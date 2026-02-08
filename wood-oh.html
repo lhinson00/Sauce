@@ -1115,6 +1115,21 @@
                         </div>
                     </div>
 
+                    <div style="margin-top: 24px; padding-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.15);">
+                        <div class="breakdown-item" style="border: none; padding: 8px 0;">
+                            <span class="breakdown-label">📍 Zip Code</span>
+                            <span class="breakdown-value" id="zipCode">-</span>
+                        </div>
+                        <div class="breakdown-item" style="border: none; padding: 8px 0;">
+                            <span class="breakdown-label">📍 County</span>
+                            <span class="breakdown-value" id="county">-</span>
+                        </div>
+                        <div class="breakdown-item" style="border: none; padding: 8px 0;">
+                            <span class="breakdown-label">🚗 Mileage</span>
+                            <span class="breakdown-value" id="mileage">- miles</span>
+                        </div>
+                    </div>
+
                     <div style="margin-top: 24px;">
                         <div class="breakdown-item">
                             <span class="breakdown-label">Material Only (D2)</span>
@@ -1135,6 +1150,10 @@
                         <div class="breakdown-item">
                             <span class="breakdown-label">TN Tax (I2)</span>
                             <span class="breakdown-value" id="tax">$0.00</span>
+                        </div>
+                        <div class="breakdown-item">
+                            <span class="breakdown-label">Shipping (J2)</span>
+                            <span class="breakdown-value" id="shipping">$0.00</span>
                         </div>
                     </div>
 
@@ -1251,7 +1270,83 @@
             }, 5000);
         }
 
-        async function calculatePricing() {
+        // Mileage Calculation
+        const SHOP_ADDRESS = '3846 Summertown Hwy, Hohenwald, TN 38462';
+        let calculatedMileage = 0;
+
+        async function calculateMileage() {
+            const customerAddr = document.getElementById('address').value.trim();
+            const display = document.getElementById('mileageDisplay');
+            
+            if (!customerAddr) {
+                display.textContent = '';
+                return;
+            }
+            
+            display.textContent = '🔄 Calculating distance...';
+            display.style.color = '#666';
+            
+            try {
+                // Use Nominatim (free geocoding service)
+                const geocodeUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(customerAddr)}&format=json&limit=1`;
+                const shopGeoUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(SHOP_ADDRESS)}&format=json&limit=1`;
+                
+                const [customerRes, shopRes] = await Promise.all([
+                    fetch(geocodeUrl),
+                    fetch(shopGeoUrl)
+                ]);
+                
+                const customerData = await customerRes.json();
+                const shopData = await shopRes.json();
+                
+                if (customerData.length === 0) {
+                    display.textContent = '⚠️ Could not find address';
+                    display.style.color = '#dc3545';
+                    calculatedMileage = 0;
+                    return;
+                }
+                
+                if (shopData.length === 0) {
+                    display.textContent = '⚠️ Shop address error';
+                    display.style.color = '#dc3545';
+                    calculatedMileage = 0;
+                    return;
+                }
+                
+                const customerLat = parseFloat(customerData[0].lat);
+                const customerLon = parseFloat(customerData[0].lon);
+                const shopLat = parseFloat(shopData[0].lat);
+                const shopLon = parseFloat(shopData[0].lon);
+                
+                // Calculate straight-line distance (Haversine formula)
+                const R = 3959; // Earth's radius in miles
+                const dLat = (customerLat - shopLat) * Math.PI / 180;
+                const dLon = (customerLon - shopLon) * Math.PI / 180;
+                const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                         Math.cos(shopLat * Math.PI / 180) * Math.cos(customerLat * Math.PI / 180) *
+                         Math.sin(dLon/2) * Math.sin(dLon/2);
+                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                const distance = R * c;
+                
+                // Multiply by 1.2 to estimate road distance
+                calculatedMileage = Math.round(distance * 1.2);
+                
+                display.textContent = `📍 Distance: ${calculatedMileage} miles from shop`;
+                display.style.color = '#28a745';
+                
+                if (calculatedMileage > 200) {
+                    display.textContent += ` (Beyond 200 miles - additional labor charge applies)`;
+                    display.style.color = '#dc3545';
+                }
+                
+            } catch (error) {
+                display.textContent = '⚠️ Error calculating distance';
+                display.style.color = '#dc3545';
+                calculatedMileage = 0;
+            }
+        }
+
+                async function calculatePricing() {
             if (!currentUser) {
                 showAlert('You must be logged in to calculate');
                 return;
@@ -1362,7 +1457,13 @@
                     document.getElementById('laborBeyond200').textContent = formatCurrency(results.laborBeyond200);
                     document.getElementById('concrete').textContent = formatCurrency(results.concrete);
                     document.getElementById('tax').textContent = formatCurrency(results.tax);
+                    document.getElementById('shipping').textContent = formatCurrency(results.shipping || 0);
                     document.getElementById('totalCombined').textContent = formatCurrency(results.total);
+                    
+                    // Display location info
+                    document.getElementById('zipCode').textContent = results.zipCode || '-';
+                    document.getElementById('county').textContent = results.county || '-';
+                    document.getElementById('mileage').textContent = results.mileage ? results.mileage + ' miles' : '- miles';
                     
                     const width = parseFloat(document.getElementById('width').value) || 0;
                     const length = parseFloat(document.getElementById('length').value) || 0;
