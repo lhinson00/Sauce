@@ -1203,6 +1203,7 @@
         const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec';
         let currentUser = null;
         let autoCalculateTimer = null;
+        let calculationCounter = 0; // Track calculation requests
 
         // Check if already logged in
         window.onload = function() {
@@ -1269,7 +1270,7 @@
             document.getElementById('userUsername').textContent = '@' + currentUser.username;
             
             // Setup auto-calculate listeners
-            setupAutoCalculate();
+            // // setupAutoCalculate(); // DISABLED - button only for speed // DISABLED - button only for speed
         }
 
         function handleLogout() {
@@ -1386,6 +1387,16 @@
                 return;
             }
             
+            // Track this calculation
+            calculationCounter++;
+            const thisCalculationId = calculationCounter;
+            
+            // Red indicator - calculating
+            const totalElement = document.getElementById('totalCombined');
+            totalElement.style.color = '#dc3545';
+            totalElement.style.fontWeight = 'bold';
+            totalElement.textContent = 'Calculating...';
+            
             showLoading();
 
             try {
@@ -1485,6 +1496,12 @@
                 const data = await response.json();
 
                 if (data.success) {
+                    // Race condition check
+                    if (thisCalculationId !== calculationCounter) {
+                        hideLoading();
+                        return;
+                    }
+                    
                     const results = data.results;
                     console.log("Results from server:", results);
                     
@@ -1506,7 +1523,12 @@
                     updateElement('esd', formatCurrency(results.esd || 0));
                     updateElement('manualAdders', formatCurrency(results.manualAdders || 0));
                     updateElement('shipping', formatCurrency(results.shipping || 0));
-                    updateElement('totalCombined', formatCurrency(results.total));
+                    
+                    // Update total with green indicator
+                    const totalElement = document.getElementById('totalCombined');
+                    totalElement.textContent = formatCurrency(results.total);
+                    totalElement.style.color = '#28a745';
+                    totalElement.style.fontWeight = 'bold';
                     
                     // Display location info
                     updateElement('zipCode', results.zipCode || '-');
@@ -1926,6 +1948,15 @@
                 return;
             }
             
+            // Track this calculation
+            calculationCounter++;
+            const thisCalculationId = calculationCounter;
+            
+            // Red indicator - calculating
+            const totalElement = document.getElementById('totalCombined');
+            totalElement.style.color = '#dc3545';
+            totalElement.textContent = 'Calculating...';
+            
             try {
                 const formData = {
                     action: 'calculate',
@@ -2044,8 +2075,15 @@
                     updateElement('esd', formatCurrency(results.esd || 0));
                     updateElement('manualAdders', formatCurrency(results.manualAdders || 0));
                     updateElement('shipping', formatCurrency(results.shipping || 0));
-                    updateElement('totalCombined', formatCurrency(results.total));
-                    document.getElementById('totalCombined').textContent = formatCurrency(results.total);
+                    
+                    // Race check then green indicator
+                    if (thisCalculationId !== calculationCounter) {
+                        return;
+                    }
+                    const totalElement = document.getElementById('totalCombined');
+                    totalElement.textContent = formatCurrency(results.total);
+                    totalElement.style.color = '#28a745';
+                    totalElement.style.fontWeight = 'bold';
                     
                     // Display location info
                     document.getElementById('zipCode').textContent = results.zipCode || '-';
@@ -2071,6 +2109,59 @@
         }
 
         // Auto-calculate when inputs change (optimized for speed)
+        async function emailQuote() {
+            if (!currentUser) {
+                showAlert('Please login first');
+                return;
+            }
+            
+            const emailBtn = document.getElementById('emailBtn');
+            const originalText = emailBtn.textContent;
+            emailBtn.disabled = true;
+            emailBtn.textContent = 'Sending...';
+            
+            try {
+                const customerName = document.getElementById('customerName').value || 'Customer';
+                const total = document.getElementById('totalCombined').textContent;
+                
+                const emailBody = `
+                    <h2>New Quote Request - Wood OH Calculator</h2>
+                    <p><strong>Sales Person:</strong> ${currentUser.fullName}</p>
+                    <p><strong>Customer:</strong> ${customerName}</p>
+                    <p><strong>Total Price:</strong> ${total}</p>
+                    <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
+                    <hr>
+                    <p>Please review the quote details in the Google Sheet: ${currentUser.username}_WoodOH</p>
+                `;
+                
+                const emailData = {
+                    action: 'sendEmail',
+                    to: 'lain.hinson@gmail.com',
+                    subject: `Quote Request - ${customerName} - ${currentUser.fullName}`,
+                    htmlBody: emailBody
+                };
+                
+                const response = await fetch(SCRIPT_URL, {
+                    method: 'POST',
+                    body: JSON.stringify(emailData),
+                    headers: { 'Content-Type': 'text/plain' }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showAlert('✅ Quote emailed successfully!', 'success');
+                } else {
+                    showAlert('❌ Failed to send email: ' + result.error);
+                }
+            } catch (error) {
+                showAlert('❌ Error sending email: ' + error.message);
+            } finally {
+                emailBtn.disabled = false;
+                emailBtn.textContent = originalText;
+            }
+        }
+
         function setupAutoCalculate() {
             // Get all input and select elements
             const inputs = document.querySelectorAll('input, select');
@@ -2092,7 +2183,7 @@
                         if (width && length && height) {
                             calculatePricingSilent();
                         }
-                    }, 300); // Reduced from 800ms
+                    }, 800); // Wait for user to finish typing
                 });
                 
                 input.addEventListener('change', () => {
@@ -2109,7 +2200,7 @@
                         if (width && length && height) {
                             autoCalculateTimer = setTimeout(() => {
                                 calculatePricingSilent();
-                            }, 100); // Reduced from 300ms
+                            }, 200); // Quick for dropdowns
                         }
                     }
                 });
