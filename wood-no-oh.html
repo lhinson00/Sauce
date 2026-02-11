@@ -240,6 +240,9 @@
                         <div class="form-group">
                             <label>Customer Address</label>
                             <input type="text" id="address" placeholder="Enter address">
+                            <div id="addressLookupResult" style="margin-top: 8px; padding: 8px; background: #f8f9fa; border-radius: 6px; font-size: 13px; display: none;">
+                                <strong>Location:</strong> <span id="lookupZip"></span> | <span id="lookupCounty"></span> | <span id="lookupMiles"></span>
+                            </div>
                         </div>
                     </div>
                     <div class="form-grid" style="margin-top: 16px;">
@@ -1462,10 +1465,48 @@
             showLoading();
 
             try {
+                // STEP 1: LOOKUP ADDRESS FIRST (if address provided)
+                const customerAddress = document.getElementById('address').value.trim();
+                let addressData = { zipCode: '', county: '', mileage: 0 };
+                
+                if (customerAddress) {
+                    try {
+                        const addressResponse = await fetch(SCRIPT_URL, {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                action: 'addressLookup',
+                                address: customerAddress
+                            }),
+                            headers: { 'Content-Type': 'text/plain' }
+                        });
+                        
+                        const addressResult = await addressResponse.json();
+                        
+                        if (addressResult.success) {
+                            addressData = {
+                                zipCode: addressResult.zipCode || '',
+                                county: addressResult.county || '',
+                                mileage: addressResult.mileage || 0
+                            };
+                            // Show the lookup result
+                            document.getElementById('lookupZip').textContent = addressData.zipCode || 'N/A';
+                            document.getElementById('lookupCounty').textContent = addressData.county || 'N/A';
+                            document.getElementById('lookupMiles').textContent = addressData.mileage ? addressData.mileage + ' miles' : 'N/A';
+                            document.getElementById('addressLookupResult').style.display = 'block';
+                        }
+                    } catch (addressError) {
+                        console.log('Address lookup failed, continuing with calculation:', addressError);
+                    }
+                }
+                
+                // STEP 2: NOW SEND TO SHEET FOR PRICING CALCULATION
                 const formData = {
                     action: 'calculate',
                     calculatorType: 'WoodNoOH',
                     username: currentUser.username,
+                    
+                    // Include address lookup data
+                    addressLookup: addressData,
                     
                     customerName: document.getElementById('customerName').value,
                     phone: document.getElementById('phone').value,
@@ -1624,6 +1665,50 @@
         }
 
         
+        async function quickAddressLookup() {
+            const address = document.getElementById('address').value.trim();
+            
+            if (!address) {
+                showAlert('Please enter an address first');
+                return;
+            }
+            
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Looking up...';
+            
+            try {
+                const response = await fetch(SCRIPT_URL, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        action: 'addressLookup',
+                        address: address
+                    }),
+                    headers: { 'Content-Type': 'text/plain' }
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Show the results below address field
+                    document.getElementById('lookupZip').textContent = data.zipCode || 'N/A';
+                    document.getElementById('lookupCounty').textContent = data.county || 'N/A';
+                    document.getElementById('lookupMiles').textContent = (data.mileage ? data.mileage + ' miles' : 'N/A');
+                    document.getElementById('addressLookupResult').style.display = 'block';
+                    
+                    showAlert('✅ Address lookup complete!', 'success');
+                } else {
+                    showAlert('❌ Could not lookup address: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                showAlert('❌ Lookup failed: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }
+        }
+
         async function emailQuote() {
             if (!currentUser) {
                 showAlert('You must be logged in');
