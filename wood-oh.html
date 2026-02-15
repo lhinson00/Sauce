@@ -1234,6 +1234,10 @@
                         📧 Email Quote to Salesman
                     </button>
 
+                    <button class="calculate-btn" onclick="launch3DQuote()" id="gen3dBtn" style="margin-top: 12px; background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); display: none;">
+                        🏗️ Generate 3D Quote
+                    </button>
+
                     <div style="margin-top: 20px; text-align: center; opacity: 0.8; font-size: 13px;">
                         ✅ Connected to Google Sheet<br>All exact dropdown options
                     </div>
@@ -1837,6 +1841,7 @@
                     
                     showAlert('✅ Pricing calculated successfully! Check your Google Sheet tab: ' + currentUser.username, 'success');
                     document.getElementById('emailBtn').style.display = 'block';
+                    document.getElementById('gen3dBtn').style.display = 'block';
                 } else {
                     showAlert('Error: ' + data.error);
                 }
@@ -2318,6 +2323,7 @@
                     
                     document.getElementById('emailBtn').style.display = 'block';
                 }
+                    document.getElementById('gen3dBtn').style.display = 'block';
 
             } catch (error) {
                 console.error('Auto-calculate error:', error);
@@ -2370,13 +2376,729 @@
             });
         }
 
-    </script>
+    // ════════════════════════════════════════════════════════════
+    // 3D QUOTE GENERATOR
+    // ════════════════════════════════════════════════════════════
+    function parseGarageDoorSize(code) {
+        // GD88W → 8x8, GD1210INW → 12x10, GD168W → 16x8
+        const m = code.match(/^GD(\d+?)(\d{1,2})(INS?W|W)$/);
+        if (!m) return null;
+        // Tricky: codes like GD88 = 8x8, GD108 = 10x8, GD1210 = 12x10, GD1414 = 14x14
+        const digits = m[1] + m[2];
+        let w, h;
+        if (digits.length === 2) { w = parseInt(digits[0]); h = parseInt(digits[1]); }
+        else if (digits.length === 3) { w = parseInt(digits.substring(0,2)); h = parseInt(digits.substring(2)); }
+        else if (digits.length === 4) { w = parseInt(digits.substring(0,2)); h = parseInt(digits.substring(2)); }
+        else return null;
+        return { w, h };
+    }
 
-<script>
-// ============================================================================
-// LOAD LEAD — Auto-populate calculator from lead form data
-// © 2025-2026 Lain Hinson. All rights reserved.
-// ============================================================================
+    function parseBarnDoorSize(code) {
+        // "12X10 SINGLE SLIDING DOOR" → {w:12, h:10}
+        const m = code.match(/(\d+)X(\d+)/i);
+        if (!m) return null;
+        return { w: parseInt(m[1]), h: parseInt(m[2]) };
+    }
+
+    function launch3DQuote() {
+        // Read all specs from calculator fields
+        const width = parseFloat(document.getElementById('width').value) || 0;
+        const length = parseFloat(document.getElementById('length').value) || 0;
+        const height = parseFloat(document.getElementById('height').value) || 0;
+        const pitch = parseFloat(document.getElementById('roofPitch').value) || 4;
+        const postSpacing = parseFloat(document.getElementById('eavePostSpacing').value) || 12;
+        const customerName = document.getElementById('customerName').value || 'Customer';
+
+        if (!width || !length || !height) {
+            showAlert('Please fill in width, length, and height first.');
+            return;
+        }
+
+        // Read pricing from displayed results
+        function parseCurrency(el) {
+            const txt = document.getElementById(el)?.textContent || '$0';
+            return parseFloat(txt.replace(/[$,]/g, '')) || 0;
+        }
+        const pricing = {
+            materialOnly: parseCurrency('materialOnly'),
+            labor: parseCurrency('labor'),
+            laborBeyond200: parseCurrency('laborBeyond200'),
+            concrete: parseCurrency('concrete'),
+            tax: parseCurrency('tax'),
+            esd: parseCurrency('esd'),
+            shipping: parseCurrency('shipping'),
+            manualAdders: parseCurrency('manualAdders'),
+            total: parseCurrency('totalCombined'),
+        };
+
+        if (pricing.total === 0) {
+            showAlert('Please Calculate Pricing first, then Generate 3D Quote.');
+            return;
+        }
+
+        // Read garage doors
+        const garageDoors = [];
+        for (let i = 1; i <= 4; i++) {
+            const type = document.getElementById('garageDoor' + i + 'Type').value;
+            const qty = parseInt(document.getElementById('garageDoor' + i + 'Qty').value) || 0;
+            if (type && type !== 'None' && qty > 0) {
+                const sz = parseGarageDoorSize(type);
+                if (sz) garageDoors.push({ size: sz.w + "'×" + sz.h + "'", w: sz.w, h: sz.h, qty, code: type });
+            }
+        }
+
+        // Read barn doors
+        const barnDoors = [];
+        for (let i = 1; i <= 2; i++) {
+            const type = document.getElementById('barnDoor' + i + 'Type').value;
+            const qty = parseInt(document.getElementById('barnDoor' + i + 'Qty').value) || 0;
+            if (type && type !== 'None' && qty > 0) {
+                const sz = parseBarnDoorSize(type);
+                if (sz) barnDoors.push({ size: sz.w + "'×" + sz.h + "' Sliding", w: sz.w, h: sz.h, qty, code: type });
+            }
+        }
+
+        // Side sheds
+        const ssW = parseFloat(document.getElementById('ssWidth').value) || 0;
+        const ssL = parseFloat(document.getElementById('ssLength').value) || 0;
+        const ss2W = parseFloat(document.getElementById('ss2Width').value) || 0;
+        const ss2L = parseFloat(document.getElementById('ss2Length').value) || 0;
+        const shed1 = (ssW > 0 && ssL > 0) ? { wall: 'left', width: ssW, length: ssL } : null;
+        const shed2 = (ss2W > 0 && ss2L > 0) ? { wall: 'right', width: ss2W, length: ss2L } : null;
+
+        // Build specs
+        const wainscot = document.getElementById('wainscot').value;
+        const mainConcrete = document.getElementById('mainConcrete').value;
+        const roofColor = document.getElementById('roofColor').value;
+
+        // Build line items from real pricing
+        const lineItems = [];
+        if (pricing.materialOnly > 0) lineItems.push({ icon: '🏗️', name: width + "'×" + length + "'×" + height + "' Fully Enclosed Building", desc: 'Wood truss, 18" overhang, ' + roofColor + ', 4 walls', price: pricing.materialOnly });
+        if (pricing.labor > 0) lineItems.push({ icon: '🔨', name: 'Installation Labor', desc: 'Full shell build + crew', price: pricing.labor });
+        if (pricing.laborBeyond200 > 0) lineItems.push({ icon: '🚛', name: 'Mileage Labor Adder', desc: 'Beyond 200-mile radius', price: pricing.laborBeyond200 });
+        if (pricing.concrete > 0) lineItems.push({ icon: '🏗️', name: 'Concrete — ' + mainConcrete, desc: 'Full building slab with footers', price: pricing.concrete });
+        if (pricing.esd > 0) lineItems.push({ icon: '📐', name: 'Engineered Sealed Drawings', desc: 'County-required engineering', price: pricing.esd });
+        if (pricing.shipping > 0) lineItems.push({ icon: '🚚', name: 'Shipping', desc: 'Material delivery', price: pricing.shipping });
+        if (pricing.tax > 0) lineItems.push({ icon: '🏛️', name: 'Sales Tax', desc: 'Based on county rate', price: pricing.tax });
+        if (pricing.manualAdders > 0) lineItems.push({ icon: '➕', name: 'Additional Items', desc: 'Manual adders', price: pricing.manualAdders });
+
+        // Package data and open the generator
+        const quoteData = {
+            w: width, l: length, h: height, pitch, truss: 'wood',
+            oh: 18, soffit: true, postSpacing, encl: 'fully',
+            shed: shed1, shed2: shed2,
+            garageDoors, barnDoors,
+            lineItems, pricing,
+            customerName, wainscot: wainscot !== 'No',
+            roofColor,
+        };
+
+        open3DGenerator(quoteData);
+    }
+
+    function open3DGenerator(Q) {
+        // Remove any existing overlay
+        const old = document.getElementById('quoteGenOverlay');
+        if (old) old.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'quoteGenOverlay';
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:10000;background:#0c0f14;overflow-y:auto;';
+        document.body.appendChild(overlay);
+
+        // Load Three.js if not already loaded
+        function go() { buildQuoteGenerator(overlay, Q); }
+        if (typeof THREE !== 'undefined') { go(); }
+        else {
+            const s = document.createElement('script');
+            s.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
+            s.onload = go;
+            document.head.appendChild(s);
+        }
+    }
+
+    function buildQuoteGenerator(overlay, Q) {
+        const WALLS = [
+            { id: 'front', label: 'Front Gable', len: Q.w, color: '#f59e0b' },
+            { id: 'back', label: 'Back Gable', len: Q.w, color: '#fbbf24' },
+            { id: 'left', label: 'Left Eave', len: Q.l, color: '#3b82f6' },
+            { id: 'right', label: 'Right Eave', len: Q.l, color: '#22c55e' },
+        ];
+
+        let allDoors = [];
+        let nextDoorId = 0;
+        Q.garageDoors.forEach(d => { for (let i = 0; i < d.qty; i++) allDoors.push({ id: nextDoorId++, type: 'garage', icon: '🚪', label: 'Garage ' + d.size, size: d.size, w: d.w, h: d.h, wall: null, offset: null }); });
+        Q.barnDoors.forEach(d => { for (let i = 0; i < d.qty; i++) allDoors.push({ id: nextDoorId++, type: 'barn', icon: '🚜', label: 'Barn Door ' + d.size, size: d.size, w: d.w, h: d.h, wall: null, offset: null }); });
+
+        let activeDD = null;
+
+        function fmt(ft) {
+            if (ft == null) return '';
+            const f = Math.floor(ft), inc = Math.round((ft - f) * 12);
+            if (inc === 0 || inc === 12) return (inc === 12 ? f + 1 : f) + "'";
+            return f + "'" + inc + '"';
+        }
+
+        function parseOff(val) {
+            val = val.trim();
+            const m1 = val.match(/^(\d+)['']?\s*(\d+)?[""]?$/);
+            const m2 = val.match(/^(\d+\.?\d*)$/);
+            let ft = 0;
+            if (m1) { ft = parseInt(m1[1]); if (m1[2]) ft += parseInt(m1[2]) / 12; }
+            else if (m2) ft = parseFloat(m2[1]);
+            return Math.round(ft * 10) / 10;
+        }
+
+        function wallLabel(id) { return WALLS.find(w => w.id === id)?.label || id; }
+
+        const peakH = Q.h + (Q.w / 2) * (Q.pitch / 12);
+
+        // Build HTML
+        overlay.innerHTML = `
+        <style>
+            .qg *{margin:0;padding:0;box-sizing:border-box;}
+            .qg{font-family:'DM Sans',sans-serif;color:#f8fafc;background:#0c0f14;}
+            .qg-hdr{display:flex;align-items:center;gap:12px;padding:10px 20px;background:#141820;border-bottom:1px solid rgba(245,158,11,.12);}
+            .qg-logo{width:30px;height:30px;background:#f59e0b;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:'Space Mono',monospace;font-weight:700;font-size:12px;color:#0c0f14;}
+            .qg-ht{font-size:14px;font-weight:700;}.qg-hs{font-size:8px;color:#64748b;font-family:'Space Mono',monospace;text-transform:uppercase;letter-spacing:1.5px;}
+            .qg-close{margin-left:auto;padding:6px 14px;background:#1f2937;border:1px solid rgba(255,255,255,.1);border-radius:7px;color:#cbd5e1;cursor:pointer;font-size:12px;font-family:'DM Sans',sans-serif;}
+            .qg-close:hover{border-color:#f59e0b;color:#f59e0b;}
+            .qg-body{max-width:920px;margin:0 auto;padding:16px 16px 40px;}
+            .qg-top{text-align:center;margin-bottom:14px;}
+            .qg-badge{display:inline-flex;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.2);border-radius:16px;padding:3px 10px;font-size:8px;color:#fbbf24;font-weight:600;font-family:'Space Mono',monospace;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;}
+            .qg-top h2{font-size:20px;font-weight:800;margin-bottom:3px;}.qg-top h2 span{color:#f59e0b;}
+            .qg-top p{font-size:11px;color:#64748b;}
+            .qg-specs{display:flex;gap:5px;justify-content:center;flex-wrap:wrap;margin-bottom:14px;}
+            .qg-sp{background:#1a1f2a;border:1px solid rgba(255,255,255,.04);border-radius:6px;padding:3px 8px;font-size:9px;font-family:'Space Mono',monospace;color:#cbd5e1;}.qg-sp b{color:#fbbf24;}
+            .qg-lay{display:flex;gap:14px;}
+            .qg-tray{width:310px;flex-shrink:0;}
+            .qg-sec{background:#141820;border:1px solid rgba(255,255,255,.04);border-radius:10px;padding:10px;margin-bottom:8px;}
+            .qg-st{font-size:8px;font-family:'Space Mono',monospace;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;margin-bottom:6px;display:flex;align-items:center;gap:5px;}.qg-st::before{content:'';width:3px;height:8px;background:#f59e0b;border-radius:2px;}
+            .qg-uchip{display:flex;align-items:center;gap:7px;padding:6px 8px;background:#1f2937;border:1px solid rgba(255,255,255,.05);border-radius:7px;margin-bottom:4px;font-size:10px;}
+            .qg-uchip .ic{font-size:14px;}.qg-uchip .nm{font-weight:600;flex:1;}
+            .qg-abtn{padding:2px 7px;background:#f59e0b;color:#0c0f14;border:none;border-radius:4px;font-size:8px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;}
+            .qg-dd{position:fixed;z-index:10001;background:#1a1f2a;border:1px solid rgba(245,158,11,.2);border-radius:7px;padding:3px;box-shadow:0 6px 20px rgba(0,0,0,.4);min-width:130px;}
+            .qg-dd-opt{padding:5px 8px;font-size:10px;cursor:pointer;border-radius:4px;display:flex;align-items:center;gap:5px;color:#f8fafc;transition:background .1s;}
+            .qg-dd-opt:hover{background:rgba(245,158,11,.1);}
+            .qg-dd-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+            .qg-whdr{display:flex;align-items:center;gap:5px;padding:5px 0;font-size:10px;font-weight:700;color:#cbd5e1;}
+            .qg-wdot{width:5px;height:5px;border-radius:50%;flex-shrink:0;}
+            .qg-wcnt{margin-left:auto;font-family:'Space Mono',monospace;font-size:8px;color:#475569;}
+            .qg-pd{display:flex;align-items:center;gap:5px;padding:5px 7px;background:#1f2937;border:1px solid rgba(255,255,255,.04);border-radius:6px;margin-bottom:3px;font-size:9px;}
+            .qg-pd .pi{font-size:12px;}.qg-pd .pinfo{flex:1;}.qg-pd .pn{font-weight:600;font-size:9px;}.qg-pd .poff{display:flex;align-items:center;gap:2px;margin-top:2px;}
+            .qg-pd .poff label{font-size:7px;color:#475569;font-family:'Space Mono',monospace;white-space:nowrap;}
+            .qg-pd input.oft{width:30px;padding:1px 3px;background:#1a1f2a;border:1px solid rgba(255,255,255,.1);border-radius:3px;color:#fbbf24;font-family:'Space Mono',monospace;font-size:9px;text-align:center;outline:none;}
+            .qg-pd input.oft:focus{border-color:#f59e0b;}
+            .qg-pd .pend{font-size:7px;color:#64748b;font-family:'Space Mono',monospace;}
+            .qg-pd .pdel{color:#ef4444;cursor:pointer;font-size:10px;padding:1px 3px;opacity:.4;}.qg-pd .pdel:hover{opacity:1;}
+            .qg-conflict{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:5px;padding:4px 7px;font-size:8px;color:#ef4444;margin-bottom:4px;display:none;align-items:center;gap:3px;}.qg-conflict.on{display:flex;}
+            .qg-fpa{flex:1;}
+            .qg-fpl{font-size:8px;font-family:'Space Mono',monospace;color:#475569;text-align:center;margin-bottom:5px;text-transform:uppercase;letter-spacing:1px;}
+            .qg-fp{position:relative;background:#141820;border:2px solid rgba(255,255,255,.05);border-radius:12px;margin:0 auto;}
+            .qg-fw{position:absolute;transition:all .15s;}.qg-fw.hz{left:6%;right:6%;height:5px;border-radius:2px;}.qg-fw.vt{top:6%;bottom:6%;width:5px;border-radius:2px;}
+            .qg-fw.ft{top:0;transform:translateY(-50%);}.qg-fw.bk{bottom:0;transform:translateY(50%);}.qg-fw.lt{left:0;transform:translateX(-50%);}.qg-fw.rt{right:0;transform:translateX(50%);}
+            .qg-fw{background:rgba(100,116,139,.25);}.qg-fw.act{background:#f59e0b;box-shadow:0 0 6px rgba(245,158,11,.3);}
+            .qg-fwl{position:absolute;font-size:7px;font-family:'Space Mono',monospace;color:#475569;white-space:nowrap;}
+            .qg-fwl.tp{top:-14px;left:50%;transform:translateX(-50%);}.qg-fwl.bt{bottom:-14px;left:50%;transform:translateX(-50%);}
+            .qg-fwl.lf{left:-7px;top:50%;transform:translateY(-50%) rotate(-90deg);}.qg-fwl.rf{right:-7px;top:50%;transform:translateY(-50%) rotate(90deg);}
+            .qg-post{position:absolute;width:5px;height:5px;border-radius:1px;background:#b45309;opacity:.4;transform:translate(-50%,-50%);z-index:1;}
+            .qg-fpd{position:absolute;height:8px;background:#f59e0b;border-radius:2px;z-index:3;transition:all .2s;}.qg-fpd.barn{background:#3b82f6;}
+            .qg-fpd.vt{width:8px;height:auto;}
+            .qg-fpdl{position:absolute;top:-11px;left:50%;transform:translateX(-50%);font-size:6px;font-family:'Space Mono',monospace;color:#fbbf24;white-space:nowrap;}
+            .qg-shed{position:absolute;background:rgba(59,130,246,.06);border:1.5px dashed rgba(59,130,246,.25);border-radius:3px;z-index:0;}
+            .qg-shed-l{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:7px;color:#3b82f6;font-family:'Space Mono',monospace;text-align:center;pointer-events:none;}
+            .qg-dim{position:absolute;font-family:'Space Mono',monospace;font-size:11px;font-weight:700;color:#f59e0b;}
+            .qg-dim.dw{bottom:-24px;left:50%;transform:translateX(-50%);}.qg-dim.dl{right:-32px;top:50%;transform:translateY(-50%) rotate(90deg);}
+            .qg-fint{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;}
+            .qg-fint strong{display:block;font-size:13px;color:#64748b;font-family:'Space Mono',monospace;}.qg-fint span{font-size:8px;color:#475569;}
+            .qg-bsec{text-align:center;margin-top:20px;}
+            .qg-bbtn{padding:10px 32px;background:#f59e0b;color:#0c0f14;border:none;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:7px;}
+            .qg-bbtn:hover{background:#fbbf24;transform:translateY(-1px);box-shadow:0 6px 20px rgba(245,158,11,.25);}
+            .qg-bhint{font-size:9px;color:#475569;margin-top:5px;}
+            /* REPLAY */
+            .qg-rep{display:none;}.qg-rep.on{display:block;}
+            .qg-rx{position:fixed;top:12px;right:12px;width:34px;height:34px;border-radius:50%;background:#1a1f2a;border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;z-index:10002;color:#cbd5e1;}.qg-rx:hover{border-color:#f59e0b;color:#f59e0b;}
+            .qg-rv{width:100%;max-width:900px;margin:0 auto;height:460px;background:#141820;position:relative;}
+            .qg-rv canvas{display:block;width:100%!important;height:100%!important;}
+            .qg-rvb{position:absolute;top:10px;left:10px;display:flex;align-items:center;gap:5px;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.05);border-radius:6px;padding:5px 10px;}
+            .qg-rvd{width:5px;height:5px;border-radius:50%;background:#f59e0b;animation:qgp 2s infinite;}
+            @keyframes qgp{0%,100%{opacity:1}50%{opacity:.4}}
+            .qg-rvt{font-size:8px;font-family:'Space Mono',monospace;color:#64748b;text-transform:uppercase;letter-spacing:1px;}
+            .qg-rvh{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);font-size:8px;color:#475569;font-family:'Space Mono',monospace;background:rgba(0,0,0,.5);padding:3px 8px;border-radius:4px;}
+            .qg-rh{text-align:center;padding:24px 16px 16px;background:radial-gradient(ellipse at 50% 0%,rgba(245,158,11,.04) 0%,transparent 60%);}
+            .qg-rh h2{font-size:24px;font-weight:800;margin-bottom:3px;}.qg-rh h2 span{color:#f59e0b;}
+            .qg-rh .rs{font-size:12px;color:#64748b;}.qg-rh .rd{font-size:9px;color:#475569;margin-top:4px;font-family:'Space Mono',monospace;}
+            .qg-rlw{max-width:780px;margin:10px auto;padding:0 14px;}
+            .qg-rl{display:flex;align-items:center;gap:12px;padding:12px 14px;background:#141820;border:1px solid rgba(255,255,255,.03);border-radius:10px;margin-bottom:5px;opacity:0;transform:translateX(-14px);}
+            .qg-rl.on{opacity:1;transform:translateX(0);transition:all .4s cubic-bezier(.22,.61,.36,1);}
+            .qg-rl .ri{width:32px;height:32px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:14px;background:rgba(245,158,11,.06);flex-shrink:0;}
+            .qg-rl .rn{font-size:11px;font-weight:600;}.qg-rl .rd{font-size:9px;color:#64748b;margin-top:1px;}
+            .qg-rl .rp{font-size:13px;font-weight:700;font-family:'Space Mono',monospace;color:#fbbf24;margin-left:auto;white-space:nowrap;}
+            .qg-rcta{text-align:center;padding:26px 16px;margin:10px auto;max-width:780px;background:#141820;border:1px solid rgba(255,255,255,.04);border-radius:14px;opacity:0;transform:translateY(14px);}.qg-rcta.on{opacity:1;transform:translateY(0);transition:all .5s;}
+            .qg-rcta .ct{font-size:17px;font-weight:800;margin-bottom:3px;}.qg-rcta .cs{font-size:11px;color:#64748b;margin-bottom:14px;}
+            .qg-rcta .cb{padding:10px 24px;background:#f59e0b;color:#0c0f14;border:none;border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;}
+            .qg-rtot{position:sticky;bottom:0;background:linear-gradient(180deg,transparent,#0c0f14 20%);padding:10px 0 14px;}
+            .qg-rtoti{max-width:780px;margin:0 auto;padding:12px 18px;display:flex;align-items:center;justify-content:space-between;background:#1a1f2a;border:1px solid rgba(245,158,11,.2);border-radius:10px;}
+            .qg-rtotl{font-size:10px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:1px;font-family:'Space Mono',monospace;}
+            .qg-rtota{font-size:24px;font-weight:800;font-family:'Space Mono',monospace;color:#f59e0b;letter-spacing:-1px;}
+            .qg-rprog{position:fixed;top:0;left:0;height:3px;background:#f59e0b;width:0%;z-index:10003;transition:width .3s;}
+            @media(max-width:760px){.qg-lay{flex-direction:column;}.qg-tray{width:100%;}}
+        </style>
+        <div class="qg">
+        <div class="qg-hdr">
+            <div class="qg-logo">SM</div>
+            <div><div class="qg-ht">3D Quote Generator</div><div class="qg-hs">Summertown Metals</div></div>
+            <button class="qg-close" id="qgClose">✕ Close</button>
+        </div>
+        <div class="qg-body" id="qgPlace">
+            <div class="qg-top">
+                <div class="qg-badge">Place Doors → Generate 3D Quote</div>
+                <h2>Position Doors for <span>${Q.customerName}</span></h2>
+                <p>Assign each door to a wall and set exact offset from left corner.</p>
+            </div>
+            <div class="qg-specs" id="qgSpecs"></div>
+            <div class="qg-lay">
+                <div class="qg-tray">
+                    <div class="qg-sec"><div class="qg-st">Unplaced Doors</div><div id="qgUnplaced"></div></div>
+                    <div class="qg-sec"><div class="qg-st">Wall Assignments</div><div id="qgConflict" class="qg-conflict">⚠️ <span id="qgConMsg"></span></div><div id="qgWalls"></div></div>
+                </div>
+                <div class="qg-fpa">
+                    <div class="qg-fpl">Top-Down Footprint</div>
+                    <div class="qg-fp" id="qgFP"><div id="qgFPI" style="position:relative;width:100%;height:100%;">
+                        <div class="qg-fw hz ft" id="qgFwF"></div><div class="qg-fw hz bk" id="qgFwB"></div>
+                        <div class="qg-fw vt lt" id="qgFwL"></div><div class="qg-fw vt rt" id="qgFwR"></div>
+                        <div class="qg-fwl tp">Front Gable</div><div class="qg-fwl bt">Back Gable</div>
+                        <div class="qg-fwl lf">Left Eave</div><div class="qg-fwl rf">Right Eave</div>
+                        <div class="qg-fint"><strong id="qgSqft"></strong><span id="qgHts"></span></div>
+                    </div>
+                    <div class="qg-dim dw" id="qgDW"></div><div class="qg-dim dl" id="qgDL"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="qg-bsec">
+                <button class="qg-bbtn" id="qgBuildBtn">▶ Build 3D Quote</button>
+                <div class="qg-bhint">Unplaced doors omitted · Offsets default to centered</div>
+            </div>
+        </div>
+        <div class="qg-rep" id="qgReplay">
+            <div class="qg-rx" id="qgReplayClose">✕</div>
+            <div class="qg-rprog" id="qgProg"></div>
+            <div class="qg-rv" id="qgRV"><div class="qg-rvb"><div class="qg-rvd"></div><div class="qg-rvt">Interactive 3D</div></div><div class="qg-rvh">↔ Drag to rotate · Scroll to zoom</div></div>
+            <div class="qg-rh"><h2 id="qgRHt"></h2><div class="rs" id="qgRSub"></div><div class="rd" id="qgRDate"></div></div>
+            <div class="qg-rlw" id="qgRLW"></div>
+            <div class="qg-rcta" id="qgRCta"><div class="ct">Ready to Build?</div><div class="cs">Quote valid 30 days. 30% deposit to get on the schedule.</div><button class="cb">Let's Move Forward →</button><div style="margin-top:6px;font-size:9px;color:#475569">Call <strong style="color:#cbd5e1">(931) 964-4040</strong></div></div>
+            <div class="qg-rtot"><div class="qg-rtoti"><div><div class="qg-rtotl">Installed Total</div><div style="font-size:8px;color:#475569;margin-top:1px">Includes tax</div></div><div class="qg-rtota" id="qgTotA">$0</div></div></div>
+        </div>
+        </div>`;
+
+        // Bind close
+        document.getElementById('qgClose').onclick = () => overlay.remove();
+
+        // Specs
+        document.getElementById('qgSpecs').innerHTML = [
+            `<div class="qg-sp"><b>${Q.w}'</b>×<b>${Q.l}'</b>×<b>${Q.h}'</b></div>`,
+            `<div class="qg-sp">🪵 Wood Truss</div>`,
+            `<div class="qg-sp">${Q.oh}" OH${Q.soffit ? '+Soffit' : ''}</div>`,
+            `<div class="qg-sp">${Q.postSpacing}' Posts</div>`,
+            `<div class="qg-sp">${Q.pitch}/12 Pitch</div>`,
+            Q.shed ? `<div class="qg-sp">🏘️ ${Q.shed.width}'×${Q.shed.length}' Shed</div>` : '',
+            Q.shed2 ? `<div class="qg-sp">🏘️ ${Q.shed2.width}'×${Q.shed2.length}' Shed 2</div>` : '',
+        ].join('');
+
+        // Footprint sizing
+        const fp = document.getElementById('qgFP');
+        const fpa = document.querySelector('.qg-fpa');
+        const maxFW = Math.min(fpa.clientWidth - 50, 460);
+        const ratio = Q.l / Q.w;
+        fp.style.width = maxFW + 'px';
+        fp.style.height = Math.min(maxFW * ratio, 440) + 'px';
+        fp.style.margin = '20px auto';
+
+        document.getElementById('qgDW').textContent = Q.w + "'";
+        document.getElementById('qgDL').textContent = Q.l + "'";
+        document.getElementById('qgSqft').textContent = (Q.w * Q.l).toLocaleString() + ' sqft';
+        document.getElementById('qgHts').innerHTML = `SW: ${Q.h}' · Peak: ${Math.round(peakH * 10) / 10}'`;
+
+        // Posts + sheds on footprint
+        function renderFPPosts() {
+            document.querySelectorAll('.qg-post').forEach(p => p.remove());
+            const fpi = document.getElementById('qgFPI');
+            const numP = Math.round(Q.l / Q.postSpacing);
+            for (let i = 0; i <= numP; i++) {
+                const pct = 6 + (i / numP) * 88;
+                [3, 97].forEach(x => { const d = document.createElement('div'); d.className = 'qg-post'; d.style.left = x + '%'; d.style.top = pct + '%'; fpi.appendChild(d); });
+            }
+            // Gable posts
+            const numGP = Math.round(Q.w / Q.postSpacing);
+            ['front', 'back'].forEach(wall => {
+                const wd = allDoors.filter(d => d.wall === wall);
+                const yPct = wall === 'front' ? '6%' : '94%';
+                for (let i = 0; i <= numGP; i++) {
+                    const xFt = i * (Q.w / numGP);
+                    let blocked = false;
+                    wd.forEach(d => { const dL = d.offset || 0; if (xFt > dL - 0.5 && xFt < dL + d.w + 0.5) blocked = true; });
+                    if (!blocked) {
+                        const xPct = 6 + (xFt / Q.w) * 88;
+                        const dot = document.createElement('div'); dot.className = 'qg-post';
+                        dot.style.left = xPct + '%'; dot.style.top = yPct; dot.style.background = '#92400e'; dot.style.opacity = '.6';
+                        fpi.appendChild(dot);
+                    }
+                }
+            });
+        }
+
+        function renderFPSheds() {
+            document.querySelectorAll('.qg-shed').forEach(s => s.remove());
+            [Q.shed, Q.shed2].forEach(s => {
+                if (!s) return;
+                const el = document.createElement('div'); el.className = 'qg-shed';
+                const wP = (s.width / Q.w) * 100, lP = (s.length / Q.l) * 100;
+                const lS = ((Q.l - s.length) / 2 / Q.l) * 100;
+                if (s.wall === 'left') { el.style.left = (-wP - 2) + '%'; el.style.width = wP + '%'; el.style.top = (6 + lS * .88) + '%'; el.style.height = (lP * .88) + '%'; }
+                else { el.style.right = (-wP - 2) + '%'; el.style.width = wP + '%'; el.style.top = (6 + lS * .88) + '%'; el.style.height = (lP * .88) + '%'; }
+                el.innerHTML = `<div class="qg-shed-l">${s.width}'×${s.length}'</div>`;
+                document.getElementById('qgFPI').appendChild(el);
+            });
+        }
+
+        function renderFPDoors() {
+            document.querySelectorAll('.qg-fpd').forEach(d => d.remove());
+            const fpi = document.getElementById('qgFPI');
+            allDoors.filter(d => d.wall).forEach(d => {
+                const w = WALLS.find(wl => wl.id === d.wall);
+                const isHz = (d.wall === 'front' || d.wall === 'back');
+                const startP = ((d.offset || 0) / w.len) * 100, widthP = (d.w / w.len) * 100;
+                const el = document.createElement('div');
+                el.className = 'qg-fpd' + (d.type === 'barn' ? ' barn' : '') + (isHz ? '' : ' vt');
+                const usable = 88;
+                if (isHz) {
+                    el.style.left = (6 + startP * usable / 100) + '%'; el.style.width = (widthP * usable / 100) + '%';
+                    if (d.wall === 'front') el.style.top = '-4px'; else el.style.bottom = '-4px';
+                } else {
+                    el.style.top = (6 + startP * usable / 100) + '%'; el.style.height = (widthP * usable / 100) + '%';
+                    if (d.wall === 'left') el.style.left = '-4px'; else { el.style.right = '-4px'; el.style.left = 'auto'; }
+                }
+                el.innerHTML = `<div class="qg-fpdl">${d.size}</div>`;
+                fpi.appendChild(el);
+            });
+        }
+
+        function renderAll() {
+            // Unplaced
+            const up = allDoors.filter(d => !d.wall);
+            document.getElementById('qgUnplaced').innerHTML = up.length === 0
+                ? '<div style="font-size:9px;color:#4ade80;padding:3px;">✓ All doors assigned</div>'
+                : up.map(d => `<div class="qg-uchip"><span class="ic">${d.icon}</span><span class="nm">${d.label}</span><button class="qg-abtn" data-did="${d.id}">Assign →</button></div>`).join('');
+
+            // Bind assign buttons
+            document.querySelectorAll('.qg-abtn').forEach(btn => {
+                btn.onclick = (e) => { e.stopPropagation(); showDD(e, parseInt(btn.dataset.did)); };
+            });
+
+            // Walls
+            document.getElementById('qgWalls').innerHTML = WALLS.map(w => {
+                const wd = allDoors.filter(d => d.wall === w.id).sort((a, b) => (a.offset || 0) - (b.offset || 0));
+                return `<div><div class="qg-whdr"><span class="qg-wdot" style="background:${w.color}"></span>${w.label} (${w.len}')<span class="qg-wcnt">${wd.length}</span></div>
+                    ${wd.map(d => `<div class="qg-pd"><span class="pi">${d.icon}</span><div class="pinfo"><div class="pn">${d.label}</div><div class="poff"><label>From left:</label><input class="oft" type="text" value="${fmt(d.offset)}" data-did="${d.id}"><span class="pend">→ ends ${fmt((d.offset || 0) + d.w)}</span></div></div><span class="pdel" data-did="${d.id}">✕</span></div>`).join('')}
+                    ${wd.length === 0 ? '<div style="font-size:8px;color:#475569;padding:2px 0;">—</div>' : ''}</div>`;
+            }).join('');
+
+            // Bind offset inputs
+            document.querySelectorAll('.qg-pd input.oft').forEach(inp => {
+                inp.onchange = () => { const d = allDoors.find(x => x.id === parseInt(inp.dataset.did)); if (d) { d.offset = parseOff(inp.value); renderAll(); } };
+            });
+            // Bind delete
+            document.querySelectorAll('.qg-pd .pdel').forEach(btn => {
+                btn.onclick = () => { const d = allDoors.find(x => x.id === parseInt(btn.dataset.did)); if (d) { d.wall = null; d.offset = null; renderAll(); } };
+            });
+
+            // Wall highlights
+            WALLS.forEach(w => {
+                const el = document.getElementById('qgFw' + w.id.charAt(0).toUpperCase());
+                if (el) el.classList.toggle('act', allDoors.some(d => d.wall === w.id));
+            });
+
+            renderFPPosts();
+            renderFPDoors();
+            checkConflicts();
+        }
+
+        function showDD(e, doorId) {
+            closeActiveDD();
+            const rect = e.target.getBoundingClientRect();
+            const dd = document.createElement('div'); dd.className = 'qg-dd';
+            dd.style.position = 'fixed'; dd.style.left = (rect.right + 4) + 'px'; dd.style.top = rect.top + 'px';
+            WALLS.forEach(w => {
+                const opt = document.createElement('div'); opt.className = 'qg-dd-opt';
+                opt.innerHTML = `<span class="qg-dd-dot" style="background:${w.color}"></span>${w.label} (${w.len}')`;
+                opt.onclick = () => {
+                    const d = allDoors.find(x => x.id === doorId);
+                    if (d) { d.wall = w.id; d.offset = Math.round((w.len - d.w) / 2 * 10) / 10; }
+                    closeActiveDD(); renderAll();
+                };
+                dd.appendChild(opt);
+            });
+            overlay.appendChild(dd); activeDD = dd;
+            setTimeout(() => document.addEventListener('click', closeActiveDD, { once: true }), 10);
+        }
+
+        function closeActiveDD() { if (activeDD) { activeDD.remove(); activeDD = null; } }
+
+        function checkConflicts() {
+            const msgs = [];
+            WALLS.forEach(w => {
+                const wd = allDoors.filter(d => d.wall === w.id).sort((a, b) => (a.offset || 0) - (b.offset || 0));
+                for (let i = 0; i < wd.length; i++) {
+                    const d = wd[i], s = d.offset || 0, e = s + d.w;
+                    if (s < 0) msgs.push(d.label + ' on ' + w.label + ': before wall edge');
+                    if (e > w.len) msgs.push(d.label + ' on ' + w.label + ': past wall end');
+                    if (i < wd.length - 1 && e > (wd[i + 1].offset || 0)) msgs.push(d.label + ' overlaps ' + wd[i + 1].label + ' on ' + w.label);
+                }
+            });
+            const box = document.getElementById('qgConflict');
+            if (msgs.length) { box.classList.add('on'); document.getElementById('qgConMsg').textContent = msgs[0] + (msgs.length > 1 ? ' (+' + (msgs.length - 1) + ')' : ''); }
+            else box.classList.remove('on');
+        }
+
+        renderFPSheds();
+        renderAll();
+
+        // BUILD 3D QUOTE
+        let rrx = null;
+        document.getElementById('qgBuildBtn').onclick = () => {
+            const rep = document.getElementById('qgReplay'); rep.classList.add('on');
+            document.getElementById('qgPlace').style.display = 'none';
+            const placed = allDoors.filter(d => d.wall);
+
+            document.getElementById('qgRHt').innerHTML = `Your <span>${Q.w}'×${Q.l}'</span> Building`;
+            document.getElementById('qgRSub').textContent = `Fully enclosed, ${Q.truss} truss, ${Q.oh}" overhang${Q.soffit ? ' w/ soffit' : ''}${Q.shed ? ', ' + Q.shed.width + "'×" + Q.shed.length + "' shed" : ''}`;
+            document.getElementById('qgRDate').textContent = 'Quote #QT-2026-' + String(Math.floor(Math.random() * 9999)).padStart(4, '0') + ' · ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+            // Line items from calculator + door details
+            const items = [...Q.lineItems];
+            placed.forEach(d => {
+                items.push({ icon: d.icon, name: (d.type === 'garage' ? 'Garage Door' : 'Barn Door') + ' — ' + d.size, desc: wallLabel(d.wall) + ', ' + fmt(d.offset) + ' from left corner', price: 0 }); // Price already in materialOnly
+            });
+
+            document.getElementById('qgRLW').innerHTML = items.map((it, i) =>
+                `<div class="qg-rl" id="qri${i}"><div class="ri">${it.icon}</div><div style="flex:1;min-width:0"><div class="rn">${it.name}</div><div class="rd">${it.desc}</div></div>${it.price > 0 ? '<div class="rp">$' + it.price.toLocaleString() + '</div>' : ''}</div>`
+            ).join('');
+
+            // Build 3D
+            build3DReplay(placed);
+
+            // Animate line items
+            setTimeout(() => {
+                let idx = 0, run = 0;
+                const prog = document.getElementById('qgProg');
+                (function next() {
+                    if (idx >= items.length) { setTimeout(() => document.getElementById('qgRCta').classList.add('on'), 400); return; }
+                    const li = document.getElementById('qri' + idx);
+                    if (!li) { idx++; next(); return; }
+                    setTimeout(() => {
+                        li.classList.add('on');
+                        run += (items[idx].price || 0);
+                        if (run > 0) {
+                            const el = document.getElementById('qgTotA');
+                            const st = parseInt(el.textContent.replace(/[$,]/g, '')) || 0;
+                            const tgt = run; const t0 = performance.now();
+                            (function t() { const p = Math.min((performance.now() - t0) / 350, 1); el.textContent = '$' + Math.round(st + (tgt - st) * (1 - Math.pow(1 - p, 3))).toLocaleString(); if (p < 1) requestAnimationFrame(t); })();
+                        }
+                        prog.style.width = ((idx + 1) / items.length) * 100 + '%';
+                        idx++; next();
+                    }, 420);
+                })();
+            }, 900);
+        };
+
+        document.getElementById('qgReplayClose').onclick = () => {
+            document.getElementById('qgReplay').classList.remove('on');
+            document.getElementById('qgPlace').style.display = '';
+            if (rrx) { rrx.dispose(); rrx = null; }
+        };
+
+        function build3DReplay(placed) {
+            const c = document.getElementById('qgRV');
+            const old = c.querySelector('canvas'); if (old) old.remove();
+            const scene = new THREE.Scene(); scene.background = new THREE.Color(0x141820); scene.fog = new THREE.Fog(0x141820, 40, 90);
+            const cam = new THREE.PerspectiveCamera(38, c.clientWidth / c.clientHeight, 0.1, 200);
+            rrx = new THREE.WebGLRenderer({ antialias: true }); rrx.setSize(c.clientWidth, c.clientHeight); rrx.setPixelRatio(Math.min(window.devicePixelRatio, 2)); rrx.shadowMap.enabled = true;
+            c.appendChild(rrx.domElement);
+
+            scene.add(new THREE.AmbientLight(0x8899bb, 0.5));
+            const sun = new THREE.DirectionalLight(0xffeedd, 1.1); sun.position.set(10, 18, 8); sun.castShadow = true; scene.add(sun);
+
+            const gnd = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), new THREE.MeshStandardMaterial({ color: 0x151a22, roughness: 1 }));
+            gnd.rotation.x = -Math.PI / 2; gnd.position.y = -0.01; gnd.receiveShadow = true; scene.add(gnd);
+            scene.add(new THREE.GridHelper(60, 60, 0x1c2230, 0x181d28));
+
+            const Sc = 0.1, sw = Q.w * Sc, sl = Q.l * Sc, sh = Q.h * Sc;
+            const sr = (Q.h + (Q.w / 2) * (Q.pitch / 12)) * Sc, oh = (Q.oh / 12) * Sc;
+
+            const mW = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: .5, metalness: .5, side: THREE.DoubleSide });
+            const mR = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: .35, metalness: .6, side: THREE.DoubleSide });
+            const mP = new THREE.MeshStandardMaterial({ color: 0xb45309, roughness: .7 });
+            const mS = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: .8, side: THREE.DoubleSide });
+            const mD = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: .4, metalness: .3 });
+            const mBD = new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: .6 });
+            const mSh = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: .5, metalness: .4, side: THREE.DoubleSide });
+            const mE = new THREE.LineBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: .5 });
+            const mDF = new THREE.LineBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: .8 });
+            const mC = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: .9 });
+
+            function mkQ(v, m) { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(v), 3)); g.setIndex([0, 1, 2, 0, 2, 3]); g.computeVertexNormals(); const ms = new THREE.Mesh(g, m); ms.castShadow = true; return ms; }
+            function mkL(pts, m) { return new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), m); }
+
+            const grps = { slab: new THREE.Group(), posts: new THREE.Group(), walls: new THREE.Group(), roof: new THREE.Group(), doors: new THREE.Group(), dims: new THREE.Group(), shed: new THREE.Group() };
+            Object.values(grps).forEach(g => { g.visible = false; scene.add(g); });
+
+            // Slab
+            grps.slab.add(new THREE.Mesh(new THREE.BoxGeometry(sw + .04, .04, sl + .04), mC));
+            grps.slab.children[0].position.y = .02; grps.slab.children[0].receiveShadow = true;
+
+            // Shed slab
+            [Q.shed, Q.shed2].forEach(s => {
+                if (!s) return;
+                const ssw = s.width * Sc, ssl = s.length * Sc;
+                const m = new THREE.Mesh(new THREE.BoxGeometry(ssw + .02, .04, ssl + .02), mC);
+                m.position.set(s.wall === 'left' ? -sw / 2 - ssw / 2 : sw / 2 + ssw / 2, .02, 0);
+                m.receiveShadow = true; grps.slab.add(m);
+            });
+
+            // Posts — eave
+            const ps = .05, numP = Math.round(Q.l / Q.postSpacing);
+            for (let i = 0; i <= numP; i++) { const z = -sl / 2 + (sl * i / numP); [-1, 1].forEach(s => { const p = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mP); p.position.set(s * sw / 2, sh / 2, z); p.castShadow = true; grps.posts.add(p); }); }
+
+            // Posts — gable ends (skip doors)
+            ['front', 'back'].forEach(wall => {
+                const zPos = wall === 'front' ? -sl / 2 : sl / 2;
+                const wd = placed.filter(d => d.wall === wall);
+                const numGP = Math.round(Q.w / Q.postSpacing);
+                for (let i = 0; i <= numGP; i++) {
+                    const xFt = i * (Q.w / numGP); let blocked = false;
+                    wd.forEach(d => { if (xFt > (d.offset || 0) - 0.5 && xFt < (d.offset || 0) + d.w + 0.5) blocked = true; });
+                    if (!blocked) {
+                        const distC = Math.abs(xFt - Q.w / 2);
+                        const pH = (Q.h + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc;
+                        const p = new THREE.Mesh(new THREE.BoxGeometry(ps, pH, ps), mP);
+                        p.position.set((-Q.w / 2 + xFt) * Sc, pH / 2, zPos); p.castShadow = true; grps.posts.add(p);
+                    }
+                }
+            });
+
+            // Shed posts
+            [Q.shed, Q.shed2].forEach(s => {
+                if (!s) return;
+                const ssw = s.width * Sc, ssl = s.length * Sc;
+                const shedX = s.wall === 'left' ? -sw / 2 - ssw : sw / 2 + ssw;
+                const shedSh = (Q.h - 3) * Sc;
+                const numSP = Math.round(s.length / Q.postSpacing);
+                for (let i = 0; i <= numSP; i++) { const z = -ssl / 2 + (ssl * i / numSP); const p = new THREE.Mesh(new THREE.BoxGeometry(ps, shedSh, ps), mP); p.position.set(shedX, shedSh / 2, z); p.castShadow = true; grps.posts.add(p); }
+            });
+
+            // Walls with door cutouts
+            function buildWS(wallId) {
+                const isG = (wallId === 'front' || wallId === 'back');
+                const wLen = isG ? Q.w : Q.l, zP = wallId === 'front' ? -sl / 2 : wallId === 'back' ? sl / 2 : 0, xP = wallId === 'left' ? -sw / 2 : wallId === 'right' ? sw / 2 : 0;
+                const wd = placed.filter(d => d.wall === wallId).sort((a, b) => (a.offset || 0) - (b.offset || 0));
+                if (isG) {
+                    let x = 0;
+                    wd.forEach(d => { const dL = d.offset || 0, dR = dL + d.w, dh = d.h * Sc; if (dL > x) { grps.walls.add(mkQ([(-wLen / 2 + x) * Sc, 0, zP, (-wLen / 2 + dL) * Sc, 0, zP, (-wLen / 2 + dL) * Sc, sh, zP, (-wLen / 2 + x) * Sc, sh, zP], mW)); } if (dh < sh) { grps.walls.add(mkQ([(-wLen / 2 + dL) * Sc, dh, zP, (-wLen / 2 + dR) * Sc, dh, zP, (-wLen / 2 + dR) * Sc, sh, zP, (-wLen / 2 + dL) * Sc, sh, zP], mW)); } x = dR; });
+                    if (x < wLen) grps.walls.add(mkQ([(-wLen / 2 + x) * Sc, 0, zP, (wLen / 2) * Sc, 0, zP, (wLen / 2) * Sc, sh, zP, (-wLen / 2 + x) * Sc, sh, zP], mW));
+                    const tg = new THREE.BufferGeometry(); tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-sw / 2, sh, zP, sw / 2, sh, zP, 0, sr, zP]), 3)); tg.setIndex([0, 1, 2]); tg.computeVertexNormals(); grps.walls.add(new THREE.Mesh(tg, mW));
+                } else {
+                    let z = 0;
+                    wd.forEach(d => { const dL = d.offset || 0, dR = dL + d.w, dh = d.h * Sc; if (dL > z) { grps.walls.add(mkQ([xP, 0, (-wLen / 2 + z) * Sc, xP, 0, (-wLen / 2 + dL) * Sc, xP, sh, (-wLen / 2 + dL) * Sc, xP, sh, (-wLen / 2 + z) * Sc], mW)); } if (dh < sh) { grps.walls.add(mkQ([xP, dh, (-wLen / 2 + dL) * Sc, xP, dh, (-wLen / 2 + dR) * Sc, xP, sh, (-wLen / 2 + dR) * Sc, xP, sh, (-wLen / 2 + dL) * Sc], mW)); } z = dR; });
+                    if (z < wLen) grps.walls.add(mkQ([xP, 0, (-wLen / 2 + z) * Sc, xP, 0, (wLen / 2) * Sc, xP, sh, (wLen / 2) * Sc, xP, sh, (-wLen / 2 + z) * Sc], mW));
+                }
+            }
+            WALLS.forEach(w => buildWS(w.id));
+
+            // Doors
+            placed.forEach(d => {
+                const isG = (d.wall === 'front' || d.wall === 'back');
+                const wLen = isG ? Q.w : Q.l;
+                const dw = d.w * Sc, dh = d.h * Sc, center = ((-wLen / 2) + (d.offset || 0) + d.w / 2) * Sc;
+                const zP = d.wall === 'front' ? -sl / 2 : d.wall === 'back' ? sl / 2 : 0;
+                const xP = d.wall === 'left' ? -sw / 2 : d.wall === 'right' ? sw / 2 : 0;
+                const dMat = d.type === 'barn' ? mBD : mD;
+                if (isG) {
+                    const zo = d.wall === 'front' ? -0.015 : 0.015;
+                    const pan = new THREE.Mesh(new THREE.PlaneGeometry(dw, dh), dMat); pan.position.set(center, dh / 2, zP + zo); if (d.wall === 'back') pan.rotation.y = Math.PI; grps.doors.add(pan);
+                    const hd = dw / 2, fz = zP + zo * 1.2;
+                    grps.doors.add(mkL([new THREE.Vector3(center - hd, 0, fz), new THREE.Vector3(center - hd, dh, fz), new THREE.Vector3(center + hd, dh, fz), new THREE.Vector3(center + hd, 0, fz)], mDF));
+                    for (let ln = 1; ln <= Math.floor(d.h / 3); ln++) { const y = (dh / Math.ceil(d.h / 3)) * ln; grps.doors.add(mkL([new THREE.Vector3(center - hd, y, fz), new THREE.Vector3(center + hd, y, fz)], new THREE.LineBasicMaterial({ color: 0x334155, transparent: true, opacity: .3 }))); }
+                    const cv = document.createElement('canvas'); cv.width = 128; cv.height = 32; const cx = cv.getContext('2d'); cx.fillStyle = '#fbbf24'; cx.font = 'bold 16px monospace'; cx.textAlign = 'center'; cx.fillText(d.size, 64, 22);
+                    const lb = new THREE.Mesh(new THREE.PlaneGeometry(dw * .4, dw * .08), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv), transparent: true, side: THREE.DoubleSide })); lb.position.set(center, dh + .06, fz); grps.doors.add(lb);
+                } else {
+                    const xo = d.wall === 'left' ? -0.015 : 0.015;
+                    const pan = new THREE.Mesh(new THREE.PlaneGeometry(dw, dh), dMat); pan.position.set(xP + xo, dh / 2, center); pan.rotation.y = d.wall === 'left' ? Math.PI / 2 : -Math.PI / 2; grps.doors.add(pan);
+                    grps.doors.add(mkL([new THREE.Vector3(xP + xo * 1.2, 0, center - dw / 2), new THREE.Vector3(xP + xo * 1.2, dh, center - dw / 2), new THREE.Vector3(xP + xo * 1.2, dh, center + dw / 2), new THREE.Vector3(xP + xo * 1.2, 0, center + dw / 2)], mDF));
+                }
+            });
+
+            // Roof
+            grps.roof.add(mkQ([-sw / 2 - oh, sh - .01, -sl / 2 - oh, 0, sr, -sl / 2 - oh, 0, sr, sl / 2 + oh, -sw / 2 - oh, sh - .01, sl / 2 + oh], mR));
+            grps.roof.add(mkQ([sw / 2 + oh, sh - .01, sl / 2 + oh, 0, sr, sl / 2 + oh, 0, sr, -sl / 2 - oh, sw / 2 + oh, sh - .01, -sl / 2 - oh], mR));
+            if (Q.soffit && Q.oh > 0) {
+                grps.roof.add(mkQ([-sw / 2, sh, -sl / 2 - oh, -sw / 2 - oh, sh, -sl / 2 - oh, -sw / 2 - oh, sh, sl / 2 + oh, -sw / 2, sh, sl / 2 + oh], mS));
+                grps.roof.add(mkQ([sw / 2 + oh, sh, -sl / 2 - oh, sw / 2, sh, -sl / 2 - oh, sw / 2, sh, sl / 2 + oh, sw / 2 + oh, sh, sl / 2 + oh], mS));
+                for (let s = -1; s <= 1; s += 2) { const gz = s * (sl / 2), go = s * (sl / 2 + oh); grps.roof.add(mkQ([-sw / 2 - oh, sh, go, 0, sr, go, 0, sr, gz, -sw / 2, sh, gz], mS)); grps.roof.add(mkQ([sw / 2 + oh, sh, go, sw / 2, sh, gz, 0, sr, gz, 0, sr, go], mS)); }
+            }
+            grps.roof.add(mkL([new THREE.Vector3(0, sr, -sl / 2 - oh), new THREE.Vector3(0, sr, sl / 2 + oh)], mE));
+            grps.roof.add(mkL([new THREE.Vector3(-sw / 2 - oh, sh, -sl / 2 - oh), new THREE.Vector3(-sw / 2 - oh, sh, sl / 2 + oh)], mE));
+            grps.roof.add(mkL([new THREE.Vector3(sw / 2 + oh, sh, -sl / 2 - oh), new THREE.Vector3(sw / 2 + oh, sh, sl / 2 + oh)], mE));
+            for (let s = -1; s <= 1; s += 2) { const gz = s * (sl / 2 + oh); grps.roof.add(mkL([new THREE.Vector3(-sw / 2 - oh, sh, gz), new THREE.Vector3(0, sr, gz), new THREE.Vector3(sw / 2 + oh, sh, gz)], mE)); }
+
+            // Dimensions
+            function mkDL(txt, sz) { const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64; const cx = cv.getContext('2d'); cx.fillStyle = 'rgba(12,15,20,.75)'; cx.beginPath(); cx.roundRect(16, 8, 224, 48, 8); cx.fill(); cx.fillStyle = '#f59e0b'; cx.font = 'bold 26px monospace'; cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillText(txt, 128, 32); return new THREE.Mesh(new THREE.PlaneGeometry(sz, sz * .25), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv), transparent: true, side: THREE.DoubleSide, depthTest: false })); }
+            const dO = .4;
+            // Width
+            let lb = mkDL(Q.w + "' wide", 1.2); lb.position.set(0, .05, -sl / 2 - oh - dO - .2); grps.dims.add(lb);
+            grps.dims.add(mkL([new THREE.Vector3(-sw / 2, .05, -sl / 2 - oh - dO), new THREE.Vector3(sw / 2, .05, -sl / 2 - oh - dO)], new THREE.LineBasicMaterial({ color: 0x64748b, transparent: true, opacity: .6 })));
+            // Length
+            lb = mkDL(Q.l + "' long", 1.2); lb.position.set(sw / 2 + oh + dO + .2, .05, 0); lb.rotation.y = -Math.PI / 2; grps.dims.add(lb);
+            grps.dims.add(mkL([new THREE.Vector3(sw / 2 + oh + dO, .05, -sl / 2), new THREE.Vector3(sw / 2 + oh + dO, .05, sl / 2)], new THREE.LineBasicMaterial({ color: 0x64748b, transparent: true, opacity: .6 })));
+            // Sidewall height
+            lb = mkDL(Q.h + "' sidewall", 1); lb.position.set(-sw / 2 - oh - dO - .5, sh / 2, sl / 2 + oh + dO); grps.dims.add(lb);
+            grps.dims.add(mkL([new THREE.Vector3(-sw / 2 - oh - dO, 0, sl / 2 + oh + dO), new THREE.Vector3(-sw / 2 - oh - dO, sh, sl / 2 + oh + dO)], new THREE.LineBasicMaterial({ color: 0x64748b, transparent: true, opacity: .6 })));
+            // Peak height
+            lb = mkDL(Math.round(peakH * 10) / 10 + "' peak", 1); lb.position.set(.6, (sh + sr) / 2, -sl / 2 - oh - dO * 2); grps.dims.add(lb);
+            grps.dims.add(mkL([new THREE.Vector3(0, sh, -sl / 2 - oh - dO * 2), new THREE.Vector3(0, sr, -sl / 2 - oh - dO * 2)], new THREE.LineBasicMaterial({ color: 0x64748b, transparent: true, opacity: .6 })));
+
+            // Shed
+            [Q.shed, Q.shed2].forEach(s => {
+                if (!s) return;
+                const ssw = s.width * Sc, ssl = s.length * Sc, shedSh = (Q.h - 3) * Sc;
+                const outerX = s.wall === 'left' ? -sw / 2 - ssw : sw / 2 + ssw;
+                const attachX = s.wall === 'left' ? -sw / 2 : sw / 2;
+                grps.shed.add(mkQ([outerX, shedSh, ssl / 2, attachX, sh, ssl / 2, attachX, sh, -ssl / 2, outerX, shedSh, -ssl / 2], mSh));
+                grps.shed.add(mkL([new THREE.Vector3(outerX, shedSh, -ssl / 2), new THREE.Vector3(outerX, shedSh, ssl / 2)], mE));
+                grps.shed.add(mkL([new THREE.Vector3(outerX, shedSh, -ssl / 2), new THREE.Vector3(attachX, sh, -ssl / 2)], mE));
+                grps.shed.add(mkL([new THREE.Vector3(outerX, shedSh, ssl / 2), new THREE.Vector3(attachX, sh, ssl / 2)], mE));
+            });
+
+            // Animate phases
+            const phases = [grps.slab, grps.posts, grps.walls, grps.roof, grps.dims, grps.doors];
+            if (Q.shed || Q.shed2) phases.push(grps.shed);
+            let phase = 0;
+            function bNext() {
+                if (phase >= phases.length) return;
+                setTimeout(() => { const g = phases[phase]; g.visible = true; g.scale.set(.01, .01, .01); const t0 = performance.now(); (function grow() { const p = Math.min((performance.now() - t0) / 600, 1); const e = 1 - Math.pow(1 - p, 3); g.scale.set(e, e, e); if (p < 1) requestAnimationFrame(grow); })(); phase++; bNext(); }, phase === 0 ? 400 : 500);
+            }
+            bNext();
+
+            // Camera orbit
+            let th = Math.PI * .22, ph = Math.PI * .14, di = 15, dr = false, pm = { x: 0, y: 0 };
+            function setC() { cam.position.set(di * Math.sin(th) * Math.cos(ph), di * Math.sin(ph) + 2, di * Math.cos(th) * Math.cos(ph)); cam.lookAt(0, sh * .4, 0); }
+            setC();
+            rrx.domElement.addEventListener('pointerdown', e => { dr = true; pm = { x: e.clientX, y: e.clientY }; });
+            window.addEventListener('pointermove', e => { if (!dr) return; th -= (e.clientX - pm.x) * .005; ph = Math.max(.05, Math.min(Math.PI * .45, ph + (e.clientY - pm.y) * .005)); pm = { x: e.clientX, y: e.clientY }; });
+            window.addEventListener('pointerup', () => { dr = false; });
+            rrx.domElement.addEventListener('wheel', e => { e.preventDefault(); di = Math.max(5, Math.min(25, di + e.deltaY * .012)); }, { passive: false });
+            (function anim() { if (!rrx) return; requestAnimationFrame(anim); if (!dr) th += .0015; setC(); rrx.render(scene, cam); })();
+        }
+    }
 
 (function() {
     // Check for lead parameter in URL
