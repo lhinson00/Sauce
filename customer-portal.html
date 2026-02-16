@@ -375,11 +375,139 @@ async function sendChat() {
 }
 
 async function publishQuote(data) {
-    var msg = document.getElementById('msgEdit') ? document.getElementById('msgEdit').value : '';
-    showToast('📤 Publishing quote...');
-    // TODO: Wire up to createQuote API action with full data payload
-    // For now, show confirmation
-    setTimeout(function(){ showToast('✓ Quote published! Portal link ready to send.'); }, 1500);
+    var btn = document.getElementById('publishBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Publishing...'; }
+
+    try {
+        // Get user session
+        var user = {};
+        try { user = JSON.parse(sessionStorage.getItem('sauce_user')||'{}'); } catch(e) {}
+
+        // Build specs in the format the API expects: { sections: [{title, items: [{label, value}]}] }
+        var specSections = [{ title: 'Building', items: [] }, { title: 'Customer', items: [] }];
+        var bd = data.buildingData || {};
+        specSections[0].items.push({ label: 'Width', value: bd.w + "'" });
+        specSections[0].items.push({ label: 'Length', value: bd.l + "'" });
+        specSections[0].items.push({ label: 'Height', value: bd.h + "'" });
+        specSections[0].items.push({ label: 'Pitch', value: (bd.pitch||4) + '/12' });
+        specSections[0].items.push({ label: 'Post Spacing', value: (bd.postSpacing||10) + "'" });
+        if (bd.roofColor) specSections[0].items.push({ label: 'Roof Color', value: bd.roofColor });
+        if (bd.wallColor) specSections[0].items.push({ label: 'Wall Color', value: bd.wallColor });
+        if (bd.trimColor) specSections[0].items.push({ label: 'Trim Color', value: bd.trimColor });
+
+        // Add door specs
+        if (data.doors) data.doors.forEach(function(d) {
+            specSections[0].items.push({ label: (d.type||'Door') + ' ' + (d.size||''), value: (d.wall||'') + ", " + (d.offset||0) + "' offset" });
+        });
+
+        // Add shed specs  
+        if (data.sheds) data.sheds.forEach(function(s, idx) {
+            specSections[0].items.push({ label: 'Side Shed ' + (idx+1), value: s.w + "'×" + s.l + "' " + (s.type||'leanto') + ' on ' + (s.wall||'') });
+        });
+
+        // Customer info
+        specSections[1].items.push({ label: 'Name', value: data.customerName || '' });
+        specSections[1].items.push({ label: 'Email', value: user.email || '' });
+        specSections[1].items.push({ label: 'Phone', value: user.phone || '' });
+
+        var specsObj = { sections: specSections, width: bd.w, length: bd.l, height: bd.h };
+
+        // Step 1: Save quote to get a real ID
+        var saveRes = await fetch(SU, { method:'POST', headers:{'Content-Type':'text/plain'}, body: JSON.stringify({
+            action: 'saveQuote',
+            username: user.username || '',
+            customerName: data.customerName || '',
+            calcType: data.calcType || 'Post Frame',
+            totalAmount: data.totalAmount || 0,
+            specs: specsObj,
+            pricing: data.pricing || [],
+            formData: data.buildingData || {},
+            results: {}
+        })});
+        var saveData = await saveRes.json();
+        if (!saveData.success) throw new Error(saveData.error || 'Save failed');
+
+        var quoteId = saveData.quoteId;
+        var customerId = saveData.customerId || '';
+
+        // Step 2: Publish it (mark as live)
+        // Also save the full building data + 3D config for portal rendering
+        var fullQuoteData = {
+            formData: data.buildingData || {},
+            results: {},
+            specs: specsObj,
+            pricing: data.pricing || [],
+            totalAmount: data.totalAmount || 0,
+            message: '',
+            userSig: data.userSig || {},
+            buildingData: data.buildingData || {},
+            doors: data.doors || [],
+            sheds: data.sheds || [],
+            walls: data.walls || []
+        };
+
+        await fetch(SU, { method:'POST', headers:{'Content-Type':'text/plain'}, body: JSON.stringify({
+            action: 'publishQuote',
+            quoteId: quoteId,
+            quoteData: fullQuoteData
+        })});
+
+        // Build portal link
+        var portalBase = window.location.origin + window.location.pathname;
+        var portalLink = portalBase + '?q=' + encodeURIComponent(quoteId);
+
+        // Step 3: Replace preview bar with send options
+        var bar = document.querySelector('.preview-bar');
+        if (bar) {
+            bar.innerHTML = '<div style="display:flex;flex-direction:column;gap:10px;width:100%;">' +
+                '<div style="display:flex;align-items:center;gap:10px;">' +
+                    '<div style="font-size:18px;">✅</div>' +
+                    '<span class="pb-t">Published! Quote ' + quoteId + '</span>' +
+                    '<span class="pb-s" style="margin-left:auto;">Portal link ready</span>' +
+                '</div>' +
+                '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
+                    '<input id="portalLinkInput" type="text" value="' + portalLink + '" readonly style="flex:1;min-width:200px;padding:8px 12px;border-radius:6px;border:1px solid rgba(0,0,0,.2);font-size:11px;font-family:monospace;background:rgba(255,255,255,.9);color:#1c1917;">' +
+                    '<button onclick="navigator.clipboard.writeText(document.getElementById(\'portalLinkInput\').value);this.textContent=\'✓ Copied\';setTimeout(()=>this.textContent=\'📋 Copy\',2000)" class="pub-btn" style="white-space:nowrap;">📋 Copy</button>' +
+                    '<button id="sendEmailBtn" class="pub-btn" style="background:#2c5f2c;color:#fff;white-space:nowrap;">📧 Email to Customer</button>' +
+                    '<button id="sendTextBtn" class="pub-btn" style="background:#1e40af;color:#fff;white-space:nowrap;">📱 Text Link</button>' +
+                '</div>' +
+            '</div>';
+
+            // Email button — calls sendPortalEmail API
+            document.getElementById('sendEmailBtn').onclick = async function() {
+                this.disabled = true; this.textContent = '⏳ Sending...';
+                try {
+                    var res = await fetch(SU, { method:'POST', headers:{'Content-Type':'text/plain'}, body: JSON.stringify({
+                        action: 'sendPortalEmail',
+                        quoteId: quoteId,
+                        portalLink: portalLink,
+                        username: user.username || ''
+                    })});
+                    var r = await res.json();
+                    if (r.success) {
+                        showToast('✓ Email sent to ' + (r.sentTo||[]).join(', '));
+                        this.textContent = '✓ Sent';
+                    } else {
+                        showToast('Email failed: ' + (r.error||'unknown'));
+                        this.textContent = '📧 Retry';
+                        this.disabled = false;
+                    }
+                } catch(e) { showToast('Email error'); this.textContent = '📧 Retry'; this.disabled = false; }
+            };
+
+            // Text button — opens SMS compose with portal link
+            document.getElementById('sendTextBtn').onclick = function() {
+                var body = 'Your building quote from Summertown Metals is ready! View it here: ' + portalLink;
+                window.open('sms:?body=' + encodeURIComponent(body), '_blank');
+            };
+        }
+
+        showToast('✅ Quote ' + quoteId + ' published!');
+
+    } catch(e) {
+        showToast('Publish failed: ' + e.message);
+        if (btn) { btn.disabled = false; btn.textContent = '📤 Publish & Send'; }
+    }
 }
 
 // === 3D RENDERER ===
