@@ -1622,28 +1622,43 @@ function buildQuoteGenerator(overlay, Q) {
         // Shed slabs from config
         (shedCfgs || []).forEach(sc => {
             const ssw = sc.w * Sc, ssl = sc.l * Sc;
-            const m = new THREE.Mesh(new THREE.BoxGeometry(ssw + .02, .04, ssl + .02), mC);
+            // Slab length should match building dimension (shed runs full length of wall)
+            const slabL = (sc.wall === 'left' || sc.wall === 'right') ? sl : sw;
+            const m = new THREE.Mesh(new THREE.BoxGeometry(ssw + .02, .04, slabL + .02), mC);
             // Position based on wall
             if (sc.wall === 'left') m.position.set(-sw / 2 - ssw / 2, .02, 0);
             else if (sc.wall === 'right') m.position.set(sw / 2 + ssw / 2, .02, 0);
-            else if (sc.wall === 'front') { m.geometry = new THREE.BoxGeometry(ssl + .02, .04, ssw + .02); m.position.set(0, .02, -sl / 2 - ssw / 2); }
-            else { m.geometry = new THREE.BoxGeometry(ssl + .02, .04, ssw + .02); m.position.set(0, .02, sl / 2 + ssw / 2); }
+            else if (sc.wall === 'front') { m.geometry = new THREE.BoxGeometry(slabL + .02, .04, ssw + .02); m.position.set(0, .02, -sl / 2 - ssw / 2); }
+            else { m.geometry = new THREE.BoxGeometry(slabL + .02, .04, ssw + .02); m.position.set(0, .02, sl / 2 + ssw / 2); }
             if (sc.type === 'wrap') {
-                // Add second leg slab
-                const m2 = new THREE.Mesh(new THREE.BoxGeometry(ssw + .02, .04, ssw + .02), mC);
-                // Corner position depends on wrap direction
+                // Add second leg slab for wrap-around
                 const isEave = (sc.wall === 'left' || sc.wall === 'right');
+                const wrapLen = (sc.wrapLeg || 0) * Sc;
                 if (isEave) {
+                    // Primary is on eave (left/right), wrap leg goes along gable (front/back)
                     const gZ = sc.wrapDir === 'cw' ? -sl / 2 - ssw / 2 : sl / 2 + ssw / 2;
-                    const eX = sc.wall === 'left' ? -sw / 2 - ssw / 2 : sw / 2 + ssw / 2;
-                    m2.geometry = new THREE.BoxGeometry(sw + ssw + .02, .04, ssw + .02);
-                    m2.position.set((sc.wall === 'left' ? -ssw / 2 : ssw / 2) / 2, .02, gZ);
+                    // Second leg spans the building width
+                    const m2 = new THREE.Mesh(new THREE.BoxGeometry(sw + .02, .04, ssw + .02), mC);
+                    m2.position.set(0, .02, gZ);
+                    m2.receiveShadow = true; grps.slab.add(m2);
+                    // Corner fill piece connecting the two legs
+                    const m3 = new THREE.Mesh(new THREE.BoxGeometry(ssw + .02, .04, ssw + .02), mC);
+                    const cX = sc.wall === 'left' ? -sw / 2 - ssw / 2 : sw / 2 + ssw / 2;
+                    m3.position.set(cX, .02, gZ);
+                    m3.receiveShadow = true; grps.slab.add(m3);
                 } else {
+                    // Primary is on gable (front/back), wrap leg goes along eave (left/right)
                     const eX = sc.wrapDir === 'cw' ? -sw / 2 - ssw / 2 : sw / 2 + ssw / 2;
-                    m2.geometry = new THREE.BoxGeometry(ssw + .02, .04, sl + ssw + .02);
-                    m2.position.set(eX, .02, (sc.wall === 'front' ? -ssw / 2 : ssw / 2) / 2);
+                    // Second leg spans the building length
+                    const m2 = new THREE.Mesh(new THREE.BoxGeometry(ssw + .02, .04, sl + .02), mC);
+                    m2.position.set(eX, .02, 0);
+                    m2.receiveShadow = true; grps.slab.add(m2);
+                    // Corner fill
+                    const m3 = new THREE.Mesh(new THREE.BoxGeometry(ssw + .02, .04, ssw + .02), mC);
+                    const cZ = sc.wall === 'front' ? -sl / 2 - ssw / 2 : sl / 2 + ssw / 2;
+                    m3.position.set(eX, .02, cZ);
+                    m3.receiveShadow = true; grps.slab.add(m3);
                 }
-                m2.receiveShadow = true; grps.slab.add(m2);
             }
             m.receiveShadow = true; grps.slab.add(m);
         });
@@ -1804,16 +1819,21 @@ function buildQuoteGenerator(overlay, Q) {
         (shedCfgs || []).forEach(sc => {
             const ssw = sc.w * Sc, ssl = sc.l * Sc;
             const shedSh = (Q.h - 3) * Sc; // outer shed eave height
-            const numSP = Math.max(1, Math.round(sc.l / (Q.postSpacing || 10)));
+            // Use the post spacing of the wall the shed attaches to
+            const attachWall = wallCfgs.find(w => w.id === sc.wall);
+            const attachPS = attachWall ? attachWall.postSpacing : (Q.postSpacing || 10);
 
-            function addPostLine(startX, startZ, endX, endZ, count, postH) {
+            // Place posts at same positions as the main building wall they run parallel to
+            function addPostLineAligned(oX, oZ, isAlongZ, wallLen, wallPS, postH) {
                 const h = postH || shedSh;
-                for (let i = 0; i <= count; i++) {
-                    const t = count > 0 ? i / count : 0;
-                    const x = startX + (endX - startX) * t;
-                    const z = startZ + (endZ - startZ) * t;
+                const numBays = Math.max(1, Math.floor(wallLen / wallPS));
+                for (let i = 0; i <= numBays; i++) {
+                    const ft = i * (wallLen / numBays);
+                    const pos = (-wallLen / 2 + ft) * Sc;
                     const p = new THREE.Mesh(new THREE.BoxGeometry(ps, h, ps), mP);
-                    p.position.set(x, h / 2, z); p.castShadow = true; grps.posts.add(p);
+                    if (isAlongZ) p.position.set(oX, h / 2, pos);
+                    else p.position.set(pos, h / 2, oZ);
+                    p.castShadow = true; grps.posts.add(p);
                 }
             }
 
@@ -1821,7 +1841,6 @@ function buildQuoteGenerator(overlay, Q) {
                 // Gable extension: clear span — corner posts at attachment height (main sidewall)
                 if (sc.wall === 'left' || sc.wall === 'right') {
                     const oX = sc.wall === 'left' ? -sw/2 - ssw : sw/2 + ssw;
-                    // Corner posts go to main wall height where they attach
                     const p1 = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mP);
                     p1.position.set(oX, sh/2, -ssl/2); p1.castShadow = true; grps.posts.add(p1);
                     const p2 = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mP);
@@ -1837,42 +1856,46 @@ function buildQuoteGenerator(overlay, Q) {
                 // Wrap: posts along primary leg + secondary leg + corner post at hip
                 if (sc.wall === 'left' || sc.wall === 'right') {
                     const oX = sc.wall === 'left' ? -sw/2 - ssw : sw/2 + ssw;
-                    addPostLine(oX, -ssl/2, oX, ssl/2, numSP);
+                    // Primary leg posts aligned with eave wall spacing
+                    addPostLineAligned(oX, 0, true, Q.l, attachPS);
                     // Wrap leg posts
                     const wrapWall = sc.wrapDir === 'cw' ? 'front' : 'back';
+                    const wrapWallCfg = wallCfgs.find(w => w.id === wrapWall);
+                    const wrapPS = wrapWallCfg ? wrapWallCfg.postSpacing : (Q.postSpacing || 10);
                     const secLen = (sc.wrapLeg || 0) * Sc;
                     if (secLen > 0) {
-                        const numSec = Math.max(1, Math.round((sc.wrapLeg || 0) / (Q.postSpacing || 10)));
                         const oZ = wrapWall === 'front' ? -sl/2 - ssw : sl/2 + ssw;
-                        addPostLine(-sw/2, oZ, sw/2, oZ, numSec);
-                        // HIP CORNER POST — where the two shed legs meet
-                        const hipX = oX;
-                        const hipZ = oZ;
+                        // Wrap leg aligned with gable wall spacing
+                        addPostLineAligned(0, oZ, false, Q.w, wrapPS);
+                        // HIP CORNER POST
                         const hipPost = new THREE.Mesh(new THREE.BoxGeometry(ps, shedSh, ps), mP);
-                        hipPost.position.set(hipX, shedSh/2, hipZ); hipPost.castShadow = true; grps.posts.add(hipPost);
+                        hipPost.position.set(oX, shedSh/2, oZ); hipPost.castShadow = true; grps.posts.add(hipPost);
                     }
                 } else {
                     const oZ = sc.wall === 'front' ? -sl/2 - ssw : sl/2 + ssw;
-                    addPostLine(-ssl/2, oZ, ssl/2, oZ, numSP);
+                    // Primary leg posts aligned with gable wall spacing
+                    addPostLineAligned(0, oZ, false, Q.w, attachPS);
                     const secLen = (sc.wrapLeg || 0) * Sc;
                     if (secLen > 0) {
-                        const numSec = Math.max(1, Math.round((sc.wrapLeg || 0) / (Q.postSpacing || 10)));
                         const wrapWall = sc.wrapDir === 'cw' ? 'left' : 'right';
+                        const wrapWallCfg = wallCfgs.find(w => w.id === wrapWall);
+                        const wrapPS = wrapWallCfg ? wrapWallCfg.postSpacing : (Q.postSpacing || 10);
                         const oX = wrapWall === 'left' ? -sw/2 - ssw : sw/2 + ssw;
-                        addPostLine(oX, -sl/2, oX, sl/2, numSec);
+                        // Wrap leg aligned with eave wall spacing
+                        addPostLineAligned(oX, 0, true, Q.l, wrapPS);
                         // HIP CORNER POST
                         const hipPost = new THREE.Mesh(new THREE.BoxGeometry(ps, shedSh, ps), mP);
                         hipPost.position.set(oX, shedSh/2, oZ); hipPost.castShadow = true; grps.posts.add(hipPost);
                     }
                 }
             } else {
-                // Leanto (default): posts along outer edge only
+                // Leanto (default): posts along outer edge aligned with building wall
                 if (sc.wall === 'left' || sc.wall === 'right') {
                     const oX = sc.wall === 'left' ? -sw/2 - ssw : sw/2 + ssw;
-                    addPostLine(oX, -ssl/2, oX, ssl/2, numSP);
+                    addPostLineAligned(oX, 0, true, Q.l, attachPS);
                 } else {
                     const oZ = sc.wall === 'front' ? -sl/2 - ssw : sl/2 + ssw;
-                    addPostLine(-ssl/2, oZ, ssl/2, oZ, numSP);
+                    addPostLineAligned(0, oZ, false, Q.w, attachPS);
                 }
             }
         });
