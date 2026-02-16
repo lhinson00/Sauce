@@ -528,7 +528,7 @@ function buildQuoteGenerator(overlay, Q) {
         <div class="qg-rcta" id="qgRCta">
             <div class="ct">Building Review Complete</div>
             <div class="cs">Review the specs above. Everything look right?</div>
-            ${Q.pricing && Q.pricing.total > 0 ? '<button class="cb" id="qgPortalBtn" style="margin-bottom:8px;">📋 Create Customer Portal</button><br><div style="font-size:10px;color:#6b6460;margin-top:4px;">Preview the portal with 3D model, specs & pricing — then publish & send to customer</div>' : '<div style="font-size:11px;color:#6b6460;">Design-only mode — no pricing attached</div>'}
+            ${Q.pricing && Q.pricing.total > 0 ? '<button class="cb" id="qgPortalBtn" style="margin-bottom:8px;">📋 Create Customer Portal</button><br><div style="font-size:10px;color:#6b6460;margin-top:4px;">Preview the portal with 3D model, specs & pricing — then publish & send to customer</div>' : '<div style="font-size:11px;color:#6b6460;margin-bottom:10px;">Design-only mode — no pricing attached</div><div style="border-top:1px solid rgba(255,255,255,0.06);padding-top:10px;"><div style="font-size:11px;color:#a8a29e;margin-bottom:6px;font-weight:600;">📧 Email Rendering to Customer</div><input type="email" id="qgCustEmail" placeholder="Customer email address" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:#1c1917;color:#e7e5e4;font-size:12px;font-family:Inter,sans-serif;margin-bottom:6px;"><button class="cb" id="qgEmailRenderBtn" style="background:linear-gradient(135deg,#28a745,#20c997);width:100%;">📧 Send Rendering</button><div id="qgEmailStatus" style="font-size:10px;color:#6b6460;margin-top:6px;"></div></div>'}
         </div>
         <div class="qg-rtot"><div class="qg-rtoti"><div><div class="qg-rtotl">Installed Total</div><div style="font-size:8px;color:#475569;margin-top:1px">Includes tax</div></div><div class="qg-rtota" id="qgTotA">$0</div></div></div>
     </div>
@@ -1487,12 +1487,121 @@ function buildQuoteGenerator(overlay, Q) {
         };
     }
 
+    // EMAIL RENDERING TO CUSTOMER (standalone mode only)
+    const emailRenderBtn = document.getElementById('qgEmailRenderBtn');
+    if (emailRenderBtn) {
+        emailRenderBtn.onclick = async () => {
+            const custEmail = document.getElementById('qgCustEmail').value.trim();
+            const statusEl = document.getElementById('qgEmailStatus');
+            if (!custEmail || !custEmail.includes('@')) { statusEl.textContent = '⚠️ Please enter a valid email'; statusEl.style.color = '#f59e0b'; return; }
+
+            emailRenderBtn.disabled = true;
+            emailRenderBtn.textContent = '📧 Capturing views...';
+            statusEl.textContent = '';
+
+            try {
+                const d = window._3d;
+                if (!d || !d.rrx) throw new Error('3D model not ready — build the model first');
+
+                // Save current camera state
+                const origTh = d.th, origPh = d.ph, origDi = d.di;
+
+                // Define 4 elevation angles + 1 iso
+                const views = [
+                    { name: 'Front', th: Math.PI, ph: Math.PI * 0.08, di: 16 },
+                    { name: 'Right', th: Math.PI * 0.5, ph: Math.PI * 0.08, di: 16 },
+                    { name: 'Back', th: 0, ph: Math.PI * 0.08, di: 16 },
+                    { name: 'Left', th: -Math.PI * 0.5, ph: Math.PI * 0.08, di: 16 },
+                    { name: 'Iso', th: Math.PI * 0.75, ph: Math.PI * 0.18, di: 18 }
+                ];
+
+                const captures = [];
+                for (const v of views) {
+                    d.th = v.th; d.ph = v.ph; d.di = v.di;
+                    d.setC();
+                    d.dimLabels.forEach(lbl => lbl.quaternion.copy(d.cam.quaternion));
+                    d.rrx.render(d.scene, d.cam);
+                    captures.push({ name: v.name, data: d.rrx.domElement.toDataURL('image/jpeg', 0.85) });
+                }
+
+                // Restore original camera
+                d.th = origTh; d.ph = origPh; d.di = origDi;
+                d.setC();
+
+                emailRenderBtn.textContent = '📧 Sending email...';
+
+                // Get salesman info
+                const su = JSON.parse(sessionStorage.getItem('sauce_user') || '{}');
+                const salesName = su.fullName || su.name || 'Summertown Metals';
+                const salesPhone = su.phone || '';
+                const salesEmail = su.email || '';
+                const salesCompany = su.company || 'Summertown Metals';
+
+                // Read colors
+                const roofColor = document.getElementById('qgRoofColor')?.value || 'Charcoal';
+                const wallColor = document.getElementById('qgWallColor')?.value || 'Light Stone';
+                const trimColor = document.getElementById('qgTrimColor')?.value || 'White';
+
+                // Build email with all views
+                const imageRows = captures.map(c =>
+                    '<tr><td style="padding:4px 0;"><div style="font-size:12px;font-weight:700;color:#1a2744;padding:4px 12px;">' + c.name + ' Elevation</div><img src="' + c.data + '" style="width:100%;display:block;border:1px solid #e5e5e5;" alt="' + c.name + '"></td></tr>'
+                ).join('');
+
+                const emailHtml = '<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;background:#f5f5f5;padding:20px;">' +
+                    '<div style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);">' +
+                    '<div style="background:#1a2744;color:white;padding:24px;text-align:center;">' +
+                    '<h1 style="margin:0;font-size:22px;">Your Building Design</h1>' +
+                    '<p style="margin:8px 0 0;opacity:0.8;font-size:14px;">' + Q.w + "' × " + Q.l + "' × " + Q.h + "'</p></div>" +
+                    '<div style="padding:16px;">' +
+                    '<table style="width:100%;border-collapse:collapse;margin-bottom:12px;font-size:13px;">' +
+                    '<tr style="background:#f8f8f8;"><td style="padding:6px 12px;border:1px solid #e5e5e5;font-weight:600;">Roof</td><td style="padding:6px 12px;border:1px solid #e5e5e5;">' + roofColor + '</td>' +
+                    '<td style="padding:6px 12px;border:1px solid #e5e5e5;font-weight:600;">Walls</td><td style="padding:6px 12px;border:1px solid #e5e5e5;">' + wallColor + '</td></tr>' +
+                    '<tr><td style="padding:6px 12px;border:1px solid #e5e5e5;font-weight:600;">Trim</td><td style="padding:6px 12px;border:1px solid #e5e5e5;">' + trimColor + '</td>' +
+                    '<td style="padding:6px 12px;border:1px solid #e5e5e5;font-weight:600;">Size</td><td style="padding:6px 12px;border:1px solid #e5e5e5;">' + Q.w + "' × " + Q.l + "' × " + Q.h + "'</td></tr></table>" +
+                    '<table style="width:100%;border-collapse:collapse;">' + imageRows + '</table>' +
+                    '<p style="font-size:11px;color:#888;margin-top:12px;">Please review the rendering above and confirm the layout, colors, and door placements are accurate before we proceed with your quote.</p></div>' +
+                    '<div style="background:#f5f5f5;padding:16px;text-align:center;font-size:13px;">' +
+                    '<strong>' + salesCompany + '</strong><br>' + salesName + '<br>' +
+                    (salesPhone ? salesPhone + '<br>' : '') + salesEmail + '</div></div></body></html>';
+
+                const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec';
+                const resp = await fetch(SCRIPT_URL, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        action: 'sendEmail',
+                        to: custEmail,
+                        subject: "Your Building Design — " + Q.w + "' × " + Q.l + "' × " + Q.h + "'",
+                        htmlBody: emailHtml,
+                        customerName: Q.customerName || 'Customer',
+                        buildingType: '3D Rendering'
+                    }),
+                    headers: { 'Content-Type': 'text/plain' }
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    statusEl.textContent = '✅ Rendering sent to ' + custEmail;
+                    statusEl.style.color = '#22c55e';
+                } else {
+                    statusEl.textContent = '❌ ' + (data.error || 'Send failed');
+                    statusEl.style.color = '#ef4444';
+                }
+            } catch (err) {
+                statusEl.textContent = '❌ ' + err.message;
+                statusEl.style.color = '#ef4444';
+            } finally {
+                emailRenderBtn.disabled = false;
+                emailRenderBtn.textContent = '📧 Send Rendering';
+            }
+        };
+    }
+
     function build3DReplay(placed, shedCfgs, wallCfgs) {
         const c = document.getElementById('qgRV');
         const old = c.querySelector('canvas'); if (old) old.remove();
         const scene = new THREE.Scene(); scene.background = new THREE.Color(0x141820); scene.fog = new THREE.Fog(0x141820, 40, 90);
         const cam = new THREE.PerspectiveCamera(38, c.clientWidth / c.clientHeight, 0.1, 200);
-        rrx = new THREE.WebGLRenderer({ antialias: true }); rrx.setSize(c.clientWidth, c.clientHeight); rrx.setPixelRatio(Math.min(window.devicePixelRatio, 2)); rrx.shadowMap.enabled = true;
+        window._rrxScene = scene; window._rrxCam = cam;
+        rrx = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true }); rrx.setSize(c.clientWidth, c.clientHeight); rrx.setPixelRatio(Math.min(window.devicePixelRatio, 2)); rrx.shadowMap.enabled = true;
         c.appendChild(rrx.domElement);
 
         scene.add(new THREE.AmbientLight(0x8899bb, 0.5));
@@ -2172,6 +2281,8 @@ function buildQuoteGenerator(overlay, Q) {
         let th = Math.PI * .22, ph = Math.PI * .14, di = 15, dr = false, pm = { x: 0, y: 0 };
         function setC() { cam.position.set(di * Math.sin(th) * Math.cos(ph), di * Math.sin(ph) + 2, di * Math.cos(th) * Math.cos(ph)); cam.lookAt(0, sh * .4, 0); }
         setC();
+        // Expose for multi-angle capture
+        window._3d = { get th() { return th; }, set th(v) { th = v; }, get ph() { return ph; }, set ph(v) { ph = v; }, get di() { return di; }, set di(v) { di = v; }, setC, scene, cam, rrx, dimLabels };
         rrx.domElement.addEventListener('pointerdown', e => { dr = true; pm = { x: e.clientX, y: e.clientY }; });
         window.addEventListener('pointermove', e => { if (!dr) return; th -= (e.clientX - pm.x) * .005; ph = Math.max(.05, Math.min(Math.PI * .45, ph + (e.clientY - pm.y) * .005)); pm = { x: e.clientX, y: e.clientY }; });
         window.addEventListener('pointerup', () => { dr = false; });
