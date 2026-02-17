@@ -230,43 +230,71 @@ async function loadQuote() {
         var r = await fetch(SU, {method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify({action:'getQuote',quoteId:qId})});
         var d = await r.json();
         if (!d.success) { showErr('Quote not found', d.error||'This quote may have expired.'); return; }
-        // Transform API data and render
-        var qd=d.quoteData||{},sp=qd.specs||{};
-        var ft=[],pr=qd.pricing||[];
-        // Build features from specs (same logic as existing portal)
-        var dims=(sp.width||'?')+"'×"+(sp.length||'?')+"'×"+(sp.height||'?')+"'";
+        // API returns { success, quote: { quoteId, calcType, customerName, specs, pricing, buildingData, doors, walls, sheds, ... } }
+        var q=d.quote||{};
+        var sp=q.specs||{};
+        // specs may be { sections: [...] } format from publishQuote, or flat from old format
+        // Extract flat values from sections format if present
+        var flatSpecs={};
+        if(sp.sections){
+            sp.sections.forEach(function(sec){
+                (sec.items||[]).forEach(function(it){ flatSpecs[it.label]=it.value; });
+            });
+            flatSpecs.width=sp.width; flatSpecs.length=sp.length; flatSpecs.height=sp.height;
+        } else {
+            flatSpecs=sp;
+        }
+        var ft=[],pr=q.pricing||[];
+        // Build features from specs
+        var bd=q.buildingData||{};
+        var bw=bd.w||parseFloat(flatSpecs.Width||flatSpecs.width)||40;
+        var bl=bd.l||parseFloat(flatSpecs.Length||flatSpecs.length)||60;
+        var bh=bd.h||parseFloat(flatSpecs.Height||flatSpecs.height)||14;
+        var dims=bw+"'×"+bl+"'×"+bh+"'";
         function aF(i,n,v){if(v&&v!=='None'&&v!=='No'&&v!=='0'&&v!=='')ft.push({i:i,n:n,v:v});}
-        aF('📐','Building Size',dims); aF('🏗️','Sidewall',(sp.height||'14')+"'");
-        var pkH=(parseFloat(sp.height)||14)+((parseFloat(sp.width)||40)/2)*((parseFloat(sp.roofPitch)||4)/12);
-        aF('⛰️','Peak',Math.round(pkH*10)/10+"'"); aF('📐','Pitch',(sp.roofPitch||'4')+'/12');
-        aF('🏗️','Posts',(sp.eavePostSpacing||'12')+"'"); aF('🎨','Roof',sp.roofColor);
-        for(var i=1;i<=4;i++){var t=sp['garageDoor'+i+'Type'],q=parseInt(sp['garageDoor'+i+'Qty'])||0;if(t&&t!=='None'&&q>0)aF('🚪','Garage Door',t+' ×'+q);}
-        for(var i=1;i<=2;i++){var t=sp['walkDoor'+i+'Type'],q=parseInt(sp['walkDoor'+i+'Qty'])||0;if(t&&t!=='None'&&q>0)aF('🚪','Walk Door',t+' ×'+q);}
-        for(var i=1;i<=3;i++){var t=sp['window'+i+'Type'],q=parseInt(sp['window'+i+'Qty'])||0;if(t&&t!=='None'&&q>0)aF('🪟','Window',t+' ×'+q);}
-        if(sp.insulation&&sp.insulation!=='None'){var loc='';if(sp.insulationRoof==='Yes')loc+='Roof ';if(sp.insulationWalls==='Yes')loc+='Walls';aF('🧊','Insulation',sp.insulation+(loc?' — '+loc.trim():''));}
-        aF('🌧️','Gutters',sp.gutters); aF('🛡️','Post Protectors',sp.postProtectors); aF('🧱','Rock Wainscot',sp.rockWainscot);
-        aF('📐','Posts On Top',sp.postsOnTop); aF('🎨','Wainscot',sp.wainscot);
-        if(sp.cupola&&sp.cupola!=='None'&&parseInt(sp.cupolaQty)>0)aF('🏛️','Cupola',sp.cupola+'" ×'+sp.cupolaQty);
-        if(parseInt(sp.ssWidth)>0)aF('🏘️','Shed 1',sp.ssWidth+"'×"+sp.ssLength+"'");
-        if(parseInt(sp.ss2Width)>0)aF('🏘️','Shed 2',sp.ss2Width+"'×"+sp.ss2Length+"'");
+        aF('📐','Building Size',dims); aF('🏗️','Sidewall',bh+"'");
+        var pitch=bd.pitch||parseFloat(flatSpecs['Pitch'])||4;
+        var pkH=bh+(bw/2)*(pitch/12);
+        aF('⛰️','Peak',Math.round(pkH*10)/10+"'"); aF('📐','Pitch',pitch+'/12');
+        aF('🏗️','Posts',(bd.postSpacing||flatSpecs['Post Spacing']||'12')+"'");
+        aF('🎨','Roof',bd.roofColor||flatSpecs['Roof Color']||'');
+        aF('🎨','Walls',bd.wallColor||flatSpecs['Wall Color']||'');
+        aF('🎨','Trim',bd.trimColor||flatSpecs['Trim Color']||'');
+        // Doors from specs sections
+        (q.doors||[]).forEach(function(dr){
+            aF('🚪',(dr.type||'Door'),(dr.size||'')+' on '+(dr.wall||''));
+        });
+        // Sheds
+        (q.sheds||[]).forEach(function(s,idx){
+            if(s.w>0) aF('🏘️','Shed '+(idx+1),s.w+"'×"+s.l+"' "+(s.type||'leanto'));
+        });
+        // Extra specs from sections
+        for(var key in flatSpecs){
+            var v=flatSpecs[key];
+            if(!v||v==='None'||v==='No'||v==='0') continue;
+            if(['Width','Length','Height','Pitch','Post Spacing','Roof Color','Wall Color','Trim Color','Name','Email','Phone'].indexOf(key)!==-1) continue;
+            if(key.match(/Door|Shed/i)) continue;
+            aF('📋',key,v);
+        }
 
         renderPortal({
             isPreview: md==='preview',
-            customerName: d.customerName||'Customer',
+            editQuoteId: q.editQuoteId||null,
+            customerName: q.customerName||'Customer',
             quoteId: qId,
-            createdDate: d.createdDate || new Date().toISOString(),
-            expiryDate: d.expiryDate || new Date(Date.now()+30*864e5).toISOString(),
-            calcType: d.calcType || 'Post Frame',
+            createdDate: q.createdDate || new Date().toISOString(),
+            expiryDate: q.expiryDate || new Date(Date.now()+30*864e5).toISOString(),
+            calcType: q.calcType || 'Post Frame',
             specs: ft,
             pricing: pr.filter(function(p){return parseFloat(p.amount)>0;}),
-            totalAmount: parseFloat(qd.totalAmount)||0,
-            message: qd.message||'',
-            userSig: qd.userSig||{},
-            buildingData: qd.buildingData || { w:parseFloat(sp.width)||40, l:parseFloat(sp.length)||60, h:parseFloat(sp.height)||14, pitch:parseFloat(sp.roofPitch)||4, postSpacing:parseFloat(sp.eavePostSpacing)||12 },
-            doors: qd.doors || [],
-            walls: qd.walls || [],
-            sheds: qd.sheds || [],
-            chatMessages: d.chatMessages||[]
+            totalAmount: parseFloat(q.totalAmount)||0,
+            message: q.message||'',
+            userSig: q.userSig||{},
+            buildingData: bd.w ? bd : { w:bw, l:bl, h:bh, pitch:pitch, postSpacing:parseFloat(bd.postSpacing)||12 },
+            doors: q.doors || [],
+            walls: q.walls || [],
+            sheds: q.sheds || [],
+            chatMessages: q.chatMessages||d.chatMessages||[]
         });
     } catch(e) { showErr('Connection error','Unable to load. Try again.'); }
 }
