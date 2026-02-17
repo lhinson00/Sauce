@@ -204,7 +204,8 @@ function buildPreviewPayload(pd) {
     return {
         isPreview: true,
         customerName: pd.customerName || 'Customer',
-        quoteId: 'QT-PREVIEW',
+        quoteId: pd.editQuoteId || 'QT-PREVIEW',
+        editQuoteId: pd.editQuoteId || null,
         createdDate: new Date().toISOString(),
         expiryDate: new Date(Date.now()+30*864e5).toISOString(),
         calcType: pd.truss + ' Truss Post Frame',
@@ -293,7 +294,13 @@ function renderPortal(data) {
     var deposit=Math.round(depositBase*.3*100)/100;
 
     // Preview bar
-    var pvB=data.isPreview?'<div class="preview-bar"><div class="pb-dot"></div><span class="pb-t">Salesman Preview</span><span class="pb-s">This is what your customer will see</span><button class="pub-btn" id="publishBtn">📤 Publish & Send</button></div>':'';
+    var pvB=data.isPreview?'<div class="preview-bar"><div class="pb-dot"></div><span class="pb-t">Salesman Preview'+(data.editQuoteId?' — Editing '+data.editQuoteId:'')+'</span><span class="pb-s">This is what your customer will see</span><button class="pub-btn" id="publishBtn">'+(data.editQuoteId?'✏️ Update & Republish':'📤 Publish & Send')+'</button></div>':'';
+    // Admin edit bar — only lain.hinson on published quotes
+    if(!data.isPreview && qId) {
+        try { var _au=JSON.parse(sessionStorage.getItem('sauce_user')||'{}');
+            if(_au.username==='lain.hinson') pvB='<div class="preview-bar" style="background:linear-gradient(135deg,#1a2744,#2a3d66);"><span class="pb-t" style="color:#d4a843;">🔧 Admin View — '+qId+'</span><span class="pb-s" style="color:rgba(212,168,67,.5);margin-left:auto;">Edit this quote in the 3D designer</span><button class="pub-btn" id="editDesignBtn">✏️ Edit Design</button></div>';
+        } catch(e) {}
+    }
 
     // Message card
     var mH='';
@@ -345,6 +352,41 @@ function renderPortal(data) {
             if(pb) pb.onclick=function(){ publishQuote(data); };
         },100);
     }
+
+    // Wire up admin edit button
+    setTimeout(function(){
+        var eb=document.getElementById('editDesignBtn');
+        if(eb) eb.onclick=function(){
+            // Package current quote data back into configurator format
+            var bd=data.buildingData||{};
+            var editData = {
+                w: bd.w||40, l: bd.l||60, h: bd.h||14,
+                pitch: bd.pitch||4, postSpacing: bd.postSpacing||10,
+                oh: bd.oh||18, soffit: bd.soffit!==undefined?bd.soffit:true,
+                truss: bd.truss||'Steel', frameType: bd.frameType||'post',
+                roofColor: bd.roofColor||'Charcoal',
+                wallColor: bd.wallColor, trimColor: bd.trimColor,
+                wainscotColor: bd.wainscotColor, hasWainscot: bd.hasWainscot,
+                customerName: data.customerName||'',
+                lineItems: data.pricing||[],
+                pricing: { total: data.totalAmount||0 },
+                garageDoors: [], barnDoors: [],
+                // Pass through 3D config
+                doors: data.doors||[],
+                sheds: data.sheds||[],
+                walls: data.walls||[],
+                // Flag: editing existing quote
+                editQuoteId: qId
+            };
+            // Rebuild lineItems in configurator format
+            if(data.pricing && data.pricing.length) {
+                editData.lineItems = data.pricing.map(function(p){ return {icon:'🏗️',name:p.label,desc:'',price:parseFloat(p.amount)||0}; });
+                editData.pricing = { total: data.totalAmount||0 };
+            }
+            sessionStorage.setItem('sauce_3d_data', JSON.stringify(editData));
+            window.open('building-configurator.html','_blank');
+        };
+    },100);
 }
 
 function formatTime(ts) {
@@ -393,7 +435,7 @@ async function sendChat() {
 
 async function publishQuote(data) {
     var btn = document.getElementById('publishBtn');
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Publishing...'; }
+    if (btn) { btn.disabled = true; btn.textContent = data.editQuoteId ? '⏳ Updating...' : '⏳ Publishing...'; }
 
     try {
         // Get user session
@@ -429,23 +471,29 @@ async function publishQuote(data) {
 
         var specsObj = { sections: specSections, width: bd.w, length: bd.l, height: bd.h };
 
-        // Step 1: Save quote to get a real ID
-        var saveRes = await fetch(SU, { method:'POST', headers:{'Content-Type':'text/plain'}, body: JSON.stringify({
-            action: 'saveQuote',
-            username: user.username || '',
-            customerName: data.customerName || '',
-            calcType: data.calcType || 'Post Frame',
-            totalAmount: data.totalAmount || 0,
-            specs: specsObj,
-            pricing: data.pricing || [],
-            formData: data.buildingData || {},
-            results: {}
-        })});
-        var saveData = await saveRes.json();
-        if (!saveData.success) throw new Error(saveData.error || 'Save failed');
+        var quoteId, customerId = '';
 
-        var quoteId = saveData.quoteId;
-        var customerId = saveData.customerId || '';
+        if (data.editQuoteId) {
+            // EDIT MODE — reuse existing quote ID, skip creating a new one
+            quoteId = data.editQuoteId;
+        } else {
+            // NEW MODE — save quote to get a real ID
+            var saveRes = await fetch(SU, { method:'POST', headers:{'Content-Type':'text/plain'}, body: JSON.stringify({
+                action: 'saveQuote',
+                username: user.username || '',
+                customerName: data.customerName || '',
+                calcType: data.calcType || 'Post Frame',
+                totalAmount: data.totalAmount || 0,
+                specs: specsObj,
+                pricing: data.pricing || [],
+                formData: data.buildingData || {},
+                results: {}
+            })});
+            var saveData = await saveRes.json();
+            if (!saveData.success) throw new Error(saveData.error || 'Save failed');
+            quoteId = saveData.quoteId;
+            customerId = saveData.customerId || '';
+        }
 
         // Step 2: Publish it (mark as live)
         // Also save the full building data + 3D config for portal rendering
@@ -479,7 +527,7 @@ async function publishQuote(data) {
             bar.innerHTML = '<div style="display:flex;flex-direction:column;gap:10px;width:100%;">' +
                 '<div style="display:flex;align-items:center;gap:10px;">' +
                     '<div style="font-size:18px;">✅</div>' +
-                    '<span class="pb-t">Published! Quote ' + quoteId + '</span>' +
+                    '<span class="pb-t">' + (data.editQuoteId ? 'Updated! Quote ' : 'Published! Quote ') + quoteId + '</span>' +
                     '<span class="pb-s" style="margin-left:auto;">Portal link ready</span>' +
                 '</div>' +
                 '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
@@ -519,11 +567,11 @@ async function publishQuote(data) {
             };
         }
 
-        showToast('✅ Quote ' + quoteId + ' published!');
+        showToast(data.editQuoteId ? '✅ Quote ' + quoteId + ' updated!' : '✅ Quote ' + quoteId + ' published!');
 
     } catch(e) {
         showToast('Publish failed: ' + e.message);
-        if (btn) { btn.disabled = false; btn.textContent = '📤 Publish & Send'; }
+        if (btn) { btn.disabled = false; btn.textContent = data.editQuoteId ? '✏️ Retry Update' : '📤 Publish & Send'; }
     }
 }
 
