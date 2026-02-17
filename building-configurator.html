@@ -806,6 +806,21 @@ function buildQuoteGenerator(overlay, Q) {
                         </select>
                     </div>
                 </div>
+                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">
+                    <div style="flex:1;min-width:90px;">
+                        <div style="${lblStyle}">Position</div>
+                        <select id="shedPos${i}" onchange="window._shedCfgChange(${i})" style="${selStyle}">
+                            <option value="center" ${(sc.position||'center')==='center'?'selected':''}>Centered</option>
+                            <option value="start" ${sc.position==='start'?'selected':''}>Start (Corner 1)</option>
+                            <option value="end" ${sc.position==='end'?'selected':''}>End (Corner 2)</option>
+                            <option value="custom" ${sc.position==='custom'?'selected':''}>Custom Offset</option>
+                        </select>
+                    </div>
+                    <div id="shedOffsetLbl${i}" style="flex:1;min-width:70px;display:${sc.position==='custom'?'block':'none'};">
+                        <div style="${lblStyle}">Offset (ft)</div>
+                        <input id="shedOffset${i}" type="number" value="${sc.offsetFt||0}" style="${inputStyle}width:100%;" onchange="window._shedCfgChange(${i})">
+                    </div>
+                </div>
             </div>
         `).join('');
         updateWrapOptions();
@@ -835,6 +850,14 @@ function buildQuoteGenerator(overlay, Q) {
         if (enclEl) shedConfigs[i].encl = enclEl.value;
         const wrapLenEl = document.getElementById('shedWrapLen' + i);
         if (wrapLenEl) shedConfigs[i].wrapLeg = parseFloat(wrapLenEl.value) || 0;
+
+        // Position / offset
+        const posEl = document.getElementById('shedPos' + i);
+        if (posEl) shedConfigs[i].position = posEl.value;
+        const offEl = document.getElementById('shedOffset' + i);
+        if (offEl) shedConfigs[i].offsetFt = parseFloat(offEl.value) || 0;
+        const offLbl = document.getElementById('shedOffsetLbl' + i);
+        if (offLbl) offLbl.style.display = shedConfigs[i].position === 'custom' ? 'block' : 'none';
 
         // Show/hide wrap fields
         const isWrap = shedConfigs[i].type === 'wrap';
@@ -962,7 +985,8 @@ function buildQuoteGenerator(overlay, Q) {
             w: 10, l: 40, origL: 40,
             wall: idx === 0 ? 'left' : 'right',
             type: 'leanto', wrapDir: 'cw', wrapLeg: 0,
-            encl: 'roofonly'
+            encl: 'roofonly',
+            position: 'center', offsetFt: 0
         });
         buildShedConfigUI();
         renderFPPosts();
@@ -1184,6 +1208,20 @@ function buildQuoteGenerator(overlay, Q) {
         });
     }
 
+    // Compute shed offset in feet from wall start
+    function getShedOffset(sc) {
+        const wallId = sc.wall;
+        const wallLen = (wallId === 'front' || wallId === 'back') ? Q.w : Q.l;
+        const shedLen = sc.l;
+        if (shedLen >= wallLen) return 0; // full length, no offset
+        const pos = sc.position || 'center';
+        if (pos === 'start') return 0;
+        if (pos === 'end') return wallLen - shedLen;
+        if (pos === 'custom') return Math.max(0, Math.min(sc.offsetFt || 0, wallLen - shedLen));
+        // center
+        return (wallLen - shedLen) / 2;
+    }
+
     function renderFPSheds() {
         document.querySelectorAll('.qg-shed').forEach(s => s.remove());
         shedConfigs.forEach(sc => {
@@ -1193,17 +1231,18 @@ function buildQuoteGenerator(overlay, Q) {
 
             if (sc.type === 'leanto' || sc.type === 'gable') {
                 // Simple rectangle on the chosen wall
+                const sOff = getShedOffset(sc);
                 if (w === 'left') {
-                    const wP = (sW / Q.w) * 100, lP = (sL / Q.l) * 100, lS = ((Q.l - sL) / 2 / Q.l) * 100;
+                    const wP = (sW / Q.w) * 100, lP = (sL / Q.l) * 100, lS = (sOff / Q.l) * 100;
                     el.style.cssText = 'left:' + (-wP - 2) + '%;width:' + wP + '%;top:' + (6 + lS * .88) + '%;height:' + (lP * .88) + '%';
                 } else if (w === 'right') {
-                    const wP = (sW / Q.w) * 100, lP = (sL / Q.l) * 100, lS = ((Q.l - sL) / 2 / Q.l) * 100;
+                    const wP = (sW / Q.w) * 100, lP = (sL / Q.l) * 100, lS = (sOff / Q.l) * 100;
                     el.style.cssText = 'right:' + (-wP - 2) + '%;width:' + wP + '%;top:' + (6 + lS * .88) + '%;height:' + (lP * .88) + '%';
                 } else if (w === 'front') {
-                    const wP = (sW / Q.l) * 100, lP = (sL / Q.w) * 100, lS = ((Q.w - sL) / 2 / Q.w) * 100;
+                    const wP = (sW / Q.l) * 100, lP = (sL / Q.w) * 100, lS = (sOff / Q.w) * 100;
                     el.style.cssText = 'top:' + (-wP - 2) + '%;height:' + wP + '%;left:' + (6 + lS * .88) + '%;width:' + (lP * .88) + '%';
                 } else {
-                    const wP = (sW / Q.l) * 100, lP = (sL / Q.w) * 100, lS = ((Q.w - sL) / 2 / Q.w) * 100;
+                    const wP = (sW / Q.l) * 100, lP = (sL / Q.w) * 100, lS = (sOff / Q.w) * 100;
                     el.style.cssText = 'bottom:' + (-wP - 2) + '%;height:' + wP + '%;left:' + (6 + lS * .88) + '%;width:' + (lP * .88) + '%';
                 }
                 if (sc.type === 'gable') el.style.borderColor = 'rgba(34,197,94,.3)';
@@ -1895,41 +1934,62 @@ function buildQuoteGenerator(overlay, Q) {
             const attachWall = wallCfgs.find(w => w.id === sc.wall);
             const attachPS = attachWall ? attachWall.postSpacing : (Q.postSpacing || 10);
 
-            // Place posts at same positions as the main building wall they run parallel to
-            function addPostLineAligned(oX, oZ, isAlongZ, wallLen, wallPS, postH) {
+            // Compute shed offset from wall start (in feet)
+            const isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
+            const mainWallLen = isEaveWall ? Q.l : Q.w;
+            const shedLen = sc.l;
+            const shedPos = sc.position || 'center';
+            let shedOffFt = 0;
+            if (shedLen >= mainWallLen) { shedOffFt = 0; }
+            else if (shedPos === 'start') { shedOffFt = 0; }
+            else if (shedPos === 'end') { shedOffFt = mainWallLen - shedLen; }
+            else if (shedPos === 'custom') { shedOffFt = Math.max(0, Math.min(sc.offsetFt || 0, mainWallLen - shedLen)); }
+            else { shedOffFt = (mainWallLen - shedLen) / 2; }
+            // Shed center offset from wall center (in scene units)
+            const shedCenterOff = (shedOffFt + shedLen / 2 - mainWallLen / 2) * Sc;
+
+            // Place posts along the shed's length only (not full wall)
+            function addPostLineAligned(oX, oZ, isAlongZ, shedLength, wallPS, postH) {
                 const h = postH || shedSh;
-                const numBays = Math.max(1, Math.floor(wallLen / wallPS));
+                const numBays = Math.max(1, Math.floor(shedLength / wallPS));
                 for (let i = 0; i <= numBays; i++) {
-                    const ft = i * (wallLen / numBays);
-                    const pos = (-wallLen / 2 + ft) * Sc;
+                    const ft = i * (shedLength / numBays);
+                    const pos = (-shedLength / 2 + ft) * Sc;
                     const p = new THREE.Mesh(new THREE.BoxGeometry(ps, h, ps), mP);
-                    if (isAlongZ) p.position.set(oX, h / 2, pos);
+                    if (isAlongZ) p.position.set(oX, h / 2, pos + shedCenterOff);
+                    else p.position.set(pos + shedCenterOff, h / 2, oZ);
+                    p.castShadow = true; grps.posts.add(p);
+                }
                     else p.position.set(pos, h / 2, oZ);
                     p.castShadow = true; grps.posts.add(p);
                 }
             }
 
             if (sc.type === 'gable') {
-                // Gable extension: clear span — corner posts at attachment height (main sidewall)
+                // Gable extension: clear span — corner posts at shed ends
                 if (sc.wall === 'left' || sc.wall === 'right') {
                     const oX = sc.wall === 'left' ? -sw/2 - ssw : sw/2 + ssw;
+                    const z1 = (-sc.l/2) * Sc + shedCenterOff;
+                    const z2 = (sc.l/2) * Sc + shedCenterOff;
                     const p1 = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mP);
-                    p1.position.set(oX, sh/2, -ssl/2); p1.castShadow = true; grps.posts.add(p1);
+                    p1.position.set(oX, sh/2, z1); p1.castShadow = true; grps.posts.add(p1);
                     const p2 = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mP);
-                    p2.position.set(oX, sh/2, ssl/2); p2.castShadow = true; grps.posts.add(p2);
+                    p2.position.set(oX, sh/2, z2); p2.castShadow = true; grps.posts.add(p2);
                 } else {
                     const oZ = sc.wall === 'front' ? -sl/2 - ssw : sl/2 + ssw;
+                    const x1 = (-sc.l/2) * Sc + shedCenterOff;
+                    const x2 = (sc.l/2) * Sc + shedCenterOff;
                     const p1 = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mP);
-                    p1.position.set(-ssl/2, sh/2, oZ); p1.castShadow = true; grps.posts.add(p1);
+                    p1.position.set(x1, sh/2, oZ); p1.castShadow = true; grps.posts.add(p1);
                     const p2 = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mP);
-                    p2.position.set(ssl/2, sh/2, oZ); p2.castShadow = true; grps.posts.add(p2);
+                    p2.position.set(x2, sh/2, oZ); p2.castShadow = true; grps.posts.add(p2);
                 }
             } else if (sc.type === 'wrap') {
                 // Wrap: posts along primary leg + secondary leg + corner post at hip
                 if (sc.wall === 'left' || sc.wall === 'right') {
                     const oX = sc.wall === 'left' ? -sw/2 - ssw : sw/2 + ssw;
-                    // Primary leg posts aligned with eave wall spacing
-                    addPostLineAligned(oX, 0, true, Q.l, attachPS);
+                    // Primary leg posts along shed length
+                    addPostLineAligned(oX, 0, true, sc.l, attachPS);
                     // Wrap leg posts
                     const wrapWall = sc.wrapDir === 'cw' ? 'front' : 'back';
                     const wrapWallCfg = wallCfgs.find(w => w.id === wrapWall);
@@ -1963,8 +2023,8 @@ function buildQuoteGenerator(overlay, Q) {
                     }
                 } else {
                     const oZ = sc.wall === 'front' ? -sl/2 - ssw : sl/2 + ssw;
-                    // Primary leg posts aligned with gable wall spacing
-                    addPostLineAligned(0, oZ, false, Q.w, attachPS);
+                    // Primary leg posts along shed length
+                    addPostLineAligned(0, oZ, false, sc.l, attachPS);
                     const secLen = (sc.wrapLeg || 0) * Sc;
                     if (secLen > 0) {
                         const wrapWall = sc.wrapDir === 'cw' ? 'left' : 'right';
@@ -1997,13 +2057,13 @@ function buildQuoteGenerator(overlay, Q) {
                     }
                 }
             } else {
-                // Leanto (default): posts along outer edge aligned with building wall
+                // Leanto (default): posts along outer edge aligned with shed length only
                 if (sc.wall === 'left' || sc.wall === 'right') {
                     const oX = sc.wall === 'left' ? -sw/2 - ssw : sw/2 + ssw;
-                    addPostLineAligned(oX, 0, true, Q.l, attachPS);
+                    addPostLineAligned(oX, 0, true, sc.l, attachPS);
                 } else {
                     const oZ = sc.wall === 'front' ? -sl/2 - ssw : sl/2 + ssw;
-                    addPostLineAligned(0, oZ, false, Q.w, attachPS);
+                    addPostLineAligned(0, oZ, false, sc.l, attachPS);
                 }
             }
         });
