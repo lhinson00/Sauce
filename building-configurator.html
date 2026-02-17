@@ -837,6 +837,29 @@ function buildQuoteGenerator(overlay, Q) {
                         </select>
                     </div>
                 </div>
+                <div id="shedLeantoRow${i}" style="display:${sc.type==='leanto'||sc.type==='wrap'?'flex':'none'};flex-wrap:wrap;gap:6px;margin-top:4px;">
+                    <div style="flex:1;min-width:80px;">
+                        <div style="${lblStyle}">Roof Pitch</div>
+                        <select id="shedLTPitch${i}" onchange="window._shedCfgChange(${i})" style="${selStyle}">
+                            <option value="1" ${(sc.ltPitch||1)==1?'selected':''}>1/12</option>
+                            <option value="2" ${sc.ltPitch==2?'selected':''}>2/12</option>
+                            <option value="3" ${sc.ltPitch==3?'selected':''}>3/12</option>
+                            <option value="4" ${sc.ltPitch==4?'selected':''}>4/12</option>
+                        </select>
+                    </div>
+                    <div style="flex:1;min-width:80px;">
+                        <div style="${lblStyle}">Drop Down</div>
+                        <select id="shedDrop${i}" onchange="window._shedCfgChange(${i})" style="${selStyle}">
+                            <option value="0" ${(sc.dropFt||0)==0?'selected':''}>None (at eave)</option>
+                            <option value="1" ${sc.dropFt==1?'selected':''}>1' drop</option>
+                            <option value="2" ${sc.dropFt==2?'selected':''}>2' drop</option>
+                            <option value="3" ${sc.dropFt==3?'selected':''}>3' drop</option>
+                            <option value="4" ${sc.dropFt==4?'selected':''}>4' drop</option>
+                            <option value="5" ${sc.dropFt==5?'selected':''}>5' drop</option>
+                            <option value="6" ${sc.dropFt==6?'selected':''}>6' drop</option>
+                        </select>
+                    </div>
+                </div>
             </div>
         `).join('');
         updateWrapOptions();
@@ -882,6 +905,12 @@ function buildQuoteGenerator(overlay, Q) {
         if (gPitchEl) shedConfigs[i].gablePitch = parseInt(gPitchEl.value) || 4;
         const gPitchLbl = document.getElementById('shedGablePitchLbl' + i);
         if (gPitchLbl) gPitchLbl.style.display = shedConfigs[i].type === 'gable' ? 'block' : 'none';
+        const ltPitchEl = document.getElementById('shedLTPitch' + i);
+        if (ltPitchEl) shedConfigs[i].ltPitch = parseInt(ltPitchEl.value) || 1;
+        const dropEl = document.getElementById('shedDrop' + i);
+        if (dropEl) shedConfigs[i].dropFt = parseInt(dropEl.value) || 0;
+        const ltRow = document.getElementById('shedLeantoRow' + i);
+        if (ltRow) ltRow.style.display = (shedConfigs[i].type === 'leanto' || shedConfigs[i].type === 'wrap') ? 'flex' : 'none';
 
         // Show/hide wrap fields
         const isWrap = shedConfigs[i].type === 'wrap';
@@ -1011,7 +1040,8 @@ function buildQuoteGenerator(overlay, Q) {
             type: 'leanto', wrapDir: 'cw', wrapLeg: 0,
             encl: 'roofonly',
             position: 'center', offsetFt: 0,
-            gablePS: 10, gablePitch: 4
+            gablePS: 10, gablePitch: 4,
+            ltPitch: 1, dropFt: 0
         });
         buildShedConfigUI();
         renderFPPosts();
@@ -1965,7 +1995,10 @@ function buildQuoteGenerator(overlay, Q) {
         // Shed posts from config
         (shedCfgs || []).forEach(sc => {
             const ssw = sc.w * Sc, ssl = sc.l * Sc;
-            const shedSh = (Q.h - 3) * Sc; // outer shed eave height
+            const ltPitchP = sc.ltPitch || 1;
+            const dropHP = (sc.dropFt || 0) * Sc;
+            const attachHP = sh - dropHP;
+            const shedSh = attachHP - (sc.w * (ltPitchP / 12)) * Sc; // outer post height from pitch
             // Use the post spacing of the wall the shed attaches to
             const attachWall = wallCfgs.find(w => w.id === sc.wall);
             const attachPS = attachWall ? attachWall.postSpacing : (Q.postSpacing || 10);
@@ -2355,7 +2388,11 @@ function buildQuoteGenerator(overlay, Q) {
         // Shed
         // Shed roofs from config
         (shedCfgs || []).forEach(sc => {
-            const ssw = sc.w * Sc, ssl = sc.l * Sc, sSh = (Q.h - 3) * Sc;
+            const ssw = sc.w * Sc, ssl = sc.l * Sc;
+            const ltPitchR = sc.ltPitch || 1;
+            const dropHR = (sc.dropFt || 0) * Sc;
+            const attachHR = sh - dropHR;
+            const sSh = attachHR - (sc.w * (ltPitchR / 12)) * Sc;
 
             // Compute shed offset for roof positioning
             const isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
@@ -2370,33 +2407,39 @@ function buildQuoteGenerator(overlay, Q) {
             else { shedOffFt = (mainWallLen - shedLen) / 2; }
             const sco = (shedOffFt + shedLen / 2 - mainWallLen / 2) * Sc; // shed center offset
 
+            // Lean-to heights: attachment at main eave minus drop, outer edge from pitch
+            const ltPitch = sc.ltPitch || 1;
+            const dropH = (sc.dropFt || 0) * Sc;
+            const attachH = sh - dropH; // where shed meets main building (monitor gap if drop > 0)
+            const outerH = attachH - (sc.w * (ltPitch / 12)) * Sc; // outer edge from pitch slope
+
             function addLeanto(wall, sW, sL) {
                 // sL is already in scene units, sco shifts along the wall
                 var oX, oZ, aX, aZ;
                 if (wall === 'left') {
                     oX = -sw / 2 - sW; aX = -sw / 2;
-                    grps.shed.add(mkQ([oX, sSh, sL / 2 + sco, aX, sh, sL / 2 + sco, aX, sh, -sL / 2 + sco, oX, sSh, -sL / 2 + sco], mSh));
-                    grps.shed.add(mkL([new THREE.Vector3(oX, sSh, -sL / 2 + sco), new THREE.Vector3(oX, sSh, sL / 2 + sco)], mE));
-                    grps.shed.add(mkL([new THREE.Vector3(oX, sSh, -sL / 2 + sco), new THREE.Vector3(aX, sh, -sL / 2 + sco)], mE));
-                    grps.shed.add(mkL([new THREE.Vector3(oX, sSh, sL / 2 + sco), new THREE.Vector3(aX, sh, sL / 2 + sco)], mE));
+                    grps.shed.add(mkQ([oX, outerH, sL / 2 + sco, aX, attachH, sL / 2 + sco, aX, attachH, -sL / 2 + sco, oX, outerH, -sL / 2 + sco], mSh));
+                    grps.shed.add(mkL([new THREE.Vector3(oX, outerH, -sL / 2 + sco), new THREE.Vector3(oX, outerH, sL / 2 + sco)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(oX, outerH, -sL / 2 + sco), new THREE.Vector3(aX, attachH, -sL / 2 + sco)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(oX, outerH, sL / 2 + sco), new THREE.Vector3(aX, attachH, sL / 2 + sco)], mE));
                 } else if (wall === 'right') {
                     oX = sw / 2 + sW; aX = sw / 2;
-                    grps.shed.add(mkQ([oX, sSh, -sL / 2 + sco, aX, sh, -sL / 2 + sco, aX, sh, sL / 2 + sco, oX, sSh, sL / 2 + sco], mSh));
-                    grps.shed.add(mkL([new THREE.Vector3(oX, sSh, -sL / 2 + sco), new THREE.Vector3(oX, sSh, sL / 2 + sco)], mE));
-                    grps.shed.add(mkL([new THREE.Vector3(oX, sSh, -sL / 2 + sco), new THREE.Vector3(aX, sh, -sL / 2 + sco)], mE));
-                    grps.shed.add(mkL([new THREE.Vector3(oX, sSh, sL / 2 + sco), new THREE.Vector3(aX, sh, sL / 2 + sco)], mE));
+                    grps.shed.add(mkQ([oX, outerH, -sL / 2 + sco, aX, attachH, -sL / 2 + sco, aX, attachH, sL / 2 + sco, oX, outerH, sL / 2 + sco], mSh));
+                    grps.shed.add(mkL([new THREE.Vector3(oX, outerH, -sL / 2 + sco), new THREE.Vector3(oX, outerH, sL / 2 + sco)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(oX, outerH, -sL / 2 + sco), new THREE.Vector3(aX, attachH, -sL / 2 + sco)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(oX, outerH, sL / 2 + sco), new THREE.Vector3(aX, attachH, sL / 2 + sco)], mE));
                 } else if (wall === 'front') {
                     oZ = -sl / 2 - sW; aZ = -sl / 2;
-                    grps.shed.add(mkQ([sL / 2 + sco, sSh, oZ, sL / 2 + sco, sh, aZ, -sL / 2 + sco, sh, aZ, -sL / 2 + sco, sSh, oZ], mSh));
-                    grps.shed.add(mkL([new THREE.Vector3(-sL / 2 + sco, sSh, oZ), new THREE.Vector3(sL / 2 + sco, sSh, oZ)], mE));
-                    grps.shed.add(mkL([new THREE.Vector3(-sL / 2 + sco, sSh, oZ), new THREE.Vector3(-sL / 2 + sco, sh, aZ)], mE));
-                    grps.shed.add(mkL([new THREE.Vector3(sL / 2 + sco, sSh, oZ), new THREE.Vector3(sL / 2 + sco, sh, aZ)], mE));
+                    grps.shed.add(mkQ([sL / 2 + sco, outerH, oZ, sL / 2 + sco, attachH, aZ, -sL / 2 + sco, attachH, aZ, -sL / 2 + sco, outerH, oZ], mSh));
+                    grps.shed.add(mkL([new THREE.Vector3(-sL / 2 + sco, outerH, oZ), new THREE.Vector3(sL / 2 + sco, outerH, oZ)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(-sL / 2 + sco, outerH, oZ), new THREE.Vector3(-sL / 2 + sco, attachH, aZ)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(sL / 2 + sco, outerH, oZ), new THREE.Vector3(sL / 2 + sco, attachH, aZ)], mE));
                 } else {
                     oZ = sl / 2 + sW; aZ = sl / 2;
-                    grps.shed.add(mkQ([-sL / 2 + sco, sSh, oZ, -sL / 2 + sco, sh, aZ, sL / 2 + sco, sh, aZ, sL / 2 + sco, sSh, oZ], mSh));
-                    grps.shed.add(mkL([new THREE.Vector3(-sL / 2 + sco, sSh, oZ), new THREE.Vector3(sL / 2 + sco, sSh, oZ)], mE));
-                    grps.shed.add(mkL([new THREE.Vector3(-sL / 2 + sco, sSh, oZ), new THREE.Vector3(-sL / 2 + sco, sh, aZ)], mE));
-                    grps.shed.add(mkL([new THREE.Vector3(sL / 2 + sco, sSh, oZ), new THREE.Vector3(sL / 2 + sco, sh, aZ)], mE));
+                    grps.shed.add(mkQ([-sL / 2 + sco, outerH, oZ, -sL / 2 + sco, attachH, aZ, sL / 2 + sco, attachH, aZ, sL / 2 + sco, outerH, oZ], mSh));
+                    grps.shed.add(mkL([new THREE.Vector3(-sL / 2 + sco, outerH, oZ), new THREE.Vector3(sL / 2 + sco, outerH, oZ)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(-sL / 2 + sco, outerH, oZ), new THREE.Vector3(-sL / 2 + sco, attachH, aZ)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(sL / 2 + sco, outerH, oZ), new THREE.Vector3(sL / 2 + sco, attachH, aZ)], mE));
                 }
             }
 
