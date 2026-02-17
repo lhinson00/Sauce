@@ -827,6 +827,15 @@ function buildQuoteGenerator(overlay, Q) {
                             <option value="12" ${sc.gablePS==12?'selected':''}>12' O/C</option>
                         </select>
                     </div>
+                    <div id="shedGablePitchLbl${i}" style="flex:1;min-width:70px;display:${sc.type==='gable'?'block':'none'};">
+                        <div style="${lblStyle}">Ext. Pitch</div>
+                        <select id="shedGablePitch${i}" onchange="window._shedCfgChange(${i})" style="${selStyle}">
+                            <option value="3" ${sc.gablePitch==3?'selected':''}>3/12</option>
+                            <option value="4" ${(sc.gablePitch||4)==4?'selected':''}>4/12</option>
+                            <option value="5" ${sc.gablePitch==5?'selected':''}>5/12</option>
+                            <option value="6" ${sc.gablePitch==6?'selected':''}>6/12</option>
+                        </select>
+                    </div>
                 </div>
             </div>
         `).join('');
@@ -869,6 +878,10 @@ function buildQuoteGenerator(overlay, Q) {
         if (gPSEl) shedConfigs[i].gablePS = parseInt(gPSEl.value) || 10;
         const gPSLbl = document.getElementById('shedGablePSLbl' + i);
         if (gPSLbl) gPSLbl.style.display = shedConfigs[i].type === 'gable' ? 'block' : 'none';
+        const gPitchEl = document.getElementById('shedGablePitch' + i);
+        if (gPitchEl) shedConfigs[i].gablePitch = parseInt(gPitchEl.value) || 4;
+        const gPitchLbl = document.getElementById('shedGablePitchLbl' + i);
+        if (gPitchLbl) gPitchLbl.style.display = shedConfigs[i].type === 'gable' ? 'block' : 'none';
 
         // Show/hide wrap fields
         const isWrap = shedConfigs[i].type === 'wrap';
@@ -998,7 +1011,7 @@ function buildQuoteGenerator(overlay, Q) {
             type: 'leanto', wrapDir: 'cw', wrapLeg: 0,
             encl: 'roofonly',
             position: 'center', offsetFt: 0,
-            gablePS: 10
+            gablePS: 10, gablePitch: 4
         });
         buildShedConfigUI();
         renderFPPosts();
@@ -2488,58 +2501,93 @@ function buildQuoteGenerator(overlay, Q) {
                     grps.shed.add(mkL([new THREE.Vector3(sw / 2, sh, sl / 2), new THREE.Vector3(sw / 2 + ssw, sSh, sl / 2 + ssw)], mE));
                 }
             } else if (sc.type === 'gable') {
-                // Gable extension: peaked roof with ridge running outward from main building
+                // Gable extension: 4/12 pitch roof, ties into main roof with valley fill
+                // Eave extension: use selectable pitch. Gable-end extension: match main roof pitch.
+                const isEaveExt = (sc.wall === 'left' || sc.wall === 'right');
+                const gablePitch = isEaveExt ? (sc.gablePitch || 4) : Q.pitch;
                 if (sc.wall === 'left' || sc.wall === 'right') {
-                    // Extension off eave wall — ridge runs along X (outward), roof slopes along Z (front/back)
+                    // Extension off eave wall — ridge runs outward along X
                     var dir = sc.wall === 'left' ? -1 : 1;
-                    var aX = sc.wall === 'left' ? -sw / 2 : sw / 2; // attachment X
-                    var oX = aX + dir * ssw; // outer tip X
-                    var halfLen = ssl / 2; // half shed length along Z
-                    var z1 = -halfLen + sco; // front edge Z
-                    var z2 = halfLen + sco;  // back edge Z
-                    var zMid = sco;          // ridge Z (center of shed along Z)
-                    // Ridge height: same pitch as main building, based on half the shed length
-                    var ridgeH = sh + (sc.l / 2) * (Q.pitch / 12) * Sc;
-                    // Left roof plane (attachment to ridge to outer)
-                    grps.shed.add(mkQ([aX, sh, z1, aX, ridgeH, zMid, oX, ridgeH, zMid, oX, sh, z1], mSh));
-                    // Right roof plane
-                    grps.shed.add(mkQ([oX, sh, z2, oX, ridgeH, zMid, aX, ridgeH, zMid, aX, sh, z2], mSh));
+                    var aX = sc.wall === 'left' ? -sw / 2 : sw / 2;
+                    var oX = aX + dir * ssw;
+                    var halfLen = ssl / 2;
+                    var z1 = -halfLen + sco;
+                    var z2 = halfLen + sco;
+                    var zMid = sco;
+                    var extRidgeH = sh + (sc.l / 2) * (gablePitch / 12) * Sc;
+                    // Front roof plane
+                    grps.shed.add(mkQ([aX, sh, z1, aX, extRidgeH, zMid, oX, extRidgeH, zMid, oX, sh, z1], mSh));
+                    // Back roof plane
+                    grps.shed.add(mkQ([oX, sh, z2, oX, extRidgeH, zMid, aX, extRidgeH, zMid, aX, sh, z2], mSh));
                     // Ridge line
-                    grps.shed.add(mkL([new THREE.Vector3(aX, ridgeH, zMid), new THREE.Vector3(oX, ridgeH, zMid)], mE));
-                    // Eave lines (front and back)
+                    grps.shed.add(mkL([new THREE.Vector3(aX, extRidgeH, zMid), new THREE.Vector3(oX, extRidgeH, zMid)], mE));
+                    // Eave lines
                     grps.shed.add(mkL([new THREE.Vector3(aX, sh, z1), new THREE.Vector3(oX, sh, z1)], mE));
                     grps.shed.add(mkL([new THREE.Vector3(aX, sh, z2), new THREE.Vector3(oX, sh, z2)], mE));
-                    // Outer gable triangle (at tip)
+                    // Outer gable triangle
                     var tg = new THREE.BufferGeometry();
-                    tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([oX, sh, z1, oX, sh, z2, oX, ridgeH, zMid]), 3));
+                    tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([oX, sh, z1, oX, sh, z2, oX, extRidgeH, zMid]), 3));
                     tg.setIndex([0, 1, 2]); tg.computeVertexNormals(); grps.shed.add(new THREE.Mesh(tg, mW));
-                    // Outer gable edges
-                    grps.shed.add(mkL([new THREE.Vector3(oX, sh, z1), new THREE.Vector3(oX, ridgeH, zMid)], mE));
-                    grps.shed.add(mkL([new THREE.Vector3(oX, sh, z2), new THREE.Vector3(oX, ridgeH, zMid)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(oX, sh, z1), new THREE.Vector3(oX, extRidgeH, zMid)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(oX, sh, z2), new THREE.Vector3(oX, extRidgeH, zMid)], mE));
+                    // Valley fill: triangular panels connecting extension roof to main roof
+                    // Main roof at aX = sh (eave). Moving inward by deltaX, main roof rises at Q.pitch/12
+                    // Find X where main roof height = extRidgeH
+                    var deltaX = (extRidgeH - sh) / ((Q.pitch / 12) * Sc);
+                    var valleyX = aX - dir * deltaX;
+                    // Front valley triangle
+                    var vt1 = new THREE.BufferGeometry();
+                    vt1.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+                        aX, sh, z1, valleyX, extRidgeH, zMid, aX, extRidgeH, zMid
+                    ]), 3)); vt1.setIndex([0, 1, 2]); vt1.computeVertexNormals();
+                    grps.shed.add(new THREE.Mesh(vt1, mSh));
+                    // Back valley triangle
+                    var vt2 = new THREE.BufferGeometry();
+                    vt2.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+                        aX, sh, z2, aX, extRidgeH, zMid, valleyX, extRidgeH, zMid
+                    ]), 3)); vt2.setIndex([0, 1, 2]); vt2.computeVertexNormals();
+                    grps.shed.add(new THREE.Mesh(vt2, mSh));
+                    // Valley edge lines
+                    grps.shed.add(mkL([new THREE.Vector3(aX, sh, z1), new THREE.Vector3(valleyX, extRidgeH, zMid)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(aX, sh, z2), new THREE.Vector3(valleyX, extRidgeH, zMid)], mE));
                 } else {
-                    // Gable off front/back — ridge extends outward along Z, matching main ridge direction
-                    var oZ = sc.wall === 'front' ? -sl / 2 - ssw : sl / 2 + ssw;
+                    // Gable off front/back — ridge extends outward along Z
+                    var dir = sc.wall === 'front' ? -1 : 1;
                     var aZ = sc.wall === 'front' ? -sl / 2 : sl / 2;
-                    var halfSpan = Math.min(ssl, sw) / 2;
+                    var oZ = aZ + dir * ssw;
+                    var halfSpan = ssl / 2;
                     var x1 = -halfSpan + sco;
                     var x2 = halfSpan + sco;
                     var xMid = sco;
-                    var ridgeH = sh + (sc.l / 2) * (Q.pitch / 12) * Sc;
+                    var extRidgeH = sh + (sc.l / 2) * (gablePitch / 12) * Sc;
                     // Left roof plane
-                    grps.shed.add(mkQ([x1, sh, aZ, xMid, ridgeH, aZ, xMid, ridgeH, oZ, x1, sh, oZ], mSh));
+                    grps.shed.add(mkQ([x1, sh, aZ, xMid, extRidgeH, aZ, xMid, extRidgeH, oZ, x1, sh, oZ], mSh));
                     // Right roof plane
-                    grps.shed.add(mkQ([x2, sh, oZ, xMid, ridgeH, oZ, xMid, ridgeH, aZ, x2, sh, aZ], mSh));
-                    // Ridge line
-                    grps.shed.add(mkL([new THREE.Vector3(xMid, ridgeH, aZ), new THREE.Vector3(xMid, ridgeH, oZ)], mE));
+                    grps.shed.add(mkQ([x2, sh, oZ, xMid, extRidgeH, oZ, xMid, extRidgeH, aZ, x2, sh, aZ], mSh));
+                    // Ridge
+                    grps.shed.add(mkL([new THREE.Vector3(xMid, extRidgeH, aZ), new THREE.Vector3(xMid, extRidgeH, oZ)], mE));
                     // Eave lines
                     grps.shed.add(mkL([new THREE.Vector3(x1, sh, aZ), new THREE.Vector3(x1, sh, oZ)], mE));
                     grps.shed.add(mkL([new THREE.Vector3(x2, sh, aZ), new THREE.Vector3(x2, sh, oZ)], mE));
                     // Outer gable triangle
                     var tg = new THREE.BufferGeometry();
-                    tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([x1, sh, oZ, x2, sh, oZ, xMid, ridgeH, oZ]), 3));
+                    tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([x1, sh, oZ, x2, sh, oZ, xMid, extRidgeH, oZ]), 3));
                     tg.setIndex([0, 1, 2]); tg.computeVertexNormals(); grps.shed.add(new THREE.Mesh(tg, mW));
-                    grps.shed.add(mkL([new THREE.Vector3(x1, sh, oZ), new THREE.Vector3(xMid, ridgeH, oZ)], mE));
-                    grps.shed.add(mkL([new THREE.Vector3(x2, sh, oZ), new THREE.Vector3(xMid, ridgeH, oZ)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(x1, sh, oZ), new THREE.Vector3(xMid, extRidgeH, oZ)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(x2, sh, oZ), new THREE.Vector3(xMid, extRidgeH, oZ)], mE));
+                    // Valley fill at attachment wall
+                    if (extRidgeH < sr) {
+                        var vt1 = new THREE.BufferGeometry();
+                        vt1.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+                            x1, sh, aZ, xMid, extRidgeH, aZ, xMid, sr, aZ
+                        ]), 3)); vt1.setIndex([0, 1, 2]); vt1.computeVertexNormals();
+                        grps.shed.add(new THREE.Mesh(vt1, mSh));
+                        var vt2 = new THREE.BufferGeometry();
+                        vt2.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+                            x2, sh, aZ, xMid, sr, aZ, xMid, extRidgeH, aZ
+                        ]), 3)); vt2.setIndex([0, 1, 2]); vt2.computeVertexNormals();
+                        grps.shed.add(new THREE.Mesh(vt2, mSh));
+                    }
                 }
             }
 
