@@ -2168,10 +2168,60 @@ function buildQuoteGenerator(overlay, Q) {
             const wH = wCfg.encl === 'partial' ? sh * 0.35 : sh;
             const wsH = hasWainscot ? Math.min(4 * Sc, wH) : 0; // 4' wainscot height
 
-            // Gable triangle always renders on gable walls (structural)
+            // Gable triangle — with monitor cutout if eave sheds have drop-down
             if (isG) {
-                const zOff = wallId === 'front' ? .005 : -.005; // slight offset to prevent z-fight with roof
-                const tg = new THREE.BufferGeometry(); tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-sw / 2, sh, zP + zOff, sw / 2, sh, zP + zOff, 0, sr, zP + zOff]), 3)); tg.setIndex([0, 1, 2]); tg.computeVertexNormals(); grps.walls.add(new THREE.Mesh(tg, mW));
+                const zOff = wallId === 'front' ? .005 : -.005;
+                const z = zP + zOff;
+                let leftDrop = 0, rightDrop = 0;
+                (shedCfgs || []).forEach(sc2 => {
+                    if (sc2.type !== 'leanto' && sc2.type !== 'wrap') return;
+                    const d = (sc2.dropFt || 0) * Sc;
+                    if (d <= 0) return;
+                    if (sc2.wall === 'left') leftDrop = d;
+                    if (sc2.wall === 'right') rightDrop = d;
+                });
+                const lH = sh - leftDrop;
+                const rH = sh - rightDrop;
+                if (leftDrop <= 0 && rightDrop <= 0) {
+                    // Standard gable triangle
+                    const tg = new THREE.BufferGeometry();
+                    tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+                        -sw/2, sh, z, sw/2, sh, z, 0, sr, z
+                    ]), 3)); tg.setIndex([0, 1, 2]); tg.computeVertexNormals();
+                    grps.walls.add(new THREE.Mesh(tg, mW));
+                } else {
+                    // Gable with monitor notch(es) — build as multiple triangles
+                    // Full gable triangle above sh (always present)
+                    const tg = new THREE.BufferGeometry();
+                    tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+                        -sw/2, sh, z, sw/2, sh, z, 0, sr, z
+                    ]), 3)); tg.setIndex([0, 1, 2]); tg.computeVertexNormals();
+                    grps.walls.add(new THREE.Mesh(tg, mW));
+                    // The wall below sh is built by buildWS as a rectangle from 0 to sh.
+                    // We need to mask out the corners where the monitor gap is.
+                    // Use a slightly-forward dark quad to hide the wall in the gap area.
+                    const zM = zP + (wallId === 'front' ? .008 : -.008);
+                    // Sky-matching material (transparent would be better but this works visually)
+                    const mSky = new THREE.MeshBasicMaterial({ 
+                        color: 0x87CEEB, side: THREE.DoubleSide, 
+                        transparent: true, opacity: 0 
+                    });
+                    // Actually, use a clipping approach: render an invisible quad with depthWrite
+                    // to block the wall behind it. Use colorWrite: false + depthWrite: true
+                    const mMask = new THREE.MeshBasicMaterial({ 
+                        colorWrite: false, side: THREE.DoubleSide 
+                    });
+                    if (leftDrop > 0) {
+                        const gap = mkQ([-sw/2 - .005, lH, zM, -sw/2 - .005, sh, zM, -sw/2 + .005, sh, zM, -sw/2 + .005, lH, zM], mMask);
+                        gap.renderOrder = -1;
+                        grps.walls.add(gap);
+                    }
+                    if (rightDrop > 0) {
+                        const gap = mkQ([sw/2 - .005, rH, zM, sw/2 - .005, sh, zM, sw/2 + .005, sh, zM, sw/2 + .005, rH, zM], mMask);
+                        gap.renderOrder = -1;
+                        grps.walls.add(gap);
+                    }
+                }
                 // Gable triangle outline edges — always visible
                 grps.walls.add(mkL([new THREE.Vector3(-sw / 2, sh, zP), new THREE.Vector3(0, sr, zP)], mE));
                 grps.walls.add(mkL([new THREE.Vector3(sw / 2, sh, zP), new THREE.Vector3(0, sr, zP)], mE));
