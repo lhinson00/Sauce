@@ -2843,23 +2843,9 @@ window._generatePostLayout = function() {
     // ---- PDF ----
     const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter' });
     const pw = 792, ph = 612;
-    const mg = 40; // margin
+    const mg = 36;
 
-    // ---- DRAWING SETUP ----
-    // Reserve space for dimensions: 3 tiers on each side
-    const dimTier = 18; // spacing per dim tier
-    const tierCount = 3; // post-to-post, overall building, overall frame
-    const dimSpace = dimTier * tierCount + 20;
-
-    const drawL = mg + dimSpace;
-    const drawR = pw - mg - dimSpace;
-    const drawT = mg + 50 + dimSpace; // room for title
-    const drawB = ph - mg - 20 - dimSpace;
-    const drawW = drawR - drawL;
-    const drawH = drawB - drawT;
-
-    // Compute scale — include sheds in bounding box
-    let totalW = bwIn, totalL = blIn;
+    // ---- BOUNDING BOX (include sheds) ----
     let padL = 0, padR = 0, padT = 0, padB = 0;
     shedCfgs.forEach(sc => {
         if (!sc.wall || !sc.w) return;
@@ -2869,66 +2855,67 @@ window._generatePostLayout = function() {
         else if (sc.wall === 'front') padL = Math.max(padL, sW);
         else if (sc.wall === 'back') padR = Math.max(padR, sW);
     });
-    const boundW = totalL + padL + padR;
-    const boundH = totalW + padT + padB;
-    const scale = Math.min(drawW / boundW, drawH / boundH) * 0.92;
-    const cx = (drawL + drawR) / 2, cy = (drawT + drawB) / 2;
-    const ox = cx - (totalL / 2 + padL) * scale - (-padL * scale);
-    const oy = cy - (totalW / 2 + padT) * scale - (-padT * scale);
-    // Simplify: origin at top-left of main building
-    const bx0 = cx - (totalL * scale) / 2 + (padL - padR) * scale / 2;
-    const by0 = cy - (totalW * scale) / 2 + (padT - padB) * scale / 2;
+
+    // Drawing area — generous margins for dims
+    const dimZone = 80; // space reserved for dimension lines on each side
+    const titleH = 50;
+    const drawL = mg + dimZone + (padL > 0 ? 30 : 0);
+    const drawR = pw - mg - dimZone - (padR > 0 ? 30 : 0);
+    const drawT = mg + titleH + dimZone + (padT > 0 ? 30 : 0);
+    const drawB = ph - mg - 30 - dimZone - (padB > 0 ? 30 : 0);
+    const drawW = drawR - drawL;
+    const drawH = drawB - drawT;
+
+    const boundW = blIn + padL + padR;
+    const boundH = bwIn + padT + padB;
+    const scale = Math.min(drawW / boundW, drawH / boundH) * 0.88;
+
+    // Origin: top-left corner of main building
+    const bx0 = (drawL + drawR) / 2 - (blIn * scale) / 2 + (padL - padR) * scale / 2;
+    const by0 = (drawT + drawB) / 2 - (bwIn * scale) / 2 + (padT - padB) * scale / 2;
 
     function tx(inches) { return bx0 + inches * scale; }
     function ty(inches) { return by0 + inches * scale; }
 
     // ---- TITLE BLOCK ----
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(16);
+    doc.setFontSize(14);
     doc.setTextColor(0);
-    doc.text('POST LAYOUT', mg, mg + 18);
-    doc.setFontSize(9);
+    doc.text('POST LAYOUT', mg, mg + 16);
+    doc.setFontSize(8);
     doc.setFont('helvetica', 'normal');
-    const titleParts = [];
-    if (jobName) titleParts.push(jobName);
-    titleParts.push(bw + "' x " + bl + "' x " + bh + "'");
-    titleParts.push(pitch + '/12 Pitch');
-    titleParts.push(truss + ' Truss');
-    titleParts.push(postSize + ' Posts');
-    doc.text(titleParts.join('   |   '), mg, mg + 32);
-    doc.text(new Date().toLocaleDateString(), pw - mg, mg + 18, { align: 'right' });
-
-    // Thin separator
-    doc.setDrawColor(0);
-    doc.setLineWidth(0.5);
-    doc.line(mg, mg + 40, pw - mg, mg + 40);
+    const parts = [];
+    if (jobName) parts.push(jobName);
+    parts.push(bw + "' x " + bl + "' x " + bh + "'");
+    parts.push(pitch + '/12 Pitch');
+    parts.push(truss + ' Truss');
+    parts.push(postSize + ' Posts');
+    doc.text(parts.join('    |    '), mg, mg + 30);
+    doc.text(new Date().toLocaleDateString(), pw - mg, mg + 16, { align: 'right' });
+    doc.setDrawColor(0); doc.setLineWidth(0.5);
+    doc.line(mg, mg + 38, pw - mg, mg + 38);
 
     // ---- MAIN BUILDING OUTLINE ----
-    doc.setDrawColor(0);
-    doc.setLineWidth(1.5);
+    doc.setDrawColor(0); doc.setLineWidth(1.5);
     doc.rect(tx(0), ty(0), blIn * scale, bwIn * scale);
 
-    // Frame outline (if wood offset)
+    // Frame outline if wood
     if (offset > 0) {
-        doc.setLineWidth(0.3);
-        doc.setLineDashPattern([2, 2]);
+        doc.setLineWidth(0.3); doc.setLineDashPattern([2, 2]);
         doc.rect(tx(offset), ty(offset), frameL * scale, frameW * scale);
         doc.setLineDashPattern([]);
     }
 
-    // ---- POSTS ----
-    const pr = 3.5;
+    // ---- POST SYMBOLS ----
+    const pr = 3;
     function drawPost(xIn, yIn, isJamb) {
         const px = tx(xIn), py = ty(yIn);
+        doc.setDrawColor(0); doc.setLineWidth(0.5);
         if (isJamb) {
-            // Jamb: filled black
             doc.setFillColor(0);
             doc.rect(px - pr, py - pr, pr * 2, pr * 2, 'F');
         } else {
-            // Regular: open square with cross
             doc.setFillColor(255);
-            doc.setDrawColor(0);
-            doc.setLineWidth(0.6);
             doc.rect(px - pr, py - pr, pr * 2, pr * 2, 'FD');
             doc.setLineWidth(0.3);
             doc.line(px - pr, py - pr, px + pr, py + pr);
@@ -2936,268 +2923,248 @@ window._generatePostLayout = function() {
         }
     }
 
-    // Main building posts
     wallPosts.left.forEach(p => drawPost(p.ft * 12, 0, p.isJamb));
     wallPosts.right.forEach(p => drawPost(p.ft * 12, bwIn, p.isJamb));
     wallPosts.front.forEach(p => drawPost(0, p.ft * 12, p.isJamb));
     wallPosts.back.forEach(p => drawPost(blIn, p.ft * 12, p.isJamb));
 
-    // ---- DOORS ----
-    doc.setLineWidth(2);
-    doc.setDrawColor(0);
+    // ---- DOORS (labeled inside the building) ----
+    doc.setLineWidth(2.5); doc.setDrawColor(0);
     allDoors.filter(d => d.wall).forEach(d => {
-        const dL = (d.offset || 0) * 12, dR = dL + d.w * 12;
-        const dMid = (dL + dR) / 2;
-        const label = d.w + "'x" + d.h + "'" + (d.type === 'garage' ? ' GD' : d.type === 'barn' ? ' BD' : ' WD');
-        doc.setFontSize(6);
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(0);
+        const dL = (d.offset || 0) * 12, dR = dL + d.w * 12, dMid = (dL + dR) / 2;
+        const label = d.w + "'x" + d.h + "' " + (d.type === 'garage' ? 'GD' : d.type === 'barn' ? 'BD' : 'WD');
+        doc.setLineWidth(2.5);
 
         if (d.wall === 'left') {
             doc.line(tx(dL), ty(0), tx(dR), ty(0));
-            // Gap markers
-            doc.setLineWidth(0.8);
-            doc.line(tx(dL), ty(0) - 4, tx(dL), ty(0) + 4);
-            doc.line(tx(dR), ty(0) - 4, tx(dR), ty(0) + 4);
-            doc.text(label, tx(dMid), ty(0) + 10, { align: 'center' });
+            doc.setLineWidth(0.6);
+            doc.line(tx(dL), ty(0) - 5, tx(dL), ty(0) + 5);
+            doc.line(tx(dR), ty(0) - 5, tx(dR), ty(0) + 5);
+            // Label INSIDE building
+            doc.setFontSize(6); doc.setFont('helvetica', 'bold');
+            doc.text(label, tx(dMid), ty(0) + 14, { align: 'center' });
         } else if (d.wall === 'right') {
             doc.line(tx(dL), ty(bwIn), tx(dR), ty(bwIn));
-            doc.setLineWidth(0.8);
-            doc.line(tx(dL), ty(bwIn) - 4, tx(dL), ty(bwIn) + 4);
-            doc.line(tx(dR), ty(bwIn) - 4, tx(dR), ty(bwIn) + 4);
-            doc.text(label, tx(dMid), ty(bwIn) - 6, { align: 'center' });
+            doc.setLineWidth(0.6);
+            doc.line(tx(dL), ty(bwIn) - 5, tx(dL), ty(bwIn) + 5);
+            doc.line(tx(dR), ty(bwIn) - 5, tx(dR), ty(bwIn) + 5);
+            doc.setFontSize(6); doc.setFont('helvetica', 'bold');
+            doc.text(label, tx(dMid), ty(bwIn) - 8, { align: 'center' });
         } else if (d.wall === 'front') {
             doc.line(tx(0), ty(dL), tx(0), ty(dR));
-            doc.setLineWidth(0.8);
-            doc.line(tx(0) - 4, ty(dL), tx(0) + 4, ty(dL));
-            doc.line(tx(0) - 4, ty(dR), tx(0) + 4, ty(dR));
-            doc.text(label, tx(0) + 10, ty(dMid) + 2, { align: 'left' });
+            doc.setLineWidth(0.6);
+            doc.line(tx(0) - 5, ty(dL), tx(0) + 5, ty(dL));
+            doc.line(tx(0) - 5, ty(dR), tx(0) + 5, ty(dR));
+            doc.setFontSize(6); doc.setFont('helvetica', 'bold');
+            doc.text(label, tx(0) + 14, ty(dMid) + 2);
         } else if (d.wall === 'back') {
             doc.line(tx(blIn), ty(dL), tx(blIn), ty(dR));
-            doc.setLineWidth(0.8);
-            doc.line(tx(blIn) - 4, ty(dL), tx(blIn) + 4, ty(dL));
-            doc.line(tx(blIn) - 4, ty(dR), tx(blIn) + 4, ty(dR));
-            doc.text(label, tx(blIn) - 10, ty(dMid) + 2, { align: 'right' });
+            doc.setLineWidth(0.6);
+            doc.line(tx(blIn) - 5, ty(dL), tx(blIn) + 5, ty(dL));
+            doc.line(tx(blIn) - 5, ty(dR), tx(blIn) + 5, ty(dR));
+            doc.setFontSize(6); doc.setFont('helvetica', 'bold');
+            doc.text(label, tx(blIn) - 14, ty(dMid) + 2, { align: 'right' });
         }
-        doc.setLineWidth(2);
     });
 
     // ---- SIDE SHEDS ----
     shedCfgs.forEach(sc => {
         if (!sc.wall || !sc.w || !sc.l) return;
-        const sW = sc.w * 12, sL = Math.min(sc.l, (sc.wall === 'left' || sc.wall === 'right') ? bl : bw) * 12;
-        const mainWallIn = ((sc.wall === 'left' || sc.wall === 'right') ? bl : bw) * 12;
-        let shedOffIn = 0;
-        const shedPos = sc.position || 'center';
-        if (sL >= mainWallIn) shedOffIn = 0;
-        else if (shedPos === 'start') shedOffIn = 0;
-        else if (shedPos === 'end') shedOffIn = mainWallIn - sL;
-        else if (shedPos === 'custom') shedOffIn = Math.max(0, Math.min((sc.offsetFt || 0) * 12, mainWallIn - sL));
-        else shedOffIn = (mainWallIn - sL) / 2;
+        const sW = sc.w * 12, mainIn = ((sc.wall === 'left' || sc.wall === 'right') ? bl : bw) * 12;
+        const sL = Math.min(sc.l * 12, mainIn);
+        let sOff = 0;
+        const sp = sc.position || 'center';
+        if (sL >= mainIn) sOff = 0;
+        else if (sp === 'start') sOff = 0;
+        else if (sp === 'end') sOff = mainIn - sL;
+        else if (sp === 'custom') sOff = Math.max(0, Math.min((sc.offsetFt || 0) * 12, mainIn - sL));
+        else sOff = (mainIn - sL) / 2;
 
-        // Outline
-        doc.setDrawColor(0);
-        doc.setLineWidth(0.8);
-        doc.setLineDashPattern([3, 2]);
-        if (sc.wall === 'left') doc.rect(tx(shedOffIn), ty(-sW), sL * scale, sW * scale);
-        else if (sc.wall === 'right') doc.rect(tx(shedOffIn), ty(bwIn), sL * scale, sW * scale);
-        else if (sc.wall === 'front') doc.rect(tx(-sW), ty(shedOffIn), sW * scale, sL * scale);
-        else doc.rect(tx(blIn), ty(shedOffIn), sW * scale, sL * scale);
+        doc.setDrawColor(0); doc.setLineWidth(0.8); doc.setLineDashPattern([3, 2]);
+        if (sc.wall === 'left') doc.rect(tx(sOff), ty(-sW), sL * scale, sW * scale);
+        else if (sc.wall === 'right') doc.rect(tx(sOff), ty(bwIn), sL * scale, sW * scale);
+        else if (sc.wall === 'front') doc.rect(tx(-sW), ty(sOff), sW * scale, sL * scale);
+        else doc.rect(tx(blIn), ty(sOff), sW * scale, sL * scale);
         doc.setLineDashPattern([]);
 
-        // Label
-        doc.setFontSize(6);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(80);
-        const sLabel = (sc.type === 'gable' ? 'Gable' : sc.type === 'wrap' ? 'Wrap' : 'Lean-to') + ' ' + sc.w + "'x" + sc.l + "'";
-        if (sc.wall === 'left') doc.text(sLabel, tx(shedOffIn + sL / 2), ty(-sW / 2) + 2, { align: 'center' });
-        else if (sc.wall === 'right') doc.text(sLabel, tx(shedOffIn + sL / 2), ty(bwIn + sW / 2) + 2, { align: 'center' });
-        else if (sc.wall === 'front') doc.text(sLabel, tx(-sW / 2), ty(shedOffIn + sL / 2) + 2, { align: 'center', angle: 90 });
-        else doc.text(sLabel, tx(blIn + sW / 2), ty(shedOffIn + sL / 2) + 2, { align: 'center', angle: 90 });
+        // Shed label centered inside
+        doc.setFontSize(6); doc.setFont('helvetica', 'normal'); doc.setTextColor(60);
+        const sLbl = (sc.type === 'gable' ? 'Gable' : sc.type === 'wrap' ? 'Wrap' : 'Lean-to') + ' ' + sc.w + "'x" + sc.l + "'";
+        if (sc.wall === 'left') doc.text(sLbl, tx(sOff + sL / 2), ty(-sW / 2) + 2, { align: 'center' });
+        else if (sc.wall === 'right') doc.text(sLbl, tx(sOff + sL / 2), ty(bwIn + sW / 2) + 2, { align: 'center' });
+        else if (sc.wall === 'front') doc.text(sLbl, tx(-sW / 2), ty(sOff + sL / 2) + 2, { align: 'center', angle: 90 });
+        else doc.text(sLbl, tx(blIn + sW / 2), ty(sOff + sL / 2) + 2, { align: 'center', angle: 90 });
         doc.setTextColor(0);
 
         // Shed outer posts
         const sPS = sc.type === 'gable' ? (sc.gablePS || 10) : (Q.postSpacing || 10);
-        const numSB = Math.max(1, Math.floor(sc.l / sPS));
-        for (let i = 0; i <= numSB; i++) {
-            const p = shedOffIn + i * (sL / numSB);
+        const nSB = Math.max(1, Math.floor(sc.l / sPS));
+        for (let i = 0; i <= nSB; i++) {
+            const p = sOff + i * (sL / nSB);
             if (sc.wall === 'left') drawPost(p, -sW, false);
             else if (sc.wall === 'right') drawPost(p, bwIn + sW, false);
             else if (sc.wall === 'front') drawPost(-sW, p, false);
             else drawPost(blIn + sW, p, false);
         }
+
+        // Shed width dim
+        doc.setDrawColor(0); doc.setLineWidth(0.3);
+        doc.setFontSize(6); doc.setFont('helvetica', 'normal');
+        if (sc.wall === 'left') {
+            const dx = tx(sOff) - 12;
+            doc.line(dx, ty(0), dx, ty(-sW));
+            doc.line(dx - 2, ty(0), dx + 2, ty(0));
+            doc.line(dx - 2, ty(-sW), dx + 2, ty(-sW));
+            doc.text(sc.w + "'", dx - 3, ty(-sW / 2) + 2, { align: 'center', angle: 90 });
+        } else if (sc.wall === 'right') {
+            const dx = tx(sOff) - 12;
+            doc.line(dx, ty(bwIn), dx, ty(bwIn + sW));
+            doc.line(dx - 2, ty(bwIn), dx + 2, ty(bwIn));
+            doc.line(dx - 2, ty(bwIn + sW), dx + 2, ty(bwIn + sW));
+            doc.text(sc.w + "'", dx - 3, ty(bwIn + sW / 2) + 2, { align: 'center', angle: 90 });
+        } else if (sc.wall === 'front') {
+            const dy = ty(sOff) - 12;
+            doc.line(tx(0), dy, tx(-sW), dy);
+            doc.line(tx(0), dy - 2, tx(0), dy + 2);
+            doc.line(tx(-sW), dy - 2, tx(-sW), dy + 2);
+            doc.text(sc.w + "'", tx(-sW / 2), dy - 3, { align: 'center' });
+        } else {
+            const dy = ty(sOff) - 12;
+            doc.line(tx(blIn), dy, tx(blIn + sW), dy);
+            doc.line(tx(blIn), dy - 2, tx(blIn), dy + 2);
+            doc.line(tx(blIn + sW), dy - 2, tx(blIn + sW), dy + 2);
+            doc.text(sc.w + "'", tx(blIn + sW / 2), dy - 3, { align: 'center' });
+        }
     });
 
     // ---- DIMENSION SYSTEM ----
-    // All dimensions in black, clean lines, organized in tiers
-    doc.setDrawColor(0);
-    doc.setTextColor(0);
-    doc.setFont('helvetica', 'normal');
+    // Strategy: post-to-post dims on TOP and LEFT only
+    // Overall building dims on BOTTOM and RIGHT only
+    // This prevents any overlap between tiers
+    doc.setDrawColor(0); doc.setTextColor(0);
 
-    // Dimension helper — clean architectural style
-    function dimH(x1, x2, y, label, fontSize) {
-        // Horizontal dimension line at y
-        doc.setLineWidth(0.4);
-        doc.line(x1, y, x2, y);
-        // Ticks
-        doc.setLineWidth(0.6);
-        doc.line(x1, y - 3, x1, y + 3);
-        doc.line(x2, y - 3, x2, y + 3);
-        // Label
-        doc.setFontSize(fontSize || 6.5);
-        doc.text(label, (x1 + x2) / 2, y - 4, { align: 'center' });
+    // Extension lines (light gray, from posts outward)
+    doc.setLineWidth(0.15); doc.setDrawColor(180);
+    wallPosts.left.forEach(p => { const px = tx(p.ft * 12); doc.line(px, ty(0), px, ty(0) - dimZone); });
+    wallPosts.front.forEach(p => { const py = ty(p.ft * 12); doc.line(tx(0), py, tx(0) - dimZone, py); });
+    // For overall dims on bottom/right
+    doc.line(tx(0), ty(bwIn), tx(0), ty(bwIn) + 40);
+    doc.line(tx(blIn), ty(bwIn), tx(blIn), ty(bwIn) + 40);
+    doc.line(tx(blIn), ty(0), tx(blIn) + 40, ty(0));
+    doc.line(tx(blIn), ty(bwIn), tx(blIn) + 40, ty(bwIn));
+    doc.setDrawColor(0);
+
+    // Helper: horizontal dim
+    function dimH(x1, x2, y, label, fs) {
+        if (Math.abs(x2 - x1) < 2) return; // too small to label
+        doc.setLineWidth(0.4); doc.line(x1, y, x2, y);
+        doc.setLineWidth(0.6); doc.line(x1, y - 3, x1, y + 3); doc.line(x2, y - 3, x2, y + 3);
+        doc.setFontSize(fs || 6.5); doc.setFont('helvetica', 'normal');
+        // Check if there's enough room for the label between ticks
+        const w = doc.getTextWidth(label);
+        if ((x2 - x1) > w + 4) {
+            doc.text(label, (x1 + x2) / 2, y - 4, { align: 'center' });
+        } else {
+            // Place label above with a leader
+            doc.text(label, (x1 + x2) / 2, y - 8, { align: 'center' });
+        }
     }
-    function dimV(y1, y2, x, label, fontSize) {
-        // Vertical dimension line at x
-        doc.setLineWidth(0.4);
-        doc.line(x, y1, x, y2);
-        // Ticks
-        doc.setLineWidth(0.6);
-        doc.line(x - 3, y1, x + 3, y1);
-        doc.line(x - 3, y2, x + 3, y2);
-        // Label
-        doc.setFontSize(fontSize || 6.5);
+    function dimV(y1, y2, x, label, fs) {
+        if (Math.abs(y2 - y1) < 2) return;
+        doc.setLineWidth(0.4); doc.line(x, y1, x, y2);
+        doc.setLineWidth(0.6); doc.line(x - 3, y1, x + 3, y1); doc.line(x - 3, y2, x + 3, y2);
+        doc.setFontSize(fs || 6.5); doc.setFont('helvetica', 'normal');
         doc.text(label, x - 5, (y1 + y2) / 2, { align: 'center', angle: 90 });
     }
 
-    // Extension lines from building corners
-    doc.setLineWidth(0.2);
-    doc.setDrawColor(160);
-    const extLen = dimSpace + 5;
-    // Top extensions (from left eave posts up)
-    wallPosts.left.forEach(p => {
-        const px = tx(p.ft * 12);
-        doc.line(px, ty(0), px, ty(0) - extLen);
-    });
-    // Bottom extensions
-    wallPosts.right.forEach(p => {
-        const px = tx(p.ft * 12);
-        doc.line(px, ty(bwIn), px, ty(bwIn) + extLen);
-    });
-    // Left extensions (from front gable posts left)
-    wallPosts.front.forEach(p => {
-        const py = ty(p.ft * 12);
-        doc.line(tx(0), py, tx(0) - extLen, py);
-    });
-    // Right extensions
-    wallPosts.back.forEach(p => {
-        const py = ty(p.ft * 12);
-        doc.line(tx(blIn), py, tx(blIn) + extLen, py);
-    });
-    doc.setDrawColor(0);
-
-    // TIER 1: Post-to-post dimensions (closest to building)
-    const t1 = dimTier;
-    doc.setFont('helvetica', 'normal');
-
-    // Left eave (top) — post-to-post
+    // POST-TO-POST: Top side (left eave) — Tier at -20pt from building
+    const t1y = ty(0) - 20;
     const leftP = wallPosts.left;
     for (let i = 0; i < leftP.length - 1; i++) {
         const d = (leftP[i + 1].ft - leftP[i].ft) * 12;
-        dimH(tx(leftP[i].ft * 12), tx(leftP[i + 1].ft * 12), ty(0) - t1, inToFrac(d), 6);
+        dimH(tx(leftP[i].ft * 12), tx(leftP[i + 1].ft * 12), t1y, inToFrac(d), 6);
     }
-    // Right eave (bottom)
-    const rightP = wallPosts.right;
-    for (let i = 0; i < rightP.length - 1; i++) {
-        const d = (rightP[i + 1].ft - rightP[i].ft) * 12;
-        dimH(tx(rightP[i].ft * 12), tx(rightP[i + 1].ft * 12), ty(bwIn) + t1, inToFrac(d), 6);
-    }
-    // Front gable (left side)
+
+    // POST-TO-POST: Left side (front gable) — Tier at -20pt from building
+    const t1x = tx(0) - 20;
     const frontP = wallPosts.front;
     for (let i = 0; i < frontP.length - 1; i++) {
         const d = (frontP[i + 1].ft - frontP[i].ft) * 12;
-        dimV(ty(frontP[i].ft * 12), ty(frontP[i + 1].ft * 12), tx(0) - t1, inToFrac(d), 6);
-    }
-    // Back gable (right side)
-    const backP = wallPosts.back;
-    for (let i = 0; i < backP.length - 1; i++) {
-        const d = (backP[i + 1].ft - backP[i].ft) * 12;
-        dimV(ty(backP[i].ft * 12), ty(backP[i + 1].ft * 12), tx(blIn) + t1, inToFrac(d), 6);
+        dimV(ty(frontP[i].ft * 12), ty(frontP[i + 1].ft * 12), t1x, inToFrac(d), 6);
     }
 
-    // TIER 2: Overall building dimensions
-    const t2 = dimTier * 2.5;
+    // OVERALL LENGTH: Bottom side — single clean line
+    const oby = ty(bwIn) + 25;
     doc.setFont('helvetica', 'bold');
-    dimH(tx(0), tx(blIn), ty(0) - t2, bl + "'", 8);
-    dimH(tx(0), tx(blIn), ty(bwIn) + t2, bl + "'", 8);
-    dimV(ty(0), ty(bwIn), tx(0) - t2, bw + "'", 8);
-    dimV(ty(0), ty(bwIn), tx(blIn) + t2, bw + "'", 8);
+    dimH(tx(0), tx(blIn), oby, bl + "'  OVERALL LENGTH", 8);
 
-    // TIER 3: Frame dimensions (if offset)
+    // OVERALL WIDTH: Right side — single clean line
+    const obx = tx(blIn) + 25;
+    doc.setFont('helvetica', 'bold');
+    dimV(ty(0), ty(bwIn), obx, bw + "'  OVERALL WIDTH", 8);
+
+    // FRAME DIMS (if offset): second tier further out
     if (offset > 0) {
-        const t3 = dimTier * 3.5;
         doc.setFont('helvetica', 'normal');
-        dimH(tx(offset), tx(offset + frameL), ty(0) - t3, 'Frame: ' + inToFrac(frameL), 6);
-        dimV(ty(offset), ty(offset + frameW), tx(0) - t3, 'Frame: ' + inToFrac(frameW), 6);
+        const ft = ty(0) - 40;
+        dimH(tx(offset), tx(offset + frameL), ft, 'FRAME ' + inToFrac(frameL), 6);
+        const fx = tx(0) - 40;
+        dimV(ty(offset), ty(offset + frameW), fx, 'FRAME ' + inToFrac(frameW), 6);
     }
 
     // ---- DIAGONAL ----
-    doc.setDrawColor(0);
-    doc.setLineWidth(0.3);
-    doc.setLineDashPattern([4, 3]);
-    const diagX1 = offset > 0 ? offset : 0, diagY1 = offset > 0 ? offset : 0;
-    const diagX2 = offset > 0 ? offset + frameL : blIn, diagY2 = offset > 0 ? offset + frameW : bwIn;
-    doc.line(tx(diagX1), ty(diagY1), tx(diagX2), ty(diagY2));
+    doc.setDrawColor(0); doc.setLineWidth(0.3); doc.setLineDashPattern([4, 3]);
+    const dX1 = offset || 0, dY1 = offset || 0;
+    const dX2 = offset ? offset + frameL : blIn, dY2 = offset ? offset + frameW : bwIn;
+    doc.line(tx(dX1), ty(dY1), tx(dX2), ty(dY2));
     doc.setLineDashPattern([]);
-    const diag = Math.sqrt((diagX2 - diagX1) ** 2 + (diagY2 - diagY1) ** 2);
-    doc.setFontSize(7);
-    doc.setFont('helvetica', 'bold');
-    doc.text('DIAG: ' + inToFrac(diag), (tx(diagX1) + tx(diagX2)) / 2 + 8, (ty(diagY1) + ty(diagY2)) / 2 - 6);
+    const diag = Math.sqrt((dX2 - dX1) ** 2 + (dY2 - dY1) ** 2);
+    doc.setFontSize(7); doc.setFont('helvetica', 'bold');
+    doc.text('DIAG: ' + inToFrac(diag), (tx(dX1) + tx(dX2)) / 2 + 10, (ty(dY1) + ty(dY2)) / 2 - 8);
 
-    // ---- WALL LABELS ----
-    doc.setFontSize(7);
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(100);
-    doc.text('LEFT EAVE', tx(blIn / 2), ty(0) - dimTier * 3 - 10, { align: 'center' });
-    doc.text('RIGHT EAVE', tx(blIn / 2), ty(bwIn) + dimTier * 3 + 14, { align: 'center' });
-    doc.text('BACK GABLE', tx(0) - dimTier * 3 - 10, ty(bwIn / 2), { align: 'center', angle: 90 });
-    doc.text('FRONT GABLE', tx(blIn) + dimTier * 3 + 10, ty(bwIn / 2), { align: 'center', angle: 90 });
+    // ---- WALL LABELS (at corners, out of the way) ----
+    doc.setFontSize(7); doc.setFont('helvetica', 'bold'); doc.setTextColor(80);
+    // Top
+    doc.text('LEFT EAVE', tx(blIn / 2), ty(0) - 52, { align: 'center' });
+    // Bottom
+    doc.text('RIGHT EAVE', tx(blIn / 2), ty(bwIn) + 42, { align: 'center' });
+    // Left
+    doc.text('BACK GABLE', tx(0) - 52, ty(bwIn / 2), { align: 'center', angle: 90 });
+    // Right
+    doc.text('FRONT GABLE', tx(blIn) + 42, ty(bwIn / 2), { align: 'center', angle: 90 });
     doc.setTextColor(0);
 
     // ---- LEGEND ----
-    const lgX = pw - mg - 140, lgY = ph - mg - 10;
-    doc.setFontSize(6);
-    doc.setFont('helvetica', 'normal');
-    // Regular post symbol
-    doc.setFillColor(255); doc.setDrawColor(0); doc.setLineWidth(0.5);
-    doc.rect(lgX, lgY - 3, 6, 6, 'FD');
-    doc.setLineWidth(0.3); doc.line(lgX, lgY - 3, lgX + 6, lgY + 3); doc.line(lgX + 6, lgY - 3, lgX, lgY + 3);
-    doc.text('Regular Post', lgX + 10, lgY + 2);
-    // Jamb post symbol
-    doc.setFillColor(0); doc.rect(lgX + 65, lgY - 3, 6, 6, 'F');
-    doc.text('Jamb Post', lgX + 75, lgY + 2);
-    // Door symbol
-    doc.setLineWidth(1.5); doc.line(lgX + 120, lgY, lgX + 132, lgY);
-    doc.text('Door', lgX + 136, lgY + 2);
+    doc.setFontSize(6); doc.setFont('helvetica', 'normal');
+    const lgY = ph - mg - 4;
+    doc.setFillColor(255); doc.setDrawColor(0); doc.setLineWidth(0.4);
+    doc.rect(mg, lgY - 3, 5, 5, 'FD');
+    doc.setLineWidth(0.2); doc.line(mg, lgY - 3, mg + 5, lgY + 2); doc.line(mg + 5, lgY - 3, mg, lgY + 2);
+    doc.text('Post', mg + 8, lgY + 1);
+    doc.setFillColor(0); doc.rect(mg + 30, lgY - 3, 5, 5, 'F');
+    doc.text('Jamb', mg + 38, lgY + 1);
+    doc.setLineWidth(1.5); doc.line(mg + 62, lgY, mg + 72, lgY);
+    doc.text('Door', mg + 75, lgY + 1);
 
     // ---- FOOTER ----
-    doc.setFontSize(7);
-    doc.setTextColor(150);
-    doc.text('Generated by Sauce Estimator  —  © ' + new Date().getFullYear() + ' Lain Hinson', pw / 2, ph - 8, { align: 'center' });
+    doc.setFontSize(6); doc.setTextColor(150);
+    doc.text('Sauce Estimator  |  © ' + new Date().getFullYear() + ' Lain Hinson', pw - mg, ph - mg - 4, { align: 'right' });
 
     // ======== PAGE 2: SCHEDULE ========
     doc.addPage('letter', 'landscape');
     doc.setTextColor(0);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(16);
-    doc.text('POST & DOOR SCHEDULE', mg, mg + 18);
-    doc.setLineWidth(0.5);
-    doc.line(mg, mg + 26, pw - mg, mg + 26);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
+    doc.text('POST & DOOR SCHEDULE', mg, mg + 16);
+    doc.setLineWidth(0.5); doc.line(mg, mg + 24, pw - mg, mg + 24);
 
-    let curY = mg + 48;
-
-    // Building info
-    doc.setFontSize(9);
-    doc.setFont('helvetica', 'bold');
+    let curY = mg + 44;
+    doc.setFontSize(9); doc.setFont('helvetica', 'bold');
     doc.text('BUILDING', mg, curY); curY += 14;
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
     doc.text('Size: ' + bw + "' x " + bl + "' x " + bh + "'    Pitch: " + pitch + '/12    Truss: ' + truss + '    Posts: ' + postSize, mg + 12, curY); curY += 11;
-    doc.text('Frame: ' + inToFrac(frameL) + ' x ' + inToFrac(frameW) + '    Diagonal: ' + inToFrac(diag) + '    Girt Offset: ' + (offset > 0 ? offset + '"' : 'None'), mg + 12, curY); curY += 18;
+    doc.text('Frame: ' + inToFrac(frameL) + ' x ' + inToFrac(frameW) + '    Diagonal: ' + inToFrac(diag) + '    Girt Offset: ' + (offset > 0 ? offset + '"' : 'None'), mg + 12, curY); curY += 20;
 
-    // Post schedule
-    doc.setFontSize(9);
-    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9); doc.setFont('helvetica', 'bold');
     doc.text('POST SCHEDULE', mg, curY); curY += 14;
     doc.setFontSize(8);
     ['left', 'right', 'front', 'back'].forEach(wid => {
@@ -3210,57 +3177,54 @@ window._generatePostLayout = function() {
         doc.text(posts.length + ' posts', mg + 100, curY);
         const dims = [];
         for (let i = 0; i < posts.length - 1; i++) dims.push(inToFrac((posts[i + 1].ft - posts[i].ft) * 12));
-        doc.text(dims.join('  >  '), mg + 140, curY);
-        curY += 12;
+        // Wrap long dim chains
+        const chain = dims.join('  >  ');
+        if (chain.length > 80) {
+            doc.text(dims.slice(0, Math.ceil(dims.length / 2)).join('  >  '), mg + 145, curY); curY += 10;
+            doc.text(dims.slice(Math.ceil(dims.length / 2)).join('  >  '), mg + 145, curY); curY += 12;
+        } else {
+            doc.text(chain, mg + 145, curY); curY += 12;
+        }
     });
 
-    // Door schedule
     const doorsOnWalls = allDoors.filter(d => d.wall);
     if (doorsOnWalls.length > 0) {
         curY += 8;
-        doc.setFontSize(9);
-        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9); doc.setFont('helvetica', 'bold');
         doc.text('DOOR SCHEDULE', mg, curY); curY += 14;
-        doc.setFontSize(8);
-        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8); doc.setFont('helvetica', 'normal');
         doorsOnWalls.forEach(d => {
             const wCfg = WALLS.find(w => w.id === d.wall);
             const t = d.type === 'garage' ? 'Garage Door' : d.type === 'barn' ? 'Barn Door' : 'Walk Door';
             doc.text(t + '  ' + d.w + "' x " + d.h + "'", mg + 12, curY);
-            doc.text((wCfg ? wCfg.label : d.wall) + '  @  ' + (d.offset || 0) + "' from corner", mg + 160, curY);
+            doc.text((wCfg ? wCfg.label : d.wall) + '  @  ' + (d.offset || 0) + "' from corner", mg + 170, curY);
             curY += 11;
         });
     }
 
-    // Shed schedule
     if (shedCfgs.length > 0) {
         curY += 8;
-        doc.setFontSize(9);
-        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9); doc.setFont('helvetica', 'bold');
         doc.text('SIDE SHED SCHEDULE', mg, curY); curY += 14;
-        doc.setFontSize(8);
-        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8); doc.setFont('helvetica', 'normal');
         shedCfgs.forEach(sc => {
             const wCfg = WALLS.find(w => w.id === sc.wall);
             const tl = sc.type === 'gable' ? 'Gable Ext.' : sc.type === 'wrap' ? 'Wrap' : 'Lean-To';
             const pos = sc.position === 'start' ? 'Start' : sc.position === 'end' ? 'End' : sc.position === 'custom' ? (sc.offsetFt || 0) + "' offset" : 'Centered';
             let line = tl + '  ' + sc.w + "' x " + sc.l + "'  —  " + (wCfg ? wCfg.label : sc.wall) + '  —  ' + pos;
-            if (sc.type !== 'gable' && sc.ltPitch) line += '  |  ' + (sc.ltPitch || 1) + '/12';
+            if (sc.type !== 'gable' && sc.ltPitch) line += '  |  ' + sc.ltPitch + '/12';
             if (sc.dropFt > 0) line += '  |  ' + sc.dropFt + "' drop";
-            doc.text(line, mg + 12, curY);
-            curY += 11;
+            doc.text(line, mg + 12, curY); curY += 11;
         });
     }
 
-    // Footer
-    doc.setFontSize(7);
-    doc.setTextColor(150);
-    doc.text('Generated by Sauce Estimator  —  © ' + new Date().getFullYear() + ' Lain Hinson', pw / 2, ph - 8, { align: 'center' });
+    doc.setFontSize(6); doc.setTextColor(150);
+    doc.text('Sauce Estimator  |  © ' + new Date().getFullYear() + ' Lain Hinson', pw - mg, ph - mg - 4, { align: 'right' });
 
-    // Save
     const fn = (jobName || bw + 'x' + bl + '_building').replace(/[^a-zA-Z0-9]/g, '_') + '_post_layout.pdf';
     doc.save(fn);
 };
+
 
 </script>
 </body>
