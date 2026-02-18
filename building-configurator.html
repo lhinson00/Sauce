@@ -2774,457 +2774,494 @@ window._generatePostLayout = function() {
     const Q = window._Q;
     const WALLS = window._WALLS;
     const allDoors = window._allDoors;
+    const shedCfgs = window._shedConfigs || [];
     if (!Q) { alert('Please configure a building first.'); return; }
     const { jsPDF } = window.jspdf;
     if (!jsPDF) { alert('PDF library not loaded. Please refresh.'); return; }
 
-        // Gather building config
-        const bw = Q.w, bl = Q.l, bh = Q.h, pitch = Q.pitch || 4;
-        const truss = Q.truss || 'Wood';
-        const postSize = Q.postSize || '6x6';
-        const jobName = Q.jobName || document.getElementById('cfgJobName')?.value || 'Unnamed Job';
-        const girt = 1.5; // inches
-        const offset = truss.toLowerCase().includes('wood') ? girt : 0;
+    const bw = Q.w, bl = Q.l, bh = Q.h, pitch = Q.pitch || 4;
+    const truss = Q.truss || 'Wood';
+    const postSize = Q.postSize || '6x6';
+    const jobName = Q.jobName || document.getElementById('cfgJobName')?.value || '';
+    const girt = 1.5;
+    const offset = truss.toLowerCase().includes('wood') ? girt : 0;
+    const bwIn = bw * 12, blIn = bl * 12;
+    const frameW = bwIn - 2 * offset, frameL = blIn - 2 * offset;
 
-        // Frame dimensions (inches)
-        const bwIn = bw * 12, blIn = bl * 12;
-        const frameW = bwIn - 2 * offset;
-        const frameL = blIn - 2 * offset;
-
-        // Fraction formatter
-        function inToFrac(val) {
-            const tot = Math.abs(val);
-            let ft = Math.floor(tot / 12);
-            let rem = tot - ft * 12;
-            let wh = Math.floor(rem);
-            let frac = rem - wh;
-            let s16 = Math.round(frac * 16);
-            if (s16 >= 16) { wh++; s16 = 0; }
-            if (wh >= 12) { ft++; wh = 0; }
-            let fs = '';
-            if (s16 > 0) {
-                if (s16 % 8 === 0) fs = ' ' + (s16/8) + '/2';
-                else if (s16 % 4 === 0) fs = ' ' + (s16/4) + '/4';
-                else if (s16 % 2 === 0) fs = ' ' + (s16/2) + '/8';
-                else fs = ' ' + s16 + '/16';
-            }
-            return ft > 0 ? ft + "'" + ' ' + wh + fs + '"' : wh + fs + '"';
+    function inToFrac(val) {
+        const tot = Math.abs(val);
+        let ft = Math.floor(tot / 12), rem = tot - ft * 12;
+        let wh = Math.floor(rem), frac = rem - wh, s16 = Math.round(frac * 16);
+        if (s16 >= 16) { wh++; s16 = 0; }
+        if (wh >= 12) { ft++; wh = 0; }
+        let fs = '';
+        if (s16 > 0) {
+            if (s16 % 8 === 0) fs = ' ' + (s16/8) + '/2';
+            else if (s16 % 4 === 0) fs = ' ' + (s16/4) + '/4';
+            else if (s16 % 2 === 0) fs = ' ' + (s16/2) + '/8';
+            else fs = ' ' + s16 + '/16';
         }
+        if (ft > 0 && wh === 0 && fs === '') return ft + "'";
+        if (ft > 0) return ft + "'-" + wh + fs + '"';
+        return wh + fs + '"';
+    }
 
-        // Compute post positions per wall
-        function getWallPosts(wallId) {
-            const wCfg = WALLS.find(w => w.id === wallId);
-            const isEave = (wallId === 'left' || wallId === 'right');
-            const wallLen = isEave ? bl : bw;
-            const wallLenIn = wallLen * 12;
-            const frameLen = wallLenIn - 2 * offset;
-            const ps = wCfg ? wCfg.postSpacing : (Q.postSpacing || 10);
-            const wd = allDoors.filter(d => d.wall === wallId);
-
-            // Skip open gable walls
-            if (!isEave && wCfg && wCfg.encl === 'open') return [];
-
-            function insideDoor(posFt) {
-                for (let d of wd) {
-                    const dL = d.offset || 0, dR = dL + d.w;
-                    if (posFt > dL + 0.25 && posFt < dR - 0.25) return true;
-                }
-                return false;
-            }
-
-            const posts = [];
-            // Regular posts at spacing
-            const numBays = Math.floor(wallLen / ps);
-            for (let i = 0; i <= numBays; i++) {
-                const posFt = i * (wallLen / numBays);
-                if (!insideDoor(posFt)) {
-                    posts.push({ ft: posFt, isJamb: false });
-                }
-            }
-            // Jamb posts at door edges
-            wd.forEach(d => {
+    function getWallPosts(wallId) {
+        const wCfg = WALLS.find(w => w.id === wallId);
+        const isEave = (wallId === 'left' || wallId === 'right');
+        const wallLen = isEave ? bl : bw;
+        const ps = wCfg ? wCfg.postSpacing : (Q.postSpacing || 10);
+        const wd = allDoors.filter(d => d.wall === wallId);
+        if (!isEave && wCfg && wCfg.encl === 'open') return [];
+        function insideDoor(posFt) {
+            for (let d of wd) {
                 const dL = d.offset || 0, dR = dL + d.w;
-                [dL, dR].forEach(posFt => {
-                    if (!posts.some(p => Math.abs(p.ft - posFt) < 0.2)) {
-                        posts.push({ ft: posFt, isJamb: true });
-                    }
-                });
+                if (posFt > dL + 0.25 && posFt < dR - 0.25) return true;
+            }
+            return false;
+        }
+        const posts = [];
+        const numBays = Math.floor(wallLen / ps);
+        for (let i = 0; i <= numBays; i++) {
+            const posFt = i * (wallLen / numBays);
+            if (!insideDoor(posFt)) posts.push({ ft: posFt, isJamb: false });
+        }
+        wd.forEach(d => {
+            const dL = d.offset || 0, dR = dL + d.w;
+            [dL, dR].forEach(posFt => {
+                if (!posts.some(p => Math.abs(p.ft - posFt) < 0.2))
+                    posts.push({ ft: posFt, isJamb: true });
             });
-            posts.sort((a, b) => a.ft - b.ft);
-            return posts;
-        }
-
-        // Get posts for all 4 walls
-        const wallPosts = {};
-        ['left', 'right', 'front', 'back'].forEach(wid => {
-            wallPosts[wid] = getWallPosts(wid);
         });
+        posts.sort((a, b) => a.ft - b.ft);
+        return posts;
+    }
 
-        // Convert post positions to frame inches (from corner of frame)
-        function postToFrameIn(posFt, wallLen) {
-            return posFt * 12; // posts are in feet from wall start (0)
-        }
+    const wallPosts = {};
+    ['left', 'right', 'front', 'back'].forEach(wid => { wallPosts[wid] = getWallPosts(wid); });
 
-        // ---- PDF GENERATION ----
-        const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter' });
-        const pw = 792, ph = 612; // letter landscape in points
-        const margin = 50;
+    // ---- PDF ----
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter' });
+    const pw = 792, ph = 612;
+    const mg = 40; // margin
 
-        // PAGE 1: Blueprint
-        // Header
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(14);
-        doc.text('SUMMERTOWN METALS — POST LAYOUT', margin, 30);
-        doc.setFontSize(9);
-        doc.setFont('helvetica', 'normal');
-        doc.text('Job: ' + jobName + '   |   ' + bw + "'" + 'x' + bl + "'" + 'x' + bh + "'  " + pitch + '/12   |   ' + truss + ' Truss  |  ' + postSize + ' Posts', margin, 44);
-        doc.text(new Date().toLocaleDateString() + '  ' + new Date().toLocaleTimeString(), pw - margin, 44, { align: 'right' });
+    // ---- DRAWING SETUP ----
+    // Reserve space for dimensions: 3 tiers on each side
+    const dimTier = 18; // spacing per dim tier
+    const tierCount = 3; // post-to-post, overall building, overall frame
+    const dimSpace = dimTier * tierCount + 20;
 
-        // Drawing area
-        const drawTop = 70, drawBottom = ph - 60;
-        const drawLeft = margin + 60, drawRight = pw - margin - 60;
-        const drawW = drawRight - drawLeft;
-        const drawH = drawBottom - drawTop;
+    const drawL = mg + dimSpace;
+    const drawR = pw - mg - dimSpace;
+    const drawT = mg + 50 + dimSpace; // room for title
+    const drawB = ph - mg - 20 - dimSpace;
+    const drawW = drawR - drawL;
+    const drawH = drawB - drawT;
 
-        // Scale to fit
-        const scaleX = drawW / blIn;
-        const scaleY = drawH / bwIn;
-        const scale = Math.min(scaleX, scaleY) * 0.85;
-        const ox = drawLeft + (drawW - blIn * scale) / 2;
-        const oy = drawTop + (drawH - bwIn * scale) / 2;
+    // Compute scale — include sheds in bounding box
+    let totalW = bwIn, totalL = blIn;
+    let padL = 0, padR = 0, padT = 0, padB = 0;
+    shedCfgs.forEach(sc => {
+        if (!sc.wall || !sc.w) return;
+        const sW = sc.w * 12;
+        if (sc.wall === 'left') padT = Math.max(padT, sW);
+        else if (sc.wall === 'right') padB = Math.max(padB, sW);
+        else if (sc.wall === 'front') padL = Math.max(padL, sW);
+        else if (sc.wall === 'back') padR = Math.max(padR, sW);
+    });
+    const boundW = totalL + padL + padR;
+    const boundH = totalW + padT + padB;
+    const scale = Math.min(drawW / boundW, drawH / boundH) * 0.92;
+    const cx = (drawL + drawR) / 2, cy = (drawT + drawB) / 2;
+    const ox = cx - (totalL / 2 + padL) * scale - (-padL * scale);
+    const oy = cy - (totalW / 2 + padT) * scale - (-padT * scale);
+    // Simplify: origin at top-left of main building
+    const bx0 = cx - (totalL * scale) / 2 + (padL - padR) * scale / 2;
+    const by0 = cy - (totalW * scale) / 2 + (padT - padB) * scale / 2;
 
-        function tx(inches) { return ox + inches * scale; }
-        function ty(inches) { return oy + inches * scale; }
+    function tx(inches) { return bx0 + inches * scale; }
+    function ty(inches) { return by0 + inches * scale; }
 
-        // Draw building outline
-        doc.setDrawColor(100, 100, 100);
-        doc.setLineWidth(1.5);
-        doc.rect(tx(0), ty(0), blIn * scale, bwIn * scale);
+    // ---- TITLE BLOCK ----
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.setTextColor(0);
+    doc.text('POST LAYOUT', mg, mg + 18);
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    const titleParts = [];
+    if (jobName) titleParts.push(jobName);
+    titleParts.push(bw + "' x " + bl + "' x " + bh + "'");
+    titleParts.push(pitch + '/12 Pitch');
+    titleParts.push(truss + ' Truss');
+    titleParts.push(postSize + ' Posts');
+    doc.text(titleParts.join('   |   '), mg, mg + 32);
+    doc.text(new Date().toLocaleDateString(), pw - mg, mg + 18, { align: 'right' });
 
-        // Frame outline (dashed)
-        if (offset > 0) {
-            doc.setDrawColor(180, 180, 180);
-            doc.setLineWidth(0.5);
-            doc.setLineDashPattern([3, 3]);
-            doc.rect(tx(offset), ty(offset), frameL * scale, frameW * scale);
-            doc.setLineDashPattern([]);
-        }
+    // Thin separator
+    doc.setDrawColor(0);
+    doc.setLineWidth(0.5);
+    doc.line(mg, mg + 40, pw - mg, mg + 40);
 
-        // Draw posts and collect dimension data per wall
-        const postR = 4; // post marker radius
-        doc.setFontSize(6);
+    // ---- MAIN BUILDING OUTLINE ----
+    doc.setDrawColor(0);
+    doc.setLineWidth(1.5);
+    doc.rect(tx(0), ty(0), blIn * scale, bwIn * scale);
 
-        function drawPost(xIn, yIn, isJamb, label) {
-            const px = tx(xIn), py = ty(yIn);
-            doc.setFillColor(isJamb ? 212 : 194, isJamb ? 168 : 162, isJamb ? 67 : 120);
-            doc.rect(px - postR, py - postR, postR * 2, postR * 2, 'F');
-            doc.setDrawColor(120, 100, 60);
-            doc.setLineWidth(0.3);
-            doc.rect(px - postR, py - postR, postR * 2, postR * 2, 'S');
-        }
-
-        // Draw posts on each wall
-        // Left eave (y=0 in drawing = top)
-        wallPosts.left.forEach(p => drawPost(p.ft * 12, 0, p.isJamb));
-        // Right eave (y=bwIn)
-        wallPosts.right.forEach(p => drawPost(p.ft * 12, bwIn, p.isJamb));
-        // Front gable (x=0 in building, but in our layout front = back gable = x start)
-        wallPosts.front.forEach(p => drawPost(0, p.ft * 12, p.isJamb));
-        // Back gable (x=blIn)
-        wallPosts.back.forEach(p => drawPost(blIn, p.ft * 12, p.isJamb));
-
-        // Draw doors
-        doc.setDrawColor(59, 130, 246);
-        doc.setLineWidth(2.5);
-        allDoors.filter(d => d.wall).forEach(d => {
-            const dL = (d.offset || 0) * 12, dR = dL + d.w * 12;
-            if (d.wall === 'left') { doc.line(tx(dL), ty(0), tx(dR), ty(0)); }
-            else if (d.wall === 'right') { doc.line(tx(dL), ty(bwIn), tx(dR), ty(bwIn)); }
-            else if (d.wall === 'front') { doc.line(tx(0), ty(dL), tx(0), ty(dR)); }
-            else if (d.wall === 'back') { doc.line(tx(blIn), ty(dL), tx(blIn), ty(dR)); }
-        });
-
-        // Draw side sheds
-        const shedCfgs = window._shedConfigs || [];
-        shedCfgs.forEach(sc => {
-            if (!sc.wall || !sc.w || !sc.l) return;
-            const sW = sc.w * 12, sL = sc.l * 12;
-            const isEave = (sc.wall === 'left' || sc.wall === 'right');
-            const mainWallLen = isEave ? bl : bw;
-            const mainWallLenIn = mainWallLen * 12;
-            const shedLen = Math.min(sc.l, mainWallLen) * 12;
-
-            // Shed offset
-            let shedOffIn = 0;
-            const shedPos = sc.position || 'center';
-            if (shedLen >= mainWallLenIn) { shedOffIn = 0; }
-            else if (shedPos === 'start') { shedOffIn = 0; }
-            else if (shedPos === 'end') { shedOffIn = mainWallLenIn - shedLen; }
-            else if (shedPos === 'custom') { shedOffIn = Math.max(0, Math.min((sc.offsetFt || 0) * 12, mainWallLenIn - shedLen)); }
-            else { shedOffIn = (mainWallLenIn - shedLen) / 2; }
-
-            // Shed outline rectangle
-            doc.setDrawColor(184, 134, 11);
-            doc.setLineWidth(1);
-            doc.setLineDashPattern([4, 2]);
-            let sx, sy, srw, srh;
-            if (sc.wall === 'left') {
-                sx = tx(shedOffIn); sy = ty(-sW); srw = shedLen * scale; srh = sW * scale;
-            } else if (sc.wall === 'right') {
-                sx = tx(shedOffIn); sy = ty(bwIn); srw = shedLen * scale; srh = sW * scale;
-            } else if (sc.wall === 'front') {
-                sx = tx(-sW); sy = ty(shedOffIn); srw = sW * scale; srh = shedLen * scale;
-            } else {
-                sx = tx(blIn); sy = ty(shedOffIn); srw = sW * scale; srh = shedLen * scale;
-            }
-            doc.rect(sx, sy, srw, srh);
-            doc.setLineDashPattern([]);
-
-            // Shed label
-            doc.setFontSize(6);
-            doc.setFont('helvetica', 'bold');
-            doc.setTextColor(184, 134, 11);
-            const sLabel = sc.type === 'gable' ? 'Gable Ext' : sc.type === 'wrap' ? 'Wrap' : 'Lean-to';
-            doc.text(sLabel + ' ' + sc.w + "'x" + sc.l + "'", sx + srw / 2, sy + srh / 2 + 3, { align: 'center' });
-            doc.setTextColor(50, 50, 50);
-
-            // Shed outer posts
-            const sPS = sc.type === 'gable' ? (sc.gablePS || 10) : (Q.postSpacing || 10);
-            const numShedBays = Math.max(1, Math.floor(sc.l / sPS));
-            const shedPosts = [];
-            for (let i = 0; i <= numShedBays; i++) {
-                shedPosts.push(shedOffIn + i * (shedLen / numShedBays));
-            }
-
-            // Draw shed posts
-            if (sc.wall === 'left') {
-                shedPosts.forEach(p => drawPost(p, -sW, false));
-            } else if (sc.wall === 'right') {
-                shedPosts.forEach(p => drawPost(p, bwIn + sW, false));
-            } else if (sc.wall === 'front') {
-                shedPosts.forEach(p => drawPost(-sW, p, false));
-            } else {
-                shedPosts.forEach(p => drawPost(blIn + sW, p, false));
-            }
-
-            // Shed width dimension
-            doc.setDrawColor(184, 134, 11);
-            doc.setLineWidth(0.3);
-            doc.setFontSize(6);
-            doc.setFont('helvetica', 'normal');
-            doc.setTextColor(150, 120, 40);
-            if (sc.wall === 'left') {
-                const midZ = shedOffIn + shedLen / 2;
-                drawDimLine(tx(midZ), ty(0), tx(midZ), ty(-sW), inToFrac(sW), 'left');
-            } else if (sc.wall === 'right') {
-                const midZ = shedOffIn + shedLen / 2;
-                drawDimLine(tx(midZ), ty(bwIn), tx(midZ), ty(bwIn + sW), inToFrac(sW), 'right');
-            } else if (sc.wall === 'front') {
-                const midX = shedOffIn + shedLen / 2;
-                drawDimLine(tx(0), ty(midX), tx(-sW), ty(midX), inToFrac(sW), 'top');
-            } else {
-                const midX = shedOffIn + shedLen / 2;
-                drawDimLine(tx(blIn), ty(midX), tx(blIn + sW), ty(midX), inToFrac(sW), 'bottom');
-            }
-            doc.setTextColor(50, 50, 50);
-            doc.setDrawColor(80, 80, 80);
-        });
-
-        // Dimension lines
-        doc.setDrawColor(80, 80, 80);
-        doc.setLineWidth(0.4);
-        doc.setFontSize(7);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(50, 50, 50);
-
-        function drawDimLine(x1, y1, x2, y2, label, side) {
-            // side: 'top', 'bottom', 'left', 'right' — offset direction
-            const dimOff = 14;
-            let lx1 = x1, ly1 = y1, lx2 = x2, ly2 = y2;
-            let labelX, labelY, labelAngle = 0;
-            if (side === 'top') { ly1 -= dimOff; ly2 -= dimOff; }
-            else if (side === 'bottom') { ly1 += dimOff; ly2 += dimOff; }
-            else if (side === 'left') { lx1 -= dimOff; lx2 -= dimOff; }
-            else if (side === 'right') { lx1 += dimOff; lx2 += dimOff; }
-
-            doc.line(lx1, ly1, lx2, ly2);
-            // Ticks
-            if (side === 'top' || side === 'bottom') {
-                doc.line(lx1, ly1 - 3, lx1, ly1 + 3);
-                doc.line(lx2, ly2 - 3, lx2, ly2 + 3);
-                labelX = (lx1 + lx2) / 2;
-                labelY = ly1 + (side === 'top' ? -4 : 10);
-                doc.text(label, labelX, labelY, { align: 'center' });
-            } else {
-                doc.line(lx1 - 3, ly1, lx1 + 3, ly1);
-                doc.line(lx2 - 3, ly2, lx2 + 3, ly2);
-                labelX = lx1 + (side === 'left' ? -4 : 4);
-                labelY = (ly1 + ly2) / 2;
-                doc.text(label, labelX, labelY, { align: 'center', angle: 90 });
-            }
-        }
-
-        // Post-to-post dimensions — top wall (left eave)
-        const leftP = wallPosts.left;
-        for (let i = 0; i < leftP.length - 1; i++) {
-            const d = (leftP[i + 1].ft - leftP[i].ft) * 12;
-            drawDimLine(tx(leftP[i].ft * 12), ty(0), tx(leftP[i + 1].ft * 12), ty(0), inToFrac(d), 'top');
-        }
-        // Bottom wall (right eave)
-        const rightP = wallPosts.right;
-        for (let i = 0; i < rightP.length - 1; i++) {
-            const d = (rightP[i + 1].ft - rightP[i].ft) * 12;
-            drawDimLine(tx(rightP[i].ft * 12), ty(bwIn), tx(rightP[i + 1].ft * 12), ty(bwIn), inToFrac(d), 'bottom');
-        }
-        // Left gable (front)
-        const frontP = wallPosts.front;
-        for (let i = 0; i < frontP.length - 1; i++) {
-            const d = (frontP[i + 1].ft - frontP[i].ft) * 12;
-            drawDimLine(tx(0), ty(frontP[i].ft * 12), tx(0), ty(frontP[i + 1].ft * 12), inToFrac(d), 'left');
-        }
-        // Right gable (back)
-        const backP = wallPosts.back;
-        for (let i = 0; i < backP.length - 1; i++) {
-            const d = (backP[i + 1].ft - backP[i].ft) * 12;
-            drawDimLine(tx(blIn), ty(backP[i].ft * 12), tx(blIn), ty(backP[i + 1].ft * 12), inToFrac(d), 'right');
-        }
-
-        // Overall dimensions (outer row)
-        const outerOff = 32;
-        doc.setFontSize(8);
-        doc.setFont('helvetica', 'bold');
-        // Overall length (top)
-        drawDimLine(tx(0), ty(0) - outerOff, tx(blIn), ty(0) - outerOff, bw + "' x " + bl + "'   Frame: " + inToFrac(frameL) + ' x ' + inToFrac(frameW), 'top');
-
-        // Diagonal
-        doc.setDrawColor(200, 160, 60);
-        doc.setLineWidth(0.5);
-        doc.setLineDashPattern([4, 3]);
-        if (offset > 0) {
-            doc.line(tx(offset), ty(offset), tx(offset + frameL), ty(offset + frameW));
-        } else {
-            doc.line(tx(0), ty(0), tx(blIn), ty(bwIn));
-        }
+    // Frame outline (if wood offset)
+    if (offset > 0) {
+        doc.setLineWidth(0.3);
+        doc.setLineDashPattern([2, 2]);
+        doc.rect(tx(offset), ty(offset), frameL * scale, frameW * scale);
         doc.setLineDashPattern([]);
-        const diag = Math.sqrt(frameL * frameL + frameW * frameW);
-        doc.setFontSize(7);
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(180, 130, 20);
-        const diagMx = tx(offset + frameL / 2) + 5, diagMy = ty(offset + frameW / 2) - 5;
-        doc.text('Diag: ' + inToFrac(diag), diagMx, diagMy);
-        doc.setTextColor(50, 50, 50);
+    }
 
-        // Wall labels
+    // ---- POSTS ----
+    const pr = 3.5;
+    function drawPost(xIn, yIn, isJamb) {
+        const px = tx(xIn), py = ty(yIn);
+        if (isJamb) {
+            // Jamb: filled black
+            doc.setFillColor(0);
+            doc.rect(px - pr, py - pr, pr * 2, pr * 2, 'F');
+        } else {
+            // Regular: open square with cross
+            doc.setFillColor(255);
+            doc.setDrawColor(0);
+            doc.setLineWidth(0.6);
+            doc.rect(px - pr, py - pr, pr * 2, pr * 2, 'FD');
+            doc.setLineWidth(0.3);
+            doc.line(px - pr, py - pr, px + pr, py + pr);
+            doc.line(px + pr, py - pr, px - pr, py + pr);
+        }
+    }
+
+    // Main building posts
+    wallPosts.left.forEach(p => drawPost(p.ft * 12, 0, p.isJamb));
+    wallPosts.right.forEach(p => drawPost(p.ft * 12, bwIn, p.isJamb));
+    wallPosts.front.forEach(p => drawPost(0, p.ft * 12, p.isJamb));
+    wallPosts.back.forEach(p => drawPost(blIn, p.ft * 12, p.isJamb));
+
+    // ---- DOORS ----
+    doc.setLineWidth(2);
+    doc.setDrawColor(0);
+    allDoors.filter(d => d.wall).forEach(d => {
+        const dL = (d.offset || 0) * 12, dR = dL + d.w * 12;
+        const dMid = (dL + dR) / 2;
+        const label = d.w + "'x" + d.h + "'" + (d.type === 'garage' ? ' GD' : d.type === 'barn' ? ' BD' : ' WD');
+        doc.setFontSize(6);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(0);
+
+        if (d.wall === 'left') {
+            doc.line(tx(dL), ty(0), tx(dR), ty(0));
+            // Gap markers
+            doc.setLineWidth(0.8);
+            doc.line(tx(dL), ty(0) - 4, tx(dL), ty(0) + 4);
+            doc.line(tx(dR), ty(0) - 4, tx(dR), ty(0) + 4);
+            doc.text(label, tx(dMid), ty(0) + 10, { align: 'center' });
+        } else if (d.wall === 'right') {
+            doc.line(tx(dL), ty(bwIn), tx(dR), ty(bwIn));
+            doc.setLineWidth(0.8);
+            doc.line(tx(dL), ty(bwIn) - 4, tx(dL), ty(bwIn) + 4);
+            doc.line(tx(dR), ty(bwIn) - 4, tx(dR), ty(bwIn) + 4);
+            doc.text(label, tx(dMid), ty(bwIn) - 6, { align: 'center' });
+        } else if (d.wall === 'front') {
+            doc.line(tx(0), ty(dL), tx(0), ty(dR));
+            doc.setLineWidth(0.8);
+            doc.line(tx(0) - 4, ty(dL), tx(0) + 4, ty(dL));
+            doc.line(tx(0) - 4, ty(dR), tx(0) + 4, ty(dR));
+            doc.text(label, tx(0) + 10, ty(dMid) + 2, { align: 'left' });
+        } else if (d.wall === 'back') {
+            doc.line(tx(blIn), ty(dL), tx(blIn), ty(dR));
+            doc.setLineWidth(0.8);
+            doc.line(tx(blIn) - 4, ty(dL), tx(blIn) + 4, ty(dL));
+            doc.line(tx(blIn) - 4, ty(dR), tx(blIn) + 4, ty(dR));
+            doc.text(label, tx(blIn) - 10, ty(dMid) + 2, { align: 'right' });
+        }
+        doc.setLineWidth(2);
+    });
+
+    // ---- SIDE SHEDS ----
+    shedCfgs.forEach(sc => {
+        if (!sc.wall || !sc.w || !sc.l) return;
+        const sW = sc.w * 12, sL = Math.min(sc.l, (sc.wall === 'left' || sc.wall === 'right') ? bl : bw) * 12;
+        const mainWallIn = ((sc.wall === 'left' || sc.wall === 'right') ? bl : bw) * 12;
+        let shedOffIn = 0;
+        const shedPos = sc.position || 'center';
+        if (sL >= mainWallIn) shedOffIn = 0;
+        else if (shedPos === 'start') shedOffIn = 0;
+        else if (shedPos === 'end') shedOffIn = mainWallIn - sL;
+        else if (shedPos === 'custom') shedOffIn = Math.max(0, Math.min((sc.offsetFt || 0) * 12, mainWallIn - sL));
+        else shedOffIn = (mainWallIn - sL) / 2;
+
+        // Outline
+        doc.setDrawColor(0);
+        doc.setLineWidth(0.8);
+        doc.setLineDashPattern([3, 2]);
+        if (sc.wall === 'left') doc.rect(tx(shedOffIn), ty(-sW), sL * scale, sW * scale);
+        else if (sc.wall === 'right') doc.rect(tx(shedOffIn), ty(bwIn), sL * scale, sW * scale);
+        else if (sc.wall === 'front') doc.rect(tx(-sW), ty(shedOffIn), sW * scale, sL * scale);
+        else doc.rect(tx(blIn), ty(shedOffIn), sW * scale, sL * scale);
+        doc.setLineDashPattern([]);
+
+        // Label
+        doc.setFontSize(6);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(80);
+        const sLabel = (sc.type === 'gable' ? 'Gable' : sc.type === 'wrap' ? 'Wrap' : 'Lean-to') + ' ' + sc.w + "'x" + sc.l + "'";
+        if (sc.wall === 'left') doc.text(sLabel, tx(shedOffIn + sL / 2), ty(-sW / 2) + 2, { align: 'center' });
+        else if (sc.wall === 'right') doc.text(sLabel, tx(shedOffIn + sL / 2), ty(bwIn + sW / 2) + 2, { align: 'center' });
+        else if (sc.wall === 'front') doc.text(sLabel, tx(-sW / 2), ty(shedOffIn + sL / 2) + 2, { align: 'center', angle: 90 });
+        else doc.text(sLabel, tx(blIn + sW / 2), ty(shedOffIn + sL / 2) + 2, { align: 'center', angle: 90 });
+        doc.setTextColor(0);
+
+        // Shed outer posts
+        const sPS = sc.type === 'gable' ? (sc.gablePS || 10) : (Q.postSpacing || 10);
+        const numSB = Math.max(1, Math.floor(sc.l / sPS));
+        for (let i = 0; i <= numSB; i++) {
+            const p = shedOffIn + i * (sL / numSB);
+            if (sc.wall === 'left') drawPost(p, -sW, false);
+            else if (sc.wall === 'right') drawPost(p, bwIn + sW, false);
+            else if (sc.wall === 'front') drawPost(-sW, p, false);
+            else drawPost(blIn + sW, p, false);
+        }
+    });
+
+    // ---- DIMENSION SYSTEM ----
+    // All dimensions in black, clean lines, organized in tiers
+    doc.setDrawColor(0);
+    doc.setTextColor(0);
+    doc.setFont('helvetica', 'normal');
+
+    // Dimension helper — clean architectural style
+    function dimH(x1, x2, y, label, fontSize) {
+        // Horizontal dimension line at y
+        doc.setLineWidth(0.4);
+        doc.line(x1, y, x2, y);
+        // Ticks
+        doc.setLineWidth(0.6);
+        doc.line(x1, y - 3, x1, y + 3);
+        doc.line(x2, y - 3, x2, y + 3);
+        // Label
+        doc.setFontSize(fontSize || 6.5);
+        doc.text(label, (x1 + x2) / 2, y - 4, { align: 'center' });
+    }
+    function dimV(y1, y2, x, label, fontSize) {
+        // Vertical dimension line at x
+        doc.setLineWidth(0.4);
+        doc.line(x, y1, x, y2);
+        // Ticks
+        doc.setLineWidth(0.6);
+        doc.line(x - 3, y1, x + 3, y1);
+        doc.line(x - 3, y2, x + 3, y2);
+        // Label
+        doc.setFontSize(fontSize || 6.5);
+        doc.text(label, x - 5, (y1 + y2) / 2, { align: 'center', angle: 90 });
+    }
+
+    // Extension lines from building corners
+    doc.setLineWidth(0.2);
+    doc.setDrawColor(160);
+    const extLen = dimSpace + 5;
+    // Top extensions (from left eave posts up)
+    wallPosts.left.forEach(p => {
+        const px = tx(p.ft * 12);
+        doc.line(px, ty(0), px, ty(0) - extLen);
+    });
+    // Bottom extensions
+    wallPosts.right.forEach(p => {
+        const px = tx(p.ft * 12);
+        doc.line(px, ty(bwIn), px, ty(bwIn) + extLen);
+    });
+    // Left extensions (from front gable posts left)
+    wallPosts.front.forEach(p => {
+        const py = ty(p.ft * 12);
+        doc.line(tx(0), py, tx(0) - extLen, py);
+    });
+    // Right extensions
+    wallPosts.back.forEach(p => {
+        const py = ty(p.ft * 12);
+        doc.line(tx(blIn), py, tx(blIn) + extLen, py);
+    });
+    doc.setDrawColor(0);
+
+    // TIER 1: Post-to-post dimensions (closest to building)
+    const t1 = dimTier;
+    doc.setFont('helvetica', 'normal');
+
+    // Left eave (top) — post-to-post
+    const leftP = wallPosts.left;
+    for (let i = 0; i < leftP.length - 1; i++) {
+        const d = (leftP[i + 1].ft - leftP[i].ft) * 12;
+        dimH(tx(leftP[i].ft * 12), tx(leftP[i + 1].ft * 12), ty(0) - t1, inToFrac(d), 6);
+    }
+    // Right eave (bottom)
+    const rightP = wallPosts.right;
+    for (let i = 0; i < rightP.length - 1; i++) {
+        const d = (rightP[i + 1].ft - rightP[i].ft) * 12;
+        dimH(tx(rightP[i].ft * 12), tx(rightP[i + 1].ft * 12), ty(bwIn) + t1, inToFrac(d), 6);
+    }
+    // Front gable (left side)
+    const frontP = wallPosts.front;
+    for (let i = 0; i < frontP.length - 1; i++) {
+        const d = (frontP[i + 1].ft - frontP[i].ft) * 12;
+        dimV(ty(frontP[i].ft * 12), ty(frontP[i + 1].ft * 12), tx(0) - t1, inToFrac(d), 6);
+    }
+    // Back gable (right side)
+    const backP = wallPosts.back;
+    for (let i = 0; i < backP.length - 1; i++) {
+        const d = (backP[i + 1].ft - backP[i].ft) * 12;
+        dimV(ty(backP[i].ft * 12), ty(backP[i + 1].ft * 12), tx(blIn) + t1, inToFrac(d), 6);
+    }
+
+    // TIER 2: Overall building dimensions
+    const t2 = dimTier * 2.5;
+    doc.setFont('helvetica', 'bold');
+    dimH(tx(0), tx(blIn), ty(0) - t2, bl + "'", 8);
+    dimH(tx(0), tx(blIn), ty(bwIn) + t2, bl + "'", 8);
+    dimV(ty(0), ty(bwIn), tx(0) - t2, bw + "'", 8);
+    dimV(ty(0), ty(bwIn), tx(blIn) + t2, bw + "'", 8);
+
+    // TIER 3: Frame dimensions (if offset)
+    if (offset > 0) {
+        const t3 = dimTier * 3.5;
+        doc.setFont('helvetica', 'normal');
+        dimH(tx(offset), tx(offset + frameL), ty(0) - t3, 'Frame: ' + inToFrac(frameL), 6);
+        dimV(ty(offset), ty(offset + frameW), tx(0) - t3, 'Frame: ' + inToFrac(frameW), 6);
+    }
+
+    // ---- DIAGONAL ----
+    doc.setDrawColor(0);
+    doc.setLineWidth(0.3);
+    doc.setLineDashPattern([4, 3]);
+    const diagX1 = offset > 0 ? offset : 0, diagY1 = offset > 0 ? offset : 0;
+    const diagX2 = offset > 0 ? offset + frameL : blIn, diagY2 = offset > 0 ? offset + frameW : bwIn;
+    doc.line(tx(diagX1), ty(diagY1), tx(diagX2), ty(diagY2));
+    doc.setLineDashPattern([]);
+    const diag = Math.sqrt((diagX2 - diagX1) ** 2 + (diagY2 - diagY1) ** 2);
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'bold');
+    doc.text('DIAG: ' + inToFrac(diag), (tx(diagX1) + tx(diagX2)) / 2 + 8, (ty(diagY1) + ty(diagY2)) / 2 - 6);
+
+    // ---- WALL LABELS ----
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(100);
+    doc.text('LEFT EAVE', tx(blIn / 2), ty(0) - dimTier * 3 - 10, { align: 'center' });
+    doc.text('RIGHT EAVE', tx(blIn / 2), ty(bwIn) + dimTier * 3 + 14, { align: 'center' });
+    doc.text('BACK GABLE', tx(0) - dimTier * 3 - 10, ty(bwIn / 2), { align: 'center', angle: 90 });
+    doc.text('FRONT GABLE', tx(blIn) + dimTier * 3 + 10, ty(bwIn / 2), { align: 'center', angle: 90 });
+    doc.setTextColor(0);
+
+    // ---- LEGEND ----
+    const lgX = pw - mg - 140, lgY = ph - mg - 10;
+    doc.setFontSize(6);
+    doc.setFont('helvetica', 'normal');
+    // Regular post symbol
+    doc.setFillColor(255); doc.setDrawColor(0); doc.setLineWidth(0.5);
+    doc.rect(lgX, lgY - 3, 6, 6, 'FD');
+    doc.setLineWidth(0.3); doc.line(lgX, lgY - 3, lgX + 6, lgY + 3); doc.line(lgX + 6, lgY - 3, lgX, lgY + 3);
+    doc.text('Regular Post', lgX + 10, lgY + 2);
+    // Jamb post symbol
+    doc.setFillColor(0); doc.rect(lgX + 65, lgY - 3, 6, 6, 'F');
+    doc.text('Jamb Post', lgX + 75, lgY + 2);
+    // Door symbol
+    doc.setLineWidth(1.5); doc.line(lgX + 120, lgY, lgX + 132, lgY);
+    doc.text('Door', lgX + 136, lgY + 2);
+
+    // ---- FOOTER ----
+    doc.setFontSize(7);
+    doc.setTextColor(150);
+    doc.text('Generated by Sauce Estimator  —  © ' + new Date().getFullYear() + ' Lain Hinson', pw / 2, ph - 8, { align: 'center' });
+
+    // ======== PAGE 2: SCHEDULE ========
+    doc.addPage('letter', 'landscape');
+    doc.setTextColor(0);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text('POST & DOOR SCHEDULE', mg, mg + 18);
+    doc.setLineWidth(0.5);
+    doc.line(mg, mg + 26, pw - mg, mg + 26);
+
+    let curY = mg + 48;
+
+    // Building info
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'bold');
+    doc.text('BUILDING', mg, curY); curY += 14;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.text('Size: ' + bw + "' x " + bl + "' x " + bh + "'    Pitch: " + pitch + '/12    Truss: ' + truss + '    Posts: ' + postSize, mg + 12, curY); curY += 11;
+    doc.text('Frame: ' + inToFrac(frameL) + ' x ' + inToFrac(frameW) + '    Diagonal: ' + inToFrac(diag) + '    Girt Offset: ' + (offset > 0 ? offset + '"' : 'None'), mg + 12, curY); curY += 18;
+
+    // Post schedule
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'bold');
+    doc.text('POST SCHEDULE', mg, curY); curY += 14;
+    doc.setFontSize(8);
+    ['left', 'right', 'front', 'back'].forEach(wid => {
+        const wCfg = WALLS.find(w => w.id === wid);
+        const posts = wallPosts[wid];
+        if (!posts.length) return;
+        doc.setFont('helvetica', 'bold');
+        doc.text(wCfg.label, mg + 12, curY);
+        doc.setFont('helvetica', 'normal');
+        doc.text(posts.length + ' posts', mg + 100, curY);
+        const dims = [];
+        for (let i = 0; i < posts.length - 1; i++) dims.push(inToFrac((posts[i + 1].ft - posts[i].ft) * 12));
+        doc.text(dims.join('  >  '), mg + 140, curY);
+        curY += 12;
+    });
+
+    // Door schedule
+    const doorsOnWalls = allDoors.filter(d => d.wall);
+    if (doorsOnWalls.length > 0) {
+        curY += 8;
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.text('DOOR SCHEDULE', mg, curY); curY += 14;
         doc.setFontSize(8);
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(100, 80, 40);
-        doc.text('LEFT EAVE', tx(blIn / 2), ty(0) - 38, { align: 'center' });
-        doc.text('RIGHT EAVE', tx(blIn / 2), ty(bwIn) + 42, { align: 'center' });
-        doc.text('BACK GABLE', tx(0) - 42, ty(bwIn / 2), { align: 'center', angle: 90 });
-        doc.text('FRONT GABLE', tx(blIn) + 42, ty(bwIn / 2), { align: 'center', angle: 90 });
-
-        // Footer
-        doc.setFontSize(7);
-        doc.setTextColor(150, 150, 150);
         doc.setFont('helvetica', 'normal');
-        doc.text('Generated by Sauce Estimator — © ' + new Date().getFullYear() + ' Lain Hinson', pw / 2, ph - 15, { align: 'center' });
-
-        // ---- PAGE 2: Schedules ----
-        doc.addPage('letter', 'landscape');
-        doc.setTextColor(30, 30, 30);
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(14);
-        doc.text('POST & DOOR SCHEDULE', margin, 35);
-        doc.setFontSize(9);
-        doc.setFont('helvetica', 'normal');
-        doc.text('Job: ' + jobName + '   |   ' + bw + "'" + 'x' + bl + "'" + 'x' + bh + "'", margin, 50);
-
-        let curY = 75;
-        // Building summary
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(10);
-        doc.text('Building Summary', margin, curY); curY += 16;
-        doc.setFontSize(9);
-        doc.setFont('helvetica', 'normal');
-        const summaryLines = [
-            'Building: ' + bw + "' x " + bl + "' x " + bh + "'   Pitch: " + pitch + '/12',
-            'Frame: ' + inToFrac(frameL) + ' x ' + inToFrac(frameW) + '   Diagonal: ' + inToFrac(diag),
-            'Truss: ' + truss + '   Post Size: ' + postSize + '   Girt Offset: ' + (offset > 0 ? offset + '"' : 'None (steel)'),
-        ];
-        summaryLines.forEach(line => { doc.text(line, margin + 10, curY); curY += 13; });
-
-        curY += 12;
-        // Post schedule per wall
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(10);
-        doc.text('Post Schedule', margin, curY); curY += 16;
-
-        ['left', 'right', 'front', 'back'].forEach(wid => {
-            const wCfg = WALLS.find(w => w.id === wid);
-            const posts = wallPosts[wid];
-            if (!posts.length) return;
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(9);
-            doc.text(wCfg.label + ' (' + posts.length + ' posts)', margin + 10, curY); curY += 12;
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(8);
-            const dims = [];
-            for (let i = 0; i < posts.length - 1; i++) {
-                dims.push(inToFrac((posts[i + 1].ft - posts[i].ft) * 12));
-            }
-            doc.text('Spacing: ' + dims.join('  →  '), margin + 20, curY); curY += 12;
+        doorsOnWalls.forEach(d => {
+            const wCfg = WALLS.find(w => w.id === d.wall);
+            const t = d.type === 'garage' ? 'Garage Door' : d.type === 'barn' ? 'Barn Door' : 'Walk Door';
+            doc.text(t + '  ' + d.w + "' x " + d.h + "'", mg + 12, curY);
+            doc.text((wCfg ? wCfg.label : d.wall) + '  @  ' + (d.offset || 0) + "' from corner", mg + 160, curY);
+            curY += 11;
         });
+    }
 
-        curY += 12;
-        // Door schedule
-        const doorsOnWalls = allDoors.filter(d => d.wall);
-        if (doorsOnWalls.length > 0) {
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(10);
-            doc.text('Door Schedule', margin, curY); curY += 16;
-            doc.setFontSize(8);
-            doc.setFont('helvetica', 'normal');
-            doorsOnWalls.forEach(d => {
-                const wCfg = WALLS.find(w => w.id === d.wall);
-                const wallLabel = wCfg ? wCfg.label : d.wall;
-                doc.text(d.w + "' x " + d.h + "' " + (d.type === 'garage' ? 'Garage' : d.type === 'barn' ? 'Barn' : 'Walk') + '  —  ' + wallLabel + '  @  ' + (d.offset || 0) + "' from corner", margin + 20, curY);
-                curY += 12;
-            });
-        }
+    // Shed schedule
+    if (shedCfgs.length > 0) {
+        curY += 8;
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'bold');
+        doc.text('SIDE SHED SCHEDULE', mg, curY); curY += 14;
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'normal');
+        shedCfgs.forEach(sc => {
+            const wCfg = WALLS.find(w => w.id === sc.wall);
+            const tl = sc.type === 'gable' ? 'Gable Ext.' : sc.type === 'wrap' ? 'Wrap' : 'Lean-To';
+            const pos = sc.position === 'start' ? 'Start' : sc.position === 'end' ? 'End' : sc.position === 'custom' ? (sc.offsetFt || 0) + "' offset" : 'Centered';
+            let line = tl + '  ' + sc.w + "' x " + sc.l + "'  —  " + (wCfg ? wCfg.label : sc.wall) + '  —  ' + pos;
+            if (sc.type !== 'gable' && sc.ltPitch) line += '  |  ' + (sc.ltPitch || 1) + '/12';
+            if (sc.dropFt > 0) line += '  |  ' + sc.dropFt + "' drop";
+            doc.text(line, mg + 12, curY);
+            curY += 11;
+        });
+    }
 
-        // Shed schedule
-        if (shedCfgs.length > 0) {
-            curY += 12;
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(10);
-            doc.text('Side Shed Schedule', margin, curY); curY += 16;
-            doc.setFontSize(8);
-            doc.setFont('helvetica', 'normal');
-            shedCfgs.forEach(sc => {
-                const wCfg = WALLS.find(w => w.id === sc.wall);
-                const wallLabel = wCfg ? wCfg.label : sc.wall;
-                const typeLabel = sc.type === 'gable' ? 'Gable Extension' : sc.type === 'wrap' ? 'Wrap-Around' : 'Lean-To';
-                const posLabel = sc.position === 'start' ? 'Start' : sc.position === 'end' ? 'End' : sc.position === 'custom' ? (sc.offsetFt || 0) + "' offset" : 'Centered';
-                let details = typeLabel + '  ' + sc.w + "' x " + sc.l + "'  —  " + wallLabel + '  —  ' + posLabel;
-                if (sc.type === 'leanto' || sc.type === 'wrap') {
-                    details += '  |  Pitch: ' + (sc.ltPitch || 1) + '/12';
-                    if (sc.dropFt > 0) details += '  Drop: ' + sc.dropFt + "'";
-                }
-                doc.text(details, margin + 20, curY);
-                curY += 12;
-            });
-        }
+    // Footer
+    doc.setFontSize(7);
+    doc.setTextColor(150);
+    doc.text('Generated by Sauce Estimator  —  © ' + new Date().getFullYear() + ' Lain Hinson', pw / 2, ph - 8, { align: 'center' });
 
-        // Footer
-        doc.setFontSize(7);
-        doc.setTextColor(150, 150, 150);
-        doc.text('Generated by Sauce Estimator — © ' + new Date().getFullYear() + ' Lain Hinson', pw / 2, ph - 15, { align: 'center' });
-
-        // Save
-        const filename = (jobName || 'building').replace(/[^a-zA-Z0-9]/g, '_') + '_post_layout.pdf';
-        doc.save(filename);
-
+    // Save
+    const fn = (jobName || bw + 'x' + bl + '_building').replace(/[^a-zA-Z0-9]/g, '_') + '_post_layout.pdf';
+    doc.save(fn);
 };
+
 </script>
 </body>
 </html>
