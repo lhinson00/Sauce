@@ -216,6 +216,8 @@
                     <button class="calculate-btn" onclick="calculatePricing()" id="calculateBtn">Calculate Pricing</button>
                     <button class="calculate-btn" onclick="emailQuote()" id="emailBtn" style="margin-top:12px;background:linear-gradient(135deg,#28a745 0%,#20c997 100%);display:none;">📧 Email Quote to Salesman</button>
                     <button class="calculate-btn" onclick="launch3DQuote()" id="gen3dBtn" style="margin-top:8px;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);display:none;">🏗️ Design 3D Model</button>
+                    <button class="calculate-btn" onclick="saveQuoteSnapshot()" id="saveQuoteBtn" style="margin-top:8px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:none;">💾 Save Quote</button>
+                    <div id="saveQuoteStatus" style="display:none;margin-top:8px;text-align:center;font-size:12px;color:#059669;font-weight:700;">✅ Quote Saved — <span id="savedQuoteId"></span></div>
                     <div style="margin-top:20px;text-align:center;opacity:0.8;font-size:13px;">✅ Connected to Google Sheet</div>
                 </div>
             </div>
@@ -315,7 +317,7 @@
                     updateEl('zipCode',zipCode||'-');updateEl('county',county||'-');updateEl('mileage',mileage+' miles');updateEl('taxRateDisplay',taxRate+'%');
                     updateEl('materialOnly',fmt(r.materialOnly));updateEl('labor',fmt(r.labor));updateEl('laborBeyond200',fmt(r.laborBeyond200));
                     updateEl('tax',fmt(r.tax));updateEl('shipping',fmt(r.shipping));updateEl('manualAdders',fmt(r.manualAdders));
-                    if(currentUser.username==='lain.hinson'){document.getElementById('emailBtn').style.display='block';document.getElementById('gen3dBtn').style.display='block';}
+                    if(currentUser.username==='lain.hinson'){document.getElementById('emailBtn').style.display='block';document.getElementById('saveQuoteBtn').style.display='block';document.getElementById('gen3dBtn').style.display='none';}
                     showAlert('✅ Pricing calculated! Sheet tab: '+currentUser.username+'_RGGables','success');
                 }else{showAlert('Error: '+(result.error||'Unknown'),'error');}
             }catch(err){showAlert('Calculation failed: '+err.message,'error');}
@@ -405,6 +407,95 @@ ${shipping&&shipping!=='$0.00'?`<tr><td style="padding:8px 0;border-bottom:1px s
             catch(e){showAlert('Email failed: '+e.message,'error');}
             finally{emailBtn.disabled=false;emailBtn.textContent='📧 Email Quote to Salesman';}
         }
+
+        // ===== SAVE QUOTE SNAPSHOT =====
+        var _savedQuoteId = null;
+
+        async function saveQuoteSnapshot() {
+            if (!currentUser || currentUser.username !== 'lain.hinson') return;
+            var btn = document.getElementById('saveQuoteBtn');
+            btn.disabled = true; btn.textContent = '💾 Saving...';
+            try {
+                var formSnapshot = {};
+                document.querySelectorAll('input, select, textarea').forEach(function(el) {
+                    if (!el.id) return;
+                    if (el.type === 'checkbox') formSnapshot[el.id] = el.checked;
+                    else if (el.type === 'radio') { if (el.checked) formSnapshot[el.id] = el.value; }
+                    else formSnapshot[el.id] = el.value;
+                });
+                var pricingResults = {};
+                ['materialOnly','labor','laborBeyond200','concrete','tax','shipping','esd','totalCombined','manualAdders','pricePerSqFt','totalSqFt','zipCode','county','mileage'].forEach(function(id) {
+                    var el = document.getElementById(id);
+                    if (el) pricingResults[id] = el.textContent.trim();
+                });
+                var customerName = document.getElementById('customerName').value || 'No Name';
+                var snapshot = {
+                    calculatorName: 'RG Gables',
+                    calculatorFile: 'rg-gables.html',
+                    salesman: currentUser.username,
+                    salesmanName: currentUser.name || currentUser.fullName || currentUser.username,
+                    customerName: customerName,
+                    phone: document.getElementById('phone').value || '',
+                    email: document.getElementById('email') ? document.getElementById('email').value || '' : '',
+                    address: document.getElementById('address').value || '',
+                    formFields: formSnapshot,
+                    pricingResults: pricingResults,
+                    timestamp: new Date().toISOString()
+                };
+                var resp = await fetch(SCRIPT_URL, {
+                    method: 'POST', headers: { 'Content-Type': 'text/plain' },
+                    body: JSON.stringify({ action: 'saveQuoteSnapshot', username: currentUser.username, snapshot: snapshot })
+                });
+                var data = await resp.json();
+                if (!data.success) throw new Error(data.error || 'Save failed');
+                _savedQuoteId = data.quoteId || ('QS-' + Date.now());
+                document.getElementById('saveQuoteStatus').style.display = 'block';
+                document.getElementById('savedQuoteId').textContent = _savedQuoteId;
+                document.getElementById('gen3dBtn').style.display = 'block';
+                btn.textContent = '✅ Quote Saved';
+                btn.style.background = 'linear-gradient(135deg, #059669, #10b981)';
+                showAlert('✅ Quote saved! ID: ' + _savedQuoteId, 'success');
+            } catch(err) {
+                console.error('Save quote error:', err);
+                showAlert('Error saving quote: ' + err.message);
+                btn.disabled = false; btn.textContent = '💾 Save Quote';
+            }
+        }
+
+        async function loadQuoteSnapshot(quoteId) {
+            if (!currentUser) return;
+            try {
+                var resp = await fetch(SCRIPT_URL, {
+                    method: 'POST', headers: { 'Content-Type': 'text/plain' },
+                    body: JSON.stringify({ action: 'getQuoteSnapshot', quoteId: quoteId })
+                });
+                var data = await resp.json();
+                if (!data.success || !data.snapshot) { showAlert('Quote ' + quoteId + ' not found.'); return; }
+                var fields = data.snapshot.formFields || {};
+                var loaded = 0, skipped = 0;
+                Object.keys(fields).forEach(function(id) {
+                    var el = document.getElementById(id);
+                    if (!el) { skipped++; return; }
+                    if (el.type === 'checkbox') el.checked = !!fields[id];
+                    else if (el.tagName === 'SELECT') { el.value = fields[id]; el.dispatchEvent(new Event('change', { bubbles: true })); }
+                    else { el.value = fields[id]; el.dispatchEvent(new Event('input', { bubbles: true })); }
+                    loaded++;
+                });
+                _savedQuoteId = quoteId;
+                showAlert('✅ Loaded quote ' + quoteId + ' (' + data.snapshot.customerName + ') — ' + loaded + ' fields populated, ' + skipped + ' skipped.', 'success');
+            } catch(err) { showAlert('Error loading quote: ' + err.message); }
+        }
+
+        (function() {
+            var params = new URLSearchParams(window.location.search);
+            var loadId = params.get('loadQuote');
+            if (loadId) {
+                var checkUser = setInterval(function() {
+                    if (currentUser) { clearInterval(checkUser); loadQuoteSnapshot(loadId); }
+                }, 200);
+                setTimeout(function() { clearInterval(checkUser); }, 5000);
+            }
+        })();
 
         function launch3DQuote() {
             const width = parseFloat(document.getElementById('width').value) || 0;
