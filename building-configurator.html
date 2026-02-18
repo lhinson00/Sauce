@@ -2968,8 +2968,7 @@ window._generatePostLayout = function() {
     // Overall building dims: BOTTOM + RIGHT (tier at 22pt from building)  
     // Wall labels: INSIDE building (no outside text competing)
     // This means each side has exactly ONE tier of text = zero overlap possible.
-    var DIM = 22; // dim line offset from building/shed edge
-    var pad = DIM + 30; // total padding for dim text
+    var pad = 52; // total padding for dim text around drawing area
 
     var aL = MG + pad, aR = PW - MG - pad;
     var aT = MG + 44 + pad, aB = PH - MG - 14 - pad;
@@ -3016,28 +3015,33 @@ window._generatePostLayout = function() {
             doc.setLineWidth(0.25); doc.line(px - PR, py - PR, px + PR, py + PR); doc.line(px + PR, py - PR, px - PR, py + PR); }
     });
 
-    // Doors — label inside building
+    // Doors — thick opening line + label ALWAYS inside building
     allDoors.filter(function(d) { return d.wall; }).forEach(function(d) {
         var dL = (d.offset || 0) * 12, dR = dL + d.w * 12, dM = (dL + dR) / 2;
         var sz = d.w + "'x" + d.h + "' " + (d.type === 'garage' ? 'GARAGE' : d.type === 'barn' ? 'BARN' : 'WALK');
         doc.setDrawColor(0); doc.setLineWidth(3);
         doc.setFontSize(5.5); doc.setFont('helvetica', 'bold'); doc.setTextColor(0);
+        // Labels always point INWARD toward building center
         if (d.wall === 'left') { doc.line(TX(dL), TY(0), TX(dR), TY(0)); doc.text(sz, TX(dM), TY(0) + 11, { align: 'center' }); }
         else if (d.wall === 'right') { doc.line(TX(dL), TY(bwIn), TX(dR), TY(bwIn)); doc.text(sz, TX(dM), TY(bwIn) - 6, { align: 'center' }); }
         else if (d.wall === 'front') { doc.line(TX(0), TY(dL), TX(0), TY(dR)); doc.text(sz, TX(0) + 8, TY(dM) + 2); }
         else if (d.wall === 'back') { doc.line(TX(blIn), TY(dL), TX(blIn), TY(dR)); doc.text(sz, TX(blIn) - 8, TY(dM) + 2, { align: 'right' }); }
     });
 
-    // WALL LABELS — INSIDE the building, light gray, no outside clutter
+    // WALL LABELS — INSIDE the building, light gray
     doc.setFontSize(7); doc.setFont('helvetica', 'bold'); doc.setTextColor(200);
-    var lblIn = 18; // pixels inward from wall
+    var lblIn = 18;
     doc.text('LEFT EAVE', TX(blIn / 2), TY(0) + lblIn, { align: 'center' });
     doc.text('RIGHT EAVE', TX(blIn / 2), TY(bwIn) - lblIn + 6, { align: 'center' });
     doc.text('FRONT GABLE', TX(0) + lblIn, TY(bwIn / 2), { angle: 90, align: 'center' });
     doc.text('BACK GABLE', TX(blIn) - lblIn + 6, TY(bwIn / 2), { angle: 90, align: 'center' });
     doc.setTextColor(0);
 
-    // DIMENSIONS — simple clean lines, one tier per side
+    // ===== DIMENSIONS =====
+    // Strategy: ALL post-to-post dims are offset from the BUILDING walls (not shed edges).
+    // This keeps them visible even when sheds extend outward.
+    // Overall dims go on bottom and right, offset from the outermost bounding edge.
+
     function dH(x1, x2, y, lbl, bld, fs) {
         if (Math.abs(x2 - x1) < 2) return;
         doc.setLineWidth(0.3); doc.setDrawColor(0);
@@ -3052,48 +3056,54 @@ window._generatePostLayout = function() {
         doc.setFont('helvetica', bld ? 'bold' : 'normal'); doc.setFontSize(fs || 6); doc.setTextColor(0);
         doc.text(lbl, x - 4, (y1 + y2) / 2, { align: 'center', angle: 90 });
     }
+    function dVr(y1, y2, x, lbl, bld, fs) {
+        // Vertical dim with label on RIGHT side of line
+        if (Math.abs(y2 - y1) < 2) return;
+        doc.setLineWidth(0.3); doc.setDrawColor(0);
+        doc.line(x, y1, x, y2); doc.line(x - 2.5, y1, x + 2.5, y1); doc.line(x - 2.5, y2, x + 2.5, y2);
+        doc.setFont('helvetica', bld ? 'bold' : 'normal'); doc.setFontSize(fs || 6); doc.setTextColor(0);
+        doc.text(lbl, x + 4, (y1 + y2) / 2, { align: 'center', angle: 270 });
+    }
 
-    // TOP: post-to-post for left eave — always shown
-    var topEdge = TY(Math.min(0, mnY));
-    for (var i = 0; i < wp.left.length - 1; i++)
-        dH(TX(wp.left[i].ft * 12), TX(wp.left[i + 1].ft * 12), topEdge - DIM, F((wp.left[i + 1].ft - wp.left[i].ft) * 12));
-
-    // LEFT: post-to-post for front gable — always shown
-    var leftEdge = TX(Math.min(0, mnX));
-    for (var i = 0; i < wp.front.length - 1; i++)
-        dV(TY(wp.front[i].ft * 12), TY(wp.front[i + 1].ft * 12), leftEdge - DIM, F((wp.front[i + 1].ft - wp.front[i].ft) * 12));
-
-    // BOTTOM: overall length
-    var botEdge = TY(Math.max(bwIn, mxY));
-    dH(TX(0), TX(blIn), botEdge + DIM, bl + "'", true, 8);
-
-    // RIGHT: overall width
-    var rtEdge = TX(Math.max(blIn, mxX));
-    dV(TY(0), TY(bwIn), rtEdge + DIM, bw + "'", true, 8);
-
-    // Check which walls have doors (jamb posts)
     function wallHasDoors(wid) { for (var i = 0; i < wp[wid].length; i++) if (wp[wid][i].jamb) return true; return false; }
 
-    // RIGHT (outer): post-to-post for back gable — if it has doors
-    if (wallHasDoors('back') && wp.back.length > 2) {
-        for (var i = 0; i < wp.back.length - 1; i++)
-            dV(TY(wp.back[i].ft * 12), TY(wp.back[i + 1].ft * 12), rtEdge + DIM + 22, F((wp.back[i + 1].ft - wp.back[i].ft) * 12));
-    }
+    // Post-to-post dims: offset from BUILDING edges (not shed bounding box)
+    var D = 22; // dim offset from building wall
 
-    // BOTTOM (outer): post-to-post for right eave — if it has doors
+    // TOP: left eave post-to-post — always
+    for (var i = 0; i < wp.left.length - 1; i++)
+        dH(TX(wp.left[i].ft * 12), TX(wp.left[i + 1].ft * 12), TY(0) - D, F((wp.left[i + 1].ft - wp.left[i].ft) * 12));
+
+    // BOTTOM: right eave post-to-post — if it has doors
     if (wallHasDoors('right') && wp.right.length > 2) {
         for (var i = 0; i < wp.right.length - 1; i++)
-            dH(TX(wp.right[i].ft * 12), TX(wp.right[i + 1].ft * 12), botEdge + DIM + 22, F((wp.right[i + 1].ft - wp.right[i].ft) * 12));
+            dH(TX(wp.right[i].ft * 12), TX(wp.right[i + 1].ft * 12), TY(bwIn) + D + 10, F((wp.right[i + 1].ft - wp.right[i].ft) * 12));
     }
 
-    // Shed width dims — on the shed's own outer side
+    // LEFT: front gable post-to-post — always
+    for (var i = 0; i < wp.front.length - 1; i++)
+        dV(TY(wp.front[i].ft * 12), TY(wp.front[i + 1].ft * 12), TX(0) - D, F((wp.front[i + 1].ft - wp.front[i].ft) * 12));
+
+    // RIGHT: back gable post-to-post — if it has doors
+    if (wallHasDoors('back') && wp.back.length > 2) {
+        for (var i = 0; i < wp.back.length - 1; i++)
+            dVr(TY(wp.back[i].ft * 12), TY(wp.back[i + 1].ft * 12), TX(blIn) + D, F((wp.back[i + 1].ft - wp.back[i].ft) * 12));
+    }
+
+    // OVERALL dims: offset from outermost bounding edge
+    var botEdge = TY(Math.max(bwIn, mxY));
+    var rtEdge = TX(Math.max(blIn, mxX));
+    dH(TX(0), TX(blIn), botEdge + D + 6, bl + "'", true, 8);
+    dV(TY(0), TY(bwIn), rtEdge + D + 6, bw + "'", true, 8);
+
+    // Shed width dims
     shedCfgs.forEach(function(sc) {
         if (!sc.wall || !sc.w) return;
         var sWI = sc.w * 12;
-        if (sc.wall === 'left') dV(TY(-sWI), TY(0), leftEdge - DIM, sc.w + "'");
-        else if (sc.wall === 'right') dV(TY(bwIn), TY(bwIn + sWI), rtEdge + DIM + 16, sc.w + "'");
-        else if (sc.wall === 'front') dH(TX(-sWI), TX(0), topEdge - DIM, sc.w + "'");
-        else dH(TX(blIn), TX(blIn + sWI), botEdge + DIM + 16, sc.w + "'");
+        if (sc.wall === 'left') dV(TY(-sWI), TY(0), TX(0) - D - 14, sc.w + "'");
+        else if (sc.wall === 'right') dVr(TY(bwIn), TY(bwIn + sWI), rtEdge + D + 6 + 14, sc.w + "'");
+        else if (sc.wall === 'front') dH(TX(-sWI), TX(0), TY(0) - D - 14, sc.w + "'");
+        else dH(TX(blIn), TX(blIn + sWI), botEdge + D + 6 + 14, sc.w + "'");
     });
 
     // Legend
