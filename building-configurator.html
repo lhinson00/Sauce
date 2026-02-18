@@ -744,6 +744,7 @@ function buildQuoteGenerator(overlay, Q) {
 
     // Shed configuration state — starts empty, salesman adds via UI
     const shedConfigs = [];
+    window._shedConfigs = shedConfigs;
 
     const inputStyle = 'padding:4px 6px;background:#f4f6f8;border:1px solid #e8ecf2;border-radius:5px;color:#d4a843;font-size:10px;font-family:"Outfit",monospace;width:55px;text-align:center;outline:none;';
     const selStyle = 'padding:4px 6px;background:#f4f6f8;border:1px solid #e8ecf2;border-radius:5px;color:#1a2744;font-size:10px;font-family:"Inter",sans-serif;width:100%;';
@@ -2943,6 +2944,92 @@ window._generatePostLayout = function() {
             else if (d.wall === 'back') { doc.line(tx(blIn), ty(dL), tx(blIn), ty(dR)); }
         });
 
+        // Draw side sheds
+        const shedCfgs = window._shedConfigs || [];
+        shedCfgs.forEach(sc => {
+            if (!sc.wall || !sc.w || !sc.l) return;
+            const sW = sc.w * 12, sL = sc.l * 12;
+            const isEave = (sc.wall === 'left' || sc.wall === 'right');
+            const mainWallLen = isEave ? bl : bw;
+            const mainWallLenIn = mainWallLen * 12;
+            const shedLen = Math.min(sc.l, mainWallLen) * 12;
+
+            // Shed offset
+            let shedOffIn = 0;
+            const shedPos = sc.position || 'center';
+            if (shedLen >= mainWallLenIn) { shedOffIn = 0; }
+            else if (shedPos === 'start') { shedOffIn = 0; }
+            else if (shedPos === 'end') { shedOffIn = mainWallLenIn - shedLen; }
+            else if (shedPos === 'custom') { shedOffIn = Math.max(0, Math.min((sc.offsetFt || 0) * 12, mainWallLenIn - shedLen)); }
+            else { shedOffIn = (mainWallLenIn - shedLen) / 2; }
+
+            // Shed outline rectangle
+            doc.setDrawColor(184, 134, 11);
+            doc.setLineWidth(1);
+            doc.setLineDashPattern([4, 2]);
+            let sx, sy, srw, srh;
+            if (sc.wall === 'left') {
+                sx = tx(shedOffIn); sy = ty(-sW); srw = shedLen * scale; srh = sW * scale;
+            } else if (sc.wall === 'right') {
+                sx = tx(shedOffIn); sy = ty(bwIn); srw = shedLen * scale; srh = sW * scale;
+            } else if (sc.wall === 'front') {
+                sx = tx(-sW); sy = ty(shedOffIn); srw = sW * scale; srh = shedLen * scale;
+            } else {
+                sx = tx(blIn); sy = ty(shedOffIn); srw = sW * scale; srh = shedLen * scale;
+            }
+            doc.rect(sx, sy, srw, srh);
+            doc.setLineDashPattern([]);
+
+            // Shed label
+            doc.setFontSize(6);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(184, 134, 11);
+            const sLabel = sc.type === 'gable' ? 'Gable Ext' : sc.type === 'wrap' ? 'Wrap' : 'Lean-to';
+            doc.text(sLabel + ' ' + sc.w + "'x" + sc.l + "'", sx + srw / 2, sy + srh / 2 + 3, { align: 'center' });
+            doc.setTextColor(50, 50, 50);
+
+            // Shed outer posts
+            const sPS = sc.type === 'gable' ? (sc.gablePS || 10) : (Q.postSpacing || 10);
+            const numShedBays = Math.max(1, Math.floor(sc.l / sPS));
+            const shedPosts = [];
+            for (let i = 0; i <= numShedBays; i++) {
+                shedPosts.push(shedOffIn + i * (shedLen / numShedBays));
+            }
+
+            // Draw shed posts
+            if (sc.wall === 'left') {
+                shedPosts.forEach(p => drawPost(p, -sW, false));
+            } else if (sc.wall === 'right') {
+                shedPosts.forEach(p => drawPost(p, bwIn + sW, false));
+            } else if (sc.wall === 'front') {
+                shedPosts.forEach(p => drawPost(-sW, p, false));
+            } else {
+                shedPosts.forEach(p => drawPost(blIn + sW, p, false));
+            }
+
+            // Shed width dimension
+            doc.setDrawColor(184, 134, 11);
+            doc.setLineWidth(0.3);
+            doc.setFontSize(6);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(150, 120, 40);
+            if (sc.wall === 'left') {
+                const midZ = shedOffIn + shedLen / 2;
+                drawDimLine(tx(midZ), ty(0), tx(midZ), ty(-sW), inToFrac(sW), 'left');
+            } else if (sc.wall === 'right') {
+                const midZ = shedOffIn + shedLen / 2;
+                drawDimLine(tx(midZ), ty(bwIn), tx(midZ), ty(bwIn + sW), inToFrac(sW), 'right');
+            } else if (sc.wall === 'front') {
+                const midX = shedOffIn + shedLen / 2;
+                drawDimLine(tx(0), ty(midX), tx(-sW), ty(midX), inToFrac(sW), 'top');
+            } else {
+                const midX = shedOffIn + shedLen / 2;
+                drawDimLine(tx(blIn), ty(midX), tx(blIn + sW), ty(midX), inToFrac(sW), 'bottom');
+            }
+            doc.setTextColor(50, 50, 50);
+            doc.setDrawColor(80, 80, 80);
+        });
+
         // Dimension lines
         doc.setDrawColor(80, 80, 80);
         doc.setLineWidth(0.4);
@@ -3101,6 +3188,29 @@ window._generatePostLayout = function() {
                 const wCfg = WALLS.find(w => w.id === d.wall);
                 const wallLabel = wCfg ? wCfg.label : d.wall;
                 doc.text(d.w + "' x " + d.h + "' " + (d.type === 'garage' ? 'Garage' : d.type === 'barn' ? 'Barn' : 'Walk') + '  —  ' + wallLabel + '  @  ' + (d.offset || 0) + "' from corner", margin + 20, curY);
+                curY += 12;
+            });
+        }
+
+        // Shed schedule
+        if (shedCfgs.length > 0) {
+            curY += 12;
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(10);
+            doc.text('Side Shed Schedule', margin, curY); curY += 16;
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'normal');
+            shedCfgs.forEach(sc => {
+                const wCfg = WALLS.find(w => w.id === sc.wall);
+                const wallLabel = wCfg ? wCfg.label : sc.wall;
+                const typeLabel = sc.type === 'gable' ? 'Gable Extension' : sc.type === 'wrap' ? 'Wrap-Around' : 'Lean-To';
+                const posLabel = sc.position === 'start' ? 'Start' : sc.position === 'end' ? 'End' : sc.position === 'custom' ? (sc.offsetFt || 0) + "' offset" : 'Centered';
+                let details = typeLabel + '  ' + sc.w + "' x " + sc.l + "'  —  " + wallLabel + '  —  ' + posLabel;
+                if (sc.type === 'leanto' || sc.type === 'wrap') {
+                    details += '  |  Pitch: ' + (sc.ltPitch || 1) + '/12';
+                    if (sc.dropFt > 0) details += '  Drop: ' + sc.dropFt + "'";
+                }
+                doc.text(details, margin + 20, curY);
                 curY += 12;
             });
         }
