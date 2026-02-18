@@ -2771,309 +2771,397 @@ function buildQuoteGenerator(overlay, Q) {
 
 <script>
 window._generatePostLayout = function() {
-    const Q = window._Q;
-    const WALLS = window._WALLS;
-    const allDoors = window._allDoors;
-    const shedCfgs = window._shedConfigs || [];
+    var Q = window._Q, WALLS = window._WALLS, allDoors = window._allDoors, shedCfgs = window._shedConfigs || [];
     if (!Q) { alert('Please configure a building first.'); return; }
-    const { jsPDF } = window.jspdf;
-    if (!jsPDF) { alert('PDF library not loaded. Please refresh.'); return; }
+    var J = window.jspdf && window.jspdf.jsPDF;
+    if (!J) { alert('PDF library not loaded.'); return; }
 
-    const bw = Q.w, bl = Q.l, bh = Q.h, pitch = Q.pitch || 4;
-    const truss = Q.truss || 'Wood';
-    const postSize = Q.postSize || '6x6';
-    const jobName = Q.jobName || document.getElementById('cfgJobName')?.value || '';
-    const girt = 1.5;
-    const offset = truss.toLowerCase().includes('wood') ? girt : 0;
-    const bwIn = bw * 12, blIn = bl * 12;
-    const frameW = bwIn - 2 * offset, frameL = blIn - 2 * offset;
+    var bw = Q.w, bl = Q.l, bh = Q.h, pitch = Q.pitch || 4;
+    var truss = Q.truss || 'Wood', postSize = Q.postSize || '6x6';
+    var jobName = Q.jobName || (document.getElementById('cfgJobName') || {}).value || '';
+    var girtOff = truss.toLowerCase().indexOf('wood') >= 0 ? 1.5 : 0;
+    var bwIn = bw * 12, blIn = bl * 12;
+    var frameW = bwIn - 2 * girtOff, frameL = blIn - 2 * girtOff;
+    var WL = { left:'Left Eave', right:'Right Eave', front:'Front Gable', back:'Back Gable' };
 
-    function inToFrac(val) {
-        var tot = Math.abs(val);
-        var ft = Math.floor(tot / 12), rem = tot - ft * 12;
-        var wh = Math.floor(rem), frac = rem - wh, s16 = Math.round(frac * 16);
-        if (s16 >= 16) { wh++; s16 = 0; }
-        if (wh >= 12) { ft++; wh = 0; }
-        var fs = '';
-        if (s16 > 0) {
-            if (s16 % 8 === 0) fs = ' ' + (s16/8) + '/2';
-            else if (s16 % 4 === 0) fs = ' ' + (s16/4) + '/4';
-            else if (s16 % 2 === 0) fs = ' ' + (s16/2) + '/8';
-            else fs = ' ' + s16 + '/16';
+    // ===== FRACTION FORMATTER =====
+    function F(v) {
+        var t = Math.abs(v), ft = Math.floor(t/12), r = t - ft*12, w = Math.floor(r), f = r-w, s = Math.round(f*16);
+        if (s>=16){w++;s=0;} if(w>=12){ft++;w=0;}
+        var fs='';
+        if(s>0){if(s%8===0)fs=' '+s/8+'/2';else if(s%4===0)fs=' '+s/4+'/4';else if(s%2===0)fs=' '+s/2+'/8';else fs=' '+s+'/16';}
+        if(ft>0&&w===0&&!fs)return ft+"'";
+        if(ft>0)return ft+"'-"+w+fs+'"';
+        return w+fs+'"';
+    }
+
+    // ===== MAIN WALL POSTS =====
+    function getWP(wid) {
+        var wCfg=null,isE=(wid==='left'||wid==='right');
+        for(var i=0;i<WALLS.length;i++)if(WALLS[i].id===wid)wCfg=WALLS[i];
+        var wLen=isE?bl:bw, ps=wCfg?wCfg.postSpacing:(Q.postSpacing||10);
+        var wd=[]; for(var i=0;i<allDoors.length;i++)if(allDoors[i].wall===wid)wd.push(allDoors[i]);
+        if(!isE&&wCfg&&wCfg.encl==='open')return[];
+        var posts=[],nB=Math.floor(wLen/ps);
+        for(var i=0;i<=nB;i++){
+            var p=i*(wLen/nB),skip=false;
+            for(var j=0;j<wd.length;j++){var dL=wd[j].offset||0;if(p>dL+0.25&&p<dL+wd[j].w-0.25)skip=true;}
+            if(!skip)posts.push({ft:p,jamb:false});
         }
-        if (ft > 0 && wh === 0 && fs === '') return ft + "'";
-        if (ft > 0) return ft + "'-" + wh + fs + '"';
-        return wh + fs + '"';
-    }
-
-    function getWallPosts(wallId) {
-        var wCfg = WALLS.find(function(w){return w.id===wallId;});
-        var isEave = (wallId === 'left' || wallId === 'right');
-        var wallLen = isEave ? bl : bw;
-        var ps = wCfg ? wCfg.postSpacing : (Q.postSpacing || 10);
-        var wd = allDoors.filter(function(d){return d.wall===wallId;});
-        if (!isEave && wCfg && wCfg.encl === 'open') return [];
-        function insideDoor(posFt) {
-            for (var j = 0; j < wd.length; j++) {
-                var dL = wd[j].offset || 0, dR = dL + wd[j].w;
-                if (posFt > dL + 0.25 && posFt < dR - 0.25) return true;
-            }
-            return false;
+        for(var i=0;i<wd.length;i++){
+            var es=[wd[i].offset||0,(wd[i].offset||0)+wd[i].w];
+            for(var e=0;e<2;e++){var ex=false;for(var k=0;k<posts.length;k++)if(Math.abs(posts[k].ft-es[e])<0.2)ex=true;
+                if(!ex)posts.push({ft:es[e],jamb:true});}
         }
-        var posts = [];
-        var numBays = Math.floor(wallLen / ps);
-        for (var i = 0; i <= numBays; i++) {
-            var posFt = i * (wallLen / numBays);
-            if (!insideDoor(posFt)) posts.push({ ft: posFt, isJamb: false });
-        }
-        wd.forEach(function(d) {
-            var dL = d.offset || 0, dR = dL + d.w;
-            [dL, dR].forEach(function(posFt) {
-                if (!posts.some(function(p){return Math.abs(p.ft - posFt) < 0.2;}))
-                    posts.push({ ft: posFt, isJamb: true });
-            });
-        });
-        posts.sort(function(a,b){return a.ft-b.ft;});
-        return posts;
+        posts.sort(function(a,b){return a.ft-b.ft;}); return posts;
     }
+    var wp={}; ['left','right','front','back'].forEach(function(w){wp[w]=getWP(w);});
 
-    var wallPosts = {};
-    ['left','right','front','back'].forEach(function(wid){ wallPosts[wid] = getWallPosts(wid); });
+    // ===== COLLECT ALL DRAWING ELEMENTS =====
+    // Coordinate system: x = along building length (0..blIn), y = along building width (0..bwIn)
+    // x increases left-to-right on page, y increases top-to-bottom
+    var posts = []; // {x,y,jamb}
+    var rects = []; // {x,y,w,h,lbl}
+    var shedDims = []; // {wall, width} for shed width callouts
 
-    // Wall label map — FLIPPED so drawing left=Front Gable, right=Back Gable
-    var wallLabel = { left: 'Left Eave', right: 'Right Eave', front: 'Front Gable', back: 'Back Gable' };
+    // Main building posts
+    wp.left.forEach(function(p){posts.push({x:p.ft*12, y:0, jamb:p.jamb});});
+    wp.right.forEach(function(p){posts.push({x:p.ft*12, y:bwIn, jamb:p.jamb});});
+    wp.front.forEach(function(p){posts.push({x:0, y:p.ft*12, jamb:p.jamb});});
+    wp.back.forEach(function(p){posts.push({x:blIn, y:p.ft*12, jamb:p.jamb});});
 
-    var doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter' });
-    var pw2 = 792, ph2 = 612, mg2 = 40;
-
-    // Shed padding
-    var padT = 0, padB = 0, padL = 0, padR = 0;
-    shedCfgs.forEach(function(sc) {
-        if (!sc.wall || !sc.w) return;
-        var sW = sc.w * 12;
-        if (sc.wall === 'left') padT = Math.max(padT, sW);
-        if (sc.wall === 'right') padB = Math.max(padB, sW);
-        if (sc.wall === 'front') padL = Math.max(padL, sW);
-        if (sc.wall === 'back') padR = Math.max(padR, sW);
-    });
-
-    var dimGap = 90;
-    var dA = { l: mg2+dimGap, r: pw2-mg2-dimGap, t: mg2+50+dimGap, b: ph2-mg2-20-dimGap };
-    var boundW = blIn+padL+padR, boundH = bwIn+padT+padB;
-    var sc2 = Math.min((dA.r-dA.l)/boundW, (dA.b-dA.t)/boundH) * 0.82;
-    var bx0 = (dA.l+dA.r)/2 - (blIn*sc2)/2 + (padL-padR)*sc2/2;
-    var by0 = (dA.t+dA.b)/2 - (bwIn*sc2)/2 + (padT-padB)*sc2/2;
-    function tx(i){return bx0+i*sc2;} function ty(i){return by0+i*sc2;}
-
-    // TITLE
-    doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(0);
-    doc.text('POST LAYOUT', mg2, mg2+16);
-    doc.setFont('helvetica','normal'); doc.setFontSize(8);
-    var info = [];
-    if (jobName) info.push(jobName);
-    info.push(bw+"' x "+bl+"' x "+bh+"'", pitch+'/12', truss+' Truss', postSize+' Posts');
-    doc.text(info.join('   |   '), mg2, mg2+30);
-    doc.text(new Date().toLocaleDateString(), pw2-mg2, mg2+16, {align:'right'});
-    doc.setDrawColor(0); doc.setLineWidth(0.4);
-    doc.line(mg2, mg2+38, pw2-mg2, mg2+38);
-
-    // BUILDING OUTLINE
-    doc.setDrawColor(0); doc.setLineWidth(1.2);
-    doc.rect(tx(0), ty(0), blIn*sc2, bwIn*sc2);
-
-    // POSTS
-    var pr2 = 3.5;
-    function drawPost(xIn, yIn, isJamb) {
-        var px = tx(xIn), py = ty(yIn);
-        doc.setDrawColor(0); doc.setLineWidth(0.5);
-        if (isJamb) { doc.setFillColor(40); doc.rect(px-pr2,py-pr2,pr2*2,pr2*2,'F'); }
-        else { doc.setFillColor(255); doc.rect(px-pr2,py-pr2,pr2*2,pr2*2,'FD');
-            doc.setLineWidth(0.3); doc.line(px-pr2,py-pr2,px+pr2,py+pr2); doc.line(px+pr2,py-pr2,px-pr2,py+pr2); }
-    }
-
-    wallPosts.left.forEach(function(p){drawPost(p.ft*12,0,p.isJamb);});
-    wallPosts.right.forEach(function(p){drawPost(p.ft*12,bwIn,p.isJamb);});
-    wallPosts.front.forEach(function(p){drawPost(0,p.ft*12,p.isJamb);});
-    wallPosts.back.forEach(function(p){drawPost(blIn,p.ft*12,p.isJamb);});
-
-    // DOORS
-    allDoors.filter(function(d){return d.wall;}).forEach(function(d) {
-        var dL = (d.offset||0)*12, dR = dL+d.w*12, dMid = (dL+dR)/2;
-        var sz = d.w+"'x"+d.h+"'";
-        var tp = d.type==='garage'?'GARAGE':d.type==='barn'?'BARN':'WALK';
-        doc.setDrawColor(0); doc.setLineWidth(3);
-        if (d.wall==='left') {
-            doc.line(tx(dL),ty(0),tx(dR),ty(0));
-            doc.setFontSize(7); doc.setFont('helvetica','bold');
-            doc.text(sz+' '+tp, tx(dMid), ty(0)+14, {align:'center'});
-        } else if (d.wall==='right') {
-            doc.line(tx(dL),ty(bwIn),tx(dR),ty(bwIn));
-            doc.setFontSize(7); doc.setFont('helvetica','bold');
-            doc.text(sz+' '+tp, tx(dMid), ty(bwIn)-9, {align:'center'});
-        } else if (d.wall==='front') {
-            doc.line(tx(0),ty(dL),tx(0),ty(dR));
-            doc.setFontSize(7); doc.setFont('helvetica','bold');
-            doc.text(sz+' '+tp, tx(0)+14, ty(dMid)+2);
-        } else if (d.wall==='back') {
-            doc.line(tx(blIn),ty(dL),tx(blIn),ty(dR));
-            doc.setFontSize(7); doc.setFont('helvetica','bold');
-            doc.text(sz+' '+tp, tx(blIn)-14, ty(dMid)+2, {align:'right'});
-        }
-    });
-
-    // SHEDS
-    shedCfgs.forEach(function(sc) {
-        if (!sc.wall||!sc.w||!sc.l) return;
-        var isEave=(sc.wall==='left'||sc.wall==='right');
-        var mainIn=(isEave?bl:bw)*12;
-        var sW=sc.w*12, sL=Math.min(sc.l*12,mainIn);
-        var sOff=0, sp=sc.position||'center';
-        if(sL>=mainIn)sOff=0; else if(sp==='start')sOff=0; else if(sp==='end')sOff=mainIn-sL;
-        else if(sp==='custom')sOff=Math.max(0,Math.min((sc.offsetFt||0)*12,mainIn-sL));
-        else sOff=(mainIn-sL)/2;
-
-        doc.setDrawColor(0); doc.setLineWidth(0.7);
-        if(sc.wall==='left') doc.rect(tx(sOff),ty(-sW),sL*sc2,sW*sc2);
-        else if(sc.wall==='right') doc.rect(tx(sOff),ty(bwIn),sL*sc2,sW*sc2);
-        else if(sc.wall==='front') doc.rect(tx(-sW),ty(sOff),sW*sc2,sL*sc2);
-        else doc.rect(tx(blIn),ty(sOff),sW*sc2,sL*sc2);
-
-        doc.setFontSize(6); doc.setFont('helvetica','normal'); doc.setTextColor(80);
-        var sLbl=(sc.type==='gable'?'Gable':sc.type==='wrap'?'Wrap':'Lean-to')+' '+sc.w+"'x"+sc.l+"'";
-        if(sc.wall==='left') doc.text(sLbl,tx(sOff+sL/2),ty(-sW/2)+2,{align:'center'});
-        else if(sc.wall==='right') doc.text(sLbl,tx(sOff+sL/2),ty(bwIn+sW/2)+2,{align:'center'});
-        else if(sc.wall==='front') doc.text(sLbl,tx(-sW/2),ty(sOff+sL/2),{align:'center',angle:90});
-        else doc.text(sLbl,tx(blIn+sW/2),ty(sOff+sL/2),{align:'center',angle:90});
-        doc.setTextColor(0);
-
-        var sPS=sc.type==='gable'?(sc.gablePS||10):(Q.postSpacing||10);
-        var nSB=Math.max(1,Math.floor(sc.l/sPS));
-        for(var i=0;i<=nSB;i++){
-            var p=sOff+i*(sL/nSB);
-            if(sc.wall==='left') drawPost(p,-sW,false);
-            else if(sc.wall==='right') drawPost(p,bwIn+sW,false);
-            else if(sc.wall==='front') drawPost(-sW,p,false);
-            else drawPost(blIn+sW,p,false);
-        }
-    });
-
-    // DIMENSIONS
-    doc.setDrawColor(0); doc.setTextColor(0);
-    function dimH(x1,x2,y,label,bold,fs){
-        if(Math.abs(x2-x1)<1)return;
-        doc.setLineWidth(0.3); doc.line(x1,y,x2,y);
-        doc.line(x1,y-3,x1,y+3); doc.line(x2,y-3,x2,y+3);
-        doc.setFont('helvetica',bold?'bold':'normal'); doc.setFontSize(fs||7);
-        doc.text(label,(x1+x2)/2,y-5,{align:'center'});
-    }
-    function dimV(y1,y2,x,label,bold,fs){
-        if(Math.abs(y2-y1)<1)return;
-        doc.setLineWidth(0.3); doc.line(x,y1,x,y2);
-        doc.line(x-3,y1,x+3,y1); doc.line(x-3,y2,x+3,y2);
-        doc.setFont('helvetica',bold?'bold':'normal'); doc.setFontSize(fs||7);
-        doc.text(label,x-6,(y1+y2)/2,{align:'center',angle:90});
-    }
-
-    // Post-to-post: TOP
-    var leftP=wallPosts.left;
-    for(var i=0;i<leftP.length-1;i++){
-        var d=(leftP[i+1].ft-leftP[i].ft)*12;
-        dimH(tx(leftP[i].ft*12),tx(leftP[i+1].ft*12),ty(0)-30,inToFrac(d),false,6.5);
-    }
-
-    // Post-to-post: LEFT (front gable = drawing left)
-    var frontP=wallPosts.front;
-    for(var i=0;i<frontP.length-1;i++){
-        var d=(frontP[i+1].ft-frontP[i].ft)*12;
-        dimV(ty(frontP[i].ft*12),ty(frontP[i+1].ft*12),tx(0)-30,inToFrac(d),false,6.5);
-    }
-
-    // Post-to-post: RIGHT (back gable) — always show if has doors or different posts
-    var backP=wallPosts.back;
-    if(backP.length>2) {
-        for(var i=0;i<backP.length-1;i++){
-            var d=(backP[i+1].ft-backP[i].ft)*12;
-            dimV(ty(backP[i].ft*12),ty(backP[i+1].ft*12),tx(blIn)+22,inToFrac(d),false,6.5);
-        }
-    }
-
-    // Overall
-    dimH(tx(0),tx(blIn),ty(bwIn)+50,bl+"'  LENGTH",true,9);
-    dimV(ty(0),ty(bwIn),tx(blIn)+62,bw+"'  WIDTH",true,9);
-
-    // Shed width
+    // ===== SHED POSTS AND OUTLINES =====
     shedCfgs.forEach(function(sc){
-        if(!sc.wall||!sc.w)return; var sW=sc.w*12;
-        if(sc.wall==='left') dimV(ty(-sW),ty(0),tx(0)-52,sc.w+"'",false,7);
-        else if(sc.wall==='right') dimV(ty(bwIn),ty(bwIn+sW),tx(blIn)+55,sc.w+"'",false,7);
+        if(!sc.wall||!sc.w||!sc.l)return;
+        var isE=(sc.wall==='left'||sc.wall==='right');
+        var mainLen=isE?bl:bw, sLen=Math.min(sc.l,mainLen), sW=sc.w;
+        var sLenIn=sLen*12, sWIn=sW*12;
+        // Offset in inches along wall
+        var off=0,sp=sc.position||'center';
+        if(sLenIn>=mainLen*12)off=0;
+        else if(sp==='start')off=0;
+        else if(sp==='end')off=mainLen*12-sLenIn;
+        else if(sp==='custom')off=Math.max(0,Math.min((sc.offsetFt||0)*12,mainLen*12-sLenIn));
+        else off=(mainLen*12-sLenIn)/2;
+
+        var attachPS = Q.postSpacing||10;
+        for(var i=0;i<WALLS.length;i++)if(WALLS[i].id===sc.wall)attachPS=WALLS[i].postSpacing||attachPS;
+
+        // Helper: generate post line (like addPostLineAligned in 3D)
+        function postLine(fixedAxis, fixedVal, varStart, varLen, spacing, isX) {
+            var nB=Math.max(1,Math.floor(varLen/12/spacing));
+            for(var i=0;i<=nB;i++){
+                var v=varStart+i*(varLen/nB);
+                if(isX) posts.push({x:v, y:fixedVal, jamb:false});
+                else posts.push({x:fixedVal, y:v, jamb:false});
+            }
+        }
+
+        var lbl=(sc.type==='gable'?'Gable Ext':sc.type==='wrap'?'Wrap':'Lean-to')+' '+sW+"'x"+sLen+"'";
+
+        if(sc.type==='leanto'){
+            // Single outer edge of posts
+            if(sc.wall==='left'){
+                rects.push({x:off,y:-sWIn,w:sLenIn,h:sWIn,lbl:lbl});
+                postLine(-sWIn, -sWIn, off, sLenIn, attachPS, true); // y=-sWIn, vary x
+                shedDims.push({wall:'left',w:sWIn});
+            }else if(sc.wall==='right'){
+                rects.push({x:off,y:bwIn,w:sLenIn,h:sWIn,lbl:lbl});
+                postLine(bwIn+sWIn, bwIn+sWIn, off, sLenIn, attachPS, true);
+                shedDims.push({wall:'right',w:sWIn});
+            }else if(sc.wall==='front'){
+                rects.push({x:-sWIn,y:off,w:sWIn,h:sLenIn,lbl:lbl});
+                postLine(-sWIn, -sWIn, off, sLenIn, attachPS, false);
+                shedDims.push({wall:'front',w:sWIn});
+            }else{
+                rects.push({x:blIn,y:off,w:sWIn,h:sLenIn,lbl:lbl});
+                postLine(blIn+sWIn, blIn+sWIn, off, sLenIn, attachPS, false);
+                shedDims.push({wall:'back',w:sWIn});
+            }
+        }else if(sc.type==='gable'){
+            // GABLE EXTENSION: two rows of eave posts, clear span at end
+            var gPS=sc.gablePS||10;
+            var nB=Math.max(1,Math.floor(sW/gPS));
+            if(sc.wall==='left'||sc.wall==='right'){
+                // Extension along x-axis. Eave runs at y=off and y=off+sLenIn
+                var dir=sc.wall==='left'?-1:1;
+                var rx=sc.wall==='left'?-sWIn:blIn;
+                rects.push({x:rx,y:off,w:sWIn,h:sLenIn,lbl:lbl});
+                for(var i=1;i<=nB;i++){ // skip i=0 (attachment wall)
+                    var xp=sc.wall==='left'?-(i*sWIn/nB):blIn+(i*sWIn/nB);
+                    posts.push({x:xp, y:off, jamb:false}); // front eave side
+                    posts.push({x:xp, y:off+sLenIn, jamb:false}); // back eave side
+                }
+                shedDims.push({wall:sc.wall,w:sWIn});
+            }else{
+                var ry=sc.wall==='front'?-sWIn:bwIn;
+                rects.push({x:off,y:ry,w:sLenIn,h:sWIn,lbl:lbl});
+                for(var i=1;i<=nB;i++){
+                    var yp=sc.wall==='front'?-(i*sWIn/nB):bwIn+(i*sWIn/nB);
+                    posts.push({x:off, y:yp, jamb:false});
+                    posts.push({x:off+sLenIn, y:yp, jamb:false});
+                }
+                shedDims.push({wall:sc.wall,w:sWIn});
+            }
+        }else if(sc.type==='wrap'){
+            // WRAP-AROUND: primary leg + wrap leg + hip corner + corner void posts
+            var wrapLeg=(sc.wrapLeg||0);
+            var wrapLegIn=wrapLeg*12;
+            if(sc.wall==='left'||sc.wall==='right'){
+                // Primary leg along eave (x-axis), outer y
+                var outerY=sc.wall==='left'?-sWIn:bwIn+sWIn;
+                rects.push({x:off,y:sc.wall==='left'?-sWIn:bwIn,w:sLenIn,h:sWIn,lbl:lbl});
+                // Primary leg posts
+                postLine(outerY, outerY, off, sLenIn, attachPS, true);
+                shedDims.push({wall:sc.wall,w:sWIn});
+
+                if(wrapLegIn>0){
+                    // Wrap leg along gable (y-axis from corner)
+                    // wrapDir: 'cw' means wrap toward front gable (x=0), 'ccw' means back gable (x=blIn)
+                    var gableX=sc.wrapDir==='cw'?0:blIn;
+                    var gDir=sc.wrapDir==='cw'?-1:1;
+                    var wrapRx=sc.wrapDir==='cw'?-wrapLegIn:blIn;
+                    rects.push({x:wrapRx,y:sc.wall==='left'?-sWIn:bwIn,w:wrapLegIn,h:sWIn,lbl:''});
+
+                    // Wrap leg outer posts — runs along the width of building (y-axis)
+                    // In 3D: addPostLineAligned(0, oZ, false, Q.w, wrapPS) which puts posts across building width
+                    // But the wrap leg rect is perpendicular. The outer posts run at outerY, from gableX outward
+                    // Actually from 3D: the wrap leg has posts along building width at oZ (outer edge)
+                    // In our 2D coord: wrap leg runs along x from gableX outward. Posts at outerY.
+                    var wrapPS=attachPS;
+                    var nW=Math.max(1,Math.floor(wrapLeg/wrapPS));
+                    for(var i=0;i<=nW;i++){
+                        var wx=gableX+gDir*(i*wrapLegIn/nW);
+                        posts.push({x:wx,y:outerY,jamb:false});
+                    }
+                    // Hip corner post
+                    posts.push({x:gableX+gDir*wrapLegIn, y:outerY, jamb:false});
+                    // Corner void posts — fill the L-corner
+                    var cnB=Math.max(1,Math.floor(sW/attachPS));
+                    // Along eave outer X, from bldg corner toward gable outer
+                    for(var ci=1;ci<cnB;ci++){
+                        var cy=(sc.wall==='left'?0:bwIn)+(sc.wall==='left'?-1:1)*(ci*sWIn/cnB);
+                        posts.push({x:gableX+gDir*wrapLegIn, y:cy, jamb:false});
+                    }
+                    // Along gable outer Z, from bldg corner toward eave outer
+                    for(var ci=1;ci<cnB;ci++){
+                        var cx=gableX+gDir*(ci*sWIn/cnB);
+                        posts.push({x:cx, y:outerY, jamb:false});
+                    }
+                }
+            }else{
+                // Primary on gable wall
+                var outerX=sc.wall==='front'?-sWIn:blIn+sWIn;
+                rects.push({x:sc.wall==='front'?-sWIn:blIn,y:off,w:sWIn,h:sLenIn,lbl:lbl});
+                postLine(outerX, outerX, off, sLenIn, attachPS, false);
+                shedDims.push({wall:sc.wall,w:sWIn});
+
+                if(wrapLegIn>0){
+                    var eaveY=sc.wrapDir==='cw'?0:bwIn;
+                    var eDir=sc.wrapDir==='cw'?-1:1;
+                    var wrapRy=sc.wrapDir==='cw'?-wrapLegIn:bwIn;
+                    rects.push({x:sc.wall==='front'?-sWIn:blIn,y:wrapRy,w:sWIn,h:wrapLegIn,lbl:''});
+                    var wrapPS=attachPS;
+                    var nW=Math.max(1,Math.floor(wrapLeg/wrapPS));
+                    for(var i=0;i<=nW;i++){
+                        var wy=eaveY+eDir*(i*wrapLegIn/nW);
+                        posts.push({x:outerX,y:wy,jamb:false});
+                    }
+                    posts.push({x:outerX,y:eaveY+eDir*wrapLegIn,jamb:false});
+                    var cnB=Math.max(1,Math.floor(sW/attachPS));
+                    for(var ci=1;ci<cnB;ci++){
+                        var cx=(sc.wall==='front'?0:blIn)+(sc.wall==='front'?-1:1)*(ci*sWIn/cnB);
+                        posts.push({x:cx,y:eaveY+eDir*wrapLegIn,jamb:false});
+                    }
+                    for(var ci=1;ci<cnB;ci++){
+                        var cy=eaveY+eDir*(ci*sWIn/cnB);
+                        posts.push({x:outerX,y:cy,jamb:false});
+                    }
+                }
+            }
+        }
     });
 
-    // WALL LABELS — far out
-    doc.setFontSize(8); doc.setFont('helvetica','bold'); doc.setTextColor(100);
-    doc.text('LEFT EAVE', tx(blIn/2), ty(0)-55, {align:'center'});
-    doc.text('RIGHT EAVE', tx(blIn/2), ty(bwIn)+68, {align:'center'});
-    doc.text('FRONT GABLE', tx(0)-70, ty(bwIn/2), {align:'center',angle:90});
-    doc.text('BACK GABLE', tx(blIn)+85, ty(bwIn/2), {align:'center',angle:90});
+    // ===== BOUNDING BOX =====
+    var mnX=0,mxX=blIn,mnY=0,mxY=bwIn;
+    rects.forEach(function(r){mnX=Math.min(mnX,r.x);mxX=Math.max(mxX,r.x+r.w);mnY=Math.min(mnY,r.y);mxY=Math.max(mxY,r.y+r.h);});
+    posts.forEach(function(p){mnX=Math.min(mnX,p.x);mxX=Math.max(mxX,p.x);mnY=Math.min(mnY,p.y);mxY=Math.max(mxY,p.y);});
+
+    // ===== PDF SETUP =====
+    var doc=new J({orientation:'landscape',unit:'pt',format:'letter'});
+    var PW=792,PH=612,M=36;
+    // Layout zones — fixed pixel offsets from building edge
+    var D1=28;  // tier 1: post-to-post dim lines
+    var D2=56;  // tier 2: overall building dim lines
+    var D3=76;  // tier 3: wall labels
+    // Drawing area: building + sheds centered, with D3 clearance all around
+    var pad=D3+14;
+    var aL=M+pad, aR=PW-M-pad, aT=M+44+pad, aB=PH-M-16-pad;
+    var totW=mxX-mnX, totH=mxY-mnY;
+    var sc=Math.min((aR-aL)/totW,(aB-aT)/totH)*0.92;
+    var cx2=(aL+aR)/2, cy2=(aT+aB)/2;
+    var ox=cx2-((mnX+mxX)/2)*sc, oy=cy2-((mnY+mxY)/2)*sc;
+    function TX(i){return ox+i*sc;} function TY(i){return oy+i*sc;}
+
+    // ===== TITLE BAR =====
+    doc.setFont('helvetica','bold');doc.setFontSize(14);doc.setTextColor(0);
+    doc.text('POST LAYOUT',M,M+16);
+    doc.setFont('helvetica','normal');doc.setFontSize(8);
+    var inf=[]; if(jobName)inf.push(jobName);
+    inf.push(bw+"' x "+bl+"' x "+bh+"'",pitch+'/12',truss+' Truss',postSize+' Posts');
+    doc.text(inf.join('   |   '),M,M+30);
+    doc.text(new Date().toLocaleDateString(),PW-M,M+16,{align:'right'});
+    doc.setDrawColor(0);doc.setLineWidth(0.4);doc.line(M,M+38,PW-M,M+38);
+
+    // ===== DRAW BUILDING =====
+    doc.setDrawColor(0);doc.setLineWidth(1.5);
+    doc.rect(TX(0),TY(0),blIn*sc,bwIn*sc);
+
+    // ===== DRAW SHED OUTLINES =====
+    doc.setLineWidth(0.7);
+    rects.forEach(function(r){
+        doc.rect(TX(r.x),TY(r.y),r.w*sc,r.h*sc);
+        if(r.lbl){
+            doc.setFontSize(6);doc.setFont('helvetica','normal');doc.setTextColor(80);
+            doc.text(r.lbl,TX(r.x)+r.w*sc/2,TY(r.y)+r.h*sc/2+2,{align:'center'});
+            doc.setTextColor(0);
+        }
+    });
+
+    // ===== DRAW ALL POSTS =====
+    var PR=3;
+    function dP(px,py,jm){
+        doc.setDrawColor(0);doc.setLineWidth(0.5);
+        if(jm){doc.setFillColor(40);doc.rect(px-PR,py-PR,PR*2,PR*2,'F');}
+        else{doc.setFillColor(255);doc.rect(px-PR,py-PR,PR*2,PR*2,'FD');
+            doc.setLineWidth(0.25);doc.line(px-PR,py-PR,px+PR,py+PR);doc.line(px+PR,py-PR,px-PR,py+PR);}
+    }
+    posts.forEach(function(p){dP(TX(p.x),TY(p.y),p.jamb);});
+
+    // ===== DRAW DOORS =====
+    allDoors.filter(function(d){return d.wall;}).forEach(function(d){
+        var dL=(d.offset||0)*12,dR=dL+d.w*12,dM=(dL+dR)/2;
+        var sz=d.w+"'x"+d.h+"' "+(d.type==='garage'?'GARAGE':d.type==='barn'?'BARN':'WALK');
+        doc.setDrawColor(0);doc.setLineWidth(3);
+        doc.setFontSize(6);doc.setFont('helvetica','bold');doc.setTextColor(0);
+        if(d.wall==='left'){doc.line(TX(dL),TY(0),TX(dR),TY(0));doc.text(sz,TX(dM),TY(0)+12,{align:'center'});}
+        else if(d.wall==='right'){doc.line(TX(dL),TY(bwIn),TX(dR),TY(bwIn));doc.text(sz,TX(dM),TY(bwIn)-7,{align:'center'});}
+        else if(d.wall==='front'){doc.line(TX(0),TY(dL),TX(0),TY(dR));doc.text(sz,TX(0)+10,TY(dM)+2);}
+        else if(d.wall==='back'){doc.line(TX(blIn),TY(dL),TX(blIn),TY(dR));doc.text(sz,TX(blIn)-10,TY(dM)+2,{align:'right'});}
+    });
+
+    // ===== DIMENSION LINES =====
+    doc.setDrawColor(0);doc.setTextColor(0);
+    function dH(x1,x2,y,lbl,bld,fs){
+        if(Math.abs(x2-x1)<2)return;
+        doc.setLineWidth(0.3);doc.line(x1,y,x2,y);
+        doc.line(x1,y-3,x1,y+3);doc.line(x2,y-3,x2,y+3);
+        doc.setFont('helvetica',bld?'bold':'normal');doc.setFontSize(fs||6.5);
+        doc.text(lbl,(x1+x2)/2,y-4,{align:'center'});
+    }
+    function dV(y1,y2,x,lbl,bld,fs){
+        if(Math.abs(y2-y1)<2)return;
+        doc.setLineWidth(0.3);doc.line(x,y1,x,y2);
+        doc.line(x-3,y1,x+3,y1);doc.line(x-3,y2,x+3,y2);
+        doc.setFont('helvetica',bld?'bold':'normal');doc.setFontSize(fs||6.5);
+        doc.text(lbl,x-5,(y1+y2)/2,{align:'center',angle:90});
+    }
+
+    // TIER 1: Post-to-post — TOP (left eave)
+    for(var i=0;i<wp.left.length-1;i++)
+        dH(TX(wp.left[i].ft*12),TX(wp.left[i+1].ft*12),TY(0)-D1,F((wp.left[i+1].ft-wp.left[i].ft)*12),false,6);
+
+    // TIER 1: Post-to-post — LEFT (front gable)
+    for(var i=0;i<wp.front.length-1;i++)
+        dV(TY(wp.front[i].ft*12),TY(wp.front[i+1].ft*12),TX(0)-D1,F((wp.front[i+1].ft-wp.front[i].ft)*12),false,6);
+
+    // TIER 1: Post-to-post — RIGHT (back gable) if more than corner posts
+    if(wp.back.length>2) for(var i=0;i<wp.back.length-1;i++)
+        dV(TY(wp.back[i].ft*12),TY(wp.back[i+1].ft*12),TX(blIn)+D1,F((wp.back[i+1].ft-wp.back[i].ft)*12),false,6);
+
+    // TIER 2: Overall building — BOTTOM and RIGHT
+    dH(TX(0),TX(blIn),TY(bwIn)+D2,bl+"'",true,9);
+    dV(TY(0),TY(bwIn),TX(blIn)+D2,bw+"'",true,9);
+
+    // Shed width dims — place on whichever side the shed is
+    shedDims.forEach(function(sd){
+        if(sd.wall==='left') dV(TY(-sd.w),TY(0),TX(0)-D2,F(sd.w),false,6);
+        else if(sd.wall==='right') dV(TY(bwIn),TY(bwIn+sd.w),TX(blIn)+D2+18,F(sd.w),false,6);
+        else if(sd.wall==='front') dH(TX(-sd.w),TX(0),TY(0)-D2,F(sd.w),false,6);
+        else if(sd.wall==='back') dH(TX(blIn),TX(blIn+sd.w),TY(bwIn)+D2+18,F(sd.w),false,6);
+    });
+
+    // ===== WALL LABELS ===== (outermost — D3 from building edge)
+    doc.setFontSize(8);doc.setFont('helvetica','bold');doc.setTextColor(120);
+    doc.text('LEFT EAVE',TX(blIn/2),TY(0)-D3,{align:'center'});
+    doc.text('RIGHT EAVE',TX(blIn/2),TY(bwIn)+D3+6,{align:'center'});
+    doc.text('FRONT GABLE',TX(0)-D3,TY(bwIn/2),{align:'center',angle:90});
+    doc.text('BACK GABLE',TX(blIn)+D3,TY(bwIn/2),{align:'center',angle:90});
     doc.setTextColor(0);
 
-    // LEGEND
-    var lgY2=ph2-mg2+2;
-    doc.setFontSize(5.5); doc.setFont('helvetica','normal');
-    doc.setFillColor(255); doc.setDrawColor(0); doc.setLineWidth(0.4);
-    doc.rect(mg2,lgY2-3,5,5,'FD');
-    doc.setLineWidth(0.2); doc.line(mg2,lgY2-3,mg2+5,lgY2+2); doc.line(mg2+5,lgY2-3,mg2,lgY2+2);
-    doc.text('Post',mg2+8,lgY2+1);
-    doc.setFillColor(40); doc.rect(mg2+28,lgY2-3,5,5,'F');
-    doc.text('Jamb',mg2+36,lgY2+1);
+    // ===== LEGEND =====
+    var lgY=PH-M+2;
+    doc.setFontSize(5.5);doc.setFont('helvetica','normal');
+    doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(0.4);
+    doc.rect(M,lgY-3,5,5,'FD');
+    doc.setLineWidth(0.2);doc.line(M,lgY-3,M+5,lgY+2);doc.line(M+5,lgY-3,M,lgY+2);
+    doc.text('Post',M+8,lgY+1);
+    doc.setFillColor(40);doc.rect(M+28,lgY-3,5,5,'F');
+    doc.text('Jamb',M+36,lgY+1);
     doc.setTextColor(160);
-    doc.text('Sauce Estimator  |  \u00A9 '+new Date().getFullYear()+' Lain Hinson', pw2-mg2, lgY2+1, {align:'right'});
+    doc.text('Sauce Estimator  |  \u00A9 '+new Date().getFullYear()+' Lain Hinson',PW-M,lgY+1,{align:'right'});
 
-    // PAGE 2
+    // ======== PAGE 2: SCHEDULE ========
     doc.addPage('letter','landscape');
-    doc.setTextColor(0); doc.setFont('helvetica','bold'); doc.setFontSize(14);
-    doc.text('POST & DOOR SCHEDULE',mg2,mg2+16);
-    doc.setLineWidth(0.4); doc.line(mg2,mg2+24,pw2-mg2,mg2+24);
+    doc.setTextColor(0);doc.setFont('helvetica','bold');doc.setFontSize(14);
+    doc.text('POST & DOOR SCHEDULE',M,M+16);
+    doc.setLineWidth(0.4);doc.line(M,M+24,PW-M,M+24);
     var diag=Math.sqrt(frameL*frameL+frameW*frameW);
-    var curY=mg2+44;
-    doc.setFontSize(9); doc.setFont('helvetica','bold');
-    doc.text('BUILDING',mg2,curY); curY+=14;
-    doc.setFont('helvetica','normal'); doc.setFontSize(8);
-    doc.text('Size: '+bw+"' x "+bl+"' x "+bh+"'    Pitch: "+pitch+'/12    Truss: '+truss+'    Posts: '+postSize,mg2+12,curY); curY+=11;
-    doc.text('Frame: '+inToFrac(frameL)+' x '+inToFrac(frameW)+'    Diagonal: '+inToFrac(diag)+'    Girt Offset: '+(offset>0?offset+'"':'None'),mg2+12,curY); curY+=20;
-    doc.setFontSize(9); doc.setFont('helvetica','bold');
-    doc.text('POST SCHEDULE',mg2,curY); curY+=14;
+    var cY=M+44;
+    doc.setFontSize(9);doc.setFont('helvetica','bold');doc.text('BUILDING',M,cY);cY+=14;
+    doc.setFont('helvetica','normal');doc.setFontSize(8);
+    doc.text('Size: '+bw+"' x "+bl+"' x "+bh+"'    Pitch: "+pitch+'/12    Truss: '+truss+'    Posts: '+postSize,M+12,cY);cY+=11;
+    doc.text('Frame: '+F(frameL)+' x '+F(frameW)+'    Diagonal: '+F(diag)+'    Girt Offset: '+(girtOff>0?girtOff+'"':'None'),M+12,cY);cY+=20;
+
+    doc.setFontSize(9);doc.setFont('helvetica','bold');doc.text('POST SCHEDULE',M,cY);cY+=14;
     doc.setFontSize(8);
     ['left','right','front','back'].forEach(function(wid){
-        var posts=wallPosts[wid]; if(!posts.length)return;
-        doc.setFont('helvetica','bold'); doc.text(wallLabel[wid],mg2+12,curY);
-        doc.setFont('helvetica','normal'); doc.text(posts.length+' posts',mg2+105,curY);
-        var dims=[]; for(var i=0;i<posts.length-1;i++) dims.push(inToFrac((posts[i+1].ft-posts[i].ft)*12));
-        var chain=dims.join('  >  ');
-        if(chain.length>85){doc.text(dims.slice(0,Math.ceil(dims.length/2)).join('  >  '),mg2+150,curY);curY+=10;doc.text(dims.slice(Math.ceil(dims.length/2)).join('  >  '),mg2+150,curY);curY+=13;}
-        else{doc.text(chain,mg2+150,curY);curY+=13;}
+        var p=wp[wid];if(!p.length)return;
+        doc.setFont('helvetica','bold');doc.text(WL[wid],M+12,cY);
+        doc.setFont('helvetica','normal');doc.text(p.length+' posts',M+105,cY);
+        var d=[];for(var i=0;i<p.length-1;i++)d.push(F((p[i+1].ft-p[i].ft)*12));
+        var ch=d.join('  >  ');
+        if(ch.length>85){doc.text(d.slice(0,Math.ceil(d.length/2)).join('  >  '),M+150,cY);cY+=10;
+            doc.text(d.slice(Math.ceil(d.length/2)).join('  >  '),M+150,cY);cY+=13;}
+        else{doc.text(ch,M+150,cY);cY+=13;}
     });
-    var doorsOnWalls=allDoors.filter(function(d){return d.wall;});
-    if(doorsOnWalls.length>0){curY+=8;doc.setFontSize(9);doc.setFont('helvetica','bold');doc.text('DOOR SCHEDULE',mg2,curY);curY+=14;doc.setFontSize(8);doc.setFont('helvetica','normal');
-        doorsOnWalls.forEach(function(d){
-            var t=d.type==='garage'?'Garage Door':d.type==='barn'?'Barn Door':'Walk Door';
-            doc.text(t+'  '+d.w+"' x "+d.h+"'",mg2+12,curY);doc.text(wallLabel[d.wall]+'  @  '+(d.offset||0)+"' from corner",mg2+180,curY);curY+=11;
+
+    var drs=allDoors.filter(function(d){return d.wall;});
+    if(drs.length){cY+=8;doc.setFontSize(9);doc.setFont('helvetica','bold');doc.text('DOOR SCHEDULE',M,cY);cY+=14;
+        doc.setFontSize(8);doc.setFont('helvetica','normal');
+        drs.forEach(function(d){
+            doc.text((d.type==='garage'?'Garage':d.type==='barn'?'Barn':'Walk')+' Door  '+d.w+"' x "+d.h+"'",M+12,cY);
+            doc.text(WL[d.wall]+'  @  '+(d.offset||0)+"' from corner",M+180,cY);cY+=11;
         });
     }
-    if(shedCfgs.length>0){curY+=8;doc.setFontSize(9);doc.setFont('helvetica','bold');doc.text('SIDE SHED SCHEDULE',mg2,curY);curY+=14;doc.setFontSize(8);doc.setFont('helvetica','normal');
+
+    if(shedCfgs.length){cY+=8;doc.setFontSize(9);doc.setFont('helvetica','bold');doc.text('SIDE SHED SCHEDULE',M,cY);cY+=14;
+        doc.setFontSize(8);doc.setFont('helvetica','normal');
         shedCfgs.forEach(function(sc){
             var tl=sc.type==='gable'?'Gable Ext.':sc.type==='wrap'?'Wrap':'Lean-To';
             var pos=sc.position==='start'?'Start':sc.position==='end'?'End':sc.position==='custom'?(sc.offsetFt||0)+"' offset":'Centered';
-            var line=tl+'  '+sc.w+"' x "+sc.l+"'  \u2014  "+wallLabel[sc.wall]+'  \u2014  '+pos;
-            if(sc.type!=='gable'&&sc.ltPitch) line+='  |  '+sc.ltPitch+'/12';
-            if(sc.dropFt>0) line+='  |  '+sc.dropFt+"' drop";
-            doc.text(line,mg2+12,curY);curY+=11;
+            var ln=tl+'  '+sc.w+"' x "+sc.l+"'  \u2014  "+WL[sc.wall]+'  \u2014  '+pos;
+            if(sc.type!=='gable'&&sc.ltPitch)ln+='  |  '+sc.ltPitch+'/12';
+            if(sc.dropFt>0)ln+='  |  '+sc.dropFt+"' drop";
+            doc.text(ln,M+12,cY);cY+=11;
         });
     }
+
     doc.setFontSize(5.5);doc.setTextColor(160);
-    doc.text('Sauce Estimator  |  \u00A9 '+new Date().getFullYear()+' Lain Hinson',pw2-mg2,ph2-mg2,{align:'right'});
-    var fn=(jobName||bw+'x'+bl+'_building').replace(/[^a-zA-Z0-9]/g,'_')+'_post_layout.pdf';
-    doc.save(fn);
+    doc.text('Sauce Estimator  |  \u00A9 '+new Date().getFullYear()+' Lain Hinson',PW-M,PH-M,{align:'right'});
+    doc.save((jobName||bw+'x'+bl+'_building').replace(/[^a-zA-Z0-9]/g,'_')+'_post_layout.pdf');
 };
+
 
 
 
