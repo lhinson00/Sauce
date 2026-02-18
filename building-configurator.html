@@ -2789,12 +2789,12 @@ window._generatePostLayout = function() {
     const frameW = bwIn - 2 * offset, frameL = blIn - 2 * offset;
 
     function inToFrac(val) {
-        const tot = Math.abs(val);
-        let ft = Math.floor(tot / 12), rem = tot - ft * 12;
-        let wh = Math.floor(rem), frac = rem - wh, s16 = Math.round(frac * 16);
+        var tot = Math.abs(val);
+        var ft = Math.floor(tot / 12), rem = tot - ft * 12;
+        var wh = Math.floor(rem), frac = rem - wh, s16 = Math.round(frac * 16);
         if (s16 >= 16) { wh++; s16 = 0; }
         if (wh >= 12) { ft++; wh = 0; }
-        let fs = '';
+        var fs = '';
         if (s16 > 0) {
             if (s16 % 8 === 0) fs = ' ' + (s16/8) + '/2';
             else if (s16 % 4 === 0) fs = ' ' + (s16/4) + '/4';
@@ -2807,363 +2807,274 @@ window._generatePostLayout = function() {
     }
 
     function getWallPosts(wallId) {
-        const wCfg = WALLS.find(w => w.id === wallId);
-        const isEave = (wallId === 'left' || wallId === 'right');
-        const wallLen = isEave ? bl : bw;
-        const ps = wCfg ? wCfg.postSpacing : (Q.postSpacing || 10);
-        const wd = allDoors.filter(d => d.wall === wallId);
+        var wCfg = WALLS.find(function(w){return w.id===wallId;});
+        var isEave = (wallId === 'left' || wallId === 'right');
+        var wallLen = isEave ? bl : bw;
+        var ps = wCfg ? wCfg.postSpacing : (Q.postSpacing || 10);
+        var wd = allDoors.filter(function(d){return d.wall===wallId;});
         if (!isEave && wCfg && wCfg.encl === 'open') return [];
         function insideDoor(posFt) {
-            for (let d of wd) {
-                const dL = d.offset || 0, dR = dL + d.w;
+            for (var j = 0; j < wd.length; j++) {
+                var dL = wd[j].offset || 0, dR = dL + wd[j].w;
                 if (posFt > dL + 0.25 && posFt < dR - 0.25) return true;
             }
             return false;
         }
-        const posts = [];
-        const numBays = Math.floor(wallLen / ps);
-        for (let i = 0; i <= numBays; i++) {
-            const posFt = i * (wallLen / numBays);
+        var posts = [];
+        var numBays = Math.floor(wallLen / ps);
+        for (var i = 0; i <= numBays; i++) {
+            var posFt = i * (wallLen / numBays);
             if (!insideDoor(posFt)) posts.push({ ft: posFt, isJamb: false });
         }
-        wd.forEach(d => {
-            const dL = d.offset || 0, dR = dL + d.w;
-            [dL, dR].forEach(posFt => {
-                if (!posts.some(p => Math.abs(p.ft - posFt) < 0.2))
+        wd.forEach(function(d) {
+            var dL = d.offset || 0, dR = dL + d.w;
+            [dL, dR].forEach(function(posFt) {
+                if (!posts.some(function(p){return Math.abs(p.ft - posFt) < 0.2;}))
                     posts.push({ ft: posFt, isJamb: true });
             });
         });
-        posts.sort((a, b) => a.ft - b.ft);
+        posts.sort(function(a,b){return a.ft-b.ft;});
         return posts;
     }
 
-    const wallPosts = {};
-    ['left', 'right', 'front', 'back'].forEach(wid => { wallPosts[wid] = getWallPosts(wid); });
+    var wallPosts = {};
+    ['left','right','front','back'].forEach(function(wid){ wallPosts[wid] = getWallPosts(wid); });
 
-    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter' });
-    const pw = 792, ph = 612;
-    const mg = 40;
+    // Wall label map — FLIPPED so drawing left=Front Gable, right=Back Gable
+    var wallLabel = { left: 'Left Eave', right: 'Right Eave', front: 'Front Gable', back: 'Back Gable' };
 
-    // Compute shed pads for bounding
-    let padT = 0, padB = 0, padL = 0, padR = 0;
-    shedCfgs.forEach(sc => {
+    var doc2 = doc; // alias
+    var pw2 = 792, ph2 = 612, mg2 = 40;
+
+    // Shed padding
+    var padT = 0, padB = 0, padL = 0, padR = 0;
+    shedCfgs.forEach(function(sc) {
         if (!sc.wall || !sc.w) return;
-        const sW = sc.w * 12;
+        var sW = sc.w * 12;
         if (sc.wall === 'left') padT = Math.max(padT, sW);
         if (sc.wall === 'right') padB = Math.max(padB, sW);
         if (sc.wall === 'front') padL = Math.max(padL, sW);
         if (sc.wall === 'back') padR = Math.max(padR, sW);
-        // Wrap sheds also extend to an adjacent wall
-        if (sc.type === 'wrap') {
-            const adjW = sc.w * 12;
-            if (sc.wall === 'left') { padL = Math.max(padL, adjW); }
-            if (sc.wall === 'right') { padR = Math.max(padR, adjW); }
-        }
     });
 
-    // Drawing area
-    const dimOuter = 65; // reserved for overall dim
-    const dimInner = 45; // reserved for post-to-post dims
-    const titleH = 48;
-    const drawArea = {
-        l: mg + dimOuter + dimInner,
-        r: pw - mg - dimOuter,
-        t: mg + titleH + dimOuter + dimInner,
-        b: ph - mg - 16 - dimOuter
-    };
+    var dimGap = 90;
+    var dA = { l: mg2+dimGap, r: pw2-mg2-dimGap, t: mg2+50+dimGap, b: ph2-mg2-20-dimGap };
+    var boundW = blIn+padL+padR, boundH = bwIn+padT+padB;
+    var sc2 = Math.min((dA.r-dA.l)/boundW, (dA.b-dA.t)/boundH) * 0.82;
+    var bx0 = (dA.l+dA.r)/2 - (blIn*sc2)/2 + (padL-padR)*sc2/2;
+    var by0 = (dA.t+dA.b)/2 - (bwIn*sc2)/2 + (padT-padB)*sc2/2;
+    function tx(i){return bx0+i*sc2;} function ty(i){return by0+i*sc2;}
 
-    const boundW = blIn + padL + padR;
-    const boundH = bwIn + padT + padB;
-    const scale = Math.min((drawArea.r - drawArea.l) / boundW, (drawArea.b - drawArea.t) / boundH) * 0.9;
-
-    const bx0 = (drawArea.l + drawArea.r) / 2 - (blIn * scale) / 2 + (padL - padR) * scale / 2;
-    const by0 = (drawArea.t + drawArea.b) / 2 - (bwIn * scale) / 2 + (padT - padB) * scale / 2;
-    function tx(i) { return bx0 + i * scale; }
-    function ty(i) { return by0 + i * scale; }
-
-    // ---- TITLE ----
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.setTextColor(0);
-    doc.text('POST LAYOUT', mg, mg + 16);
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
-    const info = [];
+    // TITLE
+    doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(0);
+    doc.text('POST LAYOUT', mg2, mg2+16);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    var info = [];
     if (jobName) info.push(jobName);
-    info.push(bw + "' x " + bl + "' x " + bh + "'", pitch + '/12', truss + ' Truss', postSize + ' Posts');
-    doc.text(info.join('   |   '), mg, mg + 30);
-    doc.text(new Date().toLocaleDateString(), pw - mg, mg + 16, { align: 'right' });
+    info.push(bw+"' x "+bl+"' x "+bh+"'", pitch+'/12', truss+' Truss', postSize+' Posts');
+    doc.text(info.join('   |   '), mg2, mg2+30);
+    doc.text(new Date().toLocaleDateString(), pw2-mg2, mg2+16, {align:'right'});
     doc.setDrawColor(0); doc.setLineWidth(0.4);
-    doc.line(mg, mg + 38, pw - mg, mg + 38);
+    doc.line(mg2, mg2+38, pw2-mg2, mg2+38);
 
-    // ---- BUILDING OUTLINE ----
+    // BUILDING OUTLINE
     doc.setDrawColor(0); doc.setLineWidth(1.2);
-    doc.rect(tx(0), ty(0), blIn * scale, bwIn * scale);
+    doc.rect(tx(0), ty(0), blIn*sc2, bwIn*sc2);
 
-    // ---- POST SYMBOLS ----
-    const pr = 3.5;
+    // POSTS
+    var pr2 = 3.5;
     function drawPost(xIn, yIn, isJamb) {
-        const px = tx(xIn), py = ty(yIn);
+        var px = tx(xIn), py = ty(yIn);
         doc.setDrawColor(0); doc.setLineWidth(0.5);
-        if (isJamb) {
-            doc.setFillColor(40); doc.rect(px - pr, py - pr, pr * 2, pr * 2, 'F');
-        } else {
-            doc.setFillColor(255); doc.rect(px - pr, py - pr, pr * 2, pr * 2, 'FD');
-            doc.setLineWidth(0.3);
-            doc.line(px - pr, py - pr, px + pr, py + pr);
-            doc.line(px + pr, py - pr, px - pr, py + pr);
-        }
+        if (isJamb) { doc.setFillColor(40); doc.rect(px-pr2,py-pr2,pr2*2,pr2*2,'F'); }
+        else { doc.setFillColor(255); doc.rect(px-pr2,py-pr2,pr2*2,pr2*2,'FD');
+            doc.setLineWidth(0.3); doc.line(px-pr2,py-pr2,px+pr2,py+pr2); doc.line(px+pr2,py-pr2,px-pr2,py+pr2); }
     }
 
-    // Main building posts
-    wallPosts.left.forEach(p => drawPost(p.ft * 12, 0, p.isJamb));
-    wallPosts.right.forEach(p => drawPost(p.ft * 12, bwIn, p.isJamb));
-    wallPosts.front.forEach(p => drawPost(0, p.ft * 12, p.isJamb));
-    wallPosts.back.forEach(p => drawPost(blIn, p.ft * 12, p.isJamb));
+    wallPosts.left.forEach(function(p){drawPost(p.ft*12,0,p.isJamb);});
+    wallPosts.right.forEach(function(p){drawPost(p.ft*12,bwIn,p.isJamb);});
+    wallPosts.front.forEach(function(p){drawPost(0,p.ft*12,p.isJamb);});
+    wallPosts.back.forEach(function(p){drawPost(blIn,p.ft*12,p.isJamb);});
 
-    // ---- DOORS ----
-    allDoors.filter(d => d.wall).forEach(d => {
-        const dL = (d.offset || 0) * 12, dR = dL + d.w * 12, dMid = (dL + dR) / 2;
-        const label = d.w + "'x" + d.h + "' " + (d.type === 'garage' ? 'GD' : d.type === 'barn' ? 'BD' : 'WD');
-
-        // Draw thick opening line
+    // DOORS
+    allDoors.filter(function(d){return d.wall;}).forEach(function(d) {
+        var dL = (d.offset||0)*12, dR = dL+d.w*12, dMid = (dL+dR)/2;
+        var sz = d.w+"'x"+d.h+"'";
+        var tp = d.type==='garage'?'GARAGE':d.type==='barn'?'BARN':'WALK';
         doc.setDrawColor(0); doc.setLineWidth(3);
-        if (d.wall === 'left') doc.line(tx(dL), ty(0), tx(dR), ty(0));
-        else if (d.wall === 'right') doc.line(tx(dL), ty(bwIn), tx(dR), ty(bwIn));
-        else if (d.wall === 'front') doc.line(tx(0), ty(dL), tx(0), ty(dR));
-        else if (d.wall === 'back') doc.line(tx(blIn), ty(dL), tx(blIn), ty(dR));
-
-        // Door label inside building
-        doc.setFontSize(6.5); doc.setFont('helvetica', 'bold'); doc.setTextColor(0);
-        if (d.wall === 'left') doc.text(label, tx(dMid), ty(0) + 14, { align: 'center' });
-        else if (d.wall === 'right') doc.text(label, tx(dMid), ty(bwIn) - 8, { align: 'center' });
-        else if (d.wall === 'front') doc.text(label, tx(0) + 12, ty(dMid) + 2);
-        else if (d.wall === 'back') doc.text(label, tx(blIn) - 12, ty(dMid) + 2, { align: 'right' });
+        if (d.wall==='left') {
+            doc.line(tx(dL),ty(0),tx(dR),ty(0));
+            doc.setFontSize(7); doc.setFont('helvetica','bold');
+            doc.text(sz+' '+tp, tx(dMid), ty(0)+14, {align:'center'});
+        } else if (d.wall==='right') {
+            doc.line(tx(dL),ty(bwIn),tx(dR),ty(bwIn));
+            doc.setFontSize(7); doc.setFont('helvetica','bold');
+            doc.text(sz+' '+tp, tx(dMid), ty(bwIn)-9, {align:'center'});
+        } else if (d.wall==='front') {
+            doc.line(tx(0),ty(dL),tx(0),ty(dR));
+            doc.setFontSize(7); doc.setFont('helvetica','bold');
+            doc.text(sz+' '+tp, tx(0)+14, ty(dMid)+2);
+        } else if (d.wall==='back') {
+            doc.line(tx(blIn),ty(dL),tx(blIn),ty(dR));
+            doc.setFontSize(7); doc.setFont('helvetica','bold');
+            doc.text(sz+' '+tp, tx(blIn)-14, ty(dMid)+2, {align:'right'});
+        }
     });
 
-    // ---- SIDE SHEDS ----
-    shedCfgs.forEach(sc => {
-        if (!sc.wall || !sc.w || !sc.l) return;
-        const isEave = (sc.wall === 'left' || sc.wall === 'right');
-        const mainIn = (isEave ? bl : bw) * 12;
-        const sW = sc.w * 12, sL = Math.min(sc.l * 12, mainIn);
-        let sOff = 0;
-        const sp = sc.position || 'center';
-        if (sL >= mainIn) sOff = 0;
-        else if (sp === 'start') sOff = 0;
-        else if (sp === 'end') sOff = mainIn - sL;
-        else if (sp === 'custom') sOff = Math.max(0, Math.min((sc.offsetFt || 0) * 12, mainIn - sL));
-        else sOff = (mainIn - sL) / 2;
+    // SHEDS
+    shedCfgs.forEach(function(sc) {
+        if (!sc.wall||!sc.w||!sc.l) return;
+        var isEave=(sc.wall==='left'||sc.wall==='right');
+        var mainIn=(isEave?bl:bw)*12;
+        var sW=sc.w*12, sL=Math.min(sc.l*12,mainIn);
+        var sOff=0, sp=sc.position||'center';
+        if(sL>=mainIn)sOff=0; else if(sp==='start')sOff=0; else if(sp==='end')sOff=mainIn-sL;
+        else if(sp==='custom')sOff=Math.max(0,Math.min((sc.offsetFt||0)*12,mainIn-sL));
+        else sOff=(mainIn-sL)/2;
 
-        // Shed outline
         doc.setDrawColor(0); doc.setLineWidth(0.7);
-        if (sc.wall === 'left') doc.rect(tx(sOff), ty(-sW), sL * scale, sW * scale);
-        else if (sc.wall === 'right') doc.rect(tx(sOff), ty(bwIn), sL * scale, sW * scale);
-        else if (sc.wall === 'front') doc.rect(tx(-sW), ty(sOff), sW * scale, sL * scale);
-        else doc.rect(tx(blIn), ty(sOff), sW * scale, sL * scale);
+        if(sc.wall==='left') doc.rect(tx(sOff),ty(-sW),sL*sc2,sW*sc2);
+        else if(sc.wall==='right') doc.rect(tx(sOff),ty(bwIn),sL*sc2,sW*sc2);
+        else if(sc.wall==='front') doc.rect(tx(-sW),ty(sOff),sW*sc2,sL*sc2);
+        else doc.rect(tx(blIn),ty(sOff),sW*sc2,sL*sc2);
 
-        // Label inside shed
-        doc.setFontSize(6); doc.setFont('helvetica', 'normal'); doc.setTextColor(60);
-        const sLbl = (sc.type === 'gable' ? 'Gable' : sc.type === 'wrap' ? 'Wrap' : 'Lean-to') + ' ' + sc.w + "'x" + sc.l + "'";
-        if (sc.wall === 'left') doc.text(sLbl, tx(sOff + sL / 2), ty(-sW / 2) + 2, { align: 'center' });
-        else if (sc.wall === 'right') doc.text(sLbl, tx(sOff + sL / 2), ty(bwIn + sW / 2) + 2, { align: 'center' });
-        else if (sc.wall === 'front') doc.text(sLbl, tx(-sW / 2), ty(sOff + sL / 2), { align: 'center', angle: 90 });
-        else doc.text(sLbl, tx(blIn + sW / 2), ty(sOff + sL / 2), { align: 'center', angle: 90 });
+        doc.setFontSize(6); doc.setFont('helvetica','normal'); doc.setTextColor(80);
+        var sLbl=(sc.type==='gable'?'Gable':sc.type==='wrap'?'Wrap':'Lean-to')+' '+sc.w+"'x"+sc.l+"'";
+        if(sc.wall==='left') doc.text(sLbl,tx(sOff+sL/2),ty(-sW/2)+2,{align:'center'});
+        else if(sc.wall==='right') doc.text(sLbl,tx(sOff+sL/2),ty(bwIn+sW/2)+2,{align:'center'});
+        else if(sc.wall==='front') doc.text(sLbl,tx(-sW/2),ty(sOff+sL/2),{align:'center',angle:90});
+        else doc.text(sLbl,tx(blIn+sW/2),ty(sOff+sL/2),{align:'center',angle:90});
         doc.setTextColor(0);
 
-        // Shed outer posts along outer edge
-        const sPS = sc.type === 'gable' ? (sc.gablePS || 10) : (Q.postSpacing || 10);
-        const nSB = Math.max(1, Math.floor(sc.l / sPS));
-        for (let i = 0; i <= nSB; i++) {
-            const p = sOff + i * (sL / nSB);
-            if (sc.wall === 'left') drawPost(p, -sW, false);
-            else if (sc.wall === 'right') drawPost(p, bwIn + sW, false);
-            else if (sc.wall === 'front') drawPost(-sW, p, false);
-            else drawPost(blIn + sW, p, false);
-        }
-
-        // Wrap: also draw posts on the secondary (wrap) wall
-        if (sc.type === 'wrap' && sc.wrapLeg) {
-            const wrapIn = sc.wrapLeg * 12;
-            const wPS2 = Q.postSpacing || 10;
-            const nWB = Math.max(1, Math.floor(sc.wrapLeg / wPS2));
-            // Determine which wall the wrap extends onto
-            let wrapWall = '';
-            if (sc.wall === 'left') wrapWall = (sc.wrapDir === 'back' || sc.wrapDir === 'right') ? 'front' : 'back';
-            else if (sc.wall === 'right') wrapWall = (sc.wrapDir === 'back' || sc.wrapDir === 'right') ? 'back' : 'front';
-            // Draw wrap leg rectangle
-            if (sc.wall === 'left' || sc.wall === 'right') {
-                const yOuter = sc.wall === 'left' ? -sW : bwIn + sW;
-                const yInner = sc.wall === 'left' ? 0 : bwIn;
-                // The wrap leg runs along the gable wall
-                // For now, draw posts along outer edge of wrap leg
-                for (let i = 0; i <= nWB; i++) {
-                    const yp = i * (sW / nWB);
-                    if (sc.wall === 'left') {
-                        drawPost(sOff, -(sW - yp), false);
-                        drawPost(sOff + sL, -(sW - yp), false);
-                    }
-                }
-            }
+        var sPS=sc.type==='gable'?(sc.gablePS||10):(Q.postSpacing||10);
+        var nSB=Math.max(1,Math.floor(sc.l/sPS));
+        for(var i=0;i<=nSB;i++){
+            var p=sOff+i*(sL/nSB);
+            if(sc.wall==='left') drawPost(p,-sW,false);
+            else if(sc.wall==='right') drawPost(p,bwIn+sW,false);
+            else if(sc.wall==='front') drawPost(-sW,p,false);
+            else drawPost(blIn+sW,p,false);
         }
     });
 
-    // ---- DIMENSIONS ----
-    // Simple approach: text labels only, with thin single lines. No extension lines.
+    // DIMENSIONS
     doc.setDrawColor(0); doc.setTextColor(0);
-
-    // Simple dim line helper — just a line with ticks and centered text
-    function dimH(x1, x2, y, label, bold) {
-        if (Math.abs(x2 - x1) < 1) return;
-        doc.setLineWidth(0.3); doc.line(x1, y, x2, y);
-        doc.line(x1, y - 3, x1, y + 3);
-        doc.line(x2, y - 3, x2, y + 3);
-        doc.setFont('helvetica', bold ? 'bold' : 'normal');
-        doc.text(label, (x1 + x2) / 2, y - 5, { align: 'center' });
+    function dimH(x1,x2,y,label,bold,fs){
+        if(Math.abs(x2-x1)<1)return;
+        doc.setLineWidth(0.3); doc.line(x1,y,x2,y);
+        doc.line(x1,y-3,x1,y+3); doc.line(x2,y-3,x2,y+3);
+        doc.setFont('helvetica',bold?'bold':'normal'); doc.setFontSize(fs||7);
+        doc.text(label,(x1+x2)/2,y-5,{align:'center'});
     }
-    function dimV(y1, y2, x, label, bold) {
-        if (Math.abs(y2 - y1) < 1) return;
-        doc.setLineWidth(0.3); doc.line(x, y1, x, y2);
-        doc.line(x - 3, y1, x + 3, y1);
-        doc.line(x - 3, y2, x + 3, y2);
-        doc.setFont('helvetica', bold ? 'bold' : 'normal');
-        doc.text(label, x - 5, (y1 + y2) / 2, { align: 'center', angle: 90 });
+    function dimV(y1,y2,x,label,bold,fs){
+        if(Math.abs(y2-y1)<1)return;
+        doc.setLineWidth(0.3); doc.line(x,y1,x,y2);
+        doc.line(x-3,y1,x+3,y1); doc.line(x-3,y2,x+3,y2);
+        doc.setFont('helvetica',bold?'bold':'normal'); doc.setFontSize(fs||7);
+        doc.text(label,x-6,(y1+y2)/2,{align:'center',angle:90});
     }
 
-    // --- POST-TO-POST: Top (left eave) ---
-    doc.setFontSize(6.5);
-    const ptY = ty(0) - 18;
-    const leftP = wallPosts.left;
-    for (let i = 0; i < leftP.length - 1; i++) {
-        const d = (leftP[i + 1].ft - leftP[i].ft) * 12;
-        dimH(tx(leftP[i].ft * 12), tx(leftP[i + 1].ft * 12), ptY, inToFrac(d));
+    // Post-to-post: TOP
+    var leftP=wallPosts.left;
+    for(var i=0;i<leftP.length-1;i++){
+        var d=(leftP[i+1].ft-leftP[i].ft)*12;
+        dimH(tx(leftP[i].ft*12),tx(leftP[i+1].ft*12),ty(0)-30,inToFrac(d),false,6.5);
     }
 
-    // --- POST-TO-POST: Left (front gable) ---
-    const ptX = tx(0) - 18;
-    const frontP = wallPosts.front;
-    for (let i = 0; i < frontP.length - 1; i++) {
-        const d = (frontP[i + 1].ft - frontP[i].ft) * 12;
-        dimV(ty(frontP[i].ft * 12), ty(frontP[i + 1].ft * 12), ptX, inToFrac(d));
+    // Post-to-post: LEFT (front gable = drawing left)
+    var frontP=wallPosts.front;
+    for(var i=0;i<frontP.length-1;i++){
+        var d=(frontP[i+1].ft-frontP[i].ft)*12;
+        dimV(ty(frontP[i].ft*12),ty(frontP[i+1].ft*12),tx(0)-30,inToFrac(d),false,6.5);
     }
 
-    // --- OVERALL: Bottom ---
-    doc.setFontSize(8);
-    const obY = ty(bwIn) + 22;
-    dimH(tx(0), tx(blIn), obY, bl + "'", true);
-
-    // --- OVERALL: Right ---
-    const obX = tx(blIn) + 22;
-    dimV(ty(0), ty(bwIn), obX, bw + "'", true);
-
-    // --- SHED WIDTH DIM ---
-    doc.setFontSize(6.5);
-    shedCfgs.forEach(sc => {
-        if (!sc.wall || !sc.w) return;
-        const sW = sc.w * 12;
-        if (sc.wall === 'left') {
-            dimV(ty(-sW), ty(0), tx(0) - 18, sc.w + "'");
-        } else if (sc.wall === 'right') {
-            dimV(ty(bwIn), ty(bwIn + sW), tx(blIn) + 22, sc.w + "'");
-        } else if (sc.wall === 'front') {
-            dimH(tx(-sW), tx(0), ty(0) - 18, sc.w + "'");
-        } else {
-            dimH(tx(blIn), tx(blIn + sW), ty(bwIn) + 22, sc.w + "'");
+    // Post-to-post: RIGHT (back gable) — always show if has doors or different posts
+    var backP=wallPosts.back;
+    if(backP.length>2) {
+        for(var i=0;i<backP.length-1;i++){
+            var d=(backP[i+1].ft-backP[i].ft)*12;
+            dimV(ty(backP[i].ft*12),ty(backP[i+1].ft*12),tx(blIn)+30,inToFrac(d),false,6.5);
         }
+    }
+
+    // Overall
+    dimH(tx(0),tx(blIn),ty(bwIn)+50,bl+"'  LENGTH",true,9);
+    dimV(ty(0),ty(bwIn),tx(blIn)+55,bw+"'  WIDTH",true,9);
+
+    // Shed width
+    shedCfgs.forEach(function(sc){
+        if(!sc.wall||!sc.w)return; var sW=sc.w*12;
+        if(sc.wall==='left') dimV(ty(-sW),ty(0),tx(0)-30,sc.w+"'",false,7);
+        else if(sc.wall==='right') dimV(ty(bwIn),ty(bwIn+sW),tx(blIn)+55,sc.w+"'",false,7);
     });
 
-    // ---- WALL LABELS (small, near corners, not competing) ----
-    doc.setFontSize(7); doc.setFont('helvetica', 'bold'); doc.setTextColor(100);
-    doc.text('LEFT EAVE', tx(blIn / 2), ty(0) - 32, { align: 'center' });
-    doc.text('RIGHT EAVE', tx(blIn / 2), ty(bwIn) + 36, { align: 'center' });
-    doc.text('BACK GABLE', tx(0) - 32, ty(bwIn / 2), { align: 'center', angle: 90 });
-    doc.text('FRONT GABLE', tx(blIn) + 36, ty(bwIn / 2), { align: 'center', angle: 90 });
+    // WALL LABELS — far out
+    doc.setFontSize(8); doc.setFont('helvetica','bold'); doc.setTextColor(100);
+    doc.text('LEFT EAVE', tx(blIn/2), ty(0)-55, {align:'center'});
+    doc.text('RIGHT EAVE', tx(blIn/2), ty(bwIn)+68, {align:'center'});
+    doc.text('FRONT GABLE', tx(0)-55, ty(bwIn/2), {align:'center',angle:90});
+    doc.text('BACK GABLE', tx(blIn)+72, ty(bwIn/2), {align:'center',angle:90});
     doc.setTextColor(0);
 
-    // ---- LEGEND (bottom left, compact) ----
-    const lgY = ph - mg + 2;
-    doc.setFontSize(5.5); doc.setFont('helvetica', 'normal');
+    // LEGEND
+    var lgY2=ph2-mg2+2;
+    doc.setFontSize(5.5); doc.setFont('helvetica','normal');
     doc.setFillColor(255); doc.setDrawColor(0); doc.setLineWidth(0.4);
-    doc.rect(mg, lgY - 3, 5, 5, 'FD');
-    doc.setLineWidth(0.2); doc.line(mg, lgY - 3, mg + 5, lgY + 2); doc.line(mg + 5, lgY - 3, mg, lgY + 2);
-    doc.text('Post', mg + 8, lgY + 1);
-    doc.setFillColor(40); doc.rect(mg + 28, lgY - 3, 5, 5, 'F');
-    doc.text('Jamb', mg + 36, lgY + 1);
+    doc.rect(mg2,lgY2-3,5,5,'FD');
+    doc.setLineWidth(0.2); doc.line(mg2,lgY2-3,mg2+5,lgY2+2); doc.line(mg2+5,lgY2-3,mg2,lgY2+2);
+    doc.text('Post',mg2+8,lgY2+1);
+    doc.setFillColor(40); doc.rect(mg2+28,lgY2-3,5,5,'F');
+    doc.text('Jamb',mg2+36,lgY2+1);
+    doc.setTextColor(160);
+    doc.text('Sauce Estimator  |  \u00A9 '+new Date().getFullYear()+' Lain Hinson', pw2-mg2, lgY2+1, {align:'right'});
 
-    // ---- FOOTER ----
-    doc.setFontSize(5.5); doc.setTextColor(160);
-    doc.text('Sauce Estimator  |  © ' + new Date().getFullYear() + ' Lain Hinson', pw - mg, lgY + 1, { align: 'right' });
-
-    // ======== PAGE 2: SCHEDULE ========
-    doc.addPage('letter', 'landscape');
-    doc.setTextColor(0); doc.setFont('helvetica', 'bold'); doc.setFontSize(14);
-    doc.text('POST & DOOR SCHEDULE', mg, mg + 16);
-    doc.setLineWidth(0.4); doc.line(mg, mg + 24, pw - mg, mg + 24);
-    const diag = Math.sqrt(frameL * frameL + frameW * frameW);
-
-    let curY = mg + 44;
-    doc.setFontSize(9); doc.setFont('helvetica', 'bold');
-    doc.text('BUILDING', mg, curY); curY += 14;
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
-    doc.text('Size: ' + bw + "' x " + bl + "' x " + bh + "'    Pitch: " + pitch + '/12    Truss: ' + truss + '    Posts: ' + postSize, mg + 12, curY); curY += 11;
-    doc.text('Frame: ' + inToFrac(frameL) + ' x ' + inToFrac(frameW) + '    Diagonal: ' + inToFrac(diag) + '    Girt Offset: ' + (offset > 0 ? offset + '"' : 'None'), mg + 12, curY); curY += 20;
-
-    doc.setFontSize(9); doc.setFont('helvetica', 'bold');
-    doc.text('POST SCHEDULE', mg, curY); curY += 14;
+    // PAGE 2
+    doc.addPage('letter','landscape');
+    doc.setTextColor(0); doc.setFont('helvetica','bold'); doc.setFontSize(14);
+    doc.text('POST & DOOR SCHEDULE',mg2,mg2+16);
+    doc.setLineWidth(0.4); doc.line(mg2,mg2+24,pw2-mg2,mg2+24);
+    var diag=Math.sqrt(frameL*frameL+frameW*frameW);
+    var curY=mg2+44;
+    doc.setFontSize(9); doc.setFont('helvetica','bold');
+    doc.text('BUILDING',mg2,curY); curY+=14;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    doc.text('Size: '+bw+"' x "+bl+"' x "+bh+"'    Pitch: "+pitch+'/12    Truss: '+truss+'    Posts: '+postSize,mg2+12,curY); curY+=11;
+    doc.text('Frame: '+inToFrac(frameL)+' x '+inToFrac(frameW)+'    Diagonal: '+inToFrac(diag)+'    Girt Offset: '+(offset>0?offset+'"':'None'),mg2+12,curY); curY+=20;
+    doc.setFontSize(9); doc.setFont('helvetica','bold');
+    doc.text('POST SCHEDULE',mg2,curY); curY+=14;
     doc.setFontSize(8);
-    ['left', 'right', 'front', 'back'].forEach(wid => {
-        const wCfg = WALLS.find(w => w.id === wid);
-        const posts = wallPosts[wid];
-        if (!posts.length) return;
-        doc.setFont('helvetica', 'bold');
-        doc.text(wCfg.label, mg + 12, curY);
-        doc.setFont('helvetica', 'normal');
-        doc.text(posts.length + ' posts', mg + 105, curY);
-        const dims = [];
-        for (let i = 0; i < posts.length - 1; i++) dims.push(inToFrac((posts[i + 1].ft - posts[i].ft) * 12));
-        const chain = dims.join('  >  ');
-        if (chain.length > 85) {
-            doc.text(dims.slice(0, Math.ceil(dims.length / 2)).join('  >  '), mg + 150, curY); curY += 10;
-            doc.text(dims.slice(Math.ceil(dims.length / 2)).join('  >  '), mg + 150, curY); curY += 13;
-        } else {
-            doc.text(chain, mg + 150, curY); curY += 13;
-        }
+    ['left','right','front','back'].forEach(function(wid){
+        var posts=wallPosts[wid]; if(!posts.length)return;
+        doc.setFont('helvetica','bold'); doc.text(wallLabel[wid],mg2+12,curY);
+        doc.setFont('helvetica','normal'); doc.text(posts.length+' posts',mg2+105,curY);
+        var dims=[]; for(var i=0;i<posts.length-1;i++) dims.push(inToFrac((posts[i+1].ft-posts[i].ft)*12));
+        var chain=dims.join('  >  ');
+        if(chain.length>85){doc.text(dims.slice(0,Math.ceil(dims.length/2)).join('  >  '),mg2+150,curY);curY+=10;doc.text(dims.slice(Math.ceil(dims.length/2)).join('  >  '),mg2+150,curY);curY+=13;}
+        else{doc.text(chain,mg2+150,curY);curY+=13;}
     });
-
-    const doorsOnWalls = allDoors.filter(d => d.wall);
-    if (doorsOnWalls.length > 0) {
-        curY += 8;
-        doc.setFontSize(9); doc.setFont('helvetica', 'bold');
-        doc.text('DOOR SCHEDULE', mg, curY); curY += 14;
-        doc.setFontSize(8); doc.setFont('helvetica', 'normal');
-        doorsOnWalls.forEach(d => {
-            const wCfg = WALLS.find(w => w.id === d.wall);
-            const t = d.type === 'garage' ? 'Garage Door' : d.type === 'barn' ? 'Barn Door' : 'Walk Door';
-            doc.text(t + '  ' + d.w + "' x " + d.h + "'", mg + 12, curY);
-            doc.text((wCfg ? wCfg.label : d.wall) + '  @  ' + (d.offset || 0) + "' from corner", mg + 180, curY);
-            curY += 11;
+    var doorsOnWalls=allDoors.filter(function(d){return d.wall;});
+    if(doorsOnWalls.length>0){curY+=8;doc.setFontSize(9);doc.setFont('helvetica','bold');doc.text('DOOR SCHEDULE',mg2,curY);curY+=14;doc.setFontSize(8);doc.setFont('helvetica','normal');
+        doorsOnWalls.forEach(function(d){
+            var t=d.type==='garage'?'Garage Door':d.type==='barn'?'Barn Door':'Walk Door';
+            doc.text(t+'  '+d.w+"' x "+d.h+"'",mg2+12,curY);doc.text(wallLabel[d.wall]+'  @  '+(d.offset||0)+"' from corner",mg2+180,curY);curY+=11;
         });
     }
-
-    if (shedCfgs.length > 0) {
-        curY += 8;
-        doc.setFontSize(9); doc.setFont('helvetica', 'bold');
-        doc.text('SIDE SHED SCHEDULE', mg, curY); curY += 14;
-        doc.setFontSize(8); doc.setFont('helvetica', 'normal');
-        shedCfgs.forEach(sc => {
-            const wCfg = WALLS.find(w => w.id === sc.wall);
-            const tl = sc.type === 'gable' ? 'Gable Ext.' : sc.type === 'wrap' ? 'Wrap' : 'Lean-To';
-            const pos = sc.position === 'start' ? 'Start' : sc.position === 'end' ? 'End' : sc.position === 'custom' ? (sc.offsetFt || 0) + "' offset" : 'Centered';
-            let line = tl + '  ' + sc.w + "' x " + sc.l + "'  —  " + (wCfg ? wCfg.label : sc.wall) + '  —  ' + pos;
-            if (sc.type !== 'gable' && sc.ltPitch) line += '  |  ' + sc.ltPitch + '/12';
-            if (sc.dropFt > 0) line += '  |  ' + sc.dropFt + "' drop";
-            doc.text(line, mg + 12, curY); curY += 11;
+    if(shedCfgs.length>0){curY+=8;doc.setFontSize(9);doc.setFont('helvetica','bold');doc.text('SIDE SHED SCHEDULE',mg2,curY);curY+=14;doc.setFontSize(8);doc.setFont('helvetica','normal');
+        shedCfgs.forEach(function(sc){
+            var tl=sc.type==='gable'?'Gable Ext.':sc.type==='wrap'?'Wrap':'Lean-To';
+            var pos=sc.position==='start'?'Start':sc.position==='end'?'End':sc.position==='custom'?(sc.offsetFt||0)+"' offset":'Centered';
+            var line=tl+'  '+sc.w+"' x "+sc.l+"'  \u2014  "+wallLabel[sc.wall]+'  \u2014  '+pos;
+            if(sc.type!=='gable'&&sc.ltPitch) line+='  |  '+sc.ltPitch+'/12';
+            if(sc.dropFt>0) line+='  |  '+sc.dropFt+"' drop";
+            doc.text(line,mg2+12,curY);curY+=11;
         });
     }
-
-    doc.setFontSize(5.5); doc.setTextColor(160);
-    doc.text('Sauce Estimator  |  © ' + new Date().getFullYear() + ' Lain Hinson', pw - mg, ph - mg, { align: 'right' });
-
-    const fn = (jobName || bw + 'x' + bl + '_building').replace(/[^a-zA-Z0-9]/g, '_') + '_post_layout.pdf';
+    doc.setFontSize(5.5);doc.setTextColor(160);
+    doc.text('Sauce Estimator  |  \u00A9 '+new Date().getFullYear()+' Lain Hinson',pw2-mg2,ph2-mg2,{align:'right'});
+    var fn=(jobName||bw+'x'+bl+'_building').replace(/[^a-zA-Z0-9]/g,'_')+'_post_layout.pdf';
     doc.save(fn);
 };
+
 
 
 
