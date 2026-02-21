@@ -872,6 +872,13 @@ function buildQuoteGenerator(overlay, Q) {
                             <option value="6" ${sc.gablePitch==6?'selected':''}>6/12</option>
                         </select>
                     </div>
+                    <div id="shedTimberLbl${i}" style="flex:1;min-width:90px;display:${sc.type==='gable'?'block':'none'};">
+                        <div style="${lblStyle}">Upper Gable</div>
+                        <select id="shedTimber${i}" onchange="window._shedCfgChange(${i})" style="${selStyle}">
+                            <option value="metal" ${(sc.timberFrame||'metal')==='metal'?'selected':''}>Metal Panel</option>
+                            <option value="timber" ${sc.timberFrame==='timber'?'selected':''}>Timber Framed</option>
+                        </select>
+                    </div>
                 </div>
                 <div id="shedLeantoRow${i}" style="display:${sc.type==='leanto'||sc.type==='wrap'?'flex':'none'};flex-wrap:wrap;gap:6px;margin-top:4px;">
                     <div style="flex:1;min-width:80px;">
@@ -941,6 +948,10 @@ function buildQuoteGenerator(overlay, Q) {
         if (gPitchEl) shedConfigs[i].gablePitch = parseInt(gPitchEl.value) || 4;
         const gPitchLbl = document.getElementById('shedGablePitchLbl' + i);
         if (gPitchLbl) gPitchLbl.style.display = shedConfigs[i].type === 'gable' ? 'block' : 'none';
+        const timberEl = document.getElementById('shedTimber' + i);
+        if (timberEl) shedConfigs[i].timberFrame = timberEl.value;
+        const timberLbl = document.getElementById('shedTimberLbl' + i);
+        if (timberLbl) timberLbl.style.display = shedConfigs[i].type === 'gable' ? 'block' : 'none';
         const ltPitchEl = document.getElementById('shedLTPitch' + i);
         if (ltPitchEl) shedConfigs[i].ltPitch = parseInt(ltPitchEl.value) || 1;
         const dropEl = document.getElementById('shedDrop' + i);
@@ -1192,7 +1203,7 @@ function buildQuoteGenerator(overlay, Q) {
             type: 'leanto', wrapDir: 'cw', wrapLeg: 0,
             encl: 'roofonly',
             position: 'center', offsetFt: 0,
-            gablePS: 10, gablePitch: 4,
+            gablePS: 10, gablePitch: 4, timberFrame: 'metal',
             ltPitch: 1, dropFt: 0
         });
         buildShedConfigUI();
@@ -1748,6 +1759,11 @@ function buildQuoteGenerator(overlay, Q) {
                     </div>
                     ${currentFrameType === 'stud' ? '<div style="font-size:10px;color:#d4a843;font-weight:600;padding:4px 8px;">2×6 studs @ 16" OC</div>' : ''}
                 </div>
+                ${(w.id === 'front' || w.id === 'back') ? `<div id="qgGableType_${w.id}" style="display:${w.encl === 'open' ? 'flex' : 'none'};gap:5px;margin:0 0 5px;align-items:center;">
+                    <span style="font-size:10px;color:#7a8aa5;font-weight:600;">Upper Gable:</span>
+                    <button onclick="window._setGableType('${w.id}','metal')" style="padding:4px 10px;border-radius:5px;font-size:10px;cursor:pointer;border:1px solid ${(w.gableType||'metal')==='metal'?'#d4a843':'#e8ecf2'};background:${(w.gableType||'metal')==='metal'?'rgba(26,39,68,.06)':'#f4f6f8'};color:${(w.gableType||'metal')==='metal'?'#b8860b':'#7a8aa5'};font-family:'Sora',sans-serif;font-weight:${(w.gableType||'metal')==='metal'?'700':'400'};">🏗️ Metal Panel</button>
+                    <button onclick="window._setGableType('${w.id}','timber')" style="padding:4px 10px;border-radius:5px;font-size:10px;cursor:pointer;border:1px solid ${w.gableType==='timber'?'#d4a843':'#e8ecf2'};background:${w.gableType==='timber'?'rgba(26,39,68,.06)':'#f4f6f8'};color:${w.gableType==='timber'?'#b8860b':'#7a8aa5'};font-family:'Sora',sans-serif;font-weight:${w.gableType==='timber'?'700':'400'};">🪵 Timber Framed</button>
+                </div>` : ''}
             </div>`;
         }).join('');
 
@@ -1765,8 +1781,18 @@ function buildQuoteGenerator(overlay, Q) {
 
     window._setWallEncl = function(wi, val) {
         WALLS[wi].encl = val;
+        // Show/hide gable type selector for gable walls
+        const wId = WALLS[wi].id;
+        const gtEl = document.getElementById('qgGableType_' + wId);
+        if (gtEl) gtEl.style.display = (val === 'open' && (wId === 'front' || wId === 'back')) ? 'flex' : 'none';
         renderWalls();
         renderFPPosts();
+    };
+
+    window._setGableType = function(wallId, type) {
+        const w = WALLS.find(wl => wl.id === wallId);
+        if (w) w.gableType = type;
+        renderWalls();
     };
 
     window._setWallSpacing = function(wi, val) {
@@ -2568,6 +2594,49 @@ function buildQuoteGenerator(overlay, Q) {
             if (isG) {
                 const zOff = wallId === 'front' ? .005 : -.005;
                 const z = zP + zOff;
+                const isTimberGable = wCfg && wCfg.gableType === 'timber' && wCfg.encl === 'open';
+                if (isTimberGable) {
+                    // Timber framed upper gable
+                    var tmbG = 0.067;
+                    var tmbrMatG = new THREE.MeshBasicMaterial({ color: 0x8B6914, side: THREE.DoubleSide });
+                    // Bottom chord
+                    var bcG = new THREE.Mesh(new THREE.BoxGeometry(sw, tmbG, tmbG), tmbrMatG);
+                    bcG.position.set(0, sh + tmbG/2, zP); grps.walls.add(bcG);
+                    // King post
+                    var kpHG = sr - sh - tmbG;
+                    if (kpHG > 0) {
+                        var kpG = new THREE.Mesh(new THREE.BoxGeometry(tmbG, kpHG, tmbG), tmbrMatG);
+                        kpG.position.set(0, sh + tmbG + kpHG/2, zP); grps.walls.add(kpG);
+                    }
+                    // Left rafter
+                    var rLenG = Math.sqrt(Math.pow(sw/2, 2) + Math.pow(sr - sh, 2));
+                    var rAngG = Math.atan2(sr - sh, sw/2);
+                    var lrG = new THREE.Mesh(new THREE.BoxGeometry(rLenG, tmbG, tmbG), tmbrMatG);
+                    lrG.position.set(-sw/4, (sh + sr)/2, zP);
+                    lrG.rotation.z = rAngG; grps.walls.add(lrG);
+                    // Right rafter
+                    var rrG = new THREE.Mesh(new THREE.BoxGeometry(rLenG, tmbG, tmbG), tmbrMatG);
+                    rrG.position.set(sw/4, (sh + sr)/2, zP);
+                    rrG.rotation.z = Math.PI - rAngG; grps.walls.add(rrG);
+                    // Web members
+                    var midRHG = (sh + sr) / 2;
+                    var midRXG = sw / 4;
+                    var wLenG = Math.sqrt(Math.pow(midRXG, 2) + Math.pow(midRHG - sh - tmbG, 2));
+                    var wAngG = Math.atan2(midRHG - sh - tmbG, midRXG);
+                    // Left web
+                    var lwG = new THREE.Mesh(new THREE.BoxGeometry(wLenG, tmbG * 0.6, tmbG * 0.6), tmbrMatG);
+                    lwG.position.set(-midRXG/2, (sh + tmbG + midRHG)/2, zP);
+                    lwG.rotation.z = wAngG; grps.walls.add(lwG);
+                    // Right web
+                    var rwG = new THREE.Mesh(new THREE.BoxGeometry(wLenG, tmbG * 0.6, tmbG * 0.6), tmbrMatG);
+                    rwG.position.set(midRXG/2, (sh + tmbG + midRHG)/2, zP);
+                    rwG.rotation.z = Math.PI - wAngG; grps.walls.add(rwG);
+                    // Collar tie (horizontal member at ~1/3 from top)
+                    var collarY = sh + (sr - sh) * 0.6;
+                    var collarHalfW = (sw/2) * (1 - 0.6); // width at that height
+                    var ctG = new THREE.Mesh(new THREE.BoxGeometry(collarHalfW * 2, tmbG * 0.6, tmbG * 0.6), tmbrMatG);
+                    ctG.position.set(0, collarY, zP); grps.walls.add(ctG);
+                } else {
                 let leftDrop = 0, rightDrop = 0;
                 (shedCfgs || []).forEach(sc2 => {
                     if (sc2.type !== 'leanto' && sc2.type !== 'wrap') return;
@@ -2593,17 +2662,7 @@ function buildQuoteGenerator(overlay, Q) {
                         -sw/2, sh, z, sw/2, sh, z, 0, sr, z
                     ]), 3)); tg.setIndex([0, 1, 2]); tg.computeVertexNormals();
                     grps.walls.add(new THREE.Mesh(tg, mW));
-                    // The wall below sh is built by buildWS as a rectangle from 0 to sh.
-                    // We need to mask out the corners where the monitor gap is.
-                    // Use a slightly-forward dark quad to hide the wall in the gap area.
                     const zM = zP + (wallId === 'front' ? .008 : -.008);
-                    // Sky-matching material (transparent would be better but this works visually)
-                    const mSky = new THREE.MeshBasicMaterial({ 
-                        color: 0x87CEEB, side: THREE.DoubleSide, 
-                        transparent: true, opacity: 0 
-                    });
-                    // Actually, use a clipping approach: render an invisible quad with depthWrite
-                    // to block the wall behind it. Use colorWrite: false + depthWrite: true
                     const mMask = new THREE.MeshBasicMaterial({ 
                         colorWrite: false, side: THREE.DoubleSide 
                     });
@@ -2617,6 +2676,7 @@ function buildQuoteGenerator(overlay, Q) {
                         gap.renderOrder = -1;
                         grps.walls.add(gap);
                     }
+                }
                 }
                 // Gable triangle outline edges — always visible
                 grps.walls.add(mkL([new THREE.Vector3(-sw / 2, sh, zP), new THREE.Vector3(0, sr, zP)], mE));
@@ -3272,12 +3332,54 @@ function buildQuoteGenerator(overlay, Q) {
                     // Eave lines
                     grps.shed.add(mkL([new THREE.Vector3(aX, sh, z1), new THREE.Vector3(oX, sh, z1)], mE));
                     grps.shed.add(mkL([new THREE.Vector3(aX, sh, z2), new THREE.Vector3(oX, sh, z2)], mE));
-                    // Outer gable triangle
+                    if (sc.timberFrame === 'timber') {
+                    // Outer gable — timber framed with 8x8 members
+                    var tmbr = 0.067; // 8" timber in scene units (8/12 * Sc)
+                    var tmbrMat = new THREE.MeshBasicMaterial({ color: 0x8B6914, side: THREE.DoubleSide });
+                    var tmbrEdge = new THREE.LineBasicMaterial({ color: 0x6B4F10, transparent: true, opacity: .6 });
+                    // Gable outline edges (rafters)
+                    grps.shed.add(mkL([new THREE.Vector3(oX, sh, z1), new THREE.Vector3(oX, extRidgeH, zMid)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(oX, sh, z2), new THREE.Vector3(oX, extRidgeH, zMid)], mE));
+                    // Bottom chord (horizontal beam at eave height)
+                    var bcGeo = new THREE.BoxGeometry(tmbr, tmbr, z2 - z1);
+                    var bc = new THREE.Mesh(bcGeo, tmbrMat);
+                    bc.position.set(oX, sh + tmbr/2, zMid); grps.shed.add(bc);
+                    // King post (vertical center post)
+                    var kpH = extRidgeH - sh - tmbr;
+                    if (kpH > 0) {
+                        var kp = new THREE.Mesh(new THREE.BoxGeometry(tmbr, kpH, tmbr), tmbrMat);
+                        kp.position.set(oX, sh + tmbr + kpH/2, zMid); grps.shed.add(kp);
+                    }
+                    // Left rafter timber (z1 to peak)
+                    var rLen1 = Math.sqrt(Math.pow(zMid - z1, 2) + Math.pow(extRidgeH - sh, 2));
+                    var rAng1 = Math.atan2(extRidgeH - sh, zMid - z1);
+                    var lr = new THREE.Mesh(new THREE.BoxGeometry(tmbr, tmbr, rLen1), tmbrMat);
+                    lr.position.set(oX, (sh + extRidgeH)/2, (z1 + zMid)/2);
+                    lr.rotation.x = -rAng1; grps.shed.add(lr);
+                    // Right rafter timber (z2 to peak)
+                    var rr = new THREE.Mesh(new THREE.BoxGeometry(tmbr, tmbr, rLen1), tmbrMat);
+                    rr.position.set(oX, (sh + extRidgeH)/2, (z2 + zMid)/2);
+                    rr.rotation.x = rAng1; grps.shed.add(rr);
+                    // Web members — diagonal braces from king post base to mid-rafter
+                    var midRH = (sh + extRidgeH) / 2;
+                    var midRZ1 = (z1 + zMid) / 2;
+                    var midRZ2 = (z2 + zMid) / 2;
+                    var wLen1 = Math.sqrt(Math.pow(midRZ1 - zMid, 2) + Math.pow(midRH - sh - tmbr, 2));
+                    var wAng1 = Math.atan2(midRH - sh - tmbr, midRZ1 - zMid);
+                    var lw = new THREE.Mesh(new THREE.BoxGeometry(tmbr * 0.6, tmbr * 0.6, wLen1), tmbrMat);
+                    lw.position.set(oX, (sh + tmbr + midRH)/2, (zMid + midRZ1)/2);
+                    lw.rotation.x = -wAng1; grps.shed.add(lw);
+                    var rw = new THREE.Mesh(new THREE.BoxGeometry(tmbr * 0.6, tmbr * 0.6, wLen1), tmbrMat);
+                    rw.position.set(oX, (sh + tmbr + midRH)/2, (zMid + midRZ2)/2);
+                    rw.rotation.x = wAng1; grps.shed.add(rw);
+                    } else {
+                    // Metal panel gable (default)
                     var tg = new THREE.BufferGeometry();
                     tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([oX, sh, z1, oX, sh, z2, oX, extRidgeH, zMid]), 3));
                     tg.setIndex([0, 1, 2]); tg.computeVertexNormals(); grps.shed.add(new THREE.Mesh(tg, mW));
                     grps.shed.add(mkL([new THREE.Vector3(oX, sh, z1), new THREE.Vector3(oX, extRidgeH, zMid)], mE));
                     grps.shed.add(mkL([new THREE.Vector3(oX, sh, z2), new THREE.Vector3(oX, extRidgeH, zMid)], mE));
+                    }
                     // Valley fill: triangular panels connecting extension roof to main roof
                     // Main roof at aX = sh (eave). Moving inward by deltaX, main roof rises at Q.pitch/12
                     // Find X where main roof height = extRidgeH
@@ -3322,12 +3424,48 @@ function buildQuoteGenerator(overlay, Q) {
                     // Eave lines
                     grps.shed.add(mkL([new THREE.Vector3(x1, sh, aZ), new THREE.Vector3(x1, sh, oZ)], mE));
                     grps.shed.add(mkL([new THREE.Vector3(x2, sh, aZ), new THREE.Vector3(x2, sh, oZ)], mE));
-                    // Outer gable triangle
-                    var tg = new THREE.BufferGeometry();
-                    tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([x1, sh, oZ, x2, sh, oZ, xMid, extRidgeH, oZ]), 3));
-                    tg.setIndex([0, 1, 2]); tg.computeVertexNormals(); grps.shed.add(new THREE.Mesh(tg, mW));
+                    if (sc.timberFrame === 'timber') {
+                    // Outer gable — timber framed with 8x8 members
+                    var tmbr2 = 0.067;
+                    var tmbrMat2 = new THREE.MeshBasicMaterial({ color: 0x8B6914, side: THREE.DoubleSide });
+                    var tmbrEdge2 = new THREE.LineBasicMaterial({ color: 0x6B4F10, transparent: true, opacity: .6 });
                     grps.shed.add(mkL([new THREE.Vector3(x1, sh, oZ), new THREE.Vector3(xMid, extRidgeH, oZ)], mE));
                     grps.shed.add(mkL([new THREE.Vector3(x2, sh, oZ), new THREE.Vector3(xMid, extRidgeH, oZ)], mE));
+                    var bcGeo2 = new THREE.BoxGeometry(x2 - x1, tmbr2, tmbr2);
+                    var bc2 = new THREE.Mesh(bcGeo2, tmbrMat2);
+                    bc2.position.set(xMid, sh + tmbr2/2, oZ); grps.shed.add(bc2);
+                    var kpH2 = extRidgeH - sh - tmbr2;
+                    if (kpH2 > 0) {
+                        var kp2 = new THREE.Mesh(new THREE.BoxGeometry(tmbr2, kpH2, tmbr2), tmbrMat2);
+                        kp2.position.set(xMid, sh + tmbr2 + kpH2/2, oZ); grps.shed.add(kp2);
+                    }
+                    var rLen2 = Math.sqrt(Math.pow(xMid - x1, 2) + Math.pow(extRidgeH - sh, 2));
+                    var rAng2 = Math.atan2(extRidgeH - sh, xMid - x1);
+                    var lr2 = new THREE.Mesh(new THREE.BoxGeometry(rLen2, tmbr2, tmbr2), tmbrMat2);
+                    lr2.position.set((x1 + xMid)/2, (sh + extRidgeH)/2, oZ);
+                    lr2.rotation.z = rAng2; grps.shed.add(lr2);
+                    var rr2 = new THREE.Mesh(new THREE.BoxGeometry(rLen2, tmbr2, tmbr2), tmbrMat2);
+                    rr2.position.set((x2 + xMid)/2, (sh + extRidgeH)/2, oZ);
+                    rr2.rotation.z = Math.PI - rAng2; grps.shed.add(rr2);
+                    var midRH2 = (sh + extRidgeH) / 2;
+                    var midRX1 = (x1 + xMid) / 2;
+                    var midRX2 = (x2 + xMid) / 2;
+                    var wLen2 = Math.sqrt(Math.pow(midRX1 - xMid, 2) + Math.pow(midRH2 - sh - tmbr2, 2));
+                    var wAng2 = Math.atan2(midRH2 - sh - tmbr2, midRX1 - xMid);
+                    var lw2 = new THREE.Mesh(new THREE.BoxGeometry(wLen2, tmbr2 * 0.6, tmbr2 * 0.6), tmbrMat2);
+                    lw2.position.set((xMid + midRX1)/2, (sh + tmbr2 + midRH2)/2, oZ);
+                    lw2.rotation.z = wAng2; grps.shed.add(lw2);
+                    var rw2 = new THREE.Mesh(new THREE.BoxGeometry(wLen2, tmbr2 * 0.6, tmbr2 * 0.6), tmbrMat2);
+                    rw2.position.set((xMid + midRX2)/2, (sh + tmbr2 + midRH2)/2, oZ);
+                    rw2.rotation.z = Math.PI - wAng2; grps.shed.add(rw2);
+                    } else {
+                    // Metal panel gable (default)
+                    var tg2 = new THREE.BufferGeometry();
+                    tg2.setAttribute('position', new THREE.BufferAttribute(new Float32Array([x1, sh, oZ, x2, sh, oZ, xMid, extRidgeH, oZ]), 3));
+                    tg2.setIndex([0, 1, 2]); tg2.computeVertexNormals(); grps.shed.add(new THREE.Mesh(tg2, mW));
+                    grps.shed.add(mkL([new THREE.Vector3(x1, sh, oZ), new THREE.Vector3(xMid, extRidgeH, oZ)], mE));
+                    grps.shed.add(mkL([new THREE.Vector3(x2, sh, oZ), new THREE.Vector3(xMid, extRidgeH, oZ)], mE));
+                    }
                     // Valley fill at attachment wall
                     if (extRidgeH < sr) {
                         var vt1 = new THREE.BufferGeometry();
