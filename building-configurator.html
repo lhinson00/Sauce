@@ -2741,15 +2741,21 @@ function buildQuoteGenerator(overlay, Q) {
         const co = 0.01;
         const trimW = 0.06; // trim strip width
         const mTrimPanel = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
-        // Each corner gets two strips (one per wall face)
+        // Helper: is wall open by id?
+        const _wOpen = (id) => { const wc = wallCfgs.find(w => w.id === id); return wc && wc.encl === 'open'; };
+        // Each corner gets two strips (one per wall face) — skip if that face's wall is open
         [[-1,-1],[-1,1],[1,-1],[1,1]].forEach(([sx,sz]) => {
             const cx = sx * sw / 2, cz = sz * sl / 2;
-            // Strip on gable face (runs along X)
-            const g1 = mkQ([cx, 0, cz + sz*co, cx - sx*trimW, 0, cz + sz*co, cx - sx*trimW, sh, cz + sz*co, cx, sh, cz + sz*co], mTrimPanel);
-            grps.walls.add(g1);
-            // Strip on eave face (runs along Z)
-            const g2 = mkQ([cx + sx*co, 0, cz, cx + sx*co, 0, cz - sz*trimW, cx + sx*co, sh, cz - sz*trimW, cx + sx*co, sh, cz], mTrimPanel);
-            grps.walls.add(g2);
+            const gableId = sz === -1 ? 'front' : 'back';
+            const eaveId = sx === -1 ? 'left' : 'right';
+            // Strip on gable face (skip if gable wall is open)
+            if (!_wOpen(gableId)) {
+                grps.walls.add(mkQ([cx, 0, cz + sz*co, cx - sx*trimW, 0, cz + sz*co, cx - sx*trimW, sh, cz + sz*co, cx, sh, cz + sz*co], mTrimPanel));
+            }
+            // Strip on eave face (skip if eave wall is open)
+            if (!_wOpen(eaveId)) {
+                grps.walls.add(mkQ([cx + sx*co, 0, cz, cx + sx*co, 0, cz - sz*trimW, cx + sx*co, sh, cz - sz*trimW, cx + sx*co, sh, cz], mTrimPanel));
+            }
         });
 
         // Doors (with trim-colored frames)
@@ -2900,17 +2906,21 @@ function buildQuoteGenerator(overlay, Q) {
         // === EAVE TRIM — horizontal trim strips where roof meets walls ===
         const eaveH = 0.04;
         // Left eave
-        grps.walls.add(mkQ([-sw/2 - co, sh - eaveH, -sl/2 - oh, -sw/2 - co, sh - eaveH, sl/2 + oh, -sw/2 - co, sh, sl/2 + oh, -sw/2 - co, sh, -sl/2 - oh], mTrimPanel));
+        if (!_wOpen('left'))
+            grps.walls.add(mkQ([-sw/2 - co, sh - eaveH, -sl/2 - oh, -sw/2 - co, sh - eaveH, sl/2 + oh, -sw/2 - co, sh, sl/2 + oh, -sw/2 - co, sh, -sl/2 - oh], mTrimPanel));
         // Right eave
-        grps.walls.add(mkQ([sw/2 + co, sh - eaveH, -sl/2 - oh, sw/2 + co, sh, -sl/2 - oh, sw/2 + co, sh, sl/2 + oh, sw/2 + co, sh - eaveH, sl/2 + oh], mTrimPanel));
+        if (!_wOpen('right'))
+            grps.walls.add(mkQ([sw/2 + co, sh - eaveH, -sl/2 - oh, sw/2 + co, sh, -sl/2 - oh, sw/2 + co, sh, sl/2 + oh, sw/2 + co, sh - eaveH, sl/2 + oh], mTrimPanel));
 
         // === BASE TRIM — trim strip along the bottom of walls ===
         const baseH = 0.03;
         [-1,1].forEach(s => {
             // Eave walls
-            grps.walls.add(mkQ([s*sw/2 + s*co, 0, -sl/2, s*sw/2 + s*co, baseH, -sl/2, s*sw/2 + s*co, baseH, sl/2, s*sw/2 + s*co, 0, sl/2], mTrimPanel));
+            if (!(s === -1 && leftOpen) && !(s === 1 && rightOpen))
+                grps.walls.add(mkQ([s*sw/2 + s*co, 0, -sl/2, s*sw/2 + s*co, baseH, -sl/2, s*sw/2 + s*co, baseH, sl/2, s*sw/2 + s*co, 0, sl/2], mTrimPanel));
             // Gable walls
-            grps.walls.add(mkQ([-sw/2, 0, s*sl/2 + s*co, sw/2, 0, s*sl/2 + s*co, sw/2, baseH, s*sl/2 + s*co, -sw/2, baseH, s*sl/2 + s*co], mTrimPanel));
+            if (!(s === -1 && frontOpen) && !(s === 1 && backOpen))
+                grps.walls.add(mkQ([-sw/2, 0, s*sl/2 + s*co, sw/2, 0, s*sl/2 + s*co, sw/2, baseH, s*sl/2 + s*co, -sw/2, baseH, s*sl/2 + s*co], mTrimPanel));
         });
 
         // === GROUND SHADOW — soft shadow plane under the building ===
@@ -2923,22 +2933,23 @@ function buildQuoteGenerator(overlay, Q) {
         grps.slab.add(shadowMesh);
 
         // === WALL TEXTURE — Cypress Board & Batten or Standard Metal Ribs ===
+        // Helper: check if a wall is open
+        const _wallOpen = (id) => { const wc = wallCfgs.find(w => w.id === id); return wc && wc.encl === 'open'; };
+        const leftOpen = _wallOpen('left'), rightOpen = _wallOpen('right');
+        const frontOpen = _wallOpen('front'), backOpen = _wallOpen('back');
         const isCypress = document.getElementById('qgCypress')?.checked || false;
         if (isCypress) {
-            // Cypress Board & Batten — warm wood base with wide boards + narrow battens
-            const cypressBase = new THREE.MeshBasicMaterial({ color: 0xc8a96e, side: THREE.DoubleSide }); // warm cypress
-            const cypressDark = new THREE.MeshBasicMaterial({ color: 0xa8864a, side: THREE.DoubleSide }); // darker grain
+            const cypressBase = new THREE.MeshBasicMaterial({ color: 0xc8a96e, side: THREE.DoubleSide });
+            const cypressDark = new THREE.MeshBasicMaterial({ color: 0xa8864a, side: THREE.DoubleSide });
             const battenMat = new THREE.LineBasicMaterial({ color: 0x8b6f3c, transparent: true, opacity: 0.6 });
-            const battenW = 0.005; // batten strip width
-            const boardSpacing = 0.18; // wider than metal ribs (~1.8' boards)
+            const boardSpacing = 0.18;
             // Eave walls
             [-1,1].forEach(s => {
-                // Overlay warm wood color on wall
+                if (s === -1 && leftOpen) return;
+                if (s === 1 && rightOpen) return;
                 grps.walls.add(mkQ([s*sw/2+s*0.003, 0, -sl/2, s*sw/2+s*0.003, 0, sl/2, s*sw/2+s*0.003, sh, sl/2, s*sw/2+s*0.003, sh, -sl/2], cypressBase));
                 for (let z = -sl/2; z <= sl/2; z += boardSpacing) {
-                    // Battens — thicker visible lines
                     grps.walls.add(mkL([new THREE.Vector3(s*sw/2 + s*0.004, 0, z), new THREE.Vector3(s*sw/2 + s*0.004, sh, z)], battenMat));
-                    // Alternating board tone for natural wood variation
                     if (Math.floor((z + sl/2) / boardSpacing) % 3 === 0) {
                         const zEnd = Math.min(z + boardSpacing * 0.4, sl/2);
                         grps.walls.add(mkQ([s*sw/2+s*0.0035, 0, z, s*sw/2+s*0.0035, 0, zEnd, s*sw/2+s*0.0035, sh, zEnd, s*sw/2+s*0.0035, sh, z], cypressDark));
@@ -2947,6 +2958,8 @@ function buildQuoteGenerator(overlay, Q) {
             });
             // Gable walls
             [-1,1].forEach(s => {
+                if (s === -1 && frontOpen) return;
+                if (s === 1 && backOpen) return;
                 grps.walls.add(mkQ([-sw/2, 0, s*sl/2+s*0.003, sw/2, 0, s*sl/2+s*0.003, sw/2, sh, s*sl/2+s*0.003, -sw/2, sh, s*sl/2+s*0.003], cypressBase));
                 for (let x = -sw/2; x <= sw/2; x += boardSpacing) {
                     const gableH = sh + (Q.w/2 - Math.abs(x/Sc)) * (Q.pitch/12) * Sc;
@@ -2962,11 +2975,15 @@ function buildQuoteGenerator(overlay, Q) {
             const ribMat = new THREE.LineBasicMaterial({ color: pc(wallColorName), transparent: true, opacity: 0.15 });
             const ribSpacing = 0.12;
             [-1,1].forEach(s => {
+                if (s === -1 && leftOpen) return;
+                if (s === 1 && rightOpen) return;
                 for (let z = -sl/2; z <= sl/2; z += ribSpacing) {
                     grps.walls.add(mkL([new THREE.Vector3(s*sw/2 + s*0.002, 0, z), new THREE.Vector3(s*sw/2 + s*0.002, sh, z)], ribMat));
                 }
             });
             [-1,1].forEach(s => {
+                if (s === -1 && frontOpen) return;
+                if (s === 1 && backOpen) return;
                 for (let x = -sw/2 + ribSpacing; x < sw/2; x += ribSpacing) {
                     const gableH = sh + (Q.w/2 - Math.abs(x/Sc)) * (Q.pitch/12) * Sc;
                     grps.walls.add(mkL([new THREE.Vector3(x, 0, s*sl/2 + s*0.002), new THREE.Vector3(x, Math.min(gableH, sr), s*sl/2 + s*0.002)], ribMat));
