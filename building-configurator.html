@@ -902,6 +902,13 @@ function buildQuoteGenerator(overlay, Q) {
                             <option value="6" ${sc.dropFt==6?'selected':''}>6' drop</option>
                         </select>
                     </div>
+                    <div style="flex:1;min-width:90px;">
+                        <div style="${lblStyle}">Frame Style</div>
+                        <select id="shedFrameStyle${i}" onchange="window._shedCfgChange(${i})" style="${selStyle}">
+                            <option value="metal" ${(sc.frameStyle||'metal')==='metal'?'selected':''}>Standard Metal</option>
+                            <option value="timber" ${sc.frameStyle==='timber'?'selected':''}>Timber Framed</option>
+                        </select>
+                    </div>
                 </div>
             </div>
         `).join('');
@@ -956,6 +963,8 @@ function buildQuoteGenerator(overlay, Q) {
         if (ltPitchEl) shedConfigs[i].ltPitch = parseInt(ltPitchEl.value) || 1;
         const dropEl = document.getElementById('shedDrop' + i);
         if (dropEl) shedConfigs[i].dropFt = parseInt(dropEl.value) || 0;
+        const frameStyleEl = document.getElementById('shedFrameStyle' + i);
+        if (frameStyleEl) shedConfigs[i].frameStyle = frameStyleEl.value;
         const ltRow = document.getElementById('shedLeantoRow' + i);
         if (ltRow) ltRow.style.display = (shedConfigs[i].type === 'leanto' || shedConfigs[i].type === 'wrap') ? 'flex' : 'none';
 
@@ -1204,7 +1213,7 @@ function buildQuoteGenerator(overlay, Q) {
             encl: 'roofonly',
             position: 'center', offsetFt: 0,
             gablePS: 10, gablePitch: 4, timberFrame: 'metal',
-            ltPitch: 1, dropFt: 0
+            ltPitch: 1, dropFt: 0, frameStyle: 'metal'
         });
         buildShedConfigUI();
         renderFPPosts();
@@ -2569,12 +2578,89 @@ function buildQuoteGenerator(overlay, Q) {
                 }
             } else {
                 // Leanto (default): posts along outer edge aligned with shed length only
-                if (sc.wall === 'left' || sc.wall === 'right') {
-                    const oX = sc.wall === 'left' ? -sw/2 - ssw : sw/2 + ssw;
-                    addPostLineAligned(oX, 0, true, sc.l, attachPS);
+                const isTimberShed = sc.frameStyle === 'timber';
+                if (isTimberShed) {
+                    // Timber framed lean-to: 8x8 posts + header beams
+                    const tmbrSz = 0.067; // 8" in scene units
+                    const tmbrMat = new THREE.MeshBasicMaterial({ color: 0x8B6914, side: THREE.DoubleSide });
+                    const tmbrDark = new THREE.MeshBasicMaterial({ color: 0x6B4F10, side: THREE.DoubleSide });
+                    if (sc.wall === 'left' || sc.wall === 'right') {
+                        const oX = sc.wall === 'left' ? -sw/2 - ssw : sw/2 + ssw;
+                        const numBays = Math.max(1, Math.floor(sc.l / attachPS));
+                        // Timber posts along outer edge
+                        for (let pi = 0; pi <= numBays; pi++) {
+                            const ft = pi * (sc.l / numBays);
+                            const z = (-sc.l / 2 + ft) * Sc + shedCenterOff;
+                            const post = new THREE.Mesh(new THREE.BoxGeometry(tmbrSz, shedSh, tmbrSz), tmbrMat);
+                            post.position.set(oX, shedSh / 2, z); grps.posts.add(post);
+                        }
+                        // Header beam along the outer edge (full shed length)
+                        const beamLen = ssl;
+                        const beam = new THREE.Mesh(new THREE.BoxGeometry(tmbrSz, tmbrSz, beamLen), tmbrDark);
+                        beam.position.set(oX, shedSh + tmbrSz / 2, shedCenterOff); grps.posts.add(beam);
+                        // Header beam along attachment wall
+                        const beamA = new THREE.Mesh(new THREE.BoxGeometry(tmbrSz, tmbrSz, beamLen), tmbrDark);
+                        const aX = sc.wall === 'left' ? -sw/2 : sw/2;
+                        beamA.position.set(aX, attachHP + tmbrSz / 2, shedCenterOff); grps.posts.add(beamA);
+                        // Cross beams (rafters) connecting outer to inner at each post
+                        for (let pi = 0; pi <= numBays; pi++) {
+                            const ft = pi * (sc.l / numBays);
+                            const z = (-sc.l / 2 + ft) * Sc + shedCenterOff;
+                            const rLen = ssw;
+                            const rH = attachHP - shedSh;
+                            const rFullLen = Math.sqrt(rLen * rLen + rH * rH);
+                            const rAng = Math.atan2(rH, rLen);
+                            const rafter = new THREE.Mesh(new THREE.BoxGeometry(rFullLen, tmbrSz * 0.75, tmbrSz * 0.75), tmbrMat);
+                            const dir = sc.wall === 'left' ? 1 : -1;
+                            rafter.position.set((oX + aX) / 2, (shedSh + attachHP) / 2 + tmbrSz/2, z);
+                            rafter.rotation.z = dir * rAng; grps.posts.add(rafter);
+                        }
+                        // Decorative knee braces at corner posts
+                        const braceLen = Math.min(ssw * 0.4, 0.3);
+                        [0, numBays].forEach(pi => {
+                            const ft = pi * (sc.l / numBays);
+                            const z = (-sc.l / 2 + ft) * Sc + shedCenterOff;
+                            const brace = new THREE.Mesh(new THREE.BoxGeometry(tmbrSz * 0.5, tmbrSz * 0.5, braceLen * 1.4), tmbrDark);
+                            brace.position.set(oX, shedSh - braceLen * 0.5, z);
+                            brace.rotation.x = Math.PI / 4 * (pi === 0 ? 1 : -1); grps.posts.add(brace);
+                        });
+                    } else {
+                        const oZ = sc.wall === 'front' ? -sl/2 - ssw : sl/2 + ssw;
+                        const numBays = Math.max(1, Math.floor(sc.l / attachPS));
+                        for (let pi = 0; pi <= numBays; pi++) {
+                            const ft = pi * (sc.l / numBays);
+                            const x = (-sc.l / 2 + ft) * Sc + shedCenterOff;
+                            const post = new THREE.Mesh(new THREE.BoxGeometry(tmbrSz, shedSh, tmbrSz), tmbrMat);
+                            post.position.set(x, shedSh / 2, oZ); grps.posts.add(post);
+                        }
+                        const beamLen = ssl;
+                        const beam = new THREE.Mesh(new THREE.BoxGeometry(beamLen, tmbrSz, tmbrSz), tmbrDark);
+                        beam.position.set(shedCenterOff, shedSh + tmbrSz / 2, oZ); grps.posts.add(beam);
+                        const beamA = new THREE.Mesh(new THREE.BoxGeometry(beamLen, tmbrSz, tmbrSz), tmbrDark);
+                        const aZ = sc.wall === 'front' ? -sl/2 : sl/2;
+                        beamA.position.set(shedCenterOff, attachHP + tmbrSz / 2, aZ); grps.posts.add(beamA);
+                        for (let pi = 0; pi <= numBays; pi++) {
+                            const ft = pi * (sc.l / numBays);
+                            const x = (-sc.l / 2 + ft) * Sc + shedCenterOff;
+                            const rLen = ssw;
+                            const rH = attachHP - shedSh;
+                            const rFullLen = Math.sqrt(rLen * rLen + rH * rH);
+                            const rAng = Math.atan2(rH, rLen);
+                            const rafter = new THREE.Mesh(new THREE.BoxGeometry(tmbrSz * 0.75, tmbrSz * 0.75, rFullLen), tmbrDark);
+                            const dir = sc.wall === 'front' ? 1 : -1;
+                            rafter.position.set(x, (shedSh + attachHP) / 2 + tmbrSz/2, (oZ + aZ) / 2);
+                            rafter.rotation.x = -dir * rAng; grps.posts.add(rafter);
+                        }
+                    }
                 } else {
-                    const oZ = sc.wall === 'front' ? -sl/2 - ssw : sl/2 + ssw;
-                    addPostLineAligned(0, oZ, false, sc.l, attachPS);
+                    // Standard metal posts
+                    if (sc.wall === 'left' || sc.wall === 'right') {
+                        const oX = sc.wall === 'left' ? -sw/2 - ssw : sw/2 + ssw;
+                        addPostLineAligned(oX, 0, true, sc.l, attachPS);
+                    } else {
+                        const oZ = sc.wall === 'front' ? -sl/2 - ssw : sl/2 + ssw;
+                        addPostLineAligned(0, oZ, false, sc.l, attachPS);
+                    }
                 }
             }
         });
