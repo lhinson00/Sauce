@@ -3651,31 +3651,131 @@ function buildQuoteGenerator(overlay, Q) {
             // === SHED WALLS (for enclosed/partial sheds) ===
             if (sc.encl === 'enclosed' || sc.encl === 'partial') {
                 const isEave = (sc.wall === 'left' || sc.wall === 'right');
+                const isGableExt = (sc.type === 'gable');
+                // For gable extensions, outer wall height = main eave height (sh), not lean-to sSh
+                const outerWH = isGableExt ? sh : sSh;
+                // Rib materials matching main building
+                const wallHexShed = typeof pc === 'function' ? pc(wallColorName || 'Ash Gray') : 0x8a8d8f;
+                const srR = ((wallHexShed >> 16) & 0xff), srG = ((wallHexShed >> 8) & 0xff), srB = (wallHexShed & 0xff);
+                const sRibHi = new THREE.MeshBasicMaterial({ color: ((Math.min(255, srR + 55) << 16) | (Math.min(255, srG + 55) << 8) | Math.min(255, srB + 55)), side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
+                const sRibSh = new THREE.MeshBasicMaterial({ color: ((Math.max(0, srR - 40) << 16) | (Math.max(0, srG - 40) << 8) | Math.max(0, srB - 40)), side: THREE.DoubleSide, transparent: true, opacity: 0.75 });
+                const sRibSp = 0.075, sRibW = 0.006;
                 if (isEave) {
                     const oX = sc.wall === 'left' ? -sw / 2 - ssw : sw / 2 + ssw;
                     const aX = sc.wall === 'left' ? -sw / 2 : sw / 2;
-                    const faceDir = sc.wall === 'left' ? -1 : 1;
+                    const s = sc.wall === 'left' ? -1 : 1;
+                    const z1 = -ssl/2 + sco, z2 = ssl/2 + sco;
                     // Outer wall (away from main building)
-                    grps.shed.add(mkQ([oX, 0, -ssl/2, oX, sSh, -ssl/2, oX, sSh, ssl/2, oX, 0, ssl/2], mW));
-                    grps.shed.add(mkL([new THREE.Vector3(oX, 0, -ssl/2), new THREE.Vector3(oX, sSh, -ssl/2), new THREE.Vector3(oX, sSh, ssl/2), new THREE.Vector3(oX, 0, ssl/2)], mTrimLine));
-                    // Front end wall
-                    grps.shed.add(mkQ([oX, 0, -ssl/2, oX, sSh, -ssl/2, aX, sh, -ssl/2, aX, 0, -ssl/2], mW));
-                    grps.shed.add(mkL([new THREE.Vector3(oX, 0, -ssl/2), new THREE.Vector3(oX, sSh, -ssl/2), new THREE.Vector3(aX, sh, -ssl/2)], mTrimLine));
-                    // Back end wall
-                    grps.shed.add(mkQ([aX, 0, ssl/2, aX, sh, ssl/2, oX, sSh, ssl/2, oX, 0, ssl/2], mW));
-                    grps.shed.add(mkL([new THREE.Vector3(oX, 0, ssl/2), new THREE.Vector3(oX, sSh, ssl/2), new THREE.Vector3(aX, sh, ssl/2)], mTrimLine));
+                    grps.shed.add(mkQ([oX, 0, z1, oX, outerWH, z1, oX, outerWH, z2, oX, 0, z2], mW));
+                    grps.shed.add(mkL([new THREE.Vector3(oX, 0, z1), new THREE.Vector3(oX, outerWH, z1), new THREE.Vector3(oX, outerWH, z2), new THREE.Vector3(oX, 0, z2)], mTrimLine));
+                    // Outer wall ribs
+                    for (let z = z1; z <= z2; z += sRibSp) {
+                        grps.shed.add(mkQ([oX + s*0.003, 0, z, oX + s*0.003, 0, z + sRibW, oX + s*0.003, outerWH, z + sRibW, oX + s*0.003, outerWH, z], sRibHi));
+                        grps.shed.add(mkQ([oX + s*0.003, 0, z + sRibW, oX + s*0.003, 0, z + sRibW*2, oX + s*0.003, outerWH, z + sRibW*2, oX + s*0.003, outerWH, z + sRibW], sRibSh));
+                    }
+                    if (isGableExt) {
+                        // Gable extension: end walls are full height rectangles + gable triangle above
+                        const gablePitchExt = sc.gablePitch || 4;
+                        const extRidgeH = Math.min(sr, sh + (sc.l / 2) * (gablePitchExt / 12) * Sc);
+                        const zMid = sco;
+                        // Front end wall (rectangle sh + gable triangle)
+                        grps.shed.add(mkQ([oX, 0, z1, oX, sh, z1, aX, sh, z1, aX, 0, z1], mW));
+                        grps.shed.add(mkL([new THREE.Vector3(oX, 0, z1), new THREE.Vector3(oX, sh, z1), new THREE.Vector3(aX, sh, z1), new THREE.Vector3(aX, 0, z1)], mTrimLine));
+                        // Front end wall ribs (vertical)
+                        for (let x = Math.min(oX, aX) + sRibSp; x < Math.max(oX, aX); x += sRibSp) {
+                            grps.shed.add(mkQ([x, 0, z1 - s*0.003, x + sRibW, 0, z1 - s*0.003, x + sRibW, sh, z1 - s*0.003, x, sh, z1 - s*0.003], sRibHi));
+                            grps.shed.add(mkQ([x + sRibW, 0, z1 - s*0.003, x + sRibW*2, 0, z1 - s*0.003, x + sRibW*2, sh, z1 - s*0.003, x + sRibW, sh, z1 - s*0.003], sRibSh));
+                        }
+                        // Back end wall (rectangle sh + gable triangle)
+                        grps.shed.add(mkQ([aX, 0, z2, aX, sh, z2, oX, sh, z2, oX, 0, z2], mW));
+                        grps.shed.add(mkL([new THREE.Vector3(oX, 0, z2), new THREE.Vector3(oX, sh, z2), new THREE.Vector3(aX, sh, z2), new THREE.Vector3(aX, 0, z2)], mTrimLine));
+                        // Back end wall ribs (vertical)
+                        for (let x = Math.min(oX, aX) + sRibSp; x < Math.max(oX, aX); x += sRibSp) {
+                            grps.shed.add(mkQ([x, 0, z2 + s*0.003, x + sRibW, 0, z2 + s*0.003, x + sRibW, sh, z2 + s*0.003, x, sh, z2 + s*0.003], sRibHi));
+                            grps.shed.add(mkQ([x + sRibW, 0, z2 + s*0.003, x + sRibW*2, 0, z2 + s*0.003, x + sRibW*2, sh, z2 + s*0.003, x + sRibW, sh, z2 + s*0.003], sRibSh));
+                        }
+                    } else {
+                        // Lean-to: trapezoidal end walls (outer=sSh, inner=sh)
+                        // Front end wall
+                        grps.shed.add(mkQ([oX, 0, z1, oX, outerWH, z1, aX, sh, z1, aX, 0, z1], mW));
+                        grps.shed.add(mkL([new THREE.Vector3(oX, 0, z1), new THREE.Vector3(oX, outerWH, z1), new THREE.Vector3(aX, sh, z1)], mTrimLine));
+                        // Front end wall ribs
+                        const endWallW = Math.abs(oX - aX);
+                        const xMin = Math.min(oX, aX), xMax = Math.max(oX, aX);
+                        for (let x = xMin + sRibSp; x < xMax; x += sRibSp) {
+                            const frac = Math.abs(x - oX) / endWallW;
+                            const rH = outerWH + frac * (sh - outerWH);
+                            grps.shed.add(mkQ([x, 0, z1 - s*0.003, x + sRibW, 0, z1 - s*0.003, x + sRibW, rH, z1 - s*0.003, x, rH, z1 - s*0.003], sRibHi));
+                            grps.shed.add(mkQ([x + sRibW, 0, z1 - s*0.003, x + sRibW*2, 0, z1 - s*0.003, x + sRibW*2, rH, z1 - s*0.003, x + sRibW, rH, z1 - s*0.003], sRibSh));
+                        }
+                        // Back end wall
+                        grps.shed.add(mkQ([aX, 0, z2, aX, sh, z2, oX, outerWH, z2, oX, 0, z2], mW));
+                        grps.shed.add(mkL([new THREE.Vector3(oX, 0, z2), new THREE.Vector3(oX, outerWH, z2), new THREE.Vector3(aX, sh, z2)], mTrimLine));
+                        // Back end wall ribs
+                        for (let x = xMin + sRibSp; x < xMax; x += sRibSp) {
+                            const frac = Math.abs(x - oX) / endWallW;
+                            const rH = outerWH + frac * (sh - outerWH);
+                            grps.shed.add(mkQ([x, 0, z2 + s*0.003, x + sRibW, 0, z2 + s*0.003, x + sRibW, rH, z2 + s*0.003, x, rH, z2 + s*0.003], sRibHi));
+                            grps.shed.add(mkQ([x + sRibW, 0, z2 + s*0.003, x + sRibW*2, 0, z2 + s*0.003, x + sRibW*2, rH, z2 + s*0.003, x + sRibW, rH, z2 + s*0.003], sRibSh));
+                        }
+                    }
                 } else {
                     const oZ = sc.wall === 'front' ? -sl / 2 - ssw : sl / 2 + ssw;
                     const aZ = sc.wall === 'front' ? -sl / 2 : sl / 2;
+                    const s = sc.wall === 'front' ? -1 : 1;
+                    const x1 = -ssl/2 + sco, x2 = ssl/2 + sco;
                     // Outer wall
-                    grps.shed.add(mkQ([-ssl/2, 0, oZ, -ssl/2, sSh, oZ, ssl/2, sSh, oZ, ssl/2, 0, oZ], mW));
-                    grps.shed.add(mkL([new THREE.Vector3(-ssl/2, 0, oZ), new THREE.Vector3(-ssl/2, sSh, oZ), new THREE.Vector3(ssl/2, sSh, oZ), new THREE.Vector3(ssl/2, 0, oZ)], mTrimLine));
-                    // Left end wall
-                    grps.shed.add(mkQ([-ssl/2, 0, oZ, -ssl/2, sSh, oZ, -ssl/2, sh, aZ, -ssl/2, 0, aZ], mW));
-                    grps.shed.add(mkL([new THREE.Vector3(-ssl/2, 0, oZ), new THREE.Vector3(-ssl/2, sSh, oZ), new THREE.Vector3(-ssl/2, sh, aZ)], mTrimLine));
-                    // Right end wall
-                    grps.shed.add(mkQ([ssl/2, 0, aZ, ssl/2, sh, aZ, ssl/2, sSh, oZ, ssl/2, 0, oZ], mW));
-                    grps.shed.add(mkL([new THREE.Vector3(ssl/2, 0, oZ), new THREE.Vector3(ssl/2, sSh, oZ), new THREE.Vector3(ssl/2, sh, aZ)], mTrimLine));
+                    grps.shed.add(mkQ([x1, 0, oZ, x1, outerWH, oZ, x2, outerWH, oZ, x2, 0, oZ], mW));
+                    grps.shed.add(mkL([new THREE.Vector3(x1, 0, oZ), new THREE.Vector3(x1, outerWH, oZ), new THREE.Vector3(x2, outerWH, oZ), new THREE.Vector3(x2, 0, oZ)], mTrimLine));
+                    // Outer wall ribs
+                    for (let x = x1; x <= x2; x += sRibSp) {
+                        grps.shed.add(mkQ([x, 0, oZ + s*0.003, x + sRibW, 0, oZ + s*0.003, x + sRibW, outerWH, oZ + s*0.003, x, outerWH, oZ + s*0.003], sRibHi));
+                        grps.shed.add(mkQ([x + sRibW, 0, oZ + s*0.003, x + sRibW*2, 0, oZ + s*0.003, x + sRibW*2, outerWH, oZ + s*0.003, x + sRibW, outerWH, oZ + s*0.003], sRibSh));
+                    }
+                    if (isGableExt) {
+                        // Gable extension off gable wall: end walls are full height rectangles
+                        const gablePitchExt = Q.pitch;
+                        const extRidgeH = Math.min(sr, sh + (sc.l / 2) * (gablePitchExt / 12) * Sc);
+                        const xMid = sco;
+                        // Left end wall
+                        grps.shed.add(mkQ([x1, 0, oZ, x1, sh, oZ, x1, sh, aZ, x1, 0, aZ], mW));
+                        grps.shed.add(mkL([new THREE.Vector3(x1, 0, oZ), new THREE.Vector3(x1, sh, oZ), new THREE.Vector3(x1, sh, aZ), new THREE.Vector3(x1, 0, aZ)], mTrimLine));
+                        // Left end ribs
+                        for (let z = Math.min(oZ, aZ) + sRibSp; z < Math.max(oZ, aZ); z += sRibSp) {
+                            grps.shed.add(mkQ([x1 + s*0.003, 0, z, x1 + s*0.003, 0, z + sRibW, x1 + s*0.003, sh, z + sRibW, x1 + s*0.003, sh, z], sRibHi));
+                            grps.shed.add(mkQ([x1 + s*0.003, 0, z + sRibW, x1 + s*0.003, 0, z + sRibW*2, x1 + s*0.003, sh, z + sRibW*2, x1 + s*0.003, sh, z + sRibW], sRibSh));
+                        }
+                        // Right end wall
+                        grps.shed.add(mkQ([x2, 0, aZ, x2, sh, aZ, x2, sh, oZ, x2, 0, oZ], mW));
+                        grps.shed.add(mkL([new THREE.Vector3(x2, 0, oZ), new THREE.Vector3(x2, sh, oZ), new THREE.Vector3(x2, sh, aZ), new THREE.Vector3(x2, 0, aZ)], mTrimLine));
+                        // Right end ribs
+                        for (let z = Math.min(oZ, aZ) + sRibSp; z < Math.max(oZ, aZ); z += sRibSp) {
+                            grps.shed.add(mkQ([x2 - s*0.003, 0, z, x2 - s*0.003, 0, z + sRibW, x2 - s*0.003, sh, z + sRibW, x2 - s*0.003, sh, z], sRibHi));
+                            grps.shed.add(mkQ([x2 - s*0.003, 0, z + sRibW, x2 - s*0.003, 0, z + sRibW*2, x2 - s*0.003, sh, z + sRibW*2, x2 - s*0.003, sh, z + sRibW], sRibSh));
+                        }
+                    } else {
+                        // Lean-to: trapezoidal end walls
+                        // Left end wall
+                        grps.shed.add(mkQ([x1, 0, oZ, x1, outerWH, oZ, x1, sh, aZ, x1, 0, aZ], mW));
+                        grps.shed.add(mkL([new THREE.Vector3(x1, 0, oZ), new THREE.Vector3(x1, outerWH, oZ), new THREE.Vector3(x1, sh, aZ)], mTrimLine));
+                        const endWallD = Math.abs(oZ - aZ);
+                        const zMin = Math.min(oZ, aZ), zMax = Math.max(oZ, aZ);
+                        for (let z = zMin + sRibSp; z < zMax; z += sRibSp) {
+                            const frac = Math.abs(z - oZ) / endWallD;
+                            const rH = outerWH + frac * (sh - outerWH);
+                            grps.shed.add(mkQ([x1 + s*0.003, 0, z, x1 + s*0.003, 0, z + sRibW, x1 + s*0.003, rH, z + sRibW, x1 + s*0.003, rH, z], sRibHi));
+                            grps.shed.add(mkQ([x1 + s*0.003, 0, z + sRibW, x1 + s*0.003, 0, z + sRibW*2, x1 + s*0.003, rH, z + sRibW*2, x1 + s*0.003, rH, z + sRibW], sRibSh));
+                        }
+                        // Right end wall
+                        grps.shed.add(mkQ([x2, 0, aZ, x2, sh, aZ, x2, outerWH, oZ, x2, 0, oZ], mW));
+                        grps.shed.add(mkL([new THREE.Vector3(x2, 0, oZ), new THREE.Vector3(x2, outerWH, oZ), new THREE.Vector3(x2, sh, aZ)], mTrimLine));
+                        for (let z = zMin + sRibSp; z < zMax; z += sRibSp) {
+                            const frac = Math.abs(z - oZ) / endWallD;
+                            const rH = outerWH + frac * (sh - outerWH);
+                            grps.shed.add(mkQ([x2 - s*0.003, 0, z, x2 - s*0.003, 0, z + sRibW, x2 - s*0.003, rH, z + sRibW, x2 - s*0.003, rH, z], sRibHi));
+                            grps.shed.add(mkQ([x2 - s*0.003, 0, z + sRibW, x2 - s*0.003, 0, z + sRibW*2, x2 - s*0.003, rH, z + sRibW*2, x2 - s*0.003, rH, z + sRibW], sRibSh));
+                        }
+                    }
                 }
             }
         });
