@@ -1061,7 +1061,7 @@ function addShed(){
     id: nextShedId++, idx:idx, label:'Side Shed '+(idx+1),
     w:10, l:defaultLen, origL:defaultLen,
     wall:defaultWall, type:'leanto', wrapDir:'cw', wrapLeg:0,
-    encl:'roofonly', enclWalls:['outer','gable1','gable2'],
+    encl:'roofonly', enclWalls:['outer','gable1','gable2'], gableProfile:true,
     position:'center', offsetFt:0,
     gablePS:10, gablePitch:4, timberFrame:'metal',
     ltPitch:1, dropFt:0, frameStyle:'metal',
@@ -1082,7 +1082,7 @@ function setShedProp(id,prop,val){
     var isEave=(val==='left'||val==='right');
     sc.l=isEave?Q.l:Q.w; sc.origL=sc.l;
   }
-  if(prop==='type'){ sc.encl='roofonly'; sc.enclWalls=['outer','gable1','gable2']; }
+  if(prop==='type'){ sc.encl='roofonly'; sc.enclWalls=['outer','gable1','gable2']; sc.gableProfile=true; }
   if(prop==='encl' && val==='enclosed'){ sc.enclWalls = sc.enclWalls && sc.enclWalls.length ? sc.enclWalls : ['outer','gable1','gable2']; }
   renderSheds(); scheduleBuild();
 }
@@ -1137,13 +1137,19 @@ function renderSheds(){
           +'<input type="checkbox" '+(on?'checked':'')+' onchange="toggleShedWall('+sc.id+',\''+key+'\');event.stopPropagation();" style="accent-color:var(--gold);width:14px;height:14px;cursor:pointer;">'
           +label+'</label>';
       }
+      var gpOn = sc.gableProfile !== false; // default true
+      var gpHtml = '<label style="display:flex;align-items:center;gap:7px;cursor:pointer;padding:5px 8px;border-radius:7px;border:1.5px solid '+(gpOn?'var(--gold)':'var(--border)')+';background:'+(gpOn?'rgba(212,168,67,.1)':'#f9fafc')+';font-size:11px;font-weight:600;color:'+(gpOn?'#b8860b':'var(--muted)')+';">'
+        +'<input type="checkbox" '+(gpOn?'checked':'')+' onchange="setShedProp('+sc.id+',\'gableProfile\',this.checked);scheduleBuild();event.stopPropagation();" style="accent-color:var(--gold);width:14px;height:14px;cursor:pointer;">'
+        +'△ Upper Gable Profile</label>';
       wallPickerHtml = '<div style="margin-top:7px;">'
         +'<div class="shed-label" style="margin-bottom:5px;">Walls to Enclose</div>'
         +'<div style="display:flex;flex-wrap:wrap;gap:5px;">'
         +wChk('outer', outerLabel)
         +wChk('gable1', gable1Label)
         +wChk('gable2', gable2Label)
-        +'</div></div>';
+        +'</div>'
+        +'<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:5px;">'+gpHtml+'</div>'
+        +'</div>';
     }
 
     var posChips=[{val:'start',label:'Start'},{val:'center',label:'Center'},{val:'end',label:'End'},{val:'custom',label:'Custom'}].map(function(p){
@@ -3362,6 +3368,58 @@ function vpToggleWalls() {
                             grps.shed.add(mkQ([x + sRibW, 0, z2 + s*0.003, x + sRibW*2, 0, z2 + s*0.003, x + sRibW*2, rH, z2 + s*0.003, x + sRibW, rH, z2 + s*0.003], sRibSh));
                         }
                         }
+                        // Upper gable profile triangles — fill the triangular space above eave on end walls
+                        if (sc.gableProfile !== false) {
+                            // Each end wall: triangle from outerWH@outer-post to sh@inner-post (roof slope line)
+                            // Using degenerate quad: two points share the apex (aX, sh, zN)
+                            // Front end: triangle at z1
+                            { const tg1 = new THREE.BufferGeometry();
+                              tg1.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+                                oX, outerWH, z1,  aX, sh, z1,  aX, sh, z1,  oX, outerWH, z1
+                              ]), 3));
+                              tg1.setIndex([0,1,2,0,2,3]);
+                              // Proper triangle: oX,outerWH → aX,sh → oX,outerWH (degenerate — use triangle geo)
+                            }
+                            // Front end gable triangle (roof-slope fill)
+                            const tFront = new THREE.BufferGeometry();
+                            tFront.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+                                oX, outerWH, z1,
+                                aX, sh,      z1,
+                                oX, sh,      z1
+                            ]), 3));
+                            tFront.setIndex([0,1,2]);
+                            tFront.computeVertexNormals();
+                            grps.wallPanels.add(new THREE.Mesh(tFront, mW));
+                            grps.shed.add(mkL([
+                                new THREE.Vector3(oX, outerWH, z1),
+                                new THREE.Vector3(aX, sh, z1),
+                                new THREE.Vector3(oX, sh, z1),
+                                new THREE.Vector3(oX, outerWH, z1)
+                            ], mTrimLine));
+                            // Back end gable triangle
+                            const tBack = new THREE.BufferGeometry();
+                            tBack.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+                                oX, outerWH, z2,
+                                oX, sh,      z2,
+                                aX, sh,      z2
+                            ]), 3));
+                            tBack.setIndex([0,1,2]);
+                            tBack.computeVertexNormals();
+                            grps.wallPanels.add(new THREE.Mesh(tBack, mW));
+                            grps.shed.add(mkL([
+                                new THREE.Vector3(oX, outerWH, z2),
+                                new THREE.Vector3(oX, sh, z2),
+                                new THREE.Vector3(aX, sh, z2),
+                                new THREE.Vector3(oX, outerWH, z2)
+                            ], mTrimLine));
+                            // Ribs on upper triangles
+                            for (let x = xMin + sRibSp; x < xMax; x += sRibSp) {
+                                const frac = Math.abs(x - oX) / endWallW;
+                                const rHlo = outerWH + frac * (sh - outerWH);
+                                grps.shed.add(mkQ([x, rHlo, z1 - s*0.003, x+sRibW, rHlo, z1-s*0.003, x+sRibW, sh, z1-s*0.003, x, sh, z1-s*0.003], sRibHi));
+                                grps.shed.add(mkQ([x, rHlo, z2+s*0.003, x+sRibW, rHlo, z2+s*0.003, x+sRibW, sh, z2+s*0.003, x, sh, z2+s*0.003], sRibHi));
+                            }
+                        }
                     }
                 } else {
                     const oZ = sc.wall === 'front' ? -sl / 2 - ssw : sl / 2 + ssw;
@@ -3425,6 +3483,49 @@ function vpToggleWalls() {
                             grps.shed.add(mkQ([x2 - s*0.003, 0, z, x2 - s*0.003, 0, z + sRibW, x2 - s*0.003, rH, z + sRibW, x2 - s*0.003, rH, z], sRibHi));
                             grps.shed.add(mkQ([x2 - s*0.003, 0, z + sRibW, x2 - s*0.003, 0, z + sRibW*2, x2 - s*0.003, rH, z + sRibW*2, x2 - s*0.003, rH, z + sRibW], sRibSh));
                         }
+                        }
+                        // Upper gable profile for front/back attached lean-to sheds
+                        if (sc.gableProfile !== false) {
+                            const endWallW2 = Math.abs(oZ - aZ);
+                            // Left end (x1): triangle from outerWH@oZ to sh@aZ
+                            const tLeft = new THREE.BufferGeometry();
+                            tLeft.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+                                x1, outerWH, oZ,
+                                x1, sh,      oZ,
+                                x1, sh,      aZ
+                            ]), 3));
+                            tLeft.setIndex([0,1,2]);
+                            tLeft.computeVertexNormals();
+                            grps.wallPanels.add(new THREE.Mesh(tLeft, mW));
+                            grps.shed.add(mkL([
+                                new THREE.Vector3(x1, outerWH, oZ),
+                                new THREE.Vector3(x1, sh, oZ),
+                                new THREE.Vector3(x1, sh, aZ),
+                                new THREE.Vector3(x1, outerWH, oZ)
+                            ], mTrimLine));
+                            // Right end (x2): triangle from outerWH@oZ to sh@aZ
+                            const tRight = new THREE.BufferGeometry();
+                            tRight.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+                                x2, outerWH, oZ,
+                                x2, sh,      aZ,
+                                x2, sh,      oZ
+                            ]), 3));
+                            tRight.setIndex([0,1,2]);
+                            tRight.computeVertexNormals();
+                            grps.wallPanels.add(new THREE.Mesh(tRight, mW));
+                            grps.shed.add(mkL([
+                                new THREE.Vector3(x2, outerWH, oZ),
+                                new THREE.Vector3(x2, sh, oZ),
+                                new THREE.Vector3(x2, sh, aZ),
+                                new THREE.Vector3(x2, outerWH, oZ)
+                            ], mTrimLine));
+                            // Ribs on upper triangles
+                            for (let z = zMin + sRibSp; z < zMax; z += sRibSp) {
+                                const frac = Math.abs(z - oZ) / endWallD;
+                                const rHlo = outerWH + frac * (sh - outerWH);
+                                grps.shed.add(mkQ([x1+s*0.003, rHlo, z, x1+s*0.003, rHlo, z+sRibW, x1+s*0.003, sh, z+sRibW, x1+s*0.003, sh, z], sRibHi));
+                                grps.shed.add(mkQ([x2-s*0.003, rHlo, z, x2-s*0.003, rHlo, z+sRibW, x2-s*0.003, sh, z+sRibW, x2-s*0.003, sh, z], sRibHi));
+                            }
                         }
                     }
                 }
