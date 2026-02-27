@@ -192,7 +192,7 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
             <div class="dim-label">Width</div>
             <div class="dim-ctrl">
               <button class="dim-btn" onclick="adjDim('w',-2)">−</button>
-              <input class="dim-input" id="inW" type="number" value="40" oninput="setDim('w',this.value)">
+              <input class="dim-input" id="inW" type="number" value="40" min="20" max="100" step="1" oninput="setDim('w',this.value)">
               <span class="dim-unit">ft</span>
               <button class="dim-btn" onclick="adjDim('w',2)">+</button>
             </div>
@@ -201,7 +201,7 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
             <div class="dim-label">Length</div>
             <div class="dim-ctrl">
               <button class="dim-btn" onclick="adjDim('l',-2)">−</button>
-              <input class="dim-input" id="inL" type="number" value="60" oninput="setDim('l',this.value)">
+              <input class="dim-input" id="inL" type="number" value="60" min="20" max="200" step="1" oninput="setDim('l',this.value)">
               <span class="dim-unit">ft</span>
               <button class="dim-btn" onclick="adjDim('l',2)">+</button>
             </div>
@@ -210,7 +210,7 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
             <div class="dim-label">Height</div>
             <div class="dim-ctrl">
               <button class="dim-btn" onclick="adjDim('h',-2)">−</button>
-              <input class="dim-input" id="inH" type="number" value="14" oninput="setDim('h',this.value)">
+              <input class="dim-input" id="inH" type="number" value="14" min="2" max="20" step="2" oninput="setDim('h',this.value)">
               <span class="dim-unit">ft</span>
               <button class="dim-btn" onclick="adjDim('h',2)">+</button>
             </div>
@@ -491,23 +491,54 @@ function updateSpecs() {
 // ═══════════════════════════════════════════════════════
 // DIMENSION CONTROLS
 // ═══════════════════════════════════════════════════════
-function adjDim(k,d){
-  var mn = k==='h'?10:k==='w'?12:20;
-  var mx = k==='h'?20:k==='w'?100:300;
-  Q[k] = Math.max(mn, Math.min(mx, Q[k]+d));
-  // Snap to increments of 2
-  Q[k] = Math.round(Q[k]/2)*2;
-  Q[k] = Math.max(mn, Math.min(mx, Q[k]));
+// Valid stepped values for width/length
+var DIM_STEPS = {
+  w: (function(){ var a=[]; for(var i=20;i<=100;i+=2) if(i%10===0||i%12===0) a.push(i); return a; })(),
+  l: (function(){ var a=[]; for(var i=20;i<=200;i+=2) if(i%10===0||i%12===0) a.push(i); return a; })()
+};
+function snapToStep(k, val) {
+  if (k === 'h') {
+    // 2' increments, 2-20
+    return Math.max(2, Math.min(20, Math.round(val/2)*2));
+  }
+  var steps = DIM_STEPS[k];
+  if (!steps || !steps.length) return val;
+  // Find closest step
+  var best = steps[0];
+  var bestDist = Math.abs(val - best);
+  for (var i=1; i<steps.length; i++) {
+    var dist = Math.abs(val - steps[i]);
+    if (dist < bestDist) { best = steps[i]; bestDist = dist; }
+  }
+  return best;
+}
+function stepDim(k, dir) {
+  // Move to next/prev valid step
+  if (k === 'h') {
+    var cur = Q[k];
+    var next = cur + dir*2;
+    Q[k] = Math.max(2, Math.min(20, next));
+  } else {
+    var steps = DIM_STEPS[k];
+    var idx = steps.indexOf(Q[k]);
+    if (idx === -1) {
+      Q[k] = snapToStep(k, Q[k] + dir);
+    } else {
+      var ni = Math.max(0, Math.min(steps.length-1, idx+dir));
+      Q[k] = steps[ni];
+    }
+  }
   document.getElementById('in'+k.toUpperCase()).value = Q[k];
   if(k==='w'||k==='l'){WALLS[0].len=WALLS[1].len=Q.w;WALLS[2].len=WALLS[3].len=Q.l;}
   scheduleBuild();
 }
+function adjDim(k,d){
+  stepDim(k, d > 0 ? 1 : -1);
+}
 function setDim(k,v){
   var n=parseInt(v); if(isNaN(n)) return;
-  var mn = k==='h'?10:k==='w'?12:20;
-  var mx = k==='h'?20:k==='w'?100:300;
-  n = Math.round(n/2)*2;
-  Q[k] = Math.max(mn, Math.min(mx, n));
+  Q[k] = snapToStep(k, n);
+  document.getElementById('in'+k.toUpperCase()).value = Q[k];
   if(k==='w'||k==='l'){WALLS[0].len=WALLS[1].len=Q.w;WALLS[2].len=WALLS[3].len=Q.l;}
   scheduleBuild();
 }
@@ -716,6 +747,7 @@ function setBarnProp(id,prop,val){
     var wall=WALLS.find(function(w){return w.id===val;})||{len:Q.l};
     d.offset=Math.round((wall.len-d.w)/2*12)/12;
   }
+  else { d[prop]=val; }
   renderGarageDoors(); scheduleBuild();
 }
 function setGarageProp(id,prop,val){
@@ -726,6 +758,7 @@ function setGarageProp(id,prop,val){
     var wall=WALLS.find(function(w){return w.id===val;})||{len:Q.l};
     d.offset=Math.round((wall.len-d.w)/2*12)/12;
   }
+  else { d[prop]=val; }
   renderGarageDoors(); scheduleBuild();
 }
 function renderGarageDoors(){
@@ -900,6 +933,7 @@ function setWinProp(id,prop,val){
     d.offset=Math.round((wall.len-winDims(d.type).w)/2*12)/12;
   }
   else if(prop==='sillH'){d.sillH=parseFloat(val);}
+  else { d[prop]=val; }
   renderWindows(); scheduleBuild();
 }
 function renderWindows(){
@@ -2054,7 +2088,7 @@ function vpToggleDims() {
             function drawBarnPanel(px, py, pz, pw, ph, axis, flip, zo2) {
                 // axis: 'z' for gable walls, 'x' for eave walls
                 // Each panel = solid field + X-brace + outer trim frame
-                const mBarnField = new THREE.MeshBasicMaterial({ color: pc(wallColorName), side: THREE.DoubleSide });
+                const mBarnField = new THREE.MeshBasicMaterial({ color: pc(d.doorColor || 'White'), side: THREE.DoubleSide });
                 const mBarnTrim = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
                 const mBarnLine = new THREE.LineBasicMaterial({ color: pc(trimColorName), transparent: true, opacity: 0.8 });
                 const tb2 = 0.035; // barn door border thickness
