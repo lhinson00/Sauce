@@ -1824,6 +1824,37 @@ function vpToggleWalls() {
         const postPositions = new Set();
         const isStudFrame = currentFrameType === 'stud';
 
+        // Build set of main building corner positions hidden behind shed gable end caps
+        const _shedCoveredCorners = new Set();
+        (Q.sheds || []).forEach(sc => {
+            if (sc.type !== 'leanto' && sc.type !== 'wrap') return;
+            const isEave = sc.wall === 'left' || sc.wall === 'right';
+            const mainWallLen = isEave ? Q.l : Q.w;
+            const shedLen = sc.l;
+            const shedPos = sc.position || 'center';
+            let shedOffFt = 0;
+            if (shedLen >= mainWallLen) shedOffFt = 0;
+            else if (shedPos === 'start') shedOffFt = 0;
+            else if (shedPos === 'end') shedOffFt = mainWallLen - shedLen;
+            else if (shedPos === 'custom') shedOffFt = Math.max(0, Math.min(sc.offsetFt || 0, mainWallLen - shedLen));
+            else shedOffFt = (mainWallLen - shedLen) / 2;
+            const _sco = (shedOffFt + shedLen / 2 - mainWallLen / 2) * Sc;
+            const _ssl = sc.l * Sc;
+            if (isEave) {
+                const aX = sc.wall === 'left' ? -sw/2 : sw/2;
+                const z1 = Math.round((-_ssl/2 + _sco) * 1000);
+                const z2 = Math.round(( _ssl/2 + _sco) * 1000);
+                _shedCoveredCorners.add(Math.round(aX*1000) + ',' + z1);
+                _shedCoveredCorners.add(Math.round(aX*1000) + ',' + z2);
+            } else {
+                const aZ = sc.wall === 'front' ? -sl/2 : sl/2;
+                const x1 = Math.round((-_ssl/2 + _sco) * 1000);
+                const x2 = Math.round(( _ssl/2 + _sco) * 1000);
+                _shedCoveredCorners.add(x1 + ',' + Math.round(aZ*1000));
+                _shedCoveredCorners.add(x2 + ',' + Math.round(aZ*1000));
+            }
+        });
+
         if (isStudFrame) {
             // STUD FRAME: 2×6 studs at 16" OC (1.333 ft)
             const studSpacing = 16 / 12; // 16 inches in feet
@@ -1874,8 +1905,11 @@ function vpToggleWalls() {
             });
 
             // Corner posts (king studs — slightly beefier at corners)
+            // Skip corners where a lean-to shed gable end cap covers the post
             const cornerPS = .04;
             [[-sw/2, -sl/2], [-sw/2, sl/2], [sw/2, -sl/2], [sw/2, sl/2]].forEach(([x, z]) => {
+                const key = Math.round(x*1000) + ',' + Math.round(z*1000);
+                if (_shedCoveredCorners.has(key)) return; // hidden behind shed gable cap
                 const cp = new THREE.Mesh(new THREE.BoxGeometry(cornerPS, sh, cornerPS), mPencl);
                 cp.position.set(x, sh / 2, z); cp.castShadow = true; grps.mainPosts.add(cp);
             });
@@ -1908,7 +1942,7 @@ function vpToggleWalls() {
                     // Skip if inside a door opening
                     if (isInsideDoor(wd, zFt)) continue;
                     const key = Math.round(xSide * 1000) + ',' + Math.round(z * 1000);
-                    if (!postPositions.has(key)) {
+                    if (!postPositions.has(key) && !_shedCoveredCorners.has(key)) {
                         postPositions.add(key);
                         const mPeave = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
                         const p = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mPeave);
@@ -1947,6 +1981,7 @@ function vpToggleWalls() {
                     const xPos = (-Q.w / 2 + xFt) * Sc;
                     const key = Math.round(xPos * 1000) + ',' + Math.round(zPos * 1000);
                     if (postPositions.has(key)) continue; // corner already placed
+                    if (_shedCoveredCorners.has(key)) continue; // hidden behind shed gable cap
                     if (isInsideDoor(wd, xFt)) continue; // inside door opening
                     postPositions.add(key);
                     const distC = Math.abs(xFt - Q.w / 2);
@@ -2361,16 +2396,19 @@ function vpToggleWalls() {
         // Helper: is wall open by id?
         const _wOpen = (id) => { const wc = wallCfgs.find(w => w.id === id); return wc && wc.encl === 'open'; };
         // Each corner gets two strips (one per wall face) — skip if that face's wall is open
+        // Also skip corners covered by lean-to shed gable end caps
         [[-1,-1],[-1,1],[1,-1],[1,1]].forEach(([sx,sz]) => {
             const cx = sx * sw / 2, cz = sz * sl / 2;
             const gableId = sz === -1 ? 'front' : 'back';
             const eaveId = sx === -1 ? 'left' : 'right';
-            // Strip on gable face (skip if gable wall is open)
-            if (!_wOpen(gableId)) {
+            const cornerKey = Math.round(cx*1000) + ',' + Math.round(cz*1000);
+            const shedCovers = _shedCoveredCorners.has(cornerKey);
+            // Strip on gable face (skip if gable wall is open or shed covers this corner)
+            if (!_wOpen(gableId) && !shedCovers) {
                 grps.wallPanels.add(mkQ([cx, 0, cz + sz*co, cx - sx*trimW, 0, cz + sz*co, cx - sx*trimW, sh, cz + sz*co, cx, sh, cz + sz*co], mTrimPanel));
             }
-            // Strip on eave face (skip if eave wall is open)
-            if (!_wOpen(eaveId)) {
+            // Strip on eave face (skip if eave wall is open or shed covers this corner)
+            if (!_wOpen(eaveId) && !shedCovers) {
                 grps.wallPanels.add(mkQ([cx + sx*co, 0, cz, cx + sx*co, 0, cz - sz*trimW, cx + sx*co, sh, cz - sz*trimW, cx + sx*co, sh, cz], mTrimPanel));
             }
         });
@@ -3391,26 +3429,46 @@ function vpToggleWalls() {
                 const _hRSp = 0.075, _hRW = 0.006;
                 const hTop = sSh;              // flush with roof underside
                 const hBot = Math.max(sSh - 2*Sc, 0); // 2' below outer eave
+                const _trimHex = pc(trimColorName);
+                const _mCorner = new THREE.MeshBasicMaterial({color:_trimHex, side:THREE.DoubleSide});
+                const _cTW = 0.05; // corner trim width (~6")
                 if (sc.wall === 'left' || sc.wall === 'right') {
                     const _oX = sc.wall==='left' ? -sw/2-ssw : sw/2+ssw;
                     const _s  = sc.wall==='left' ? -1 : 1;
                     const _z1 = -ssl/2+sco, _z2 = ssl/2+sco;
-                    const _hX = _oX + _s*0.028; // just outside post face (post=0.05 wide)
+                    const _hX = _oX + _s*0.028; // just outside post face
+                    // Header panel
                     grps.wallPanels.add(mkQ([_hX, hBot, _z1, _hX, hTop, _z1, _hX, hTop, _z2, _hX, hBot, _z2], _hMW));
                     for (let z = _z1; z <= _z2; z += _hRSp) {
                         grps.wallPanels.add(mkQ([_hX+_s*0.003, hBot, z, _hX+_s*0.003, hBot, z+_hRW, _hX+_s*0.003, hTop, z+_hRW, _hX+_s*0.003, hTop, z], _hRHi));
                         grps.wallPanels.add(mkQ([_hX+_s*0.003, hBot, z+_hRW, _hX+_s*0.003, hBot, z+_hRW*2, _hX+_s*0.003, hTop, z+_hRW*2, _hX+_s*0.003, hTop, z+_hRW], _hRSh));
                     }
+                    // Corner trim at each end post — eave-facing leg only
+                    // (gable-facing leg omitted: it overlaps main building wall or is hidden by gable cap)
+                    [[_z1, -1], [_z2, 1]].forEach(([zp, zSign]) => {
+                        const trimTop = sSh;
+                        grps.wallPanels.add(mkQ([_hX, hBot, zp, _hX, trimTop, zp, _hX, trimTop, zp+zSign*_cTW, _hX, hBot, zp+zSign*_cTW], _mCorner));
+                    });
                 } else {
                     const _oZ = sc.wall==='front' ? -sl/2-ssw : sl/2+ssw;
                     const _s  = sc.wall==='front' ? -1 : 1;
                     const _x1 = -ssl/2+sco, _x2 = ssl/2+sco;
                     const _hZ = _oZ + _s*0.028;
+                    // Header panel
                     grps.wallPanels.add(mkQ([_x1, hBot, _hZ, _x1, hTop, _hZ, _x2, hTop, _hZ, _x2, hBot, _hZ], _hMW));
                     for (let x = _x1; x <= _x2; x += _hRSp) {
                         grps.wallPanels.add(mkQ([x, hBot, _hZ+_s*0.003, x+_hRW, hBot, _hZ+_s*0.003, x+_hRW, hTop, _hZ+_s*0.003, x, hTop, _hZ+_s*0.003], _hRHi));
                         grps.wallPanels.add(mkQ([x+_hRW, hBot, _hZ+_s*0.003, x+_hRW*2, hBot, _hZ+_s*0.003, x+_hRW*2, hTop, _hZ+_s*0.003, x+_hRW, hTop, _hZ+_s*0.003], _hRSh));
                     }
+                    // Corner trim at each end post
+                    [_x1, _x2].forEach(xp => {
+                        const xSign = (xp === _x1) ? -1 : 1;
+                        const trimTop = sSh;
+                        // Gable-facing leg
+                        grps.wallPanels.add(mkQ([xp, hBot, _hZ, xp, trimTop, _hZ, xp+xSign*_cTW, trimTop, _hZ, xp+xSign*_cTW, hBot, _hZ], _mCorner));
+                        // Eave-facing leg
+                        grps.wallPanels.add(mkQ([xp+xSign*0.001, hBot, _hZ, xp+xSign*0.001, trimTop, _hZ, xp+xSign*0.001, trimTop, _oZ-_s*0.001, xp+xSign*0.001, hBot, _oZ-_s*0.001], _mCorner));
+                    });
                 }
             }
             if (sc.encl === 'enclosed' || sc.encl === 'partial') {
