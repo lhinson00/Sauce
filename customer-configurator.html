@@ -3288,65 +3288,104 @@ function vpToggleWalls() {
                 return ew.indexOf(key) > -1;
             };
 
-            // === UPPER GABLE TRIANGLES — always render on lean-to sheds ===
-            // Triangle fills the space between outer eave height (sSh) and main eave (sh)
-            // following the roof slope. Shows when gable end is open/unchecked.
+            // === LEAN-TO GABLE END CAP — panel strips above outer eave height ===
+            // Same 3'-wide panel math, but bottom of each strip starts at sSh (outer eave),
+            // not the ground. Top of each strip follows slope from sSh→sh.
             if (sc.type === 'leanto' || sc.type === 'wrap') {
-                const _outerWH = sSh; // outer eave height for lean-to
+                const _ltP = sc.ltPitch || 1;
+                const _panelW = 3.0 * Sc; // 3' panel width in scene units
                 const _wallHex = pc(wallColorName);
                 const _rR=(_wallHex>>16)&0xff, _rG=(_wallHex>>8)&0xff, _rB=_wallHex&0xff;
+                const _mW2 = new THREE.MeshBasicMaterial({color:_wallHex, side:THREE.DoubleSide});
                 const _mRHi = new THREE.MeshBasicMaterial({color:((Math.min(255,_rR+55)<<16)|(Math.min(255,_rG+55)<<8)|Math.min(255,_rB+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
                 const _mRSh = new THREE.MeshBasicMaterial({color:((Math.max(0,_rR-40)<<16)|(Math.max(0,_rG-40)<<8)|Math.max(0,_rB-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
-                const _rSp=0.075, _rW=0.006;
+                const _mTL = new THREE.LineBasicMaterial({color:pc(trimColorName)});
+                const _ribSp = 0.075, _ribW = 0.006;
+
+                // Z-plane version (eave-attached sheds)
+                function _drawEndCap(outerX, innerX, zPos, zOff) {
+                    const totalW = Math.abs(innerX - outerX);
+                    const s = Math.sign(innerX - outerX);
+                    let cur = outerX;
+                    while (Math.abs(cur - outerX) < totalW - 0.001) {
+                        const rem = totalW - Math.abs(cur - outerX);
+                        const pw = Math.min(_panelW, rem);
+                        const nxt = cur + s * pw;
+                        const frL = Math.abs(cur - outerX) / totalW;
+                        const frR = Math.abs(nxt - outerX) / totalW;
+                        const botL = sSh; // bottom always at sSh
+                        const botR = sSh;
+                        const topL = sSh + frL * (sh - sSh); // slope at left edge
+                        const topR = sSh + frR * (sh - sSh); // slope at right edge
+                        // Panel quad: trapezoid from sSh up to slope
+                        grps.wallPanels.add(mkQ([cur,botL,zPos, cur,topL,zPos, nxt,topR,zPos, nxt,botR,zPos], _mW2));
+                        // Seam line at right edge
+                        grps.shed.add(mkL([new THREE.Vector3(nxt,botR,zPos), new THREE.Vector3(nxt,topR,zPos)], _mTL));
+                        // Ribs within panel
+                        for (let rx = cur + s*_ribSp; s*(rx - cur) < pw - _ribW; rx += s*_ribSp) {
+                            const fr = Math.abs(rx - cur) / pw;
+                            const rTop = topL + fr * (topR - topL);
+                            if (rTop <= botL + 0.001) continue;
+                            grps.shed.add(mkQ([rx,botL,zPos+zOff, rx+s*_ribW,botL,zPos+zOff, rx+s*_ribW,rTop,zPos+zOff, rx,rTop,zPos+zOff], _mRHi));
+                            grps.shed.add(mkQ([rx+s*_ribW,botL,zPos+zOff, rx+s*_ribW*2,botL,zPos+zOff, rx+s*_ribW*2,rTop,zPos+zOff, rx+s*_ribW,rTop,zPos+zOff], _mRSh));
+                        }
+                        cur = nxt;
+                    }
+                    // Perimeter outline
+                    grps.shed.add(mkL([
+                        new THREE.Vector3(outerX, sSh, zPos),
+                        new THREE.Vector3(innerX,  sSh, zPos),
+                        new THREE.Vector3(innerX,  sh,  zPos),
+                        new THREE.Vector3(outerX, sSh, zPos)
+                    ], _mTL));
+                }
+
+                // X-plane version (front/back-attached sheds)
+                function _drawEndCapX(outerZ, innerZ, xPos, xOff) {
+                    const totalD = Math.abs(innerZ - outerZ);
+                    const s = Math.sign(innerZ - outerZ);
+                    let cur = outerZ;
+                    while (Math.abs(cur - outerZ) < totalD - 0.001) {
+                        const rem = totalD - Math.abs(cur - outerZ);
+                        const pw = Math.min(_panelW, rem);
+                        const nxt = cur + s * pw;
+                        const frL = Math.abs(cur - outerZ) / totalD;
+                        const frR = Math.abs(nxt - outerZ) / totalD;
+                        const topL = sSh + frL * (sh - sSh);
+                        const topR = sSh + frR * (sh - sSh);
+                        grps.wallPanels.add(mkQ([xPos,sSh,cur, xPos,topL,cur, xPos,topR,nxt, xPos,sSh,nxt], _mW2));
+                        grps.shed.add(mkL([new THREE.Vector3(xPos,sSh,nxt), new THREE.Vector3(xPos,topR,nxt)], _mTL));
+                        for (let rz = cur + s*_ribSp; s*(rz - cur) < pw - _ribW; rz += s*_ribSp) {
+                            const fr = Math.abs(rz - cur) / pw;
+                            const rTop = topL + fr * (topR - topL);
+                            if (rTop <= sSh + 0.001) continue;
+                            grps.shed.add(mkQ([xPos+xOff,sSh,rz, xPos+xOff,rTop,rz, xPos+xOff,rTop,rz+s*_ribW, xPos+xOff,sSh,rz+s*_ribW], _mRHi));
+                            grps.shed.add(mkQ([xPos+xOff,rTop,rz, xPos+xOff,rTop+_ribW,rz, xPos+xOff,rTop+_ribW,rz+s*_ribW, xPos+xOff,rTop,rz+s*_ribW], _mRSh));
+                        }
+                        cur = nxt;
+                    }
+                    grps.shed.add(mkL([
+                        new THREE.Vector3(xPos, sSh, outerZ),
+                        new THREE.Vector3(xPos, sSh, innerZ),
+                        new THREE.Vector3(xPos, sh,  innerZ),
+                        new THREE.Vector3(xPos, sSh, outerZ)
+                    ], _mTL));
+                }
 
                 if (sc.wall === 'left' || sc.wall === 'right') {
-                    // Eave-attached — triangles on Z-facing end walls
                     const _oX = sc.wall==='left' ? -sw/2-ssw : sw/2+ssw;
                     const _aX = sc.wall==='left' ? -sw/2 : sw/2;
                     const _s  = sc.wall==='left' ? -1 : 1;
                     const _z1 = -ssl/2+sco, _z2 = ssl/2+sco;
-                    const _xMin=Math.min(_oX,_aX), _xMax=Math.max(_oX,_aX), _eW=Math.abs(_oX-_aX);
-                    // Triangle: outer post at sSh (low), diagonal to main wall at sh (high),
-                    // straight down main wall to sSh — right triangle in the end wall corner
-                    if (!hasWall('gable1')) {
-                        const tg=new THREE.BufferGeometry();
-                        tg.setAttribute('position',new THREE.BufferAttribute(new Float32Array([_oX,_outerWH,_z1, _aX,_outerWH,_z1, _aX,sh,_z1]),3));
-                        tg.setIndex([0,1,2]); tg.computeVertexNormals();
-                        grps.wallPanels.add(new THREE.Mesh(tg,mW));
-                        grps.shed.add(mkL([new THREE.Vector3(_oX,_outerWH,_z1),new THREE.Vector3(_aX,_outerWH,_z1),new THREE.Vector3(_aX,sh,_z1),new THREE.Vector3(_oX,_outerWH,_z1)],mTrimLine));
-                        for(let x=_xMin+_rSp;x<_xMax;x+=_rSp){const fr=Math.abs(x-_oX)/_eW;const rh=_outerWH+fr*(sh-_outerWH);grps.shed.add(mkQ([x,_outerWH,_z1-_s*0.003,x+_rW,_outerWH,_z1-_s*0.003,x+_rW,rh,_z1-_s*0.003,x,rh,_z1-_s*0.003],_mRHi));grps.shed.add(mkQ([x+_rW,_outerWH,_z1-_s*0.003,x+_rW*2,_outerWH,_z1-_s*0.003,x+_rW*2,rh,_z1-_s*0.003,x+_rW,rh,_z1-_s*0.003],_mRSh));}
-                    }
-                    if (!hasWall('gable2')) {
-                        const tg=new THREE.BufferGeometry();
-                        tg.setAttribute('position',new THREE.BufferAttribute(new Float32Array([_oX,_outerWH,_z2, _aX,_outerWH,_z2, _aX,sh,_z2]),3));
-                        tg.setIndex([0,1,2]); tg.computeVertexNormals();
-                        grps.wallPanels.add(new THREE.Mesh(tg,mW));
-                        grps.shed.add(mkL([new THREE.Vector3(_oX,_outerWH,_z2),new THREE.Vector3(_aX,_outerWH,_z2),new THREE.Vector3(_aX,sh,_z2),new THREE.Vector3(_oX,_outerWH,_z2)],mTrimLine));
-                        for(let x=_xMin+_rSp;x<_xMax;x+=_rSp){const fr=Math.abs(x-_oX)/_eW;const rh=_outerWH+fr*(sh-_outerWH);grps.shed.add(mkQ([x,_outerWH,_z2+_s*0.003,x+_rW,_outerWH,_z2+_s*0.003,x+_rW,rh,_z2+_s*0.003,x,rh,_z2+_s*0.003],_mRHi));grps.shed.add(mkQ([x+_rW,_outerWH,_z2+_s*0.003,x+_rW*2,_outerWH,_z2+_s*0.003,x+_rW*2,rh,_z2+_s*0.003,x+_rW,rh,_z2+_s*0.003],_mRSh));}
-                    }
+                    if (!hasWall('gable1')) _drawEndCap(_oX, _aX, _z1, -_s*0.003);
+                    if (!hasWall('gable2')) _drawEndCap(_oX, _aX, _z2,  _s*0.003);
                 } else {
-                    // Front/back attached — triangles on X-facing end walls
                     const _oZ = sc.wall==='front' ? -sl/2-ssw : sl/2+ssw;
                     const _aZ = sc.wall==='front' ? -sl/2 : sl/2;
                     const _s  = sc.wall==='front' ? -1 : 1;
                     const _x1=-ssl/2+sco, _x2=ssl/2+sco;
-                    const _eD=Math.abs(_oZ-_aZ), _zMin=Math.min(_oZ,_aZ), _zMax=Math.max(_oZ,_aZ);
-                    if (!hasWall('gable1')) {
-                        const tg=new THREE.BufferGeometry();
-                        tg.setAttribute('position',new THREE.BufferAttribute(new Float32Array([_x1,_outerWH,_oZ, _x1,_outerWH,_aZ, _x1,sh,_aZ]),3));
-                        tg.setIndex([0,1,2]); tg.computeVertexNormals();
-                        grps.wallPanels.add(new THREE.Mesh(tg,mW));
-                        grps.shed.add(mkL([new THREE.Vector3(_x1,_outerWH,_oZ),new THREE.Vector3(_x1,_outerWH,_aZ),new THREE.Vector3(_x1,sh,_aZ),new THREE.Vector3(_x1,_outerWH,_oZ)],mTrimLine));
-                        for(let z=_zMin+_rSp;z<_zMax;z+=_rSp){const fr=Math.abs(z-_oZ)/_eD;const rh=_outerWH+fr*(sh-_outerWH);grps.shed.add(mkQ([_x1+_s*0.003,_outerWH,z,_x1+_s*0.003,_outerWH,z+_rW,_x1+_s*0.003,rh,z+_rW,_x1+_s*0.003,rh,z],_mRHi));grps.shed.add(mkQ([_x1+_s*0.003,_outerWH,z+_rW,_x1+_s*0.003,_outerWH,z+_rW*2,_x1+_s*0.003,rh,z+_rW*2,_x1+_s*0.003,rh,z+_rW],_mRSh));}
-                    }
-                    if (!hasWall('gable2')) {
-                        const tg=new THREE.BufferGeometry();
-                        tg.setAttribute('position',new THREE.BufferAttribute(new Float32Array([_x2,_outerWH,_oZ, _x2,_outerWH,_aZ, _x2,sh,_aZ]),3));
-                        tg.setIndex([0,1,2]); tg.computeVertexNormals();
-                        grps.wallPanels.add(new THREE.Mesh(tg,mW));
-                        grps.shed.add(mkL([new THREE.Vector3(_x2,_outerWH,_oZ),new THREE.Vector3(_x2,_outerWH,_aZ),new THREE.Vector3(_x2,sh,_aZ),new THREE.Vector3(_x2,_outerWH,_oZ)],mTrimLine));
-                        for(let z=_zMin+_rSp;z<_zMax;z+=_rSp){const fr=Math.abs(z-_oZ)/_eD;const rh=_outerWH+fr*(sh-_outerWH);grps.shed.add(mkQ([_x2-_s*0.003,_outerWH,z,_x2-_s*0.003,_outerWH,z+_rW,_x2-_s*0.003,rh,z+_rW,_x2-_s*0.003,rh,z],_mRHi));grps.shed.add(mkQ([_x2-_s*0.003,_outerWH,z+_rW,_x2-_s*0.003,_outerWH,z+_rW*2,_x2-_s*0.003,rh,z+_rW*2,_x2-_s*0.003,rh,z+_rW],_mRSh));}
-                    }
+                    if (!hasWall('gable1')) _drawEndCapX(_oZ, _aZ, _x1,  _s*0.003);
+                    if (!hasWall('gable2')) _drawEndCapX(_oZ, _aZ, _x2, -_s*0.003);
                 }
             }
             if (sc.encl === 'enclosed' || sc.encl === 'partial') {
