@@ -1331,7 +1331,7 @@ function restoreConfig(cfg) {
     if(cfg.doors) { allDoors.length=0; cfg.doors.forEach(function(d){allDoors.push(d);}); }
     if(cfg.walkDoors) window._walkDoors=cfg.walkDoors;
     if(cfg.windows) window._windows=cfg.windows;
-    if(cfg.sheds) { shedCfgs.length=0; cfg.sheds.forEach(function(s){shedCfgs.push(s);}); }
+    if(cfg.sheds) { window._shedConfigs=[]; cfg.sheds.forEach(function(s){window._shedConfigs.push(s);}); }
     if(cfg.colors) {
       selRoof=cfg.colors.roof||selRoof; selWall=cfg.colors.wall||selWall;
       selTrim=cfg.colors.trim||selTrim; selWainscot=cfg.colors.wainscot||selWainscot;
@@ -1367,12 +1367,19 @@ function restoreConfig(cfg) {
 }
 
 // ── SHARE LINK ────────────────────────────────────────────────────
+function safeDecode(str){
+  try {
+    var bin=atob(str);
+    var bytes=new Uint8Array(bin.length);
+    for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch(e){ return JSON.parse(decodeURIComponent(escape(atob(str)))); }
+}
 function safeEncode(obj){
   try {
     var json=JSON.stringify(obj);
     var bytes=new TextEncoder().encode(json);
-    var bin='';
-    bytes.forEach(function(b){bin+=String.fromCharCode(b);});
+    var bin=''; bytes.forEach(function(b){bin+=String.fromCharCode(b);});
     return btoa(bin);
   } catch(e){ return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
 }
@@ -1439,7 +1446,7 @@ function submitQuote(){
     document.getElementById('quoteSuccess').classList.add('show');
   } catch(err){
     var btn=document.querySelector('.q-submit');
-    if(btn){btn.textContent='Request Free Quote \u2192';btn.disabled=false;}
+    if(btn){btn.textContent='Request Free Quote →';btn.disabled=false;}
     alert('Submit failed: '+err.message);
   }
 }
@@ -1464,7 +1471,7 @@ function vpTogglePosts() {
   }
 
   // Shed posts — only hide if all sheds are enclosed; open/roofonly sheds keep posts
-  var sc = window._shedConfigs || shedCfgs || [];
+  var sc = window._shedConfigs || [];
   var allShedsEnclosed = sc.length > 0 && sc.every(function(s) { return s.encl === 'enclosed'; });
   if (allShedsEnclosed) {
     d.grps.posts.visible = _postsVisible;
@@ -1591,8 +1598,8 @@ function vpToggleWalls() {
   var cfgParam=params.get('config');
   if(cfgParam){
     try{
-      var cfg=JSON.parse(decodeURIComponent(escape(atob(cfgParam))));
-      setTimeout(function(){ restoreConfig(cfg); },100);
+      var cfg=safeDecode(cfgParam);
+      setTimeout(function(){ restoreConfig(cfg); setTimeout(triggerBuild,200); },100);
       return;
     }catch(e){ console.warn('Invalid config param',e); }
   }
@@ -1604,15 +1611,16 @@ function vpToggleWalls() {
     .then(function(r){return r.json();})
     .then(function(res){
       if(res.configEncoded){
-        var cfg=JSON.parse(decodeURIComponent(escape(atob(res.configEncoded))));
+        var cfg=safeDecode(res.configEncoded);
         setTimeout(function(){
           restoreConfig(cfg);
-          // Also populate contact fields directly from saved submission data
-          // (fills even if cfg.contact not present — backwards compatible)
+          // populate contact fields
           var fn=document.getElementById('qfName'); if(fn && !fn.value && res.name) fn.value=res.name;
           var fp=document.getElementById('qfPhone'); if(fp && !fp.value && res.phone) fp.value=res.phone;
           var fe=document.getElementById('qfEmail'); if(fe && !fe.value && res.email) fe.value=res.email;
           var fc=document.getElementById('qfCity'); if(fc && !fc.value && res.city) fc.value=res.city;
+          // triggerBuild AFTER restoreConfig, not on a separate timer
+          setTimeout(triggerBuild, 200);
         },100);
         var banner=document.createElement('div');
         banner.style.cssText='position:fixed;top:0;left:0;right:0;background:#1a2744;color:#d4a843;text-align:center;padding:7px 12px;font-size:12px;font-family:Outfit,sans-serif;z-index:9999;';
@@ -1626,8 +1634,7 @@ function vpToggleWalls() {
         document.querySelector('.left-pane').style.paddingTop='32px';
       }
     })
-    .catch(function(e){ console.warn('Could not load quote',e); });
-    setTimeout(triggerBuild,400);
+    .catch(function(e){ console.warn('Could not load quote',e); triggerBuild(); });
     return;
   }
 
