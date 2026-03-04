@@ -63,6 +63,10 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
 .wall-btn.enclosed .wall-val{color:#15803d;}
 .wall-btn.open{border-color:#f87171;background:rgba(248,113,113,.06);}
 .wall-btn.open .wall-val{color:#dc2626;}
+.wall-btn.partial{border-color:#fb923c;background:rgba(251,146,60,.06);}
+.wall-btn.partial .wall-val{color:#c2410c;}
+.wall-partial-row{display:flex;align-items:center;gap:6px;margin-top:4px;font-size:10px;color:var(--muted);}
+.wall-partial-row select{flex:1;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:11px;font-family:inherit;background:#f9fafc;color:var(--text);}
 
 /* COLORS */
 .color-group{margin-bottom:10px;}
@@ -685,14 +689,45 @@ function buildPSChips(){
 function buildWallGrid(){
   var g=document.getElementById('wallGrid'); g.innerHTML='';
   WALLS.forEach(function(wall){
+    var wrap=document.createElement('div');
+    wrap.style.cssText='display:flex;flex-direction:column;gap:0;';
+
     var btn=document.createElement('div');
+    var lbl=wall.encl==='enclosed'?'Enclosed':wall.encl==='partial'?'Partial':'Open';
     btn.className='wall-btn '+wall.encl;
-    btn.innerHTML='<div class="wall-name">'+wall.label+'</div><div class="wall-val">'+(wall.encl==='enclosed'?'Enclosed':'Open')+'</div>';
+    btn.innerHTML='<div class="wall-name">'+wall.label+'</div><div class="wall-val">'+lbl+'</div>';
     btn.onclick=function(){
-      wall.encl=wall.encl==='enclosed'?'open':'enclosed';
+      var cycle={enclosed:'partial',partial:'open',open:'enclosed'};
+      wall.encl=cycle[wall.encl]||'enclosed';
+      if(wall.encl==='partial'&&!wall.partialH) wall.partialH=Math.min(4,Q.h);
       buildWallGrid(); scheduleBuild();
     };
-    g.appendChild(btn);
+    wrap.appendChild(btn);
+
+    // Partial height selector
+    if(wall.encl==='partial'){
+      var row=document.createElement('div');
+      row.className='wall-partial-row';
+      row.innerHTML='<span>Drop:</span>';
+      var sel=document.createElement('select');
+      sel.onclick=function(e){e.stopPropagation();};
+      // Build options 1' to wall height in 1' increments
+      var maxH=Math.floor(Q.h);
+      for(var h=1;h<=maxH;h++){
+        var opt=document.createElement('option');
+        opt.value=h; opt.textContent=h+"'";
+        if((wall.partialH||Math.min(4,Q.h))===h) opt.selected=true;
+        sel.appendChild(opt);
+      }
+      sel.onchange=(function(w){return function(){
+        w.partialH=parseFloat(this.value);
+        scheduleBuild();
+      };})(wall);
+      row.appendChild(sel);
+      wrap.appendChild(row);
+    }
+
+    g.appendChild(wrap);
   });
 }
 
@@ -2374,7 +2409,10 @@ function vpToggleWalls() {
             const isG = (wallId === 'front' || wallId === 'back');
             const wLen = isG ? Q.w : Q.l, zP = wallId === 'front' ? -sl / 2 : wallId === 'back' ? sl / 2 : 0, xP = wallId === 'left' ? -sw / 2 : wallId === 'right' ? sw / 2 : 0;
             const wd = placed.filter(d => d.wall === wallId).sort((a, b) => (a.offset || 0) - (b.offset || 0));
-            const wH = wCfg.encl === 'partial' ? sh * 0.35 : sh;
+            // For partial walls: metal drops from top down. wH = bottom edge of metal, panels go wH→sh
+            const partialDrop = wCfg.encl === 'partial' ? (wCfg.partialH || Math.min(4, Q.h)) * Sc : 0;
+            const wH = wCfg.encl === 'partial' ? sh - partialDrop : sh;
+            const wTop = sh; // top of metal always = eave height
             const wsH = hasWainscot ? Math.min(4 * Sc, wH) : 0; // 4' wainscot height
 
             // Gable triangle — with monitor cutout if eave sheds have drop-down
@@ -2474,7 +2512,7 @@ function vpToggleWalls() {
             // Helper to add a wall segment with optional wainscot split
             function addWallSeg(x1, x2, y0, y1, mat, isGable) {
                 if (y1 <= y0) return;
-                if (hasWainscot && wsH > y0 && y0 === 0 && y1 > wsH) {
+                if (hasWainscot && wsH > y0 && y0 === 0 && y1 > wsH && wCfg.encl !== 'partial') {
                     // Split: lower wainscot + upper wall
                     if (isGable) {
                         grps.wallPanels.add(mkQ([x1, 0, zP, x2, 0, zP, x2, wsH, zP, x1, wsH, zP], mWainscot));
@@ -2494,29 +2532,30 @@ function vpToggleWalls() {
                 }
             }
 
+            const yBot = wCfg.encl === 'partial' ? wH : 0; // bottom of metal panel
+            const yTop = wCfg.encl === 'partial' ? wTop : wH; // top of metal panel
             if (isG) {
                 let x = 0;
                 wd.forEach(d => {
-                    const dL = d.offset || 0, dR = dL + d.w, dh = Math.min(d.h * Sc, wH);
-                    if (dL > x) addWallSeg((-wLen / 2 + x) * Sc, (-wLen / 2 + dL) * Sc, 0, wH, mW, true);
-                    if (dh < wH) {
-                        // Header above door — always wall color
-                        grps.wallPanels.add(mkQ([(-wLen / 2 + dL) * Sc, dh, zP, (-wLen / 2 + dR) * Sc, dh, zP, (-wLen / 2 + dR) * Sc, wH, zP, (-wLen / 2 + dL) * Sc, wH, zP], mW));
+                    const dL = d.offset || 0, dR = dL + d.w, dh = Math.min(d.h * Sc, yTop);
+                    if (dL > x) addWallSeg((-wLen / 2 + x) * Sc, (-wLen / 2 + dL) * Sc, yBot, yTop, mW, true);
+                    if (dh < yTop && dh > yBot) {
+                        grps.wallPanels.add(mkQ([(-wLen / 2 + dL) * Sc, dh, zP, (-wLen / 2 + dR) * Sc, dh, zP, (-wLen / 2 + dR) * Sc, yTop, zP, (-wLen / 2 + dL) * Sc, yTop, zP], mW));
                     }
                     x = dR;
                 });
-                if (x < wLen) addWallSeg((-wLen / 2 + x) * Sc, (wLen / 2) * Sc, 0, wH, mW, true);
+                if (x < wLen) addWallSeg((-wLen / 2 + x) * Sc, (wLen / 2) * Sc, yBot, yTop, mW, true);
             } else {
                 let z = 0;
                 wd.forEach(d => {
-                    const dL = d.offset || 0, dR = dL + d.w, dh = Math.min(d.h * Sc, wH);
-                    if (dL > z) addWallSeg((-wLen / 2 + z) * Sc, (-wLen / 2 + dL) * Sc, 0, wH, mW, false);
-                    if (dh < wH) {
-                        grps.wallPanels.add(mkQ([xP, dh, (-wLen / 2 + dL) * Sc, xP, dh, (-wLen / 2 + dR) * Sc, xP, wH, (-wLen / 2 + dR) * Sc, xP, wH, (-wLen / 2 + dL) * Sc], mW));
+                    const dL = d.offset || 0, dR = dL + d.w, dh = Math.min(d.h * Sc, yTop);
+                    if (dL > z) addWallSeg((-wLen / 2 + z) * Sc, (-wLen / 2 + dL) * Sc, yBot, yTop, mW, false);
+                    if (dh < yTop && dh > yBot) {
+                        grps.wallPanels.add(mkQ([xP, dh, (-wLen / 2 + dL) * Sc, xP, dh, (-wLen / 2 + dR) * Sc, xP, yTop, (-wLen / 2 + dR) * Sc, xP, yTop, (-wLen / 2 + dL) * Sc], mW));
                     }
                     z = dR;
                 });
-                if (z < wLen) addWallSeg((-wLen / 2 + z) * Sc, (wLen / 2) * Sc, 0, wH, mW, false);
+                if (z < wLen) addWallSeg((-wLen / 2 + z) * Sc, (wLen / 2) * Sc, yBot, yTop, mW, false);
             }
         }
         wallCfgs.forEach(w => buildWS(w.id));
@@ -2877,15 +2916,21 @@ function vpToggleWalls() {
         const leftOpen = _wOpen('left'), rightOpen = _wOpen('right');
         const frontOpen = _wOpen('front'), backOpen = _wOpen('back');
 
-        // === BASE TRIM — trim strip along the bottom of walls ===
+        // === BASE TRIM — trim strip along the bottom of walls (partial walls: at bottom of metal, not ground) ===
         const baseH = 0.03;
         [-1,1].forEach(s => {
             // Eave walls
+            const eaveId = s === -1 ? 'left' : 'right';
+            const eaveWc = wallCfgs.find(w => w.id === eaveId);
+            const eavePartialY = (eaveWc && eaveWc.encl === 'partial') ? sh - (eaveWc.partialH || Math.min(4, Q.h)) * Sc : 0;
             if (!(s === -1 && leftOpen) && !(s === 1 && rightOpen))
-                grps.wallPanels.add(mkQ([s*sw/2 + s*co, 0, -sl/2, s*sw/2 + s*co, baseH, -sl/2, s*sw/2 + s*co, baseH, sl/2, s*sw/2 + s*co, 0, sl/2], mTrimPanel));
+                grps.wallPanels.add(mkQ([s*sw/2 + s*co, eavePartialY, -sl/2, s*sw/2 + s*co, eavePartialY + baseH, -sl/2, s*sw/2 + s*co, eavePartialY + baseH, sl/2, s*sw/2 + s*co, eavePartialY, sl/2], mTrimPanel));
             // Gable walls
+            const gableId = s === -1 ? 'front' : 'back';
+            const gableWc = wallCfgs.find(w => w.id === gableId);
+            const gablePartialY = (gableWc && gableWc.encl === 'partial') ? sh - (gableWc.partialH || Math.min(4, Q.h)) * Sc : 0;
             if (!(s === -1 && frontOpen) && !(s === 1 && backOpen))
-                grps.wallPanels.add(mkQ([-sw/2, 0, s*sl/2 + s*co, sw/2, 0, s*sl/2 + s*co, sw/2, baseH, s*sl/2 + s*co, -sw/2, baseH, s*sl/2 + s*co], mTrimPanel));
+                grps.wallPanels.add(mkQ([-sw/2, gablePartialY, s*sl/2 + s*co, sw/2, gablePartialY, s*sl/2 + s*co, sw/2, gablePartialY + baseH, s*sl/2 + s*co, -sw/2, gablePartialY + baseH, s*sl/2 + s*co], mTrimPanel));
         });
 
         // === GROUND SHADOW — soft shadow plane under the building ===
@@ -2945,23 +2990,33 @@ function vpToggleWalls() {
             [-1,1].forEach(s => {
                 if (s === -1 && leftOpen) return;
                 if (s === 1 && rightOpen) return;
+                const eaveId = s === -1 ? 'left' : 'right';
+                const eaveWcfg = wallCfgs.find(w => w.id === eaveId);
+                const eavePartial = eaveWcfg && eaveWcfg.encl === 'partial';
+                const eaveRibBot = eavePartial ? sh - (eaveWcfg.partialH || Math.min(4, Q.h)) * Sc : 0;
+                const eaveRibTop = sh;
+                if (eaveRibBot >= eaveRibTop) return; // nothing to draw
                 const xBase = s * sw / 2;
                 for (let z = -sl/2; z <= sl/2; z += ribSpacing) {
-                    // Light edge (highlight)
-                    grps.walls.add(mkQ([xBase + s*0.003, 0, z, xBase + s*0.003, 0, z + ribW, xBase + s*0.003, sh, z + ribW, xBase + s*0.003, sh, z], mRibHi));
-                    // Dark edge (shadow)
-                    grps.walls.add(mkQ([xBase + s*0.003, 0, z + ribW, xBase + s*0.003, 0, z + ribW*2, xBase + s*0.003, sh, z + ribW*2, xBase + s*0.003, sh, z + ribW], mRibSh));
+                    grps.walls.add(mkQ([xBase + s*0.003, eaveRibBot, z, xBase + s*0.003, eaveRibBot, z + ribW, xBase + s*0.003, eaveRibTop, z + ribW, xBase + s*0.003, eaveRibTop, z], mRibHi));
+                    grps.walls.add(mkQ([xBase + s*0.003, eaveRibBot, z + ribW, xBase + s*0.003, eaveRibBot, z + ribW*2, xBase + s*0.003, eaveRibTop, z + ribW*2, xBase + s*0.003, eaveRibTop, z + ribW], mRibSh));
                 }
             });
             [-1,1].forEach(s => {
                 if (s === -1 && frontOpen) return;
                 if (s === 1 && backOpen) return;
+                const gableId = s === -1 ? 'front' : 'back';
+                const gableWcfg = wallCfgs.find(w => w.id === gableId);
+                const gablePartial = gableWcfg && gableWcfg.encl === 'partial';
+                const gableRibBot = gablePartial ? sh - (gableWcfg.partialH || Math.min(4, Q.h)) * Sc : 0;
+                if (gableRibBot >= sh) return;
                 const zBase = s * sl / 2;
                 for (let x = -sw/2 + ribSpacing; x < sw/2; x += ribSpacing) {
                     const gableH = sh + (Q.w/2 - Math.abs(x/Sc)) * (Q.pitch/12) * Sc;
                     const rH = Math.min(gableH, sr);
-                    grps.walls.add(mkQ([x, 0, zBase + s*0.003, x + ribW, 0, zBase + s*0.003, x + ribW, rH, zBase + s*0.003, x, rH, zBase + s*0.003], mRibHi));
-                    grps.walls.add(mkQ([x + ribW, 0, zBase + s*0.003, x + ribW*2, 0, zBase + s*0.003, x + ribW*2, rH, zBase + s*0.003, x + ribW, rH, zBase + s*0.003], mRibSh));
+                    const ribBot = gablePartial ? gableRibBot : 0;
+                    grps.walls.add(mkQ([x, ribBot, zBase + s*0.003, x + ribW, ribBot, zBase + s*0.003, x + ribW, rH, zBase + s*0.003, x, rH, zBase + s*0.003], mRibHi));
+                    grps.walls.add(mkQ([x + ribW, ribBot, zBase + s*0.003, x + ribW*2, ribBot, zBase + s*0.003, x + ribW*2, rH, zBase + s*0.003, x + ribW, rH, zBase + s*0.003], mRibSh));
                 }
             });
         }
