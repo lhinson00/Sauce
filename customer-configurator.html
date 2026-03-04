@@ -1447,9 +1447,29 @@ function restoreConfig(cfg) {
 }
 
 // ── SHARE LINK ────────────────────────────────────────────────────
-function safeDecode(str){
+// ── CONFIG ENCODING: deflate-compressed + URL-safe base64 ──────────
+// Falls back to legacy plain base64 for old links
+async function safeDecodeAsync(str){
   try {
-    // Restore URL-safe base64 back to standard base64
+    var b64=str.replace(/-/g,'+').replace(/_/g,'/');
+    while(b64.length%4) b64+='=';
+    var bin=atob(b64); var bytes=new Uint8Array(bin.length);
+    for(var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    // Try decompressing first (new compressed links)
+    try {
+      var ds=new DecompressionStream('deflate-raw');
+      var w=ds.writable.getWriter(); w.write(bytes); w.close();
+      var out=await new Response(ds.readable).arrayBuffer();
+      return JSON.parse(new TextDecoder().decode(out));
+    } catch(compErr){
+      // Fall back: plain JSON (legacy links)
+      return JSON.parse(new TextDecoder().decode(bytes));
+    }
+  } catch(e){ return null; }
+}
+function safeDecode(str){
+  // Sync fallback for non-URL contexts (quote saving etc) — plain base64 only
+  try {
     var b64=str.replace(/-/g,'+').replace(/_/g,'/');
     while(b64.length%4) b64+='=';
     var bin=atob(b64); var bytes=new Uint8Array(bin.length);
@@ -1463,21 +1483,35 @@ function safeDecode(str){
     } catch(e2){ return null; }
   }
 }
+async function safeEncodeCompressed(obj){
+  try {
+    var json=JSON.stringify(obj, null, 0);
+    var bytes=new TextEncoder().encode(json);
+    var cs=new CompressionStream('deflate-raw');
+    var w=cs.writable.getWriter(); w.write(bytes); w.close();
+    var out=await new Response(cs.readable).arrayBuffer();
+    var arr=new Uint8Array(out);
+    var bin=''; arr.forEach(function(b){bin+=String.fromCharCode(b);});
+    return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  } catch(e){
+    // Fallback to uncompressed
+    return safeEncode(obj);
+  }
+}
 function safeEncode(obj){
   try {
     var json=JSON.stringify(obj);
     var bytes=new TextEncoder().encode(json);
     var bin=''; bytes.forEach(function(b){bin+=String.fromCharCode(b);});
-    // URL-safe base64: replace + with -, / with _, strip = padding
     return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
   } catch(e){
     return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
   }
 }
-function shareConfig(btnEl) {
+async function shareConfig(btnEl) {
   try {
     var cfg=serializeConfig();
-    var encoded=safeEncode(cfg);
+    var encoded=await safeEncodeCompressed(cfg);
     var url='https://lhinson00.github.io/Sauce/customer-configurator.html?config='+encoded;
     var btn=btnEl||(event&&event.target&&event.target.closest('button'));
     var orig=btn?btn.textContent:'🔗 Share';
@@ -1534,7 +1568,7 @@ async function submitQuote(){
     var GAS='https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec';
 
     // Build pre-filled link — clicking it opens their exact configuration
-    var shareLink='https://lhinson00.github.io/Sauce/customer-configurator.html?config='+safeEncode(serializeConfig());
+    var shareLink='https://lhinson00.github.io/Sauce/customer-configurator.html?config='+await safeEncodeCompressed(serializeConfig());
 
     // Step 1: Save snapshot — configEncoded stored inside snapshot so it can be reloaded
     var snapshot={
@@ -1733,11 +1767,11 @@ function vpToggleWalls() {
   // ?config=BASE64 — inline share link
   var cfgParam=params.get('config');
   if(cfgParam){
-    try{
-      var cfg=safeDecode(cfgParam);
-      setTimeout(function(){ restoreConfig(cfg); },300);
-      return;
-    }catch(e){ console.warn('Invalid config param',e); }
+    safeDecodeAsync(cfgParam).then(function(cfg){
+      if(cfg){ setTimeout(function(){ restoreConfig(cfg); },300); }
+      else { console.warn('Invalid config param'); }
+    }).catch(function(e){ console.warn('Config decode error',e); });
+    return;
   }
 
   // ?quote=ID — load saved quote from Apps Script
