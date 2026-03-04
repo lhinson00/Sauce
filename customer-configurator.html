@@ -1368,7 +1368,7 @@ function buildCupolaChips(){
 function serializeConfig() {
   return {
     Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,postSpacing:Q.postSpacing,truss:Q.truss,frameType:Q.frameType},
-    walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing};}),
+    walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,partialH:w.partialH};}),
     doors: allDoors,
     walkDoors: window._walkDoors,
     windows: window._windows,
@@ -2510,22 +2510,22 @@ function vpToggleWalls() {
             if (wCfg.encl === 'open') return;
 
             // Helper to add a wall segment with optional wainscot split
-            function addWallSeg(x1, x2, y0, y1, mat, isGable) {
+            function addWallSeg(x1, x2, y0, y1, mat, isGable, zOverride) {
                 if (y1 <= y0) return;
+                const gz = (isGable && zOverride !== undefined) ? zOverride : zP;
                 if (hasWainscot && wsH > y0 && y0 === 0 && y1 > wsH && wCfg.encl !== 'partial') {
                     // Split: lower wainscot + upper wall
                     if (isGable) {
-                        grps.wallPanels.add(mkQ([x1, 0, zP, x2, 0, zP, x2, wsH, zP, x1, wsH, zP], mWainscot));
-                        grps.wallPanels.add(mkQ([x1, wsH, zP, x2, wsH, zP, x2, y1, zP, x1, y1, zP], mW));
+                        grps.wallPanels.add(mkQ([x1, 0, gz, x2, 0, gz, x2, wsH, gz, x1, wsH, gz], mWainscot));
+                        grps.wallPanels.add(mkQ([x1, wsH, gz, x2, wsH, gz, x2, y1, gz, x1, y1, gz], mW));
                     } else {
                         grps.wallPanels.add(mkQ([xP, 0, x1, xP, 0, x2, xP, wsH, x2, xP, wsH, x1], mWainscot));
                         grps.wallPanels.add(mkQ([xP, wsH, x1, xP, wsH, x2, xP, y1, x2, xP, y1, x1], mW));
                     }
                 } else {
-                    // Single material
                     const useMat = (hasWainscot && y1 <= wsH) ? mWainscot : mat;
                     if (isGable) {
-                        grps.wallPanels.add(mkQ([x1, y0, zP, x2, y0, zP, x2, y1, zP, x1, y1, zP], useMat));
+                        grps.wallPanels.add(mkQ([x1, y0, gz, x2, y0, gz, x2, y1, gz, x1, y1, gz], useMat));
                     } else {
                         grps.wallPanels.add(mkQ([xP, y0, x1, xP, y0, x2, xP, y1, x2, xP, y1, x1], useMat));
                     }
@@ -2534,17 +2534,18 @@ function vpToggleWalls() {
 
             const yBot = wCfg.encl === 'partial' ? wH : 0; // bottom of metal panel
             const yTop = wCfg.encl === 'partial' ? wTop : wH; // top of metal panel
+            const zGable = zP + (wallId === 'front' ? .005 : -.005); // same offset as gable triangle
             if (isG) {
                 let x = 0;
                 wd.forEach(d => {
                     const dL = d.offset || 0, dR = dL + d.w, dh = Math.min(d.h * Sc, yTop);
-                    if (dL > x) addWallSeg((-wLen / 2 + x) * Sc, (-wLen / 2 + dL) * Sc, yBot, yTop, mW, true);
+                    if (dL > x) addWallSeg((-wLen / 2 + x) * Sc, (-wLen / 2 + dL) * Sc, yBot, yTop, mW, true, zGable);
                     if (dh < yTop && dh > yBot) {
-                        grps.wallPanels.add(mkQ([(-wLen / 2 + dL) * Sc, dh, zP, (-wLen / 2 + dR) * Sc, dh, zP, (-wLen / 2 + dR) * Sc, yTop, zP, (-wLen / 2 + dL) * Sc, yTop, zP], mW));
+                        grps.wallPanels.add(mkQ([(-wLen / 2 + dL) * Sc, dh, zGable, (-wLen / 2 + dR) * Sc, dh, zGable, (-wLen / 2 + dR) * Sc, yTop, zGable, (-wLen / 2 + dL) * Sc, yTop, zGable], mW));
                     }
                     x = dR;
                 });
-                if (x < wLen) addWallSeg((-wLen / 2 + x) * Sc, (wLen / 2) * Sc, yBot, yTop, mW, true);
+                if (x < wLen) addWallSeg((-wLen / 2 + x) * Sc, (wLen / 2) * Sc, yBot, yTop, mW, true, zGable);
             } else {
                 let z = 0;
                 wd.forEach(d => {
@@ -3015,8 +3016,10 @@ function vpToggleWalls() {
                     const gableH = sh + (Q.w/2 - Math.abs(x/Sc)) * (Q.pitch/12) * Sc;
                     const rH = Math.min(gableH, sr);
                     const ribBot = gablePartial ? gableRibBot : 0;
-                    grps.walls.add(mkQ([x, ribBot, zBase + s*0.003, x + ribW, ribBot, zBase + s*0.003, x + ribW, rH, zBase + s*0.003, x, rH, zBase + s*0.003], mRibHi));
-                    grps.walls.add(mkQ([x + ribW, ribBot, zBase + s*0.003, x + ribW*2, ribBot, zBase + s*0.003, x + ribW*2, rH, zBase + s*0.003, x + ribW, rH, zBase + s*0.003], mRibSh));
+                    const ribTop = gablePartial ? sh : rH; // partial: stop at eave, not peak
+                    if (ribTop <= ribBot) continue;
+                    grps.walls.add(mkQ([x, ribBot, zBase + s*0.003, x + ribW, ribBot, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003, x, ribTop, zBase + s*0.003], mRibHi));
+                    grps.walls.add(mkQ([x + ribW, ribBot, zBase + s*0.003, x + ribW*2, ribBot, zBase + s*0.003, x + ribW*2, ribTop, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003], mRibSh));
                 }
             });
         }
