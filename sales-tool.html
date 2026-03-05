@@ -4810,193 +4810,60 @@ function fmtPriceFull(v) {
   return '$' + n.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
 }
 
-// Map 3D configurator's garage door size (e.g. "10x10") + type to the API's GD code
-function gdCode(sizeKey, isInsulated) {
-  if (!sizeKey) return '';
-  // sizeKey format: "WxH" e.g. "10x10"
-  var parts = sizeKey.split('x');
-  if (parts.length !== 2) return '';
-  var w = parts[0], h = parts[1];
-  var code = 'GD' + w + h + (isInsulated ? 'INW' : 'W');
-  // Special cases that use INSW suffix
-  var insw = ['GD98INSW','GD1610INSW','GD188INSW','GD1810INSW','GD1812INSW','GD1814INSW','GD2014INSW'];
-  if (isInsulated) {
-    var alt = 'GD' + w + h + 'INSW';
-    if (insw.indexOf(alt) >= 0) code = alt;
-  }
-  return code;
-}
 
-// Map barn door size (e.g. "12x10") to API value
-function barnCode(sizeKey) {
-  if (!sizeKey) return '';
-  var parts = sizeKey.split('x');
-  if (parts.length !== 2) return '';
-  return parts[0].toUpperCase() + 'X' + parts[1].toUpperCase() + ' SINGLE SLIDING DOOR';
-}
-
-// Map roofColor name to API value
-function apiRoofColor(name) {
-  // Calculator uses: Painted, Galvalume, 26-Gauge, PBR
-  // Configurator uses full color names — treat non-Galvalume as Painted
-  if (!name) return 'Painted';
-  if (name === 'Galvalume') return 'Galvalume';
-  return 'Painted';
-}
-
-// Build the formData payload from current configurator state
+// Build the formData payload — width/length/height from 3D, everything else at calculator defaults
 function buildPricePayload() {
-  // Basic dims
-  var w = Q.w, l = Q.l, h = Q.h, pitch = Q.pitch;
-
-  // Wainscot
-  var wainscot = (document.getElementById('exWainscot') && document.getElementById('exWainscot').checked) ? 'Yes' : 'No';
-
-  // Truss spacing from Q.postSpacing
-  var trussSpacing = Q.postSpacing || 10;
-  // Snap to valid API values: 2, 4, 5
-  if (trussSpacing <= 2) trussSpacing = 2;
-  else if (trussSpacing <= 4) trussSpacing = 4;
-  else trussSpacing = 5;
-
-  // Eave post spacing
-  var eavePS = Q.eavePS || 10;
-  if (eavePS <= 8) eavePS = 8;
-  else if (eavePS <= 10) eavePS = 10;
-  else eavePS = 12;
-
-  // Salesman spec fields
-  var mbPostSize = (document.getElementById('st_mbPostSize')||{}).value || '6x6';
-  var ssPostSize = (document.getElementById('st_ssPostSize')||{}).value || '6x6';
-  var mainConcrete = (document.getElementById('st_mainConcrete')||{}).value || 'None';
-  var postsOnTop = (document.getElementById('st_postsOnTop')||{}).value || 'No';
-  var insulation = (document.getElementById('st_insulation')||{}).value || 'None';  var insulRoof = (document.getElementById('st_insulRoof')||{}).checked ? 'x' : '';
-  var insulWalls = (document.getElementById('st_insulWalls')||{}).checked ? 'x' : '';
-  var finishedCeiling = (document.getElementById('st_finishedCeiling')||{}).checked ? 'Yes' : 'No';
-  var postWraps = (document.getElementById('st_postWraps')||{}).checked ? 'Yes' : 'No';
-  var lvlHeaders = (document.getElementById('st_lvlHeaders')||{}).checked ? '11 7/8' : 'No';
-  var rockWainscot = (document.getElementById('st_rockWainscot')||{}).checked ? 'Yes' : 'No';
-  var postProtectors = (document.getElementById('st_postProtectors')||{}).checked ? 'Yes' : 'No';
-  var gutters = (document.getElementById('st_gutters')||{}).checked ? 'Yes' : 'No';
-  var manualAdder = (document.getElementById('st_manualAdder')||{}).value || '0';
-  var materialKit = (document.getElementById('st_materialKit')||{}).checked ? 'Yes' : 'No';
-  var farmTax = (document.getElementById('st_farmTax')||{}).checked ? 'Yes' : 'No';
-  var ssConcrete = (document.getElementById('st_ssConcrete')||{}).value || 'None';
-  var ss2Concrete = (document.getElementById('st_ss2Concrete')||{}).value || 'None';
-  var address = (document.getElementById('st_address')||{}).value || '';
-
-  // Shed data — map first shed to ss, second to ss2
-  var sheds = window._shedConfigs || [];
-  var ssWidth = 0, ssLength = 0, ssRoofColor = 'Painted', ss2Width = 0, ss2Length = 0, ss2RoofColor = 'Painted';
-  if (sheds[0]) { ssWidth = sheds[0].w || 0; ssLength = sheds[0].l || l; ssRoofColor = apiRoofColor(selRoof); }
-  if (sheds[1]) { ss2Width = sheds[1].w || 0; ss2Length = sheds[1].l || l; ss2RoofColor = apiRoofColor(selRoof); }
-
-  // Doors — flatten allDoors + _walkDoors + _windows into calculator slots
-  var garage = (allDoors || []).filter(function(d){ return d.type === 'garage' && d.wall; });
-  var barn = (allDoors || []).filter(function(d){ return (d.type === 'barn' || d.type === 'dutch') && d.wall; });
-  var walk = (window._walkDoors || []).filter(function(d){ return d.wall; });
-  var wins = (window._windows || []).filter(function(d){ return d.wall; });
-
-  // Garage doors → up to 4 slots, group by sizeKey+insulated
-  var gdGroups = {};
-  garage.forEach(function(d){
-    var key = (d.sizeKey||'10x10') + '|' + (d.isInsulated?'1':'0');
-    if (!gdGroups[key]) gdGroups[key] = { sizeKey: d.sizeKey||'10x10', ins: !!d.isInsulated, qty: 0 };
-    gdGroups[key].qty++;
-  });
-  var gdArr = Object.values(gdGroups).slice(0,4);
-  while (gdArr.length < 4) gdArr.push({ sizeKey: '', ins: false, qty: 0 });
-
-  // Barn doors → up to 2 slots
-  var bdGroups = {};
-  barn.forEach(function(d){
-    var key = d.sizeKey || '10x10';
-    if (!bdGroups[key]) bdGroups[key] = { sizeKey: key, qty: 0 };
-    bdGroups[key].qty++;
-  });
-  var bdArr = Object.values(bdGroups).slice(0,2);
-  while (bdArr.length < 2) bdArr.push({ sizeKey: '', qty: 0 });
-
-  // Walk doors → up to 2 slots
-  var wdGroups = {};
-  walk.forEach(function(d){
-    var key = d.doorType || '';
-    if (!wdGroups[key]) wdGroups[key] = { type: key, qty: 0 };
-    wdGroups[key].qty++;
-  });
-  var wdArr = Object.values(wdGroups).slice(0,2);
-  while (wdArr.length < 2) wdArr.push({ type: '', qty: 0 });
-
-  // Windows → up to 3 slots
-  var winGroups = {};
-  wins.forEach(function(d){
-    var key = d.winType || '';
-    if (!winGroups[key]) winGroups[key] = { type: key, qty: 0 };
-    winGroups[key].qty++;
-  });
-  var winArr = Object.values(winGroups).slice(0,3);
-  while (winArr.length < 3) winArr.push({ type: '', qty: 0 });
-
   return {
     action: 'calculate',
     calculatorType: 'WoodOH',
     username: (window.currentUser || {}).username || '',
     isDemo: (window.currentUser || {}).isDemo || false,
-    zipCode: '', county: '', mileage: 0, taxRate: 0, // no address lookup in live strip
+    zipCode: '', county: '', mileage: 0, taxRate: 0,
     customerName: (document.getElementById('st_name')||{}).value || '',
     phone: (document.getElementById('st_phone')||{}).value || '',
     email: (document.getElementById('st_email')||{}).value || '',
-    address: address,
-    materialOnlyKit: materialKit,
-    farmTaxId: farmTax,
-    manualAdder: manualAdder,
-    width: w, length: l, height: h,
-    roofColor: apiRoofColor(selRoof),
-    wainscot: wainscot,
-    trussSpacing: trussSpacing,
-    eavePostSpacing: eavePS,
-    mbPostSize: mbPostSize || '6x6',
-    ssPostSize: ssPostSize || '6x6',
-    mainConcrete: mainConcrete || 'None',
-    ssWidth: ssWidth, ssLength: ssLength, ssRoofColor: ssRoofColor, ssConcrete: ssConcrete || 'None',
-    finishedCeiling: finishedCeiling,
-    postWraps: postWraps,
-    lvlHeaders: lvlHeaders,
-    roofPitch: pitch,
+    address: (document.getElementById('st_address')||{}).value || '',
+    materialOnlyKit: 'No',
+    farmTaxId: 'No',
+    manualAdder: (document.getElementById('st_manualAdder')||{}).value || '0',
+    width: Q.w,
+    length: Q.l,
+    height: Q.h,
+    roofPitch: Q.pitch,
+    roofColor: 'Painted',
+    wainscot: 'No',
+    trussSpacing: '5',
+    eavePostSpacing: '10',
+    mbPostSize: '6x6',
+    ssPostSize: '6x6',
+    mainConcrete: 'None',
+    ssWidth: 0, ssLength: 0, ssRoofColor: 'Painted', ssConcrete: 'None',
+    finishedCeiling: 'No',
+    postWraps: 'No',
+    lvlHeaders: 'No',
     ssConcreteAdder: 'None',
     enclosedSideShedLinearFt: 0,
-    ss2Width: ss2Width, ss2Length: ss2Length, ss2RoofColor: ss2RoofColor, ss2Concrete: ss2Concrete || 'None',
-    insulation: insulation || 'None',
-    insulationRoof: insulRoof,
-    insulationWalls: insulWalls,
-    rockWainscot: rockWainscot,
-    postProtectors: postProtectors,
-    gutters: gutters,
-    postsOnTop: postsOnTop,
-    garageDoor1Type: gdArr[0].sizeKey ? gdCode(gdArr[0].sizeKey, gdArr[0].ins) : '',
-    garageDoor1Qty: gdArr[0].qty || 0,
-    garageDoor2Type: gdArr[1].sizeKey ? gdCode(gdArr[1].sizeKey, gdArr[1].ins) : '',
-    garageDoor2Qty: gdArr[1].qty || 0,
-    garageDoor3Type: gdArr[2].sizeKey ? gdCode(gdArr[2].sizeKey, gdArr[2].ins) : '',
-    garageDoor3Qty: gdArr[2].qty || 0,
-    garageDoor4Type: gdArr[3].sizeKey ? gdCode(gdArr[3].sizeKey, gdArr[3].ins) : '',
-    garageDoor4Qty: gdArr[3].qty || 0,
+    ss2Width: 0, ss2Length: 0, ss2RoofColor: 'Painted', ss2Concrete: 'None',
+    insulation: 'None',
+    insulationRoof: '',
+    insulationWalls: '',
+    rockWainscot: 'No',
+    postProtectors: 'No',
+    gutters: 'No',
+    postsOnTop: 'No',
+    garageDoor1Type: '', garageDoor1Qty: 0,
+    garageDoor2Type: '', garageDoor2Qty: 0,
+    garageDoor3Type: '', garageDoor3Qty: 0,
+    garageDoor4Type: '', garageDoor4Qty: 0,
     garageDoorWindows: 'No', garageDoorOpeners: 'No', garageDoorOpenersQty: 0,
-    barnDoor1Type: bdArr[0].sizeKey ? barnCode(bdArr[0].sizeKey) : '',
-    barnDoor1Qty: bdArr[0].qty || 0,
-    barnDoor2Type: bdArr[1].sizeKey ? barnCode(bdArr[1].sizeKey) : '',
-    barnDoor2Qty: bdArr[1].qty || 0,
-    walkDoor1Type: wdArr[0].type || '',
-    walkDoor1Qty: wdArr[0].qty || 0,
-    walkDoor2Type: wdArr[1].type || '',
-    walkDoor2Qty: wdArr[1].qty || 0,
+    barnDoor1Type: '', barnDoor1Qty: 0,
+    barnDoor2Type: '', barnDoor2Qty: 0,
+    walkDoor1Type: '', walkDoor1Qty: 0,
+    walkDoor2Type: '', walkDoor2Qty: 0,
     walkDoorAwning: '', walkDoorAwningQty: 0,
-    window1Type: winArr[0].type || '',
-    window1Qty: winArr[0].qty || 0,
-    window2Type: winArr[1].type || '',
-    window2Qty: winArr[1].qty || 0,
-    window3Type: winArr[2].type || '',
-    window3Qty: winArr[2].qty || 0,
+    window1Type: '', window1Qty: 0,
+    window2Type: '', window2Qty: 0,
+    window3Type: '', window3Qty: 0,
     windowAwning: '', windowAwningQty: 0,
     singleSlopeAwning: '', singleSlopeAwningQty: 0,
     cupola: '', cupolaQty: 0
