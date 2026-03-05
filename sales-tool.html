@@ -327,6 +327,24 @@ body.has-strip .shell{margin-top:44px;height:calc(100vh - 44px);}
   <button class="price-toggle-btn" id="priceToggleBtn" onclick="togglePriceStrip()" style="margin-left:10px;">Hide Prices</button>
 </div>
 
+<!-- ═══ SALES LOGIN MODAL ═══ -->
+<div id="salesLoginModal" style="display:none;position:fixed;inset:0;background:rgba(10,16,32,.85);z-index:500;align-items:center;justify-content:center;backdrop-filter:blur(4px);">
+  <div style="background:#fff;border-radius:16px;padding:32px;width:100%;max-width:360px;box-shadow:0 20px 60px rgba(0,0,0,.4);">
+    <div style="font-family:'Outfit',sans-serif;font-weight:900;font-size:22px;color:#1a2744;margin-bottom:4px;">Sales Tool</div>
+    <div style="font-size:12px;color:#7a8aa5;margin-bottom:24px;letter-spacing:.5px;">Sauce Estimator · Internal</div>
+    <div id="slErr" style="color:#dc2626;font-size:12px;margin-bottom:12px;min-height:16px;"></div>
+    <div style="margin-bottom:12px;">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#7a8aa5;margin-bottom:5px;">Username</div>
+      <input id="slUser" type="text" autocomplete="username" style="width:100%;padding:10px 12px;border:1.5px solid #dde3ed;border-radius:8px;font-size:14px;font-family:'DM Sans',sans-serif;outline:none;" onkeydown="if(event.key==='Enter')document.getElementById('slPass').focus()">
+    </div>
+    <div style="margin-bottom:20px;">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#7a8aa5;margin-bottom:5px;">Password</div>
+      <input id="slPass" type="password" autocomplete="current-password" style="width:100%;padding:10px 12px;border:1.5px solid #dde3ed;border-radius:8px;font-size:14px;font-family:'DM Sans',sans-serif;outline:none;" onkeydown="if(event.key==='Enter')doSalesLogin()">
+    </div>
+    <button id="slBtn" onclick="doSalesLogin()" style="width:100%;padding:12px;background:#1a2744;color:#d4a843;border:none;border-radius:10px;font-family:'Outfit',sans-serif;font-size:15px;font-weight:800;cursor:pointer;">Log In</button>
+  </div>
+</div>
+
 <div class="shell">
 
   <!-- ═══ LEFT PANEL ═══ -->
@@ -4716,7 +4734,60 @@ async function submitSalesQuote() {
 // PHASE 3 — LIVE PRICING
 // ═══════════════════════════════════════════════════════
 
+// Bootstrap currentUser from storage (same pattern as calculator)
+(function() {
+  try {
+    var raw = sessionStorage.getItem('sauce_user') || localStorage.getItem('sauce_user');
+    if (raw) {
+      var u = JSON.parse(raw);
+      if (!u.loginExpiry || Date.now() < u.loginExpiry) {
+        window.currentUser = u;
+      }
+    }
+  } catch(e) {}
+  if (!window.currentUser) showSalesLoginModal();
+})();
+
+function showSalesLoginModal() {
+  var modal = document.getElementById('salesLoginModal');
+  if (modal) modal.style.display = 'flex';
+}
+function hideSalesLoginModal() {
+  var modal = document.getElementById('salesLoginModal');
+  if (modal) modal.style.display = 'none';
+}
+
 var _priceCalcTimer = null;
+
+async function doSalesLogin() {
+  var u = (document.getElementById('slUser')||{}).value || '';
+  var p = (document.getElementById('slPass')||{}).value || '';
+  var err = document.getElementById('slErr');
+  var btn = document.getElementById('slBtn');
+  if (!u || !p) { if(err) err.textContent = 'Enter username and password.'; return; }
+  btn.textContent = 'Logging in…'; btn.disabled = true;
+  try {
+    var resp = await fetch('https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec', {
+      method: 'POST', headers: {'Content-Type': 'text/plain'},
+      body: JSON.stringify({ action: 'login', username: u, password: p })
+    });
+    var data = await resp.json();
+    if (data.success) {
+      window.currentUser = data.user || { username: u };
+      window.currentUser.loginExpiry = Date.now() + 24*60*60*1000;
+      sessionStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
+      localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
+      hideSalesLoginModal();
+      schedulePrice();
+    } else {
+      if(err) err.textContent = data.error || 'Invalid credentials.';
+      btn.textContent = 'Log In'; btn.disabled = false;
+    }
+  } catch(e) {
+    if(err) err.textContent = 'Network error. Try again.';
+    btn.textContent = 'Log In'; btn.disabled = false;
+  }
+}
 var _priceCalcGen = 0;
 var _lastPriceResults = null;
 
