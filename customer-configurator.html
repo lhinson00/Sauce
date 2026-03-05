@@ -731,6 +731,27 @@ function buildWallGrid(){
       wrap.appendChild(row);
     }
 
+    // Timber frame toggle for open gable walls
+    var isGableWall = wall.id==='front'||wall.id==='back';
+    if(wall.encl==='open' && isGableWall){
+      var trow=document.createElement('div');
+      trow.className='wall-partial-row';
+      var isTmb=wall.gableType==='timber';
+      trow.innerHTML='<span>Gable:</span>'
+        +'<div style="display:flex;gap:4px;flex:1;">'
+        +'<button data-gtype="metal" style="flex:1;padding:3px 0;font-size:10px;font-weight:700;border-radius:4px;border:1px solid var(--border);cursor:pointer;'
+          +(isTmb?'background:#f9fafc;color:var(--muted);':'background:#1a2744;color:#d4a843;border-color:#1a2744;')+'">Metal</button>'
+        +'<button data-gtype="timber" style="flex:1;padding:3px 0;font-size:10px;font-weight:700;border-radius:4px;border:1px solid var(--border);cursor:pointer;'
+          +(isTmb?'background:#8B6914;color:#fff;border-color:#8B6914;':'background:#f9fafc;color:var(--muted);')+'">Timber</button>'
+        +'</div>';
+      (function(w,tr){
+        tr.querySelectorAll('button').forEach(function(b){
+          b.onclick=function(e){e.stopPropagation();w.gableType=b.getAttribute('data-gtype');buildWallGrid();scheduleBuild();};
+        });
+      })(wall, trow);
+      wrap.appendChild(trow);
+    }
+
     g.appendChild(wrap);
   });
 }
@@ -1967,6 +1988,9 @@ function vpToggleWalls() {
         const grps = { slab: new THREE.Group(), posts: new THREE.Group(), mainPosts: new THREE.Group(), walls: new THREE.Group(), wallPanels: new THREE.Group(), roof: new THREE.Group(), doors: new THREE.Group(), dims: new THREE.Group(), shed: new THREE.Group() };
         const dimLabels = [];
         Object.values(grps).forEach(g => { g.visible = false; scene.add(g); });
+        // Roof renders on top of walls/truss so truss never shows through roof from above
+        grps.roof.renderOrder = 1;
+        grps.walls.renderOrder = 0;
 
         // Slab — only render when concrete is selected for that area; otherwise grass shows through
         const concreteOn = document.getElementById('exConcrete') && document.getElementById('exConcrete').checked;
@@ -2462,46 +2486,43 @@ function vpToggleWalls() {
                 const z = zP + zOff;
                 const isTimberGable = wCfg && wCfg.gableType === 'timber' && wCfg.encl === 'open';
                 if (isTimberGable) {
-                    // Timber framed upper gable
-                    var tmbG = 0.067;
-                    var tmbrMatG = new THREE.MeshBasicMaterial({ color: 0x8B6914, side: THREE.DoubleSide });
-                    // Bottom chord
-                    var bcG = new THREE.Mesh(new THREE.BoxGeometry(sw, tmbG, tmbG), tmbrMatG);
-                    bcG.position.set(0, sh + tmbG/2, zP); grps.walls.add(bcG);
-                    // King post
-                    var kpHG = sr - sh - tmbG;
-                    if (kpHG > 0) {
-                        var kpG = new THREE.Mesh(new THREE.BoxGeometry(tmbG, kpHG, tmbG), tmbrMatG);
-                        kpG.position.set(0, sh + tmbG + kpHG/2, zP); grps.walls.add(kpG);
+                    var tmbG = 0.075;
+                    var tmbS = tmbG * 0.65;
+                    var tmbrMat = new THREE.MeshBasicMaterial({ color: 0xA0671A, side: THREE.DoubleSide });
+
+                    // Place members on exterior face so they sit outside the roof panels
+                    var zF = wallId === 'front' ? zP - 0.08 : zP + 0.08;
+
+                    function tB(x1,y1,x2,y2,th) {
+                        var len=Math.sqrt((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1));
+                        if(len<0.001) return;
+                        // Flat in Z (0.001 depth) — renders on gable face only, never pokes through roof
+                        var m=new THREE.Mesh(new THREE.BoxGeometry(len,th,0.001),tmbrMat);
+                        m.position.set((x1+x2)/2,(y1+y2)/2,zF);
+                        m.rotation.z=Math.atan2(y2-y1,x2-x1);
+                        grps.walls.add(m);
                     }
-                    // Left rafter
-                    var rLenG = Math.sqrt(Math.pow(sw/2, 2) + Math.pow(sr - sh, 2));
-                    var rAngG = Math.atan2(sr - sh, sw/2);
-                    var lrG = new THREE.Mesh(new THREE.BoxGeometry(rLenG, tmbG, tmbG), tmbrMatG);
-                    lrG.position.set(-sw/4, (sh + sr)/2, zP);
-                    lrG.rotation.z = rAngG; grps.walls.add(lrG);
-                    // Right rafter
-                    var rrG = new THREE.Mesh(new THREE.BoxGeometry(rLenG, tmbG, tmbG), tmbrMatG);
-                    rrG.position.set(sw/4, (sh + sr)/2, zP);
-                    rrG.rotation.z = Math.PI - rAngG; grps.walls.add(rrG);
-                    // Web members
-                    var midRHG = (sh + sr) / 2;
-                    var midRXG = sw / 4;
-                    var wLenG = Math.sqrt(Math.pow(midRXG, 2) + Math.pow(midRHG - sh - tmbG, 2));
-                    var wAngG = Math.atan2(midRHG - sh - tmbG, midRXG);
-                    // Left web
-                    var lwG = new THREE.Mesh(new THREE.BoxGeometry(wLenG, tmbG * 0.6, tmbG * 0.6), tmbrMatG);
-                    lwG.position.set(-midRXG/2, (sh + tmbG + midRHG)/2, zP);
-                    lwG.rotation.z = wAngG; grps.walls.add(lwG);
-                    // Right web
-                    var rwG = new THREE.Mesh(new THREE.BoxGeometry(wLenG, tmbG * 0.6, tmbG * 0.6), tmbrMatG);
-                    rwG.position.set(midRXG/2, (sh + tmbG + midRHG)/2, zP);
-                    rwG.rotation.z = Math.PI - wAngG; grps.walls.add(rwG);
-                    // Collar tie (horizontal member at ~1/3 from top)
-                    var collarY = sh + (sr - sh) * 0.6;
-                    var collarHalfW = (sw/2) * (1 - 0.6); // width at that height
-                    var ctG = new THREE.Mesh(new THREE.BoxGeometry(collarHalfW * 2, tmbG * 0.6, tmbG * 0.6), tmbrMatG);
-                    ctG.position.set(0, collarY, zP); grps.walls.add(ctG);
+
+                    var rAng = Math.atan2(sr-sh, sw/2);
+                    var pull = tmbG*0.5;
+                    var tpX  = pull*Math.cos(Math.PI+rAng);
+                    var tpY  = pull*Math.sin(Math.PI+rAng);
+
+                    // Mid-point on each rafter (~50% up)
+                    var rMidT = 0.72; // higher up rafter = steeper diagonal
+                    var rML = { x: -sw/2 + (sw/2)*rMidT, y: sh + (sr-sh)*rMidT };
+                    var rMR = { x:  sw/2 - (sw/2)*rMidT, y: sh + (sr-sh)*rMidT };
+
+                    // King post base just above tie beam
+                    var kBase = sh + tmbG * 0.6;
+
+                    // Members
+                    tB(-sw/2, sh+tmbG/2, sw/2, sh+tmbG/2, tmbG); // tie beam
+                    tB(-sw/2, sh,  tpX,  sr+tpY, tmbG);           // left rafter
+                    tB( sw/2, sh, -tpX,  sr+tpY, tmbG);           // right rafter
+                    tB(0, sr+tpY,   0,   kBase,  tmbG);            // king post — top flush at ridge
+                    tB(rML.x, rML.y,  0, kBase,  tmbS);           // left diagonal → king post base
+                    tB(rMR.x, rMR.y,  0, kBase,  tmbS);           // right diagonal → king post base
                 } else {
                 let leftDrop = 0, rightDrop = 0;
                 (shedCfgs || []).forEach(sc2 => {
@@ -2915,12 +2936,15 @@ function vpToggleWalls() {
             const _hasFrontGable = (shedCfgs||[]).some(function(sc){return sc.type==='gable'&&sc.wall==='front';});
             const _hasBackGable  = (shedCfgs||[]).some(function(sc){return sc.type==='gable'&&sc.wall==='back';});
             if (ohG > 0) {
-                if (!_hasFrontGable) {
+                // Skip gable soffit triangle for open/timber gable walls — it overlaps the truss
+                const _frontTimber = (wallCfgs.find(w=>w.id==='front')||{}).encl === 'open';
+                const _backTimber  = (wallCfgs.find(w=>w.id==='back')||{}).encl  === 'open';
+                if (!_hasFrontGable && !_frontTimber) {
                     const gz = -sl/2, go = -(sl/2 + ohG);
                     grps.roof.add(mkQ([-sw/2-ohE, sh, go, 0, sr, go, 0, sr, gz, -sw/2, sh, gz], mSoffitPanel));
                     grps.roof.add(mkQ([sw/2+ohE, sh, go, sw/2, sh, gz, 0, sr, gz, 0, sr, go], mSoffitPanel));
                 }
-                if (!_hasBackGable) {
+                if (!_hasBackGable && !_backTimber) {
                     const gz = sl/2, go = sl/2 + ohG;
                     grps.roof.add(mkQ([-sw/2-ohE, sh, go, 0, sr, go, 0, sr, gz, -sw/2, sh, gz], mSoffitPanel));
                     grps.roof.add(mkQ([sw/2+ohE, sh, go, sw/2, sh, gz, 0, sr, gz, 0, sr, go], mSoffitPanel));
