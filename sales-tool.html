@@ -480,6 +480,55 @@ body.view-mode #viewCustomerCard {
   #viewCustomerCard .vc-salesman { align-items: flex-start; }
   #viewCustomerCard .vc-divider { display: none; }
 }
+
+/* ── CALC STATUS BADGE ──────────────────────────────────────────── */
+#calcStatusBadge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.05);
+  font-family: 'Outfit', sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .8px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,.5);
+  transition: border-color .2s, color .2s, background .2s;
+  white-space: nowrap;
+  margin-left: 8px;
+}
+#calcStatusBadge.state-calculating {
+  border-color: rgba(212,168,67,.4);
+  color: rgba(212,168,67,.8);
+  background: rgba(212,168,67,.06);
+}
+#calcStatusBadge.state-confirmed {
+  border-color: rgba(34,197,94,.5);
+  color: rgba(34,197,94,.9);
+  background: rgba(34,197,94,.08);
+}
+#calcStatusBadge.state-error {
+  border-color: rgba(239,68,68,.5);
+  color: rgba(239,68,68,.9);
+  background: rgba(239,68,68,.08);
+}
+#calcStatusBadge .csb-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+#calcStatusBadge.state-calculating .csb-dot {
+  animation: csbPulse .8s ease-in-out infinite;
+}
+@keyframes csbPulse {
+  0%,100% { opacity: .3; transform: scale(.8); }
+  50%      { opacity: 1;  transform: scale(1.2); }
+}
+@media (max-width: 600px) { #calcStatusBadge { display: none; } }
 </style>
 </head>
 <body class="has-strip">
@@ -506,6 +555,7 @@ body.view-mode #viewCustomerCard {
     </div>
   </div>
 
+  <div id="calcStatusBadge" class="state-calculating"><div class="csb-dot"></div><span id="calcStatusText">Calculating…</span></div>
   <div class="price-strip-spacer"></div>
   <div class="salesman-badge">
     <div class="salesman-dot"></div>
@@ -1366,6 +1416,9 @@ function buildWallGrid(){
       var cycle={enclosed:'partial',partial:'open',open:'enclosed'};
       wall.encl=cycle[wall.encl]||'enclosed';
       if(wall.encl==='partial'&&!wall.partialH) wall.partialH=Math.min(4,Q.h);
+      // Bust cache + clear stale prices immediately on wall change
+      _lastPayloadKey = null; _lastPayloadTime = 0;
+      window._lastPriceOH = null; window._lastPriceNoOH = null; window._lastPriceSteel = null;
       buildWallGrid(); applyRouteUI(); scheduleBuild(); schedulePrice();
     };
     wrap.appendChild(btn);
@@ -5905,8 +5958,11 @@ var _lastPayloadTime = 0;
 
 function payloadCacheKey() {
   try {
+    var route = detectCalcRoute();
+    // Include wall encl states so toggling open/closed always busts the cache
+    var wallState = WALLS.map(function(w){ return w.id+':'+w.encl; }).join('|');
     var p = buildPricePayload('WoodOH');
-    return JSON.stringify(p);
+    return route.type + '|' + wallState + '|' + JSON.stringify(p);
   } catch(e) { return Math.random(); }
 }
 
@@ -5921,23 +5977,52 @@ function warmPing() {
   } catch(e) {}
 }
 
+
+function setCalcBadge(state, text) {
+  // state: 'calculating' | 'confirmed' | 'error'
+  var badge = document.getElementById('calcStatusBadge');
+  var label = document.getElementById('calcStatusText');
+  if (!badge || !label) return;
+  badge.className = 'state-' + state;
+  label.textContent = text;
+}
+var _staleGuardTimer = null;
+
 function applyRouteUI() {
   // Instantly update price strip labels + column visibility based on wall state
-  // Called immediately on wall toggle — no debounce
   var route = detectCalcRoute();
   var isRG  = isOpenBuildingRoute();
+  var calcNames = {
+    RGSteel:'Roof & Upper Gables', RGSides:'RG Sides', RGGables:'RG Gables',
+    WoodOH:'Wood OH + No OH + Steel', EnclosedSteel:'Steel Truss'
+  };
   if (isRG) {
     updatePriceStripLabels(route.type, null, null);
     hidePriceBlock('ps2_');
     hidePriceBlock('ps3_');
-    // Reset value to pending so stale enclosed price doesn't show
-    setPriceStripCalculating();
   } else {
     updatePriceStripLabels('WoodOH', 'WoodNoOH', 'EnclosedSteel');
     showPriceBlock('ps2_');
     showPriceBlock('ps3_');
-    setPriceStripCalculating();
   }
+
+  // Wipe totals immediately — stale numbers must never sit there looking valid
+  ['ps_total','ps2_total','ps3_total'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) { el.textContent = '—'; el.classList.add('pending'); el.classList.remove('highlight'); }
+  });
+  setCalcBadge('calculating', 'Calculating…');
+
+  // Stale-guard: if no price arrives in 12s, show — and badge "Tap to retry"
+  clearTimeout(_staleGuardTimer);
+  _staleGuardTimer = setTimeout(function() {
+    ['ps_total','ps2_total','ps3_total'].forEach(function(id){
+      var el = document.getElementById(id);
+      if (el && el.classList.contains('pending')) { el.textContent = '—'; }
+    });
+    setCalcBadge('error', 'Tap to retry');
+  }, 12000);
+
   syncOpeningVisibility();
 }
 
@@ -6162,6 +6247,7 @@ function buildPricePayload(calcType) {
 
 // Set price strip to "calculating" state
 function setPriceStripCalculating() {
+  setCalcBadge('calculating', 'Calculating…');
   ['ps_material','ps_labor','ps_concrete','ps_esd','ps_tax','ps_shipping','ps2_material','ps2_labor','ps2_concrete','ps2_esd','ps2_tax','ps2_shipping','ps3_material','ps3_labor','ps3_concrete','ps3_esd','ps3_tax','ps3_shipping'].forEach(function(id){
     var el = document.getElementById(id);
     if (el) { el.textContent = '…'; el.classList.add('pending'); el.classList.remove('highlight'); }
@@ -6172,6 +6258,8 @@ function setPriceStripCalculating() {
 // Main price update function — called by schedulePrice()
 
 function populatePriceBlock(prefix, r) {
+  // Price arrived — cancel stale guard
+  clearTimeout(_staleGuardTimer);
   var p = function(id,v){var el=document.getElementById(id);if(el){el.textContent=v;el.classList.remove('pending');}};
   var labVal = fmtPrice(r.laborBeyond200 > 0 ? r.laborBeyond200 : r.labor);
   p(prefix+'material', fmtPrice(r.materialOnly));
@@ -6304,7 +6392,7 @@ async function updatePriceStrip() {
 
   var key = payloadCacheKey();
   var now = Date.now();
-  if (key === _lastPayloadKey && (now - _lastPayloadTime) < 30000) {
+  if (key === _lastPayloadKey && (now - _lastPayloadTime) < 8000) {
     console.log('[Price] cache hit — skipping');
     return;
   }
@@ -6335,7 +6423,10 @@ async function updatePriceStrip() {
         _lastPriceResults = data.results;
         window._lastPriceOH = data.results;
         populatePriceBlock('ps_', data.results);
-      } else { setPriceStripError('ps_'); }
+        var _rLabel = {RGSteel:'Roof & Upper Gables', RGSides:'RG Sides', RGGables:'RG Gables'}[route.type] || route.type;
+        setCalcBadge('confirmed', '✓ ' + _rLabel);
+        setTimeout(function(){ setCalcBadge('confirmed', _rLabel); }, 2000);
+      } else { setPriceStripError('ps_'); setCalcBadge('error', '✕ Calc Error'); }
 
     } else {
       // ── ENCLOSED BUILDING: all three calcs ────────────────────
@@ -6353,9 +6444,18 @@ async function updatePriceStrip() {
       if (thisGen !== _priceCalcGen) return;
       var [dataOH, dataNoOH, dataSteel] = await Promise.all([respOH.json(), respNoOH.json(), respSteel.json()]);
       if (thisGen !== _priceCalcGen) return;
-      if (dataOH.success    && dataOH.results)    { _lastPriceResults=dataOH.results; window._lastPriceOH=dataOH.results; populatePriceBlock('ps_', dataOH.results); } else { setPriceStripError('ps_'); }
-      if (dataNoOH.success  && dataNoOH.results)  { window._lastPriceNoOH=dataNoOH.results; populatePriceBlock('ps2_', dataNoOH.results); } else { setPriceStripError('ps2_'); }
-      if (dataSteel.success && dataSteel.results) { window._lastPriceSteel=dataSteel.results; populatePriceBlock('ps3_', dataSteel.results); } else { setPriceStripError('ps3_'); }
+      var _encOK = 0;
+      if (dataOH.success    && dataOH.results)    { _lastPriceResults=dataOH.results; window._lastPriceOH=dataOH.results; populatePriceBlock('ps_', dataOH.results); _encOK++; } else { setPriceStripError('ps_'); }
+      if (dataNoOH.success  && dataNoOH.results)  { window._lastPriceNoOH=dataNoOH.results; populatePriceBlock('ps2_', dataNoOH.results); _encOK++; } else { setPriceStripError('ps2_'); }
+      if (dataSteel.success && dataSteel.results) { window._lastPriceSteel=dataSteel.results; populatePriceBlock('ps3_', dataSteel.results); _encOK++; } else { setPriceStripError('ps3_'); }
+      if (_encOK === 3) {
+        setCalcBadge('confirmed', '✓ W/Soffit · No Soffit · Steel');
+        setTimeout(function(){ setCalcBadge('confirmed', 'W/Soffit · No Soffit · Steel'); }, 2000);
+      } else if (_encOK > 0) {
+        setCalcBadge('error', '⚠ Partial Results (' + _encOK + '/3)');
+      } else {
+        setCalcBadge('error', '✕ Calc Error');
+      }
     }
 
   } catch(e) {
