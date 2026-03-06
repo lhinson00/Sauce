@@ -849,7 +849,8 @@ body.has-strip.ps-dd-open .shell{margin-top:44px;}
           </div>
           <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:120px;">
             <div style="font-size:9px;color:var(--muted);font-weight:600;">Address / City</div>
-            <input id="st_address" type="text" placeholder="City, State" autocomplete="address-level2" style="font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
+            <input id="st_address" type="text" placeholder="City, State" autocomplete="address-level2" style="font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);" oninput="scheduleAddressLookup()" onblur="doAddressLookup()">
+            <div id="st_mileageDisplay" style="font-size:9px;color:var(--muted);margin-top:3px;min-height:12px;"></div>
           </div>
         </div>
         <div class="toggle-row">
@@ -5033,6 +5034,61 @@ function onWainscotChange() {
   schedulePrice();
 }
 
+var _addrTimer = null;
+var _cachedMileage = 0;
+var _cachedZip = '';
+var _cachedCounty = '';
+var SHOP_ADDRESS = '3846 Summertown Hwy, Hohenwald, TN 38462';
+
+function scheduleAddressLookup() {
+  clearTimeout(_addrTimer);
+  _addrTimer = setTimeout(doAddressLookup, 1200);
+}
+
+async function doAddressLookup() {
+  clearTimeout(_addrTimer);
+  var addr = (document.getElementById('st_address')||{}).value || '';
+  var display = document.getElementById('st_mileageDisplay');
+  if (!addr || addr.length < 5) {
+    if (display) display.textContent = '';
+    _cachedMileage = 0; _cachedZip = ''; _cachedCounty = '';
+    return;
+  }
+  if (display) { display.textContent = '🔄 Calculating distance...'; display.style.color = '#888'; }
+  try {
+    var geo = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=';
+    var r = await Promise.all([
+      fetch(geo + encodeURIComponent(addr)).then(function(r){return r.json();}),
+      fetch(geo + encodeURIComponent(SHOP_ADDRESS)).then(function(r){return r.json();})
+    ]);
+    var cust = r[0], shop = r[1];
+    if (!cust.length || !shop.length) {
+      if (display) { display.textContent = '⚠️ Address not found'; display.style.color = '#dc3545'; }
+      _cachedMileage = 0; return;
+    }
+    var R = 3959, toRad = function(d){return d*Math.PI/180;};
+    var dLat = toRad(cust[0].lat - shop[0].lat);
+    var dLon = toRad(cust[0].lon - shop[0].lon);
+    var a = Math.sin(dLat/2)*Math.sin(dLat/2) +
+            Math.cos(toRad(shop[0].lat))*Math.cos(toRad(cust[0].lat))*
+            Math.sin(dLon/2)*Math.sin(dLon/2);
+    _cachedMileage = Math.round(R * 2 * Math.atan2(Math.sqrt(a),Math.sqrt(1-a)) * 1.2);
+    // Extract zip from display name
+    var zipMatch = cust[0].display_name.match(/(\d{5})/);
+    _cachedZip = zipMatch ? zipMatch[1] : '';
+    if (display) {
+      var msg = '📍 ' + _cachedMileage + ' miles from shop';
+      if (_cachedMileage > 200) msg += ' — beyond 200mi';
+      display.textContent = msg;
+      display.style.color = _cachedMileage > 200 ? '#dc3545' : '#15803d';
+    }
+    schedulePrice();
+  } catch(e) {
+    if (display) { display.textContent = '⚠️ Error calculating distance'; display.style.color = '#dc3545'; }
+    _cachedMileage = 0;
+  }
+}
+
 function onInsulationChange() {
   var val = (document.getElementById('st_insulation')||{}).value || 'None';
   var roof = document.getElementById('st_insulRoof');
@@ -5160,7 +5216,7 @@ function buildPricePayload(calcType) {
       calculatorType: 'EnclosedSteel',
       username: (window.currentUser || {}).username || '',
       isDemo: (window.currentUser || {}).isDemo || false,
-      zipCode: '', county: '', mileage: 0, taxRate: 0,
+      zipCode: _cachedZip || '', county: _cachedCounty || '', mileage: _cachedMileage || 0, taxRate: 0,
       customerName: (document.getElementById('st_name')||{}).value || '',
       phone: (document.getElementById('st_phone')||{}).value || '',
       email: (document.getElementById('st_email')||{}).value || '',
@@ -5218,7 +5274,7 @@ function buildPricePayload(calcType) {
     calculatorType: calcType || 'WoodOH',
     username: (window.currentUser || {}).username || '',
     isDemo: (window.currentUser || {}).isDemo || false,
-    zipCode: '', county: '', mileage: 0, taxRate: 0,
+    zipCode: _cachedZip || '', county: _cachedCounty || '', mileage: _cachedMileage || 0, taxRate: 0,
     customerName: (document.getElementById('st_name')||{}).value || '',
     phone: (document.getElementById('st_phone')||{}).value || '',
     email: (document.getElementById('st_email')||{}).value || '',
