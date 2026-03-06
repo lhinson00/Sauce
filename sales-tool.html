@@ -1366,7 +1366,7 @@ function buildWallGrid(){
       var cycle={enclosed:'partial',partial:'open',open:'enclosed'};
       wall.encl=cycle[wall.encl]||'enclosed';
       if(wall.encl==='partial'&&!wall.partialH) wall.partialH=Math.min(4,Q.h);
-      buildWallGrid(); scheduleBuild(); schedulePrice();
+      buildWallGrid(); applyRouteUI(); scheduleBuild(); schedulePrice();
     };
     wrap.appendChild(btn);
 
@@ -2585,16 +2585,18 @@ function vpToggleWalls() {
         setTimeout(function(){
           restoreConfig(cfg);
           if(window._viewModeActive) {
-            // Build a pseudo-snapshot from decoded config for the view card
+            // Build snapshot for the view card from embedded _viewData
+            var vd = cfg._viewData || {};
+            var sf = cfg.salesFields || cfg.contact || {};
             var pseudoSnap = {
-              formFields: cfg.salesFields || cfg.contact || {},
-              pricingResults: cfg.pricingResults || {},
-              salesmanName: (cfg.salesFields||{}).salesmanName || '',
-              salesmanPhone: (cfg.salesFields||{}).salesmanPhone || '',
-              salesmanEmail: (cfg.salesFields||{}).salesmanEmail || '',
-              salesmanCompany: (cfg.salesFields||{}).salesmanCompany || ''
+              formFields: sf,
+              pricingResults: vd.pricingResults || {},
+              salesmanName:    vd.salesmanName    || sf.salesmanName    || '',
+              salesmanPhone:   vd.salesmanPhone   || sf.salesmanPhone   || '',
+              salesmanEmail:   vd.salesmanEmail   || sf.salesmanEmail   || '',
+              salesmanCompany: vd.salesmanCompany || sf.salesmanCompany || ''
             };
-            setTimeout(function(){ populateViewCard(pseudoSnap); }, 600);
+            setTimeout(function(){ populateViewCard(pseudoSnap); }, 1200);
           }
         },300);
       }
@@ -5287,6 +5289,23 @@ async function saveSalesQuote() {
     // 1. Build share/config link
     var _cfg;
     try { _cfg = serializeConfig(); } catch(cfgErr) { throw new Error('serializeConfig failed: ' + cfgErr.message); }
+    // Embed pricing + salesman into config so view=1 mode can display them without a DB lookup
+    var oh    = window._lastPriceOH    || {};
+    var nooh  = window._lastPriceNoOH  || {};
+    var steel = window._lastPriceSteel || {};
+    var cu    = window.currentUser     || {};
+    _cfg._viewData = {
+      pricingResults: {
+        totalOH:    oh.total    ? fmtPriceFull(oh.total)    : '',
+        totalNoOH:  nooh.total  ? fmtPriceFull(nooh.total)  : '',
+        totalSteel: steel.total ? fmtPriceFull(steel.total) : '',
+        total:      oh.total    ? fmtPriceFull(oh.total)    : (nooh.total ? fmtPriceFull(nooh.total) : '')
+      },
+      salesmanName:    cu.fullName    || cu.username || '',
+      salesmanPhone:   cu.phone       || '',
+      salesmanEmail:   cu.email       || '',
+      salesmanCompany: cu.company     || ''
+    };
     var shareLink = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + await safeEncodeCompressed(_cfg);
 
     // 2. Build formFields — everything the email builder needs
@@ -5649,14 +5668,19 @@ function populateViewCard(snapshot) {
   var smCompany = snapshot.salesmanCompany || '';
 
   // Dims
-  var w = f.width  || (Q && Q.w) || '';
-  var l = f.length || (Q && Q.l) || '';
-  var h = f.height || (Q && Q.h) || '';
+  var w = f.width  || f.w || (window.Q && window.Q.w) || '';
+  var l = f.length || f.l || (window.Q && window.Q.l) || '';
+  var h = f.height || f.h || (window.Q && window.Q.h) || '';
 
   function spec(lbl, val) {
     if (!val) return '';
     return '<div class="vc-spec"><div class="vc-spec-lbl">'+lbl+'</div><div class="vc-spec-val">'+val+'</div></div>';
   }
+
+  // Colors — pull from live globals set by restoreConfig, fall back to formFields
+  var roofCol  = window.selRoof  || f.roofColor  || f.st_roofMetal  || '';
+  var wallCol  = window.selWall  || f.wallColor  || f.st_wallMetal  || '';
+  var trimCol  = window.selTrim  || f.trimColor  || f.st_trimMetal  || '';
 
   var specsEl = document.getElementById('vcSpecs');
   if (specsEl) {
@@ -5664,9 +5688,9 @@ function populateViewCard(snapshot) {
       spec('Width',  w ? w+"'" : '') +
       spec('Length', l ? l+"'" : '') +
       spec('Height', h ? h+"'" : '') +
-      spec('Roof',   f.roofColor  || '') +
-      spec('Walls',  f.wallColor  || '') +
-      spec('Trim',   f.trimColor  || '');
+      spec('Roof',   roofCol) +
+      spec('Walls',  wallCol) +
+      spec('Trim',   trimCol);
   }
 
   // Prices — show whichever have values
@@ -5897,11 +5921,31 @@ function warmPing() {
   } catch(e) {}
 }
 
+function applyRouteUI() {
+  // Instantly update price strip labels + column visibility based on wall state
+  // Called immediately on wall toggle — no debounce
+  var route = detectCalcRoute();
+  var isRG  = isOpenBuildingRoute();
+  if (isRG) {
+    updatePriceStripLabels(route.type, null, null);
+    hidePriceBlock('ps2_');
+    hidePriceBlock('ps3_');
+    // Reset value to pending so stale enclosed price doesn't show
+    setPriceStripCalculating();
+  } else {
+    updatePriceStripLabels('WoodOH', 'WoodNoOH', 'EnclosedSteel');
+    showPriceBlock('ps2_');
+    showPriceBlock('ps3_');
+    setPriceStripCalculating();
+  }
+  syncOpeningVisibility();
+}
+
 function schedulePrice() {
   clearTimeout(_priceCalcTimer);
   if (!window.currentUser) { console.log('[Price] no user, skipping'); return; }
   console.log('[Price] scheduled');
-  _priceCalcTimer = setTimeout(updatePriceStrip, 800);
+  _priceCalcTimer = setTimeout(updatePriceStrip, 400);
 }
 
 function fmtPrice(v) {
