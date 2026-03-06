@@ -1864,7 +1864,7 @@ function buildCupolaChips(){
 // ── CONFIG SERIALIZATION ─────────────────────────────────────────
 function serializeConfig() {
   return {
-    Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,postSpacing:Q.postSpacing,truss:Q.truss,frameType:Q.frameType},
+    Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,truss:Q.truss,frameType:Q.frameType},
     walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,partialH:w.partialH};}),
     doors: allDoors,
     walkDoors: window._walkDoors,
@@ -1926,8 +1926,27 @@ function serializeConfig() {
 
 function restoreConfig(cfg) {
   try {
-    if(cfg.Q) { Object.assign(Q,cfg.Q); Q.truss=cfg.Q.truss; }
+    if(cfg.Q) {
+      Object.assign(Q,cfg.Q); Q.truss=cfg.Q.truss;
+      // Sync dimension inputs to restored values
+      var _iw=document.getElementById('inW'); if(_iw) _iw.value=Q.w;
+      var _il=document.getElementById('inL'); if(_il) _il.value=Q.l;
+      var _ih=document.getElementById('inH'); if(_ih) _ih.value=Q.h;
+      // Sync chip state variables from restored Q
+      cfgTruss = Q.truss || cfgTruss;
+      currentFrameType = Q.frameType || currentFrameType;
+      // Restore eavePS/gablePS from saved Q or derive from walls
+      if(cfg.Q.eavePS) Q.eavePS = cfg.Q.eavePS;
+      if(cfg.Q.gablePS) Q.gablePS = cfg.Q.gablePS;
+    }
     if(cfg.walls) cfg.walls.forEach(function(w){ var ww=WALLS.find(function(x){return x.id===w.id;}); if(ww) Object.assign(ww,w); });
+    // Re-sync wall lengths from Q in case walls weren't saved
+    WALLS[0].len=WALLS[1].len=Q.w; WALLS[2].len=WALLS[3].len=Q.l;
+    // Derive eavePS/gablePS from walls if not in saved Q
+    var _eaveWall = WALLS.find(function(w){return w.id==='left'||w.id==='right';});
+    var _gableWall = WALLS.find(function(w){return w.id==='front'||w.id==='back';});
+    if(!cfg.Q || !cfg.Q.eavePS) Q.eavePS = (_eaveWall && _eaveWall.postSpacing) || Q.postSpacing || 10;
+    if(!cfg.Q || !cfg.Q.gablePS) Q.gablePS = (_gableWall && _gableWall.postSpacing) || 10;
     if(cfg.doors) { allDoors.length=0; cfg.doors.forEach(function(d){allDoors.push(d);}); }
     if(cfg.walkDoors) window._walkDoors=cfg.walkDoors;
     if(cfg.windows) window._windows=cfg.windows;
@@ -4912,8 +4931,12 @@ async function loadSavedDesign(idx){
     var cfg = await safeDecodeAsync(encoded).catch(function(){ return safeDecode(encoded); });
     if (!cfg) throw new Error('Could not decode config');
     restoreConfig(cfg);
-    setTimeout(function(){ triggerBuild(); schedulePrice(); }, 200);
     closeLoadDesignModal();
+    // Give DOM a full frame to settle, then build + price
+    setTimeout(function(){
+      triggerBuild();
+      schedulePrice();
+    }, 300);
   } catch(e){ alert('Load failed: ' + e.message); }
 }
 
