@@ -547,7 +547,7 @@ body.has-strip.ps-dd-open .shell{margin-top:44px;}
       </div>
 
       <!-- GARAGE DOORS -->
-      <div class="sec">
+      <div class="sec" id="secGarageDoors">
         <div class="sec-title"><span class="icon">🚪</span>Garage Doors</div>
         <div id="garageDoorList"></div>
         <button class="opening-add-btn" onclick="addGarageDoor()">+ Add Garage Door</button>
@@ -556,14 +556,14 @@ body.has-strip.ps-dd-open .shell{margin-top:44px;}
       </div>
 
       <!-- WALK DOORS -->
-      <div class="sec">
+      <div class="sec" id="secWalkDoors">
         <div class="sec-title"><span class="icon">🚶</span>Walk Doors</div>
         <div id="walkDoorList"></div>
         <button class="opening-add-btn" onclick="addWalkDoor()">+ Add Walk Door</button>
       </div>
 
       <!-- WINDOWS -->
-      <div class="sec">
+      <div class="sec" id="secWindows">
         <div class="sec-title"><span class="icon">🪟</span>Windows</div>
         <div id="windowList"></div>
         <button class="opening-add-btn" onclick="addWindow()">+ Add Window</button>
@@ -1152,6 +1152,84 @@ function buildPSChips(){
 // ═══════════════════════════════════════════════════════
 // WALLS
 // ═══════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════
+// OPENING VISIBILITY — hide door/window sections for open walls
+// ═══════════════════════════════════════════════════════
+function syncOpeningVisibility() {
+  // Get open wall IDs
+  var openWalls = WALLS.filter(function(w){ return w.encl === 'open'; }).map(function(w){ return w.id; });
+  var allOpen   = openWalls.length === 4;
+  var anyOpen   = openWalls.length > 0;
+
+  // If any wall is open, filter existing door/window cards to only show those on enclosed walls
+  // Also update the wall dropdowns within each card — grey out open walls
+  _syncCardWallDropdowns(openWalls);
+
+  // Show/hide "Add" buttons and whole sections based on whether ANY enclosed wall exists
+  var hasEnclosedWall = WALLS.some(function(w){ return w.encl !== 'open'; });
+
+  var secGD = document.getElementById('secGarageDoors');
+  var secWD = document.getElementById('secWalkDoors');
+  var secWN = document.getElementById('secWindows');
+
+  if (secGD) secGD.style.display = hasEnclosedWall ? '' : 'none';
+  if (secWD) secWD.style.display = hasEnclosedWall ? '' : 'none';
+  if (secWN) secWN.style.display = hasEnclosedWall ? '' : 'none';
+
+  // Warn on any door/window assigned to an open wall
+  _flagDoorsOnOpenWalls(openWalls);
+}
+
+function _syncCardWallDropdowns(openWalls) {
+  // Disable open-wall options in all wall select dropdowns inside door/window cards
+  ['garageDoorList','walkDoorList','windowList'].forEach(function(listId){
+    var list = document.getElementById(listId);
+    if (!list) return;
+    list.querySelectorAll('select').forEach(function(sel){
+      // Only target wall assignment selects (options have values like 'front','back','left','right')
+      var isWallSel = Array.from(sel.options).some(function(o){ return ['front','back','left','right'].indexOf(o.value) >= 0; });
+      if (!isWallSel) return;
+      Array.from(sel.options).forEach(function(opt){
+        var isOpen = openWalls.indexOf(opt.value) >= 0;
+        opt.disabled = isOpen;
+        opt.style.color = isOpen ? '#ef4444' : '';
+        opt.text = isOpen ? (WALLS.find(function(w){return w.id===opt.value;})||{label:opt.value}).label + ' (open)' 
+                          : (WALLS.find(function(w){return w.id===opt.value;})||{label:opt.value}).label;
+      });
+    });
+  });
+}
+
+function _flagDoorsOnOpenWalls(openWalls) {
+  if (!openWalls.length) return;
+  // Highlight cards where the assigned wall is open
+  ['garageDoorList','walkDoorList','windowList'].forEach(function(listId){
+    var list = document.getElementById(listId);
+    if (!list) return;
+    list.querySelectorAll('.opening-card').forEach(function(card){
+      var sel = card.querySelector('select');
+      if (!sel) return;
+      var isWallSel = Array.from(sel.options).some(function(o){ return ['front','back','left','right'].indexOf(o.value) >= 0; });
+      if (!isWallSel) return;
+      var assignedWall = sel.value;
+      var isOnOpenWall = openWalls.indexOf(assignedWall) >= 0;
+      card.style.borderColor = isOnOpenWall ? '#ef4444' : '';
+      // Show/hide warning badge
+      var warn = card.querySelector('.open-wall-warn');
+      if (isOnOpenWall && !warn) {
+        warn = document.createElement('div');
+        warn.className = 'open-wall-warn';
+        warn.style.cssText = 'font-size:10px;color:#ef4444;font-weight:700;padding:4px 0 2px;';
+        warn.textContent = '⚠ Assigned wall is open — move to an enclosed wall';
+        card.appendChild(warn);
+      } else if (!isOnOpenWall && warn) {
+        warn.remove();
+      }
+    });
+  });
+}
+
 function buildWallGrid(){
   var g=document.getElementById('wallGrid'); g.innerHTML='';
   WALLS.forEach(function(wall){
@@ -1216,6 +1294,7 @@ function buildWallGrid(){
 
     g.appendChild(wrap);
   });
+  syncOpeningVisibility();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -2032,6 +2111,7 @@ function restoreConfig(cfg) {
     cfgTruss=Q.truss;
     buildTrussChips(); buildPitchChips(); buildOHChips(); buildFrameChips(); buildPSChips();
     buildWallGrid(); renderGarageDoors(); renderWalkDoors(); renderWindows(); renderSheds();
+    syncOpeningVisibility();
     buildSwatches('roofSwatches',function(){return selRoof;},function(v){selRoof=v;},'qgRoofColor');
     buildSwatches('wallSwatches',function(){return selWall;},function(v){selWall=v;},'qgWallColor');
     buildSwatches('trimSwatches',function(){return selTrim;},function(v){selTrim=v;},'qgTrimColor');
@@ -2386,22 +2466,21 @@ function vpToggleWalls() {
     fetch('https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec', {
       method: 'POST',
       headers: {'Content-Type': 'text/plain'},
-      body: JSON.stringify({ action: 'loadConfiguratorQuote', quoteId: quoteId })
+      body: JSON.stringify({ action: 'getQuoteSnapshot', quoteId: quoteId })
     })
     .then(function(r){return r.json();})
     .then(function(res){
-      if(res.configEncoded){
-        // Use async decode (handles compressed), fall back to sync
-        var decodeP = (typeof safeDecodeAsync==='function')
-          ? safeDecodeAsync(res.configEncoded).catch(function(){ return safeDecode(res.configEncoded); })
-          : Promise.resolve(safeDecode(res.configEncoded));
+      // res.snapshot has the full saved data including configEncoded
+      var snap = res.snapshot || res;
+      var encoded = snap.configEncoded || res.configEncoded || '';
+      console.log('[QuoteLoad] snapshot keys:', Object.keys(snap).join(','));
+      console.log('[QuoteLoad] configEncoded length:', encoded.length);
+      if(encoded){
+        var decodeP = safeDecodeAsync(encoded).catch(function(){ return safeDecode(encoded); });
         decodeP.then(function(cfg){
           if(!cfg) { console.warn('[QuoteLoad] decode returned null'); triggerBuild(); return; }
+          console.log('[QuoteLoad] cfg.Q:', JSON.stringify(cfg.Q));
           restoreConfig(cfg);
-          // Populate st_ customer fields from sheet data
-          var _sv2=function(id,v){var e=document.getElementById(id);if(e&&v&&!e.value)e.value=v;};
-          _sv2('st_name', res.name); _sv2('st_phone', res.phone);
-          _sv2('st_email', res.email); _sv2('st_address', res.city);
           setTimeout(function(){ triggerBuild(); schedulePrice(); }, 300);
         });
         var banner=document.createElement('div');
@@ -4531,6 +4610,7 @@ function vpToggleWalls() {
 </div>
 
 <!-- Load Design Modal (lain only) -->
+
 <div id="loadDesignModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center;">
   <div style="background:#1a2744;border:1px solid #2a3d66;border-radius:14px;padding:24px;width:90%;max-width:520px;max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.4);">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
@@ -4542,8 +4622,6 @@ function vpToggleWalls() {
     </div>
   </div>
 </div>
-</body>
-</html>
 
 <script>
 function generatePostLayout() {
@@ -4898,10 +4976,13 @@ async function openLoadDesignModal(){
     });
     var data = await resp.json();
     var quotes = data.quotes || data.designs || [];
+    console.log('[Modal] data.success:', data.success, 'quotes:', quotes.length, 'raw:', JSON.stringify(data).substring(0,300));
     if (!data.success || !quotes.length) {
       list.innerHTML = '<div style="color:#7a8aa5;font-size:13px;text-align:center;padding:20px;">No saved quotes yet</div>';
       return;
     }
+    window._savedDesigns = quotes;
+    console.log('[Modal] _savedDesigns set, count:', window._savedDesigns.length);
     list.innerHTML = quotes.map(function(d, i){
       var label = d.name || d.label || 'Unnamed';
       var sub   = d.specs || '';
@@ -4913,10 +4994,19 @@ async function openLoadDesignModal(){
           '<div style="font-size:11px;color:#7a8aa5;margin-top:2px;">'+sub+'</div>'+
           '<div style="font-size:10px;color:#3a4d65;margin-top:3px;">'+date+(qid?' &nbsp;·&nbsp; '+qid:'')+'</div>'+
         '</div>'+
-        '<button onclick="loadSavedDesign('+i+')" style="padding:6px 14px;background:rgba(212,168,67,.12);color:#d4a843;border:1px solid rgba(212,168,67,.25);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Load</button>'+
+        '<button data-load-idx="'+i+'" style="padding:6px 14px;background:rgba(212,168,67,.12);color:#d4a843;border:1px solid rgba(212,168,67,.25);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Load</button>'+
       '</div>';
     }).join('');
     window._savedDesigns = quotes;
+    // Use event delegation — avoids onclick scope issues with innerHTML
+    list.onclick = function(e) {
+      var btn = e.target.closest('[data-load-idx]');
+      if (btn) {
+        var idx = parseInt(btn.getAttribute('data-load-idx'));
+        console.log('[Modal] Load clicked, idx:', idx);
+        loadSavedDesign(idx);
+      }
+    };
   } catch(err){
     list.innerHTML = '<div style="color:#ef4444;font-size:13px;text-align:center;padding:20px;">Error: '+err.message+'</div>';
   }
@@ -4938,14 +5028,16 @@ async function loadSavedDesign(idx){
       var r = await fetch(url, {
         method: 'POST',
         headers: {'Content-Type': 'text/plain'},
-        body: JSON.stringify({ action: 'loadConfiguratorQuote', quoteId: qid })
+        body: JSON.stringify({ action: 'getQuoteSnapshot', quoteId: qid })
       });
       var rawText = await r.text();
       console.log('[Load] raw fetch response:', rawText.substring(0,300));
       var data;
       try { data = JSON.parse(rawText); } catch(e){ throw new Error('Non-JSON from server: '+rawText.substring(0,100)); }
-      console.log('[Load] data.success:', data.success, 'has configEncoded:', !!data.configEncoded);
-      encoded = data.configEncoded || '';
+      var snap2 = data.snapshot || data;
+      console.log('[Load] data.success:', data.success, 'snapshot keys:', Object.keys(snap2).join(','));
+      encoded = snap2.configEncoded || data.configEncoded || '';
+      console.log('[Load] configEncoded length:', encoded.length);
     }
     if (!encoded) throw new Error('No config data found — quoteId: '+(d.quoteId||'none'));
     console.log('[Load] encoded length:', encoded.length, 'preview:', encoded.substring(0,40));
@@ -5151,7 +5243,7 @@ async function saveSalesQuote() {
 
     // 4. Build snapshot
     var snapshot = {
-      calculatorName: 'Sales Tool',
+      calculatorName: (function(){ var r=detectCalcRoute(); var n={'RGSteel':'RG Steel','RGSides':'RG Sides','RGGables':'RG Gables','EnclosedSteel':'Enclosed Steel','WoodOH':'Post Frame','WoodNoOH':'Post Frame'}; return n[r.type]||'Sales Tool'; })(),
       calculatorFile: 'sales-tool.html',
       salesman:       (window.currentUser || {}).username || '',
       salesmanName:   (window.currentUser || {}).fullName || (window.currentUser || {}).username || '',
@@ -5746,10 +5838,106 @@ function populatePriceBlock(prefix, r) {
 
 }
 
+
+// ═══════════════════════════════════════════════════════
+// WALL-STATE ROUTER — picks calculator type from wall config
+// ═══════════════════════════════════════════════════════
+function detectCalcRoute() {
+  var front = WALLS.find(function(w){return w.id==='front';});  // gable
+  var back  = WALLS.find(function(w){return w.id==='back';});   // gable
+  var left  = WALLS.find(function(w){return w.id==='left';});   // side
+  var right = WALLS.find(function(w){return w.id==='right';});  // side
+
+  // partial counts as enclosed for routing
+  var gF = front.encl==='open';
+  var gB = back.encl==='open';
+  var sL = left.encl==='open';
+  var sR = right.encl==='open';
+
+  var allOpen           = gF && gB && sL && sR;
+  var bothGablesOpen    = gF && gB;
+  var bothGablesEncl    = !gF && !gB;
+  var anyGableEncl      = !gF || !gB;
+  var bothSidesOpen     = sL && sR;
+  var bothSidesEncl     = !sL && !sR;
+  var anySideEncl       = !sL || !sR;
+
+  // All 4 open → RG-Steel
+  if (allOpen) return { type:'RGSteel', encloseGableEnd:'no', addSide:'No' };
+
+  // Both sides enclosed (gables open or one gable closed) → RG-Sides
+  if (bothSidesEncl) {
+    return { type:'RGSides', encloseGableEnd: anyGableEncl ? 'yes' : 'no', addSide:'No' };
+  }
+
+  // Roof only (both sides open) + one side enclosed → RG-Sides
+  if (anySideEncl && !bothSidesEncl && bothGablesOpen) {
+    return { type:'RGSides', encloseGableEnd:'no', addSide:'No' };
+  }
+
+  // Roof only + one or both gables enclosed → RG-Gables
+  if (anyGableEncl && bothSidesOpen) {
+    return { type:'RGGables', encloseGableEnd:'no', addSide:'No' };
+  }
+
+  // Both gables enclosed + one side enclosed → RG-Gables + addSide
+  if (bothGablesEncl && anySideEncl) {
+    return { type:'RGGables', encloseGableEnd:'no', addSide:'Yes' };
+  }
+
+  // Fallback — fully enclosed, use wood/steel
+  return { type: Q.truss==='Steel' ? 'EnclosedSteel' : 'WoodOH', encloseGableEnd:'no', addSide:'No' };
+}
+
+function isOpenBuildingRoute() {
+  var r = detectCalcRoute();
+  return r.type==='RGSteel' || r.type==='RGSides' || r.type==='RGGables';
+}
+
+function buildRGPayload(calcType, route) {
+  var base = {
+    action: 'calculate',
+    calculatorType: calcType,
+    username: (window.currentUser||{}).username || '',
+    isDemo:   (window.currentUser||{}).isDemo || false,
+    zipCode:  _cachedZip || '',
+    county:   _cachedCounty || '',
+    mileage:  _cachedMileage || 0,
+    taxRate:  0,
+    customerName: (document.getElementById('st_name')||{}).value || '',
+    phone:        (document.getElementById('st_phone')||{}).value || '',
+    email:        (document.getElementById('st_email')||{}).value || '',
+    address:      (document.getElementById('st_address')||{}).value || '',
+    farmTaxId:    (document.getElementById('st_farmTax') && document.getElementById('st_farmTax').checked) ? 'Yes' : 'No',
+    materialOnlyKit: (document.getElementById('st_materialKit') && document.getElementById('st_materialKit').checked) ? 'Yes' : 'No',
+    manualAdder:  (document.getElementById('st_manualAdder')||{}).value || '0',
+    width:  Q.w, length: Q.l, height: Q.h,
+    roofColor:   (document.getElementById('st_roofMetal')||{}).value || 'Painted',
+    postSpacing: (document.getElementById('st_steelPS')||{}).value || '10',
+    mainPostSize:(document.getElementById('st_mbPostSize')||{}).value || '6x6',
+    ssPostSize:  (document.getElementById('st_ssPostSize')||{}).value || '6x6',
+    ssWidth:  (window._shedConfigs&&window._shedConfigs[0]) ? window._shedConfigs[0].w : 0,
+    ssLength: (window._shedConfigs&&window._shedConfigs[0]) ? window._shedConfigs[0].l : 0,
+    ss2Width: (window._shedConfigs&&window._shedConfigs[1]) ? window._shedConfigs[1].w : 0,
+    ss2Length:(window._shedConfigs&&window._shedConfigs[1]) ? window._shedConfigs[1].l : 0,
+    insulation:    (document.getElementById('st_insulation')||{}).value || 'None',
+    insulationRoof:(document.getElementById('st_insulRoof') && document.getElementById('st_insulRoof').checked) ? 'x' : '',
+    barjoist:    (document.getElementById('st_barjoist') && document.getElementById('st_barjoist').checked) ? 'Yes' : 'No',
+    barjoistQty: parseInt((document.getElementById('st_barjoistQty')||{}).value||0) || 0,
+    // RG-specific routing fields
+    encloseGableEnd: route.encloseGableEnd || 'no',
+    addSide:         route.addSide || 'No',
+    tenFootSpacing: ((document.getElementById('st_steelPS')||{}).value||'10')==='10' ? 'No' : 'No',
+    condenstop: 'No',
+    cableBracing: 'No',
+    windSill: 'No'
+  };
+  return base;
+}
+
 async function updatePriceStrip() {
   if (!window.currentUser) return;
 
-  // Skip if payload hasn't changed and last call was recent (< 30s ago)
   var key = payloadCacheKey();
   var now = Date.now();
   if (key === _lastPayloadKey && (now - _lastPayloadTime) < 30000) {
@@ -5762,43 +5950,99 @@ async function updatePriceStrip() {
   _priceCalcGen++;
   var thisGen = _priceCalcGen;
   setPriceStripCalculating();
+
   try {
-    var payloadOH    = buildPricePayload('WoodOH');
-    var payloadNoOH  = buildPricePayload('WoodNoOH');
-    var payloadSteel = buildPricePayload('EnclosedSteel');
-    console.log('[Steel] payload:', JSON.stringify(payloadSteel));
+    var route = detectCalcRoute();
+    var isRG  = isOpenBuildingRoute();
+    console.log('[Price] route:', route.type, '| encloseGableEnd:', route.encloseGableEnd, '| addSide:', route.addSide);
 
-    // Fire all three in parallel
-    var [respOH, respNoOH, respSteel] = await Promise.all([
-      fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadOH) }),
-      fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadNoOH) }),
-      fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadSteel) })
-    ]);
-    if (thisGen !== _priceCalcGen) return;
+    if (isRG) {
+      // ── OPEN BUILDING: single RG calc, relabel strip ──────────
+      updatePriceStripLabels(route.type, null, null);
+      var rgPayload = buildRGPayload(route.type, route);
+      var resp = await fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(rgPayload) });
+      if (thisGen !== _priceCalcGen) return;
+      var data = await resp.json();
+      if (thisGen !== _priceCalcGen) return;
+      // Show in ps_ slot, hide ps2_ and ps3_
+      hidePriceBlock('ps2_');
+      hidePriceBlock('ps3_');
+      if (data.success && data.results) {
+        _lastPriceResults = data.results;
+        window._lastPriceOH = data.results;
+        populatePriceBlock('ps_', data.results);
+      } else { setPriceStripError('ps_'); }
 
-    var [dataOH, dataNoOH, dataSteel] = await Promise.all([respOH.json(), respNoOH.json(), respSteel.json()]);
-    if (thisGen !== _priceCalcGen) return;
-
-    if (dataOH.success && dataOH.results) {
-      _lastPriceResults = dataOH.results;
-      window._lastPriceOH = dataOH.results;
-      populatePriceBlock('ps_', dataOH.results);
-    } else { setPriceStripError('ps_'); }
-
-    if (dataNoOH.success && dataNoOH.results) {
-      window._lastPriceNoOH = dataNoOH.results;
-      populatePriceBlock('ps2_', dataNoOH.results);
-    } else { setPriceStripError('ps2_'); }
-
-    if (dataSteel.success && dataSteel.results) {
-      window._lastPriceSteel = dataSteel.results;
-      populatePriceBlock('ps3_', dataSteel.results);
-    } else { setPriceStripError('ps3_'); }
+    } else {
+      // ── ENCLOSED BUILDING: all three calcs ────────────────────
+      updatePriceStripLabels('WoodOH', 'WoodNoOH', 'EnclosedSteel');
+      showPriceBlock('ps2_');
+      showPriceBlock('ps3_');
+      var payloadOH    = buildPricePayload('WoodOH');
+      var payloadNoOH  = buildPricePayload('WoodNoOH');
+      var payloadSteel = buildPricePayload('EnclosedSteel');
+      var [respOH, respNoOH, respSteel] = await Promise.all([
+        fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadOH) }),
+        fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadNoOH) }),
+        fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadSteel) })
+      ]);
+      if (thisGen !== _priceCalcGen) return;
+      var [dataOH, dataNoOH, dataSteel] = await Promise.all([respOH.json(), respNoOH.json(), respSteel.json()]);
+      if (thisGen !== _priceCalcGen) return;
+      if (dataOH.success    && dataOH.results)    { _lastPriceResults=dataOH.results; window._lastPriceOH=dataOH.results; populatePriceBlock('ps_', dataOH.results); } else { setPriceStripError('ps_'); }
+      if (dataNoOH.success  && dataNoOH.results)  { window._lastPriceNoOH=dataNoOH.results; populatePriceBlock('ps2_', dataNoOH.results); } else { setPriceStripError('ps2_'); }
+      if (dataSteel.success && dataSteel.results) { window._lastPriceSteel=dataSteel.results; populatePriceBlock('ps3_', dataSteel.results); } else { setPriceStripError('ps3_'); }
+    }
 
   } catch(e) {
     console.log('[Price] error:', e.message);
     if (thisGen === _priceCalcGen) { setPriceStripError('ps_'); setPriceStripError('ps2_'); setPriceStripError('ps3_'); }
   }
+}
+
+// Label maps for price strip
+var _rgLabels = {
+  RGSteel:  { ps_: 'RG Steel',  dd_oh: 'RG Steel Breakdown' },
+  RGSides:  { ps_: 'RG Sides',  dd_oh: 'RG Sides Breakdown' },
+  RGGables: { ps_: 'RG Gables', dd_oh: 'RG Gables Breakdown' },
+  WoodOH:   { ps_: 'W/ Soffit', dd_oh: 'W/ Soffit Breakdown' },
+  WoodNoOH: { ps2_:'No Soffit', dd_nooh:'No Soffit Breakdown' },
+  EnclosedSteel: { ps3_:'Steel', dd_steel:'Steel Truss Breakdown' }
+};
+
+function updatePriceStripLabels(type1, type2, type3) {
+  // ps_ label
+  var lbl1 = document.querySelector('#priceStrip .ps-total-btn:nth-child(1) .ps-total-lbl');
+  var lbl2 = document.querySelector('#priceStrip .ps-total-btn:nth-child(2) .ps-total-lbl');
+  var lbl3 = document.querySelector('#priceStrip .ps-total-btn:nth-child(3) .ps-total-lbl');
+  var dd1  = document.querySelector('#psd_oh .ps-dd-title');
+  var dd2  = document.querySelector('#psd_nooh .ps-dd-title');
+  var dd3  = document.querySelector('#psd_steel .ps-dd-title');
+  var labels = {
+    RGSteel:'RG Steel', RGSides:'RG Sides', RGGables:'RG Gables',
+    WoodOH:'W/ Soffit', WoodNoOH:'No Soffit', EnclosedSteel:'Steel'
+  };
+  var ddLabels = {
+    RGSteel:'RG Steel Breakdown', RGSides:'RG Sides Breakdown', RGGables:'RG Gables Breakdown',
+    WoodOH:'W/ Soffit Breakdown', WoodNoOH:'No Soffit Breakdown', EnclosedSteel:'Steel Truss Breakdown'
+  };
+  if (lbl1) lbl1.textContent = labels[type1] || type1 || '';
+  if (lbl2) lbl2.textContent = type2 ? (labels[type2]||type2) : '';
+  if (lbl3) lbl3.textContent = type3 ? (labels[type3]||type3) : '';
+  if (dd1)  dd1.textContent  = ddLabels[type1] || '';
+  if (dd2)  dd2.textContent  = type2 ? (ddLabels[type2]||'') : '';
+  if (dd3)  dd3.textContent  = type3 ? (ddLabels[type3]||'') : '';
+}
+
+function hidePriceBlock(prefix) {
+  var btn = document.querySelector('#priceStrip .ps-total-btn[onclick*="'+
+    (prefix==='ps2_'?'psd_nooh':prefix==='ps3_'?'psd_steel':'psd_oh')+'"]');
+  if (btn) btn.style.display = 'none';
+}
+function showPriceBlock(prefix) {
+  var btn = document.querySelector('#priceStrip .ps-total-btn[onclick*="'+
+    (prefix==='ps2_'?'psd_nooh':prefix==='ps3_'?'psd_steel':'psd_oh')+'"]');
+  if (btn) btn.style.display = '';
 }
 
 function setPriceStripError(prefix) {
@@ -5808,3 +6052,5 @@ function setPriceStripError(prefix) {
 }
 
 </script>
+</body>
+</html>
