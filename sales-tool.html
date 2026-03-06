@@ -1338,7 +1338,7 @@ function setupStripDrag(stripId,cls,id,wallLen){
 // GARAGE DOORS
 // ═══════════════════════════════════════════════════════
 function addGarageDoor(){
-  var d={id:nextDoorId++,sizeKey:'10x10',wall:'back',w:10,h:10,offset:0,type:'garage',icon:'🚪'};
+  var d={id:nextDoorId++,sizeKey:'10x10',wall:'back',w:10,h:10,offset:0,type:'garage',icon:'🚪',insulated:false};
   var wall=WALLS.find(function(w){return w.id==='back';})||{len:Q.w};
   d.offset=Math.round((wall.len-d.w)/2*12)/12;
   allDoors.push(d);
@@ -1374,8 +1374,9 @@ function setGarageProp(id,prop,val){
     var wall=WALLS.find(function(w){return w.id===val;})||{len:Q.l};
     d.offset=Math.round((wall.len-d.w)/2*12)/12;
   }
+  else if(prop==='insulated'){ d.insulated = val; }
   else { d[prop]=val; }
-  renderGarageDoors(); scheduleBuild();
+  renderGarageDoors(); scheduleBuild(); schedulePrice();
 }
 function renderGarageDoors(){
   // Wood truss: max garage door height = building height - 2ft
@@ -1414,6 +1415,11 @@ function renderGarageDoors(){
       +(Q.truss==='wood' && maxDoorH < Infinity ? '<div style="font-size:10px;color:#b45309;margin-bottom:2px">Max height '+maxDoorH+"' (wood truss — 2' headroom)</div>" : Q.truss==='steel' && maxDoorH < Infinity ? '<div style="font-size:10px;color:#b45309;margin-bottom:2px">Max height '+maxDoorH+"' (steel truss — 4' headroom)</div>" : '')
       +'<select class="opening-sel" onchange="setGarageProp('+d.id+',\'sizeKey\',this.value)">'+sizeOpts+'</select>'
       +'<select class="opening-sel" onchange="setGarageProp('+d.id+',\'wall\',this.value)">'+wallOpts+'</select>'
+      +'</div>'
+      +'<div style="display:flex;gap:6px;align-items:center;padding:4px 0 2px;">'
+      +'<span style="font-size:10px;color:var(--muted);font-weight:600;">Insulation:</span>'
+      +'<button onclick="setGarageProp('+d.id+',\'insulated\',false)" style="padding:3px 10px;border-radius:5px;border:'+(d.insulated?'1px solid #2a3d66':'1px solid #d4a843')+';background:'+(d.insulated?'transparent':'rgba(212,168,67,.15)')+';color:'+(d.insulated?'#7a8aa5':'#d4a843')+';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Standard</button>'
+      +'<button onclick="setGarageProp('+d.id+',\'insulated\',true)" style="padding:3px 10px;border-radius:5px;border:'+(d.insulated?'1px solid #d4a843':'1px solid #2a3d66')+';background:'+(d.insulated?'rgba(212,168,67,.15)':'transparent')+';color:'+(d.insulated?'#d4a843':'#7a8aa5')+';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Insulated</button>'
       +'</div>'
       +(function(){
         var dc=d.doorColor||'White';
@@ -4849,6 +4855,8 @@ async function confirmSaveDesign(){
   }
 }
 
+var API_URL = 'https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec';
+
 async function openLoadDesignModal(){
   document.getElementById('loadDesignModal').style.display = 'flex';
   var list = document.getElementById('savedDesignList');
@@ -4967,6 +4975,7 @@ function showSalesTab(name) {
 }
 
 // Submit sales quote — collects both 3D config and salesman fields
+
 async function saveSalesQuote() {
   var name = (document.getElementById('st_name')||{}).value || '';
   var phone = (document.getElementById('st_phone')||{}).value || '';
@@ -5046,7 +5055,9 @@ async function saveSalesQuote() {
     var walkDoors   = allDoors.filter(function(d){ return d.type === 'walk'; });
     var windows     = allDoors.filter(function(d){ return d.type === 'window'; });
     for (var i = 0; i < Math.min(garageDoors.length, 5); i++) {
-      formFields['garageDoor' + (i+1) + 'Type'] = garageDoors[i].w + "x" + garageDoors[i].h;
+      var gd = garageDoors[i];
+      var inCode = gd.insulated ? 'IN' : '';
+      formFields['garageDoor' + (i+1) + 'Type'] = 'GD' + gd.w + gd.h + inCode + 'W';
       formFields['garageDoor' + (i+1) + 'Qty']  = '1';
     }
     for (var i = 0; i < Math.min(walkDoors.length, 3); i++) {
@@ -5471,7 +5482,7 @@ function barnCode(sizeKey) {
 // Group configurator doors/windows into API payload fields
 function mapDoorsToPayload(maxDoorH) {
   // maxDoorH: optional cap on garage door height (steel=Q.h-4, wood=Q.h-2, undefined=no cap)
-  function capGdCode(sizeKey) {
+  function capGdCode(sizeKey, insulated) {
     if (!sizeKey) return '';
     var p = sizeKey.toLowerCase().split('x');
     if (p.length < 2) return '';
@@ -5480,7 +5491,8 @@ function mapDoorsToPayload(maxDoorH) {
     // Round down to nearest even
     if (h % 2 !== 0) h = h - 1;
     if (h < 6) h = 6;
-    return 'GD' + w + h + 'W';
+    var inCode = insulated ? 'IN' : '';
+    return 'GD' + w + h + inCode + 'W';
   }
   var out = {
     garageDoor1Type:'',garageDoor1Qty:0,garageDoor2Type:'',garageDoor2Qty:0,
@@ -5492,7 +5504,7 @@ function mapDoorsToPayload(maxDoorH) {
   // Garage doors grouped by size code (height capped for steel)
   var gdG={};
   (window._allDoors||[]).filter(function(d){return d.type==='garage';}).forEach(function(d){
-    var c=capGdCode(d.sizeKey); if(c) gdG[c]=(gdG[c]||0)+1;
+    var c=capGdCode(d.sizeKey, d.insulated); if(c) gdG[c]=(gdG[c]||0)+1;
   });
   var gdk=Object.keys(gdG);
   if(gdk[0]){out.garageDoor1Type=gdk[0];out.garageDoor1Qty=gdG[gdk[0]];}
@@ -5664,7 +5676,6 @@ function setPriceStripCalculating() {
 }
 
 // Main price update function — called by schedulePrice()
-const API_URL = 'https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec';
 
 function populatePriceBlock(prefix, r) {
   var p = function(id,v){var el=document.getElementById(id);if(el){el.textContent=v;el.classList.remove('pending');}};
