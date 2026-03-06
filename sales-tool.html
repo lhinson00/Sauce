@@ -240,7 +240,11 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
 .ps-total-btn:hover{background:rgba(255,255,255,.05);}
 .ps-total-btn.active{background:rgba(212,168,67,.08);}
 .ps-total-lbl{font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:rgba(255,255,255,.4);white-space:nowrap;}
-.ps-total-val{font-family:'Outfit',sans-serif;font-size:16px;font-weight:800;color:var(--gold);line-height:1;}
+.ps-total-val{font-family:'Outfit',sans-serif;font-size:16px;font-weight:800;color:var(--gold);line-height:1;transition:color .4s ease;}
+.ps-total-val.pending{opacity:.4;animation:pricePulse 1.2s ease-in-out infinite;}
+.ps-total-val.highlight{animation:priceFlash .8s ease forwards;}
+@keyframes pricePulse{0%,100%{opacity:.3;}50%{opacity:.7;}}
+@keyframes priceFlash{0%{color:#4ade80;text-shadow:0 0 14px rgba(74,222,128,.7);}80%{color:#4ade80;}100%{color:var(--gold);text-shadow:none;}}
 .ps-total-val.pending{color:rgba(255,255,255,.2);font-size:12px;}
 .ps-chevron{font-size:10px;color:rgba(255,255,255,.3);transition:transform .2s;}
 .ps-total-btn.active .ps-chevron{transform:rotate(180deg);}
@@ -4953,6 +4957,7 @@ function initSalesAuth() {
       var u = JSON.parse(raw);
       if (!u.loginExpiry || Date.now() < u.loginExpiry) {
         window.currentUser = u;
+        setTimeout(warmPing, 500);
         console.log('[Sales] Auto-logged in as:', u.username);
         schedulePrice();
         return;
@@ -4999,6 +5004,7 @@ async function doSalesLogin() {
       window.currentUser.loginExpiry = Date.now() + 24*60*60*1000;
       sessionStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
+      setTimeout(warmPing, 500);
       hideSalesLoginModal();
       schedulePrice();
     } else {
@@ -5110,11 +5116,33 @@ function toggleBarjoist(el) {
   schedulePrice();
 }
 
+// ── PRICE OPTIMIZATIONS ──────────────────────────────
+var _lastPayloadKey = '';
+var _lastPayloadTime = 0;
+
+function payloadCacheKey() {
+  try {
+    var p = buildPricePayload('WoodOH');
+    return JSON.stringify(p);
+  } catch(e) { return Math.random(); }
+}
+
+function warmPing() {
+  // Fire a cheap request to wake up Apps Script before salesman touches anything
+  try {
+    fetch(API_URL, {
+      method: 'POST',
+      headers: {'Content-Type':'text/plain'},
+      body: JSON.stringify({calcType:'WoodOH', warmPing:true, w:40, l:60, h:14})
+    }).catch(function(){});
+  } catch(e) {}
+}
+
 function schedulePrice() {
   clearTimeout(_priceCalcTimer);
   if (!window.currentUser) { console.log('[Price] no user, skipping'); return; }
   console.log('[Price] scheduled');
-  _priceCalcTimer = setTimeout(updatePriceStrip, 1800);
+  _priceCalcTimer = setTimeout(updatePriceStrip, 800);
 }
 
 function fmtPrice(v) {
@@ -5356,6 +5384,17 @@ function populatePriceBlock(prefix, r) {
 
 async function updatePriceStrip() {
   if (!window.currentUser) return;
+
+  // Skip if payload hasn't changed and last call was recent (< 30s ago)
+  var key = payloadCacheKey();
+  var now = Date.now();
+  if (key === _lastPayloadKey && (now - _lastPayloadTime) < 30000) {
+    console.log('[Price] cache hit — skipping');
+    return;
+  }
+  _lastPayloadKey = key;
+  _lastPayloadTime = now;
+
   _priceCalcGen++;
   var thisGen = _priceCalcGen;
   setPriceStripCalculating();
