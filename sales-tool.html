@@ -831,7 +831,7 @@ body.view-mode #viewCustomerCard {
         </div>
         <div class="chip-row" style="flex-wrap:wrap;gap:6px;margin-bottom:10px;">
           <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:80px;">
-            <div style="font-size:9px;color:var(--muted);font-weight:600;">Eave Spacing</div>
+            <div style="font-size:9px;color:var(--muted);font-weight:600;">Eave Spacing <span style="font-weight:500;color:#b45309;">(Wood Only)</span></div>
             <select id="st_eavePS" onchange="schedulePrice()" style="font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
               <option value="8">8 ft</option><option value="10" selected>10 ft</option><option value="12">12 ft</option>
             </select>
@@ -1333,75 +1333,60 @@ function buildPSChips(){
 // OPENING VISIBILITY — hide door/window sections for open walls
 // ═══════════════════════════════════════════════════════
 function syncOpeningVisibility() {
-  // Get open wall IDs
-  var openWalls = WALLS.filter(function(w){ return w.encl === 'open'; }).map(function(w){ return w.id; });
-  var allOpen   = openWalls.length === 4;
-  var anyOpen   = openWalls.length > 0;
+  // Walls that can't have doors/windows = open OR partial
+  var nonEnclosedWalls = WALLS.filter(function(w){ return w.encl === 'open' || w.encl === 'partial'; }).map(function(w){ return w.id; });
+  var openWalls        = WALLS.filter(function(w){ return w.encl === 'open'; }).map(function(w){ return w.id; });
 
-  // If any wall is open, filter existing door/window cards to only show those on enclosed walls
-  // Also update the wall dropdowns within each card — grey out open walls
-  _syncCardWallDropdowns(openWalls);
+  // Update wall dropdowns — disable non-enclosed options
+  _syncCardWallDropdowns(nonEnclosedWalls);
 
-  // Show/hide "Add" buttons and whole sections based on whether ANY enclosed wall exists
-  var hasEnclosedWall = WALLS.some(function(w){ return w.encl !== 'open'; });
-
+  // Hide entire section only when NO fully-enclosed wall exists
+  var hasEnclosedWall = WALLS.some(function(w){ return w.encl === 'enclosed'; });
   var secGD = document.getElementById('secGarageDoors');
   var secWD = document.getElementById('secWalkDoors');
   var secWN = document.getElementById('secWindows');
-
   if (secGD) secGD.style.display = hasEnclosedWall ? '' : 'none';
   if (secWD) secWD.style.display = hasEnclosedWall ? '' : 'none';
   if (secWN) secWN.style.display = hasEnclosedWall ? '' : 'none';
 
-  // Warn on any door/window assigned to an open wall
-  _flagDoorsOnOpenWalls(openWalls);
+  // Hide individual cards whose assigned wall is open or partial
+  _hideCardsOnNonEnclosedWalls(nonEnclosedWalls);
 }
 
-function _syncCardWallDropdowns(openWalls) {
-  // Disable open-wall options in all wall select dropdowns inside door/window cards
+function _syncCardWallDropdowns(nonEnclosedWalls) {
+  // Disable open/partial wall options in all wall dropdowns inside door/window cards
   ['garageDoorList','walkDoorList','windowList'].forEach(function(listId){
     var list = document.getElementById(listId);
     if (!list) return;
     list.querySelectorAll('select').forEach(function(sel){
-      // Only target wall assignment selects (options have values like 'front','back','left','right')
       var isWallSel = Array.from(sel.options).some(function(o){ return ['front','back','left','right'].indexOf(o.value) >= 0; });
       if (!isWallSel) return;
       Array.from(sel.options).forEach(function(opt){
-        var isOpen = openWalls.indexOf(opt.value) >= 0;
-        opt.disabled = isOpen;
-        opt.style.color = isOpen ? '#ef4444' : '';
-        opt.text = isOpen ? (WALLS.find(function(w){return w.id===opt.value;})||{label:opt.value}).label + ' (open)' 
-                          : (WALLS.find(function(w){return w.id===opt.value;})||{label:opt.value}).label;
+        var wall = WALLS.find(function(w){ return w.id === opt.value; }) || {};
+        var isNonEncl = nonEnclosedWalls.indexOf(opt.value) >= 0;
+        opt.disabled = isNonEncl;
+        opt.style.color = isNonEncl ? '#ef4444' : '';
+        var suffix = wall.encl === 'open' ? ' (open)' : wall.encl === 'partial' ? ' (partial)' : '';
+        opt.text = (wall.label || opt.value) + suffix;
       });
     });
   });
 }
 
-function _flagDoorsOnOpenWalls(openWalls) {
-  if (!openWalls.length) return;
-  // Highlight cards where the assigned wall is open
+function _hideCardsOnNonEnclosedWalls(nonEnclosedWalls) {
+  // Hide cards assigned to open or partial walls — show all others
   ['garageDoorList','walkDoorList','windowList'].forEach(function(listId){
     var list = document.getElementById(listId);
     if (!list) return;
     list.querySelectorAll('.opening-card').forEach(function(card){
-      var sel = card.querySelector('select');
+      // Find the wall-assignment select in this card
+      var sel = Array.from(card.querySelectorAll('select')).find(function(s){
+        return Array.from(s.options).some(function(o){ return ['front','back','left','right'].indexOf(o.value) >= 0; });
+      });
       if (!sel) return;
-      var isWallSel = Array.from(sel.options).some(function(o){ return ['front','back','left','right'].indexOf(o.value) >= 0; });
-      if (!isWallSel) return;
       var assignedWall = sel.value;
-      var isOnOpenWall = openWalls.indexOf(assignedWall) >= 0;
-      card.style.borderColor = isOnOpenWall ? '#ef4444' : '';
-      // Show/hide warning badge
-      var warn = card.querySelector('.open-wall-warn');
-      if (isOnOpenWall && !warn) {
-        warn = document.createElement('div');
-        warn.className = 'open-wall-warn';
-        warn.style.cssText = 'font-size:10px;color:#ef4444;font-weight:700;padding:4px 0 2px;';
-        warn.textContent = '⚠ Assigned wall is open — move to an enclosed wall';
-        card.appendChild(warn);
-      } else if (!isOnOpenWall && warn) {
-        warn.remove();
-      }
+      var isNonEncl = nonEnclosedWalls.indexOf(assignedWall) >= 0;
+      card.style.display = isNonEncl ? 'none' : '';
     });
   });
 }
