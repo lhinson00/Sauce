@@ -2493,7 +2493,7 @@ async function submitQuote(){
     if (sendEmail) {
       var note='Customer: '+name+(city?' - '+city:'')+' | Phone: '+(phone||'-')+' | Email: '+(email||'-')+'\n\nBuilding: '+specs;
       var r2=await fetch(GAS,{method:'POST',headers:{'Content-Type':'text/plain'},
-        body:JSON.stringify({action:'sendQuoteEmail',snapshotId:snapshotId,
+        body:JSON.stringify({action:'sendQuoteEmail',token:getToken(),snapshotId:snapshotId,
           salesmanEmail:'lain.hinson@summertownmetals.com',
           customerEmail:'',
           personalNote:note,
@@ -2700,7 +2700,7 @@ function vpToggleWalls() {
     fetch('https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec', {
       method: 'POST',
       headers: {'Content-Type': 'text/plain'},
-      body: JSON.stringify({ action: 'getQuoteSnapshot', quoteId: quoteId })
+      body: JSON.stringify({ action: 'getQuoteSnapshot', token: getToken(), quoteId: quoteId })
     })
     .then(function(r){return r.json();})
     .then(function(res){
@@ -5550,6 +5550,7 @@ async function saveSalesQuote() {
         action: 'saveQuoteSnapshot',
         username: (window.currentUser || {}).username || '',
         isDemo: (window.currentUser || {}).isDemo || false,
+        token: getToken(),
         snapshot: snapshot
       })
     });
@@ -5571,6 +5572,7 @@ async function saveSalesQuote() {
       headers: {'Content-Type': 'text/plain'},
       body: JSON.stringify({
         action: 'saveConfiguratorQuote',
+        token: getToken(),
         name: name, phone: phone, email: email, city: address,
         specs: specs,
         configEncoded: configEncoded,
@@ -5727,6 +5729,7 @@ async function sendSalesQuoteEmail() {
       headers: {'Content-Type': 'text/plain'},
       body: JSON.stringify({
         action: 'sendQuoteEmail',
+        token: getToken(),
         snapshotId:    window._savedQuoteId,
         salesmanEmail: salesmanEmail,
         customerEmail: customerEmail,
@@ -5909,7 +5912,8 @@ async function doSalesLogin() {
         materialList: data.materialList|| false,
         isDemo:       data.isDemo      || false
       };
-      window.currentUser.loginExpiry = Date.now() + 24*60*60*1000;
+      window.currentUser.token = data.token || '';
+      window.currentUser.loginExpiry = Date.now() + 8*60*60*1000;
       sessionStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       setTimeout(warmPing, 500);
@@ -6241,6 +6245,31 @@ function mapDoorsToPayload(maxDoorH) {
 }
 
 // Build the formData payload — width/length/height from 3D, everything else at calculator defaults
+// ── SESSION TOKEN HELPERS ────────────────────────────────────────────────────
+function getToken() {
+  return (window.currentUser || {}).token || '';
+}
+
+function handleSessionExpired() {
+  // Clear stale session and prompt re-login
+  window.currentUser = null;
+  sessionStorage.removeItem('sauce_user');
+  localStorage.removeItem('sauce_user');
+  showSalesLoginModal();
+  var err = document.getElementById('slErr');
+  if (err) err.textContent = 'Your session expired. Please log in again.';
+}
+
+function checkTokenResponse(data) {
+  // Returns true if response indicates session expired
+  if (data && data.sessionExpired) {
+    handleSessionExpired();
+    return true;
+  }
+  return false;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 function buildPricePayload(calcType) {
   var maxDoorH = calcType === 'EnclosedSteel' ? Q.h - 4 : Q.h - 2;
   var dp = mapDoorsToPayload(maxDoorH);
@@ -6256,6 +6285,7 @@ function buildPricePayload(calcType) {
       calculatorType: 'EnclosedSteel',
       username: (window.currentUser || {}).username || '',
       isDemo: (window.currentUser || {}).isDemo || false,
+      token: getToken(),
       zipCode: _cachedZip || '', county: _cachedCounty || '', mileage: _cachedMileage || 0, taxRate: 0,
       customerName: (document.getElementById('st_name')||{}).value || '',
       phone: (document.getElementById('st_phone')||{}).value || '',
@@ -6314,6 +6344,7 @@ function buildPricePayload(calcType) {
     calculatorType: calcType || 'WoodOH',
     username: (window.currentUser || {}).username || '',
     isDemo: (window.currentUser || {}).isDemo || false,
+    token: getToken(),
     zipCode: _cachedZip || '', county: _cachedCounty || '', mileage: _cachedMileage || 0, taxRate: 0,
     customerName: (document.getElementById('st_name')||{}).value || '',
     phone: (document.getElementById('st_phone')||{}).value || '',
@@ -6472,6 +6503,7 @@ function buildRGPayload(calcType, route) {
   var base = {
     action: 'calculate',
     calculatorType: calcType,
+    token: getToken(),
     username: (window.currentUser||{}).username || '',
     isDemo:   (window.currentUser||{}).isDemo || false,
     zipCode:  _cachedZip || '',
@@ -6538,6 +6570,7 @@ async function updatePriceStrip() {
       if (thisGen !== _priceCalcGen) return;
       var data = await resp.json();
       if (thisGen !== _priceCalcGen) return;
+      if (checkTokenResponse(data)) return;
       // Show in ps_ slot, hide ps2_ and ps3_
       hidePriceBlock('ps2_');
       hidePriceBlock('ps3_');
@@ -6566,6 +6599,7 @@ async function updatePriceStrip() {
       if (thisGen !== _priceCalcGen) return;
       var [dataOH, dataNoOH, dataSteel] = await Promise.all([respOH.json(), respNoOH.json(), respSteel.json()]);
       if (thisGen !== _priceCalcGen) return;
+      if (checkTokenResponse(dataOH)) return;
       var _encOK = 0;
       if (dataOH.success    && dataOH.results)    { _lastPriceResults=dataOH.results; window._lastPriceOH=dataOH.results; populatePriceBlock('ps_', dataOH.results); _encOK++; } else { setPriceStripError('ps_'); }
       if (dataNoOH.success  && dataNoOH.results)  { window._lastPriceNoOH=dataNoOH.results; populatePriceBlock('ps2_', dataNoOH.results); _encOK++; } else { setPriceStripError('ps2_'); }
