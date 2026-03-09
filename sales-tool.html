@@ -2689,9 +2689,9 @@ async function submitQuote(){
       pricingResults:{},
       timestamp:new Date().toISOString()
     };
-    var r1=await fetch(GAS,{method:'POST',headers:{'Content-Type':'text/plain'},
-      body:JSON.stringify({action:'saveQuoteSnapshot',username:'customer',snapshot:snapshot})});
-    var d1=await r1.json();
+    var r1=await fetchWithTimeout(GAS,{method:'POST',headers:{'Content-Type':'text/plain'},
+      body:JSON.stringify({action:'saveQuoteSnapshot',username:'customer',snapshot:snapshot})},55000);
+    var d1=await safeJson(r1);
     if(!d1.success) throw new Error('Snapshot save failed: '+(d1.error||'unknown'));
     var snapshotId=d1.quoteId||('CC-'+Date.now());
 
@@ -2703,14 +2703,14 @@ async function submitQuote(){
     }
     if (sendEmail) {
       var note='Customer: '+name+(city?' - '+city:'')+' | Phone: '+(phone||'-')+' | Email: '+(email||'-')+'\n\nBuilding: '+specs;
-      var r2=await fetch(GAS,{method:'POST',headers:{'Content-Type':'text/plain'},
+      var r2=await fetchWithTimeout(GAS,{method:'POST',headers:{'Content-Type':'text/plain'},
         body:JSON.stringify({action:'sendQuoteEmail',token:getToken(),snapshotId:snapshotId,
           salesmanEmail:'lain.hinson@summertownmetals.com',
           customerEmail:'',
           personalNote:note,
           configLink:shareLink,
-          username:'customer'})});
-      var d2=await r2.json();
+          username:'customer'})},55000);
+      var d2=await safeJson(r2);
       if(!d2.success) console.warn('Email warning:',d2.error);
     }
 
@@ -5425,11 +5425,11 @@ async function confirmSaveDesign(){
       +(window._walkDoors.length?' | '+window._walkDoors.length+' WD':'')
       +(sheds.length?' | '+sheds.length+' shed(s)':'')
       +' | '+selRoof+'/'+selWall+'/'+selTrim;
-    var resp = await fetch('https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec', {
+    var resp = await fetchWithTimeout('https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec', {
       method: 'POST', headers: {'Content-Type': 'text/plain'},
       body: JSON.stringify({ action: 'saveLainDesign', label: label, notes: notes, specs: specs, configEncoded: encoded })
-    });
-    var data = await resp.json();
+    }, 55000);
+    var data = await safeJson(resp);
     if (!data.success) throw new Error(data.error || 'Save failed');
     var st = document.getElementById('saveDesignStatus');
     st.textContent = '✓ Saved as ' + data.designId;
@@ -5449,14 +5449,14 @@ async function openLoadDesignModal(){
   var list = document.getElementById('savedDesignList');
   list.innerHTML = '<div style="color:#7a8aa5;font-size:13px;text-align:center;padding:20px;">Loading...</div>';
   try {
-    var resp = await fetch('https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec', {
+    var resp = await fetchWithTimeout('https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec', {
       method: 'POST', headers: {'Content-Type': 'text/plain'},
       body: JSON.stringify({
         action: 'getConfiguratorQuotes',
         salesman: (window.currentUser||{}).username || ''
       })
-    });
-    var data = await resp.json();
+    }, 55000);
+    var data = await safeJson(resp);
     var quotes = data.quotes || data.designs || [];
     console.log('[Modal] data.success:', data.success, 'quotes:', quotes.length, 'raw:', JSON.stringify(data).substring(0,300));
     if (!data.success || !quotes.length) {
@@ -5507,11 +5507,12 @@ async function loadSavedDesign(idx){
       var qid = d.quoteId || d.designId;
       var url = API_URL;
       console.log('[Load] fetching:', url, 'quoteId:', qid);
-      var r = await fetch(url, {
+      var r = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {'Content-Type': 'text/plain'},
         body: JSON.stringify({ action: 'getQuoteSnapshot', quoteId: qid })
-      });
+      }, 55000);
+      if (r._timedOut) throw new Error('Request timed out — please try again');
       var rawText = await r.text();
       console.log('[Load] raw fetch response:', rawText.substring(0,300));
       var data;
@@ -5761,7 +5762,7 @@ async function saveSalesQuote() {
     };
 
     // 5. Save snapshot
-    var resp = await fetch(API_URL, {
+    var resp = await fetchWithTimeout(API_URL, {
       method: 'POST',
       headers: {'Content-Type': 'text/plain'},
       body: JSON.stringify({
@@ -5952,7 +5953,7 @@ async function sendSalesQuoteEmail() {
     }
     if (!selectedPrices.length) { alert('Please select at least one price to include.'); btn.disabled=false; btn.textContent='Send Email'; return; }
 
-    var resp = await fetch(API_URL, {
+    var resp = await fetchWithTimeout(API_URL, {
       method: 'POST',
       headers: {'Content-Type': 'text/plain'},
       body: JSON.stringify({
@@ -5967,7 +5968,7 @@ async function sendSalesQuoteEmail() {
         selectedPrices: selectedPrices
       })
     });
-    var data = await resp.json();
+    var data = await safeJson(resp);
     if (!data.success) throw new Error(data.error || 'Send failed');
 
     btn.textContent = '✅ Sent!';
@@ -6132,11 +6133,11 @@ async function doSalesLogin() {
   if (!u || !p) { if(err) err.textContent = 'Enter username and password.'; return; }
   btn.textContent = 'Logging in…'; btn.disabled = true;
   try {
-    var resp = await fetch('https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec', {
+    var resp = await fetchWithTimeout('https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec', {
       method: 'POST', headers: {'Content-Type': 'text/plain'},
       body: JSON.stringify({ action: 'login', username: u, password: p })
-    });
-    var data = await resp.json();
+    }, 55000);
+    var data = await safeJson(resp);
     if (data.success) {
       window.currentUser = data.user || {
         username:     u,
@@ -6284,6 +6285,18 @@ function payloadCacheKey() {
     var p = buildPricePayload('WoodOH');
     return route.type + '|' + wallState + '|' + currentFrameType + '|' + JSON.stringify(p);
   } catch(e) { return Math.random(); }
+}
+
+// ── FETCH HELPERS ───────────────────────────────────────────────────────────
+function fetchWithTimeout(url, opts, ms) {
+  return new Promise(function(resolve) {
+    var t = setTimeout(function(){ resolve({_timedOut:true}); }, ms || 55000);
+    fetch(url, opts).then(function(r){ clearTimeout(t); resolve(r); }).catch(function(){ clearTimeout(t); resolve({}); });
+  });
+}
+function safeJson(r) {
+  if (!r || r._timedOut || !r.json) return Promise.resolve({});
+  return r.json().catch(function(){ return {}; });
 }
 
 function warmPing() {
@@ -6955,25 +6968,27 @@ async function updatePriceStrip() {
     var isRG  = isOpenBuildingRoute();
     console.log('[Price] route:', route.type, '| encloseGableEnd:', route.encloseGableEnd, '| addSide:', route.addSide);
 
+    // fetchWithTimeout / safeJson defined globally
+
     if (isRG) {
       // ── OPEN BUILDING: single RG calc, relabel strip ──────────
       updatePriceStripLabels(route.type, null, null);
       var rgPayload = buildRGPayload(route.type, route);
-      var resp = await fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(rgPayload) });
+      var resp = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(rgPayload) }, 55000);
       if (thisGen !== _priceCalcGen) return;
-      var data = await resp.json();
+      var data = await safeJson(resp);
       if (thisGen !== _priceCalcGen) return;
       if (checkTokenResponse(data)) return;
-      // Show in ps_ slot, hide ps2_ and ps3_
       hidePriceBlock('ps2_');
       hidePriceBlock('ps3_');
       hidePriceBlock('ps4_');
+      var _rLabel = {RGSteel:'Roof & Upper Gables', RGSides:'RG Sides', RGGables:'RG Gables'}[route.type] || route.type;
       if (data.success && data.results) {
         _lastPriceResults = data.results;
         window._lastPriceOH = data.results;
         populatePriceBlock('ps_', data.results);
         setTimeout(adjustShellForBreakdownBar, 50);
-        var _rLabel = {RGSteel:'Roof & Upper Gables', RGSides:'RG Sides', RGGables:'RG Gables'}[route.type] || route.type;
+        setCalcBadge('confirmed', '✓ ' + _rLabel);
         setTimeout(function(){ setCalcBadge('confirmed', _rLabel); }, 2000);
       } else { setPriceStripError('ps_'); setCalcBadge('error', '✕ Calc Error'); }
 
@@ -6988,22 +7003,23 @@ async function updatePriceStrip() {
       var payloadNoOH  = buildPricePayload('WoodNoOH');
       var payloadSteel = buildPricePayload('EnclosedSteel');
       var payloadStud  = buildPricePayload('StudFramed');
-      console.log('[Steel payload] garageDoor1Type:', payloadSteel.garageDoor1Type, 'qty:', payloadSteel.garageDoor1Qty, '| walkDoor1Type:', payloadSteel.walkDoor1Type, '| window1Type:', payloadSteel.window1Type);
-      console.log('[Steel payload] allDoors count:', (window._allDoors||[]).length, '| types:', (window._allDoors||[]).map(function(d){return d.type+':'+d.sizeKey;}).join(','));
-      console.log('[Stud] payload action:', payloadStud.action, '| calcType:', payloadStud.calculatorType, '| token len:', (payloadStud.token||'').length, '| user:', payloadStud.username);
-      var [respOH, respNoOH, respSteel, respStud] = await Promise.all([
-        fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadOH) }).catch(function(){ return {json:function(){ return Promise.resolve({}); }}; }),
-        fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadNoOH) }).catch(function(){ return {json:function(){ return Promise.resolve({}); }}; }),
-        fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadSteel) }).catch(function(){ return {json:function(){ return Promise.resolve({}); }}; }),
-        fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadStud) }).catch(function(){ return {json:function(){ return Promise.resolve({}); }}; })
-      ]);
+
+      // Sequential with 400ms stagger — Apps Script queues concurrent hits,
+      // causing timeouts when all 4 land simultaneously
+      var respOH = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadOH) }, 55000);
       if (thisGen !== _priceCalcGen) return;
-      // Parse each response independently — one bad parse won't blank the others
+      await new Promise(function(r){ setTimeout(r, 400); });
+      var respNoOH = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadNoOH) }, 55000);
+      if (thisGen !== _priceCalcGen) return;
+      await new Promise(function(r){ setTimeout(r, 400); });
+      var respSteel = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadSteel) }, 55000);
+      if (thisGen !== _priceCalcGen) return;
+      await new Promise(function(r){ setTimeout(r, 400); });
+      var respStud = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadStud) }, 55000);
+      if (thisGen !== _priceCalcGen) return;
+
       var [dataOH, dataNoOH, dataSteel, dataStud] = await Promise.all([
-        respOH.json().catch(function(){ return {}; }),
-        respNoOH.json().catch(function(){ return {}; }),
-        respSteel.json().catch(function(){ return {}; }),
-        respStud.json().catch(function(){ return {}; })
+        safeJson(respOH), safeJson(respNoOH), safeJson(respSteel), safeJson(respStud)
       ]);
       if (thisGen !== _priceCalcGen) return;
       if (checkTokenResponse(dataOH)) return;
