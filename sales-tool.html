@@ -6418,12 +6418,8 @@ function applyRouteUI() {
     showPriceBlock('ps4_');
   }
 
-  // Wipe totals immediately — stale numbers must never sit there looking valid
-  ['ps_total','ps2_total','ps3_total','ps4_total'].forEach(function(id){
-    var el = document.getElementById(id);
-    if (el) { el.textContent = '—'; el.classList.add('pending'); el.classList.remove('highlight'); }
-  });
-  setCalcBadge('calculating', 'Calculating…');
+  // Don't wipe totals here — applyRouteUI fires on wall/truss changes mid-session
+  // and would blast populated prices back to '—'. Wipe happens inside updatePriceStrip.
 
   // Stale guard is managed inside updatePriceStrip via finally block
 
@@ -7027,6 +7023,12 @@ async function updatePriceStrip() {
   _calcInFlight = true;
   _setCalcButtons(true);
   clearTimeout(_staleGuardTimer);
+  // Wipe totals now — we're about to fetch fresh numbers
+  ['ps_total','ps2_total','ps3_total','ps4_total'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) { el.textContent = '…'; el.classList.add('pending'); el.classList.remove('highlight'); }
+  });
+  setCalcBadge('calculating', 'Calculating…');
   setPriceStripCalculating();
 
   // Stale guard — if nothing comes back in 30s, unlock and let user retry
@@ -7048,6 +7050,11 @@ async function updatePriceStrip() {
       // ── OPEN BUILDING: single fetch ──────────────────────────
       updatePriceStripLabels(route.type, null, null);
       hidePriceBlock('ps2_'); hidePriceBlock('ps3_'); hidePriceBlock('ps4_');
+      // If address is filled but mileage cache is empty, wait for lookup first
+      var _addrVal = (document.getElementById('st_address')||{}).value || '';
+      if (_addrVal.length >= 5 && !_cachedMileage) {
+        await doAddressLookup();
+      }
       var rgPayload = buildRGPayload(route.type, route);
       var resp = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(rgPayload) }, 55000);
       var data = await safeJson(resp);
@@ -7066,9 +7073,16 @@ async function updatePriceStrip() {
       }
 
     } else {
-      // ── ENCLOSED: 4 parallel fetches, each to its own sheet tab ──
+      // ── ENCLOSED BUILDING: all 4 calcs always ─────────────────
       updatePriceStripLabels('WoodOH', 'WoodNoOH', 'EnclosedSteel');
-      showPriceBlock('ps2_'); showPriceBlock('ps3_'); showPriceBlock('ps4_');
+      showPriceBlock('ps2_');
+      showPriceBlock('ps3_');
+      showPriceBlock('ps4_');
+      // If address is filled but mileage cache is empty, wait for lookup first
+      var _addrVal2 = (document.getElementById('st_address')||{}).value || '';
+      if (_addrVal2.length >= 5 && !_cachedMileage) {
+        await doAddressLookup();
+      }
       var payloadOH    = buildPricePayload('WoodOH');
       var payloadNoOH  = buildPricePayload('WoodNoOH');
       var payloadSteel = buildPricePayload('EnclosedSteel');
