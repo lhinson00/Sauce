@@ -1501,7 +1501,7 @@ function chips(id, opts, getCur, setter, rebuild) {
 
 function buildTrussChips(){
   chips('trussChips',[{val:'Wood',label:'🪵 Wood'},{val:'Steel',label:'🔩 Steel'}],
-    function(){return cfgTruss;},function(v){cfgTruss=v;Q.truss=v;buildPitchChips();buildOHChips();});
+    function(){return cfgTruss;},function(v){cfgTruss=v;Q.truss=v;buildPitchChips();buildOHChips();applyRouteUI();});
 }
 function buildPitchChips(){
   var wopts=[{val:4,label:'4/12'},{val:6,label:'6/12'},{val:8,label:'8/12'},{val:10,label:'10/12'}];
@@ -1558,7 +1558,10 @@ function syncOpeningVisibility() {
   _syncCardWallDropdowns(nonEnclosedWalls);
 
   // Hide entire sections the moment ANY wall is open or partial
-  var allEnclosed = WALLS.every(function(w){ return w.encl === 'enclosed'; });
+  // Exception: EnclosedSteel and StudFramed routes always treat as fully enclosed
+  var _route = detectCalcRoute();
+  var _forceEnclosed = (_route.type === 'EnclosedSteel' || _route.type === 'StudFramed');
+  var allEnclosed = _forceEnclosed || WALLS.every(function(w){ return w.encl === 'enclosed'; });
   var enclosedOnlyIds = [
     'secGarageDoors','secWalkDoors','secWindows',
     'secWoodTrussUpgrades','rowRockWainscot','rowPostProtectors',
@@ -6401,62 +6404,54 @@ function barnCode(sizeKey) {
 }
 // Group configurator doors/windows into API payload fields
 function mapDoorsToPayload(maxDoorH) {
-  // maxDoorH: optional cap on garage door height (steel=Q.h-4, wood=Q.h-2, undefined=no cap)
-  function capGdCode(sizeKey, insulated) {
+  function gdCode(sizeKey, insulated) {
     if (!sizeKey) return '';
     var p = sizeKey.toLowerCase().split('x');
     if (p.length < 2) return '';
     var w = parseInt(p[0]), h = parseInt(p[1]);
     if (maxDoorH !== undefined && h > maxDoorH) h = maxDoorH;
-    // Round down to nearest even
     if (h % 2 !== 0) h = h - 1;
     if (h < 6) h = 6;
-    var inCode = insulated ? 'IN' : '';
-    return 'GD' + w + h + inCode + 'W';
+    return 'GD' + w + h + (insulated ? 'IN' : '') + 'W';
   }
-  var out = {
-    garageDoor1Type:'',garageDoor1Qty:0,garageDoor2Type:'',garageDoor2Qty:0,
-    garageDoor3Type:'',garageDoor3Qty:0,garageDoor4Type:'',garageDoor4Qty:0,
-    barnDoor1Type:'',barnDoor1Qty:0,barnDoor2Type:'',barnDoor2Qty:0,
-    walkDoor1Type:'',walkDoor1Qty:0,walkDoor2Type:'',walkDoor2Qty:0,
-    window1Type:'',window1Qty:0,window2Type:'',window2Qty:0,window3Type:'',window3Qty:0
+  // Garage doors — group by code, up to 4 unique sizes
+  var gds = (window._allDoors||[]).filter(function(d){return d.type==='garage';});
+  var gdG = {};
+  gds.forEach(function(d){ var c=gdCode(d.sizeKey,d.insulated); if(c) gdG[c]=(gdG[c]||0)+1; });
+  var gdk = Object.keys(gdG);
+
+  // Barn doors — stored in allDoors with type='barn'
+  var bds = (window._allDoors||[]).filter(function(d){return d.type==='barn';});
+  var bdG = {};
+  bds.forEach(function(d){ var c=barnCode(d.sizeKey); if(c) bdG[c]=(bdG[c]||0)+1; });
+  var bdk = Object.keys(bdG);
+
+  // Walk doors — exclude dutch, group by type string
+  var wds = (window._walkDoors||[]).filter(function(d){return d.type!=='dutch';});
+  var wdG = {};
+  wds.forEach(function(d){ var t=d.type||''; if(t) wdG[t]=(wdG[t]||0)+1; });
+  var wdk = Object.keys(wdG);
+
+  // Windows — group by type string
+  var wins = (window._windows||[]);
+  var winG = {};
+  wins.forEach(function(d){ var t=d.type||''; if(t) winG[t]=(winG[t]||0)+1; });
+  var wink = Object.keys(winG);
+
+  return {
+    garageDoor1Type: gdk[0]||'', garageDoor1Qty: gdk[0]?gdG[gdk[0]]:0,
+    garageDoor2Type: gdk[1]||'', garageDoor2Qty: gdk[1]?gdG[gdk[1]]:0,
+    garageDoor3Type: gdk[2]||'', garageDoor3Qty: gdk[2]?gdG[gdk[2]]:0,
+    garageDoor4Type: gdk[3]||'', garageDoor4Qty: gdk[3]?gdG[gdk[3]]:0,
+    garageDoor5Type: '',         garageDoor5Qty: 0,
+    barnDoor1Type:   bdk[0]||'', barnDoor1Qty:   bdk[0]?bdG[bdk[0]]:0,
+    barnDoor2Type:   bdk[1]||'', barnDoor2Qty:   bdk[1]?bdG[bdk[1]]:0,
+    walkDoor1Type:   wdk[0]||'', walkDoor1Qty:   wdk[0]?wdG[wdk[0]]:0,
+    walkDoor2Type:   wdk[1]||'', walkDoor2Qty:   wdk[1]?wdG[wdk[1]]:0,
+    window1Type:     wink[0]||'', window1Qty:    wink[0]?winG[wink[0]]:0,
+    window2Type:     wink[1]||'', window2Qty:    wink[1]?winG[wink[1]]:0,
+    window3Type:     wink[2]||'', window3Qty:    wink[2]?winG[wink[2]]:0
   };
-  // Garage doors grouped by size code (height capped for steel)
-  var gdG={};
-  (window._allDoors||[]).filter(function(d){return d.type==='garage';}).forEach(function(d){
-    var c=capGdCode(d.sizeKey, d.insulated); if(c) gdG[c]=(gdG[c]||0)+1;
-  });
-  var gdk=Object.keys(gdG);
-  if(gdk[0]){out.garageDoor1Type=gdk[0];out.garageDoor1Qty=gdG[gdk[0]];}
-  if(gdk[1]){out.garageDoor2Type=gdk[1];out.garageDoor2Qty=gdG[gdk[1]];}
-  if(gdk[2]){out.garageDoor3Type=gdk[2];out.garageDoor3Qty=gdG[gdk[2]];}
-  if(gdk[3]){out.garageDoor4Type=gdk[3];out.garageDoor4Qty=gdG[gdk[3]];}
-  // Barn doors
-  var bdG={};
-  (window._barnDoors||[]).forEach(function(d){
-    var c=barnCode(d.sizeKey); if(c) bdG[c]=(bdG[c]||0)+1;
-  });
-  var bdk=Object.keys(bdG);
-  if(bdk[0]){out.barnDoor1Type=bdk[0];out.barnDoor1Qty=bdG[bdk[0]];}
-  if(bdk[1]){out.barnDoor2Type=bdk[1];out.barnDoor2Qty=bdG[bdk[1]];}
-  // Walk doors (grouped by type string, exclude dutch)
-  var wdG={};
-  (window._walkDoors||[]).filter(function(d){return d.type!=='dutch';}).forEach(function(d){
-    var t=d.type||''; if(t) wdG[t]=(wdG[t]||0)+1;
-  });
-  var wdk=Object.keys(wdG);
-  if(wdk[0]){out.walkDoor1Type=wdk[0];out.walkDoor1Qty=wdG[wdk[0]];}
-  if(wdk[1]){out.walkDoor2Type=wdk[1];out.walkDoor2Qty=wdG[wdk[1]];}
-  // Windows — stored in window._windows with type = full string e.g. '5x5 Casement'
-  var winG={};
-  (window._windows||[]).forEach(function(d){
-    var t=d.type||''; if(t) winG[t]=(winG[t]||0)+1;
-  });
-  var wink=Object.keys(winG);
-  if(wink[0]){out.window1Type=wink[0];out.window1Qty=winG[wink[0]];}
-  if(wink[1]){out.window2Type=wink[1];out.window2Qty=winG[wink[1]];}
-  if(wink[2]){out.window3Type=wink[2];out.window3Qty=winG[wink[2]];}
-  return out;
 }
 
 // Build the formData payload — width/length/height from 3D, everything else at calculator defaults
@@ -6519,7 +6514,7 @@ function checkTokenResponse(data) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildPricePayload(calcType) {
-  var maxDoorH = calcType === 'EnclosedSteel' ? Q.h - 4 : Q.h - 2;
+  var maxDoorH = Q.h - 2;  // same cap for all calc types — sheet handles its own max
   var dp = mapDoorsToPayload(maxDoorH);
 
   // Steel has a different payload structure
@@ -6580,7 +6575,6 @@ function buildPricePayload(calcType) {
       garageDoorOpeners: (document.getElementById('sf_gdOpener')||{}).value || 'None',
       garageDoorOpenersQty: parseInt((document.getElementById('sf_gdOpenerQty')||{}).value||0) || 0,
       garageDoorWindows: (document.getElementById('sf_gdWindows') && document.getElementById('sf_gdWindows').checked) ? 'Yes' : 'No',
-      garageDoor5Type: '', garageDoor5Qty: 0,
       walkDoorAwning: (document.getElementById('sf_wdAwning')||{}).value || 'None',
       walkDoorAwningQty: parseInt((document.getElementById('sf_wdAwningQty')||{}).value||0) || 0,
       windowAwning: (document.getElementById('sf_winAwning')||{}).value || 'None',
@@ -6975,6 +6969,8 @@ async function updatePriceStrip() {
       var payloadNoOH  = buildPricePayload('WoodNoOH');
       var payloadSteel = buildPricePayload('EnclosedSteel');
       var payloadStud  = buildPricePayload('StudFramed');
+      console.log('[Steel payload] garageDoor1Type:', payloadSteel.garageDoor1Type, 'qty:', payloadSteel.garageDoor1Qty, '| walkDoor1Type:', payloadSteel.walkDoor1Type, '| window1Type:', payloadSteel.window1Type);
+      console.log('[Steel payload] allDoors count:', (window._allDoors||[]).length, '| types:', (window._allDoors||[]).map(function(d){return d.type+':'+d.sizeKey;}).join(','));
       console.log('[Stud] payload action:', payloadStud.action, '| calcType:', payloadStud.calculatorType, '| token len:', (payloadStud.token||'').length, '| user:', payloadStud.username);
       var [respOH, respNoOH, respSteel, respStud] = await Promise.all([
         fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadOH) }).catch(function(){ return {json:function(){ return Promise.resolve({}); }}; }),
