@@ -6221,28 +6221,20 @@ async function doAddressLookup() {
   }
   if (display) { display.textContent = '🔄 Calculating distance...'; display.style.color = '#888'; }
   try {
-    var geo = 'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&q=';
-    var r = await Promise.all([
-      fetch(geo + encodeURIComponent(addr)).then(function(r){return r.json();}),
-      fetch(geo + encodeURIComponent(SHOP_ADDRESS)).then(function(r){return r.json();})
-    ]);
-    var cust = r[0], shop = r[1];
-    if (!cust.length || !shop.length) {
+    // Use Apps Script driving distance (Google Maps Directions) — not haversine
+    var resp = await fetchWithTimeout(API_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'text/plain'},
+      body: JSON.stringify({ action: 'lookupAddress', address: addr })
+    }, 30000);
+    var data = await safeJson(resp);
+    if (!data.success) {
       if (display) { display.textContent = '⚠️ Address not found'; display.style.color = '#dc3545'; }
       _cachedMileage = 0; return;
     }
-    var R = 3959, toRad = function(d){return d*Math.PI/180;};
-    var dLat = toRad(cust[0].lat - shop[0].lat);
-    var dLon = toRad(cust[0].lon - shop[0].lon);
-    var a = Math.sin(dLat/2)*Math.sin(dLat/2) +
-            Math.cos(toRad(shop[0].lat))*Math.cos(toRad(cust[0].lat))*
-            Math.sin(dLon/2)*Math.sin(dLon/2);
-    _cachedMileage = Math.round(R * 2 * Math.atan2(Math.sqrt(a),Math.sqrt(1-a)) * 1.2);
-    // Extract zip and county from Nominatim response
-    var zipMatch = cust[0].display_name.match(/\b(\d{5})\b/);
-    _cachedZip = zipMatch ? zipMatch[1] : '';
-    var addrObj = cust[0].address || {};
-    _cachedCounty = addrObj.county || addrObj.state_district || '';
+    _cachedMileage = data.mileage || 0;
+    _cachedZip    = data.zipCode  || '';
+    _cachedCounty = data.county   || '';
     if (display) {
       var msg = '📍 ' + _cachedMileage + ' miles from shop';
       if (_cachedMileage > 200) msg += ' — beyond 200mi';
