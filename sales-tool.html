@@ -6193,7 +6193,7 @@ async function doSalesLogin() {
     btn.textContent = 'Log In'; btn.disabled = false;
   }
 }
-var _priceCalcGen = 0;
+var _priceCalcGen = 0; // kept for compatibility
 var _lastPriceResults = null;
 
 // Called every time scheduleBuild fires — debounced separately so rapid
@@ -6305,8 +6305,15 @@ function fetchWithTimeout(url, opts, ms) {
   });
 }
 function safeJson(r) {
-  if (!r || r._timedOut || !r.json) return Promise.resolve({});
-  return r.json().catch(function(){ return {}; });
+  if (!r || r._timedOut || !r.json) {
+    console.warn('[safeJson] no response or timed out:', r && r._timedOut ? 'TIMEOUT' : 'null');
+    return Promise.resolve({});
+  }
+  return r.text().then(function(txt) {
+    console.log('[safeJson] raw response (' + txt.length + ' chars):', txt.substring(0, 300));
+    try { return JSON.parse(txt); }
+    catch(e) { console.error('[safeJson] JSON parse failed:', e.message, '| text:', txt.substring(0,200)); return {}; }
+  }).catch(function(e) { console.error('[safeJson] text() failed:', e.message); return {}; });
 }
 
 function warmPing() {
@@ -6418,20 +6425,7 @@ function applyRouteUI() {
   });
   setCalcBadge('calculating', 'Calculating…');
 
-  // Stale-guard: if no price arrives in 12s, show — and badge "Tap to retry"
-  clearTimeout(_staleGuardTimer);
-  _staleGuardTimer = setTimeout(function() {
-    ['ps_total','ps2_total','ps3_total','ps4_total'].forEach(function(id){
-      var el = document.getElementById(id);
-      if (el && el.classList.contains('pending')) { el.textContent = '—'; }
-    });
-    // Unlock buttons so user can retry — and auto-retry once
-    _calcInFlight = false; _setCalcButtons(false);
-    setCalcBadge('error', '⚠ Slow response — retrying…');
-    setTimeout(function() {
-      if (!_calcInFlight) forceRefreshPrice();
-    }, 800);
-  }, 20000);
+  // Stale guard is managed inside updatePriceStrip via finally block
 
   syncOpeningVisibility();
 }
@@ -7028,36 +7022,34 @@ function buildRGPayload(calcType, route) {
 async function updatePriceStrip() {
   if (!window.currentUser) return;
 
-  // No payload cache — every Calculate press must fire. Cache was causing silent
-  // no-ops when users clicked Calculate and nothing happened.
-  _lastPayloadKey = payloadCacheKey();
-  _lastPayloadTime = Date.now();
-
-  _priceCalcGen++;
-  var thisGen = _priceCalcGen;
   _calcInFlight = true;
   _setCalcButtons(true);
+  clearTimeout(_staleGuardTimer);
   setPriceStripCalculating();
+
+  // Stale guard — if nothing comes back in 30s, unlock and let user retry
+  _staleGuardTimer = setTimeout(function() {
+    if (!_calcInFlight) return;
+    _calcInFlight = false; _setCalcButtons(false);
+    ['ps_total','ps2_total','ps3_total','ps4_total'].forEach(function(id){
+      var el = document.getElementById(id);
+      if (el && el.classList.contains('pending')) el.textContent = '—';
+    });
+    setCalcBadge('error', '⚠ No response — tap Calculate to retry');
+  }, 30000);
 
   try {
     var route = detectCalcRoute();
     var isRG  = isOpenBuildingRoute();
-    console.log('[Price] route:', route.type, '| encloseGableEnd:', route.encloseGableEnd, '| addSide:', route.addSide);
-
-    // fetchWithTimeout / safeJson defined globally
 
     if (isRG) {
-      // ── OPEN BUILDING: single RG calc, relabel strip ──────────
+      // ── OPEN BUILDING: single fetch ──────────────────────────
       updatePriceStripLabels(route.type, null, null);
+      hidePriceBlock('ps2_'); hidePriceBlock('ps3_'); hidePriceBlock('ps4_');
       var rgPayload = buildRGPayload(route.type, route);
       var resp = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(rgPayload) }, 55000);
-      if (thisGen !== _priceCalcGen) return;
       var data = await safeJson(resp);
-      if (thisGen !== _priceCalcGen) return;
-      if (checkTokenResponse(data)) return;
-      hidePriceBlock('ps2_');
-      hidePriceBlock('ps3_');
-      hidePriceBlock('ps4_');
+      if (checkTokenResponse(data)) { _calcInFlight=false; _setCalcButtons(false); clearTimeout(_staleGuardTimer); return; }
       var _rLabel = {RGSteel:'Roof & Upper Gables', RGSides:'RG Sides', RGGables:'RG Gables'}[route.type] || route.type;
       if (data.success && data.results) {
         _lastPriceResults = data.results;
@@ -7066,59 +7058,59 @@ async function updatePriceStrip() {
         setTimeout(adjustShellForBreakdownBar, 50);
         setCalcBadge('confirmed', '✓ ' + _rLabel);
         setTimeout(function(){ setCalcBadge('confirmed', _rLabel); }, 2000);
-      } else { setPriceStripError('ps_'); setCalcBadge('error', '✕ Calc Error'); }
-      _calcInFlight = false; _setCalcButtons(false);
+      } else {
+        setPriceStripError('ps_');
+        setCalcBadge('error', '✕ Calc Error');
+      }
 
     } else {
-      // ── ENCLOSED BUILDING: all 4 calcs always ─────────────────
+      // ── ENCLOSED: 4 parallel fetches, each to its own sheet tab ──
       updatePriceStripLabels('WoodOH', 'WoodNoOH', 'EnclosedSteel');
-      showPriceBlock('ps2_');
-      showPriceBlock('ps3_');
-      console.log('[Stud] calling showPriceBlock ps4_');
-      showPriceBlock('ps4_');
+      showPriceBlock('ps2_'); showPriceBlock('ps3_'); showPriceBlock('ps4_');
       var payloadOH    = buildPricePayload('WoodOH');
       var payloadNoOH  = buildPricePayload('WoodNoOH');
       var payloadSteel = buildPricePayload('EnclosedSteel');
       var payloadStud  = buildPricePayload('StudFramed');
 
-      // Fire all 4 in parallel — each writes to its own sheet tab so no conflict.
-      // Each resolves independently; one slow/failed request won't block the others.
       var [respOH, respNoOH, respSteel, respStud] = await Promise.all([
         fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadOH) }, 55000),
         fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadNoOH) }, 55000),
         fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadSteel) }, 55000),
         fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadStud) }, 55000)
       ]);
-      if (thisGen !== _priceCalcGen) return;
 
       var [dataOH, dataNoOH, dataSteel, dataStud] = await Promise.all([
         safeJson(respOH), safeJson(respNoOH), safeJson(respSteel), safeJson(respStud)
       ]);
-      if (thisGen !== _priceCalcGen) return;
-      if (checkTokenResponse(dataOH)) return;
+
+      if (checkTokenResponse(dataOH)) { _calcInFlight=false; _setCalcButtons(false); clearTimeout(_staleGuardTimer); return; }
+
       var _encOK = 0;
-      if (dataOH.success    && dataOH.results)    { _lastPriceResults=dataOH.results; window._lastPriceOH=dataOH.results; populatePriceBlock('ps_', dataOH.results); _encOK++; } else { setPriceStripError('ps_'); }
-      if (dataNoOH.success  && dataNoOH.results)  { window._lastPriceNoOH=dataNoOH.results; populatePriceBlock('ps2_', dataNoOH.results); _encOK++; } else { setPriceStripError('ps2_'); }
-      if (dataSteel.success && dataSteel.results) { window._lastPriceSteel=dataSteel.results; populatePriceBlock('ps3_', dataSteel.results); _encOK++; } else { setPriceStripError('ps3_'); }
-      console.log('[Stud] response:', JSON.stringify(dataStud).substring(0,200));
-      if (dataStud.success  && dataStud.results)  { window._lastPriceStud=dataStud.results; populatePriceBlock('ps4_', dataStud.results); _encOK++; } else { console.warn('[Stud] FAILED:', dataStud.error||'no error msg'); setPriceStripError('ps4_'); }
+      if (dataOH.success    && dataOH.results)    { _lastPriceResults=dataOH.results; window._lastPriceOH=dataOH.results;     populatePriceBlock('ps_',  dataOH.results);    _encOK++; } else { setPriceStripError('ps_'); }
+      if (dataNoOH.success  && dataNoOH.results)  { window._lastPriceNoOH=dataNoOH.results;                                   populatePriceBlock('ps2_', dataNoOH.results);   _encOK++; } else { setPriceStripError('ps2_'); }
+      if (dataSteel.success && dataSteel.results) { window._lastPriceSteel=dataSteel.results;                                 populatePriceBlock('ps3_', dataSteel.results);   _encOK++; } else { setPriceStripError('ps3_'); }
+      if (dataStud.success  && dataStud.results)  { window._lastPriceStud=dataStud.results;                                   populatePriceBlock('ps4_', dataStud.results);    _encOK++; } else { setPriceStripError('ps4_'); }
+
       setTimeout(adjustShellForBreakdownBar, 50);
       if (_encOK === 4) {
         setCalcBadge('confirmed', '✓ Stud · W/Soffit · No Soffit · Steel');
         setTimeout(function(){ setCalcBadge('confirmed', 'Stud · W/Soffit · No Soffit · Steel'); }, 2000);
       } else if (_encOK > 0) {
-        setCalcBadge('error', '⚠ Partial Results (' + _encOK + '/4)');
+        setCalcBadge('error', '⚠ Partial (' + _encOK + '/4) — tap Calculate to retry');
       } else {
-        setCalcBadge('error', '✕ Calc Error');
+        setCalcBadge('error', '✕ No results — tap Calculate to retry');
       }
-      _calcInFlight = false; _setCalcButtons(false);
     }
 
   } catch(e) {
-    console.log('[Price] error:', e.message);
-    if (thisGen === _priceCalcGen) { setPriceStripError('ps_'); setPriceStripError('ps2_'); setPriceStripError('ps3_'); }
-    _calcInFlight = false; _setCalcButtons(false);
+    console.error('[Price] exception:', e.message);
+    setPriceStripError('ps_'); setPriceStripError('ps2_'); setPriceStripError('ps3_'); setPriceStripError('ps4_');
     setCalcBadge('error', '✕ Error — tap Calculate to retry');
+  } finally {
+    // Always unlock — no matter what path we took
+    _calcInFlight = false;
+    _setCalcButtons(false);
+    clearTimeout(_staleGuardTimer);
   }
 }
 
