@@ -6418,12 +6418,8 @@ function applyRouteUI() {
     showPriceBlock('ps4_');
   }
 
-  // Wipe totals immediately — stale numbers must never sit there looking valid
-  ['ps_total','ps2_total','ps3_total','ps4_total'].forEach(function(id){
-    var el = document.getElementById(id);
-    if (el) { el.textContent = '—'; el.classList.add('pending'); el.classList.remove('highlight'); }
-  });
-  setCalcBadge('calculating', 'Calculating…');
+  // Don't wipe totals here — applyRouteUI fires on wall/truss changes mid-session
+  // and would blast populated prices back to '—'. Wipe happens inside updatePriceStrip.
 
   // Stale guard is managed inside updatePriceStrip via finally block
 
@@ -7027,6 +7023,12 @@ async function updatePriceStrip() {
   _calcInFlight = true;
   _setCalcButtons(true);
   clearTimeout(_staleGuardTimer);
+  // Wipe totals now — we're about to fetch fresh numbers
+  ['ps_total','ps2_total','ps3_total','ps4_total'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) { el.textContent = '…'; el.classList.add('pending'); el.classList.remove('highlight'); }
+  });
+  setCalcBadge('calculating', 'Calculating…');
   setPriceStripCalculating();
 
   // Stale guard — if nothing comes back in 30s, unlock and let user retry
@@ -7066,26 +7068,25 @@ async function updatePriceStrip() {
       }
 
     } else {
-      // ── ENCLOSED: 4 parallel fetches, each to its own sheet tab ──
+      // ── ENCLOSED: single calculateAll request — all 4 results in one response ──
+      // Apps Script doPost is single-threaded; 4 separate POSTs queued serially
+      // took 4× as long. One request runs all 4 handlers sequentially server-side.
       updatePriceStripLabels('WoodOH', 'WoodNoOH', 'EnclosedSteel');
       showPriceBlock('ps2_'); showPriceBlock('ps3_'); showPriceBlock('ps4_');
-      var payloadOH    = buildPricePayload('WoodOH');
-      var payloadNoOH  = buildPricePayload('WoodNoOH');
-      var payloadSteel = buildPricePayload('EnclosedSteel');
-      var payloadStud  = buildPricePayload('StudFramed');
 
-      var [respOH, respNoOH, respSteel, respStud] = await Promise.all([
-        fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadOH) }, 55000),
-        fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadNoOH) }, 55000),
-        fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadSteel) }, 55000),
-        fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadStud) }, 55000)
-      ]);
+      var payload = buildPricePayload('WoodOH'); // base payload — server runs all 4
+      payload.action = 'calculateAll';
 
-      var [dataOH, dataNoOH, dataSteel, dataStud] = await Promise.all([
-        safeJson(respOH), safeJson(respNoOH), safeJson(respSteel), safeJson(respStud)
-      ]);
+      var resp = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payload) }, 55000);
+      var data = await safeJson(resp);
 
-      if (checkTokenResponse(dataOH)) { _calcInFlight=false; _setCalcButtons(false); clearTimeout(_staleGuardTimer); return; }
+      if (checkTokenResponse(data)) { _calcInFlight=false; _setCalcButtons(false); clearTimeout(_staleGuardTimer); return; }
+
+      var all = (data.success && data.all) ? data.all : {};
+      var dataOH    = all.WoodOH        || {};
+      var dataNoOH  = all.WoodNoOH      || {};
+      var dataSteel = all.EnclosedSteel || {};
+      var dataStud  = all.StudFramed    || {};
 
       var _encOK = 0;
       if (dataOH.success    && dataOH.results)    { _lastPriceResults=dataOH.results; window._lastPriceOH=dataOH.results;     populatePriceBlock('ps_',  dataOH.results);    _encOK++; } else { setPriceStripError('ps_'); }
