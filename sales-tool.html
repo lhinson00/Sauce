@@ -6337,7 +6337,48 @@ function setCalcBadge(state, text) {
 var _staleGuardTimer = null;
 
 
+var _calcInFlight = false;
+
+function _setCalcButtons(busy) {
+  // Lock/unlock all Calculate buttons visually
+  ['priceRefreshBtn'].forEach(function(id) {
+    var btn = document.getElementById(id);
+    if (!btn) return;
+    if (busy) {
+      btn.disabled = true;
+      btn.dataset.origText = btn.textContent;
+      btn.textContent = '⏳ Calculating…';
+      btn.style.opacity = '0.6';
+      btn.style.cursor = 'not-allowed';
+    } else {
+      btn.disabled = false;
+      btn.textContent = btn.dataset.origText || '⟳ Calculate';
+      btn.style.opacity = '';
+      btn.style.cursor = '';
+    }
+  });
+  // Also handle the mobile button (no fixed id — find by text)
+  document.querySelectorAll('button').forEach(function(btn) {
+    if (!btn.id && btn.textContent.trim() === '⟳ Calculate') {
+      if (busy) {
+        btn.disabled = true;
+        btn.dataset.origText = btn.textContent;
+        btn.textContent = '⏳ Calculating…';
+        btn.style.opacity = '0.6';
+        btn.style.cursor = 'not-allowed';
+      } else {
+        btn.disabled = false;
+        btn.textContent = btn.dataset.origText || '⟳ Calculate';
+        btn.style.opacity = '';
+        btn.style.cursor = '';
+      }
+    }
+  });
+}
+
 function forceRefreshPrice() {
+  // If already in-flight, do nothing — button is disabled anyway
+  if (_calcInFlight) return;
   // Hard reset — bust cache, clear stale globals, clear displayed values, rerun immediately
   _lastPayloadKey  = null;
   _lastPayloadTime = 0;
@@ -6384,8 +6425,13 @@ function applyRouteUI() {
       var el = document.getElementById(id);
       if (el && el.classList.contains('pending')) { el.textContent = '—'; }
     });
-    setCalcBadge('error', 'Tap to retry');
-  }, 12000);
+    // Unlock buttons so user can retry — and auto-retry once
+    _calcInFlight = false; _setCalcButtons(false);
+    setCalcBadge('error', '⚠ Slow response — retrying…');
+    setTimeout(function() {
+      if (!_calcInFlight) forceRefreshPrice();
+    }, 800);
+  }, 20000);
 
   syncOpeningVisibility();
 }
@@ -6982,17 +7028,15 @@ function buildRGPayload(calcType, route) {
 async function updatePriceStrip() {
   if (!window.currentUser) return;
 
-  var key = payloadCacheKey();
-  var now = Date.now();
-  if (key === _lastPayloadKey && (now - _lastPayloadTime) < 8000) {
-    console.log('[Price] cache hit — skipping');
-    return;
-  }
-  _lastPayloadKey = key;
-  _lastPayloadTime = now;
+  // No payload cache — every Calculate press must fire. Cache was causing silent
+  // no-ops when users clicked Calculate and nothing happened.
+  _lastPayloadKey = payloadCacheKey();
+  _lastPayloadTime = Date.now();
 
   _priceCalcGen++;
   var thisGen = _priceCalcGen;
+  _calcInFlight = true;
+  _setCalcButtons(true);
   setPriceStripCalculating();
 
   try {
@@ -7023,6 +7067,7 @@ async function updatePriceStrip() {
         setCalcBadge('confirmed', '✓ ' + _rLabel);
         setTimeout(function(){ setCalcBadge('confirmed', _rLabel); }, 2000);
       } else { setPriceStripError('ps_'); setCalcBadge('error', '✕ Calc Error'); }
+      _calcInFlight = false; _setCalcButtons(false);
 
     } else {
       // ── ENCLOSED BUILDING: all 4 calcs always ─────────────────
@@ -7066,11 +7111,14 @@ async function updatePriceStrip() {
       } else {
         setCalcBadge('error', '✕ Calc Error');
       }
+      _calcInFlight = false; _setCalcButtons(false);
     }
 
   } catch(e) {
     console.log('[Price] error:', e.message);
     if (thisGen === _priceCalcGen) { setPriceStripError('ps_'); setPriceStripError('ps2_'); setPriceStripError('ps3_'); }
+    _calcInFlight = false; _setCalcButtons(false);
+    setCalcBadge('error', '✕ Error — tap Calculate to retry');
   }
 }
 
