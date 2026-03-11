@@ -224,15 +224,18 @@
             try {
                 var resp = await fetch(SCRIPT_URL, {
                     method: 'POST',
-                    body: JSON.stringify({ action: 'getSavedQuotes', username: user.username || '' }),
-                    headers: { 'Content-Type': 'text/plain' },
-                    redirect: 'follow'
+                    body: JSON.stringify({
+                        action: 'getConfiguratorQuotes',
+                        username: user.username || '',
+                        salesman: user.username || ''
+                    }),
+                    headers: { 'Content-Type': 'text/plain' }
                 });
                 var text = await resp.text();
                 var data = JSON.parse(text);
                 if (!data.success) throw new Error(data.error || 'Failed');
-                var raw = data.quotes || [];
-                _sqAll = (user.username === 'lain.hinson') ? raw : raw.filter(function(q){ return q.salesman === user.username; });
+                var raw = data.quotes || data.designs || [];
+                _sqAll = raw;
                 _sqAll.forEach(function(q, i){ q._idx = i; });
                 sqUpdateStats();
                 sqRender(_sqAll);
@@ -244,8 +247,10 @@
         function sqUpdateStats() {
             var weekAgo = Date.now() - 7 * 864e5, recent = 0, total = 0;
             _sqAll.forEach(function(q) {
-                if (q.timestamp && new Date(q.timestamp).getTime() > weekAgo) recent++;
-                var t = q.pricingResults && q.pricingResults.totalCombined ? parseFloat(q.pricingResults.totalCombined.replace(/[$,]/g,'')) || 0 : 0;
+                var ts = q.timestamp || q.date || '';
+                if (ts && new Date(ts).getTime() > weekAgo) recent++;
+                var pr = q.pricingResults || {};
+                var t = pr.totalCombined ? parseFloat(pr.totalCombined.replace(/[$,]/g,'')) || 0 : 0;
                 total += t;
             });
             document.getElementById('sqStatTotal').textContent = _sqAll.length;
@@ -256,18 +261,21 @@
         function sqRender(quotes) {
             var el = document.getElementById('sqList');
             if (!quotes.length) { el.innerHTML = '<div style="color:#7a8aa5;font-size:13px;text-align:center;padding:30px;">No quotes found</div>'; return; }
-            var sorted = quotes.slice().sort(function(a,b){ return new Date(b.timestamp||0) - new Date(a.timestamp||0); });
+            var sorted = quotes.slice().sort(function(a,b){ return new Date(b.timestamp||b.date||0) - new Date(a.timestamp||a.date||0); });
             el.innerHTML = sorted.map(function(q) {
-                var dims = '';
-                if (q.formFields) { var w=q.formFields.width||'',l=q.formFields.length||'',h=q.formFields.height||''; if(w&&l) dims=w+"'×"+l+"'×"+h+"'"; }
+                var label = q.customerName || q.name || q.label || '—';
+                var phone = q.phone || '';
+                var dims  = q.specs || '';
+                if (!dims && q.formFields) { var w=q.formFields.width||'',l=q.formFields.length||'',h=q.formFields.height||''; if(w&&l) dims=w+"'x"+l+"'x"+h+"'"; }
                 var total = (q.pricingResults && q.pricingResults.totalCombined) ? q.pricingResults.totalCombined : '—';
-                var date  = q.timestamp ? new Date(q.timestamp).toLocaleDateString() : '';
-                var loadUrl = (q.calculatorFile || 'sales-tool.html') + '?loadQuote=' + encodeURIComponent(q.quoteId || '');
+                var date  = q.timestamp||q.date ? new Date(q.timestamp||q.date).toLocaleDateString() : '';
+                var qid   = q.quoteId || q.designId || '';
+                var loadUrl = (q.calculatorFile || 'sales-tool.html') + '?loadQuote=' + encodeURIComponent(qid);
                 return '<div style="background:#0d1b2a;border:1px solid #2a3d66;border-radius:11px;padding:12px 14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">'
-                    + '<div style="font-family:Outfit,monospace;font-weight:700;font-size:12px;color:#d4a843;min-width:105px;">' + (q.quoteId||'') + '</div>'
+                    + '<div style="font-family:Outfit,monospace;font-weight:700;font-size:12px;color:#d4a843;min-width:105px;">' + qid + '</div>'
                     + '<div style="flex:1;min-width:130px;">'
-                        + '<div style="font-weight:700;font-size:13px;color:#f0f3f7;">' + (q.customerName||'—') + '</div>'
-                        + (q.phone ? '<div style="font-size:11px;color:#7a8aa5;margin-top:1px;">📞 ' + q.phone + '</div>' : '')
+                        + '<div style="font-weight:700;font-size:13px;color:#f0f3f7;">' + label + '</div>'
+                        + (phone ? '<div style="font-size:11px;color:#7a8aa5;margin-top:1px;">📞 ' + phone + '</div>' : '')
                     + '</div>'
                     + '<div style="font-size:11px;color:#8b5cf6;background:rgba(99,102,241,.12);padding:2px 8px;border-radius:5px;font-weight:700;white-space:nowrap;">' + (q.calculatorName||'') + '</div>'
                     + '<div style="font-size:11px;color:#5a6b85;">' + dims + '</div>'
@@ -283,10 +291,13 @@
             if (!q) { sqRender(_sqAll); return; }
             var qClean = q.replace(/\D/g, '');
             sqRender(_sqAll.filter(function(qt) {
+                var name  = (qt.customerName || qt.name || qt.label || '').toLowerCase();
                 var phone = (qt.phone || '').replace(/\D/g, '');
-                return (qt.customerName||'').toLowerCase().indexOf(q) >= 0
-                    || (qt.quoteId||'').toLowerCase().indexOf(q) >= 0
-                    || (qt.calculatorName||'').toLowerCase().indexOf(q) >= 0
+                var qid   = (qt.quoteId || qt.designId || '').toLowerCase();
+                var calc  = (qt.calculatorName || '').toLowerCase();
+                return name.indexOf(q) >= 0
+                    || qid.indexOf(q) >= 0
+                    || calc.indexOf(q) >= 0
                     || (qClean && phone.indexOf(qClean) >= 0);
             }));
         }
