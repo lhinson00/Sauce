@@ -1262,6 +1262,7 @@ body.view-mode #viewCustomerCard {
       <button class="act-btn secondary" onclick="generatePostLayout()">📋 Post PDF</button>
       <button class="act-btn primary" id="saveQuoteBtn" onclick="saveSalesQuote()">💾 Save Quote</button>
       <button class="act-btn secondary" id="emailQuoteBtn" onclick="openEmailQuoteModal()" style="display:none;">✉️ Email Quote</button>
+      <button class="act-btn secondary" id="quotePdfBtn" onclick="generateQuotePDF()" style="display:none;">📄 Quote PDF</button>
     </div>
     <div id="saveQuoteStatus" style="display:none;text-align:center;font-size:11px;color:#4ade80;font-weight:700;padding:4px 0;letter-spacing:.3px;"></div>
 
@@ -5342,6 +5343,316 @@ function vpToggleWalls() {
 </div>
 
 <script>
+function generateQuotePDF() {
+  var Q = window._Q || {};
+  var J = window.jspdf && window.jspdf.jsPDF;
+  if (!J) { alert('PDF library not loaded. Please wait and try again.'); return; }
+
+  // ── Collect customer info ──
+  var custName  = (document.getElementById('st_name')  ||{}).value || 'Customer';
+  var custPhone = (document.getElementById('st_phone') ||{}).value || '';
+  var custEmail = (document.getElementById('st_email') ||{}).value || '';
+  var custCity  = (document.getElementById('st_address')||{}).value || '';
+  var firstName = custName.split(' ')[0] || custName;
+
+  // ── Building dims & colors ──
+  var bw = Q.w || '', bl = Q.l || '', bh = Q.h || '';
+  var pitch = Q.pitch || 4;
+  var truss = Q.truss || 'Wood';
+  var dims  = bw + "' x " + bl + "' x " + bh + "'";
+  var roofCol  = selRoof  || '';
+  var wallCol  = selWall  || '';
+  var trimCol  = selTrim  || '';
+  var wainCol  = selWainscot || '';
+  var wainHt   = (document.getElementById('st_wainscot')||{}).value || '';
+
+  // ── Prices ──
+  var oh   = window._lastPriceOH    || {};
+  var nooh = window._lastPriceNoOH  || {};
+  var steel= window._lastPriceSteel || {};
+  var stud = window._lastPriceStud  || {};
+  var isRG = isOpenBuildingRoute();
+
+  // Build price entries array (same logic as email modal)
+  var priceEntries = [];
+  var calcTitleMap = {
+    WoodOH:'W/ Soffit', WoodNoOH:'No Soffit', EnclosedSteel:'Steel Truss',
+    StudFramed:'Stud Framed', RGSteel:'Roof & Upper Gables',
+    RGSides:'RG With Sides', RGGables:'RG With Gables'
+  };
+  if (isRG) {
+    var rgLabel = calcTitleMap[detectCalcRoute()] || detectCalcRoute();
+    if (oh.total) priceEntries.push({ label: rgLabel, r: oh });
+  } else {
+    if (oh.total)   priceEntries.push({ label: 'W/ Soffit',    r: oh });
+    if (stud.total) priceEntries.push({ label: 'Stud Framed',  r: stud });
+    if (nooh.total) priceEntries.push({ label: 'No Soffit',    r: nooh });
+    if (steel.total)priceEntries.push({ label: 'Steel Truss',  r: steel });
+  }
+
+  // ── Salesman info ──
+  var cu = window.currentUser || {};
+  var salesName  = cu.fullName || cu.username || 'Sales Consultant';
+  var salesPhone = cu.phone    || '';
+  var salesEmail = cu.email    || '';
+  var salesCo    = cu.company  || 'Summertown Metals';
+
+  // ── Capture 3D front view ──
+  var imgData = null;
+  var d3 = window._3d;
+  if (d3 && d3.rrx) {
+    var origTh = d3.th, origPh = d3.ph, origDi = d3.di;
+    var capW = 1200, capH = 525;
+    d3.rrx.setSize(capW, capH);
+    if (d3.dimLabels) d3.dimLabels.forEach(function(l){ l.visible = false; });
+    d3.th = Math.PI * 1.0; d3.ph = Math.PI * 0.08; d3.di = 13;
+    d3.setC(); d3.rrx.render(d3.scene, d3.cam);
+    imgData = d3.rrx.domElement.toDataURL('image/jpeg', 0.88);
+    // Restore
+    var vpEl = document.getElementById('qgRV');
+    var vpW = vpEl ? vpEl.clientWidth : window.innerWidth;
+    var vpH = vpEl ? vpEl.clientHeight : 400;
+    d3.rrx.setSize(vpW, vpH);
+    d3.rrx.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    d3.th = origTh; d3.ph = origPh; d3.di = origDi; d3.setC();
+    d3.rrx.render(d3.scene, d3.cam);
+    if (d3.dimLabels) d3.dimLabels.forEach(function(l){ l.visible = true; });
+  }
+
+  // ── jsPDF setup (portrait, letter) ──
+  var doc = new J({ orientation: 'portrait', unit: 'pt', format: 'letter' });
+  var PW = 612, PH = 792, MG = 36;
+  var col = { navy:'#1a2744', gold:'#d4a843', darkGold:'#b8860b', white:'#ffffff',
+               lightGray:'#ebebeb', midGray:'#e0e0e0', text:'#333333', muted:'#666666' };
+
+  function hexToRGB(h) {
+    h = h.replace('#','');
+    return [parseInt(h.substring(0,2),16), parseInt(h.substring(2,4),16), parseInt(h.substring(4,6),16)];
+  }
+  function setFill(hex) { var c=hexToRGB(hex); doc.setFillColor(c[0],c[1],c[2]); }
+  function setDraw(hex) { var c=hexToRGB(hex); doc.setDrawColor(c[0],c[1],c[2]); }
+  function setTxt(hex)  { var c=hexToRGB(hex); doc.setTextColor(c[0],c[1],c[2]); }
+
+  var quoteId = window._savedQuoteId || ('QS-' + Date.now());
+  var dateStr = new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
+
+  // ── HEADER block ──
+  setFill(col.navy); doc.rect(0, 0, PW, 110, 'F');
+
+  // Title
+  doc.setFont('helvetica','bold'); doc.setFontSize(22);
+  setTxt(col.white); doc.text('Building Quote', PW/2, 38, {align:'center'});
+
+  // Quote ID + date
+  doc.setFont('helvetica','normal'); doc.setFontSize(9);
+  setTxt(col.gold);
+  doc.text(quoteId + '  \u00B7  ' + dateStr, PW/2, 52, {align:'center'});
+
+  // Dimension pills
+  var dimLabels = [["WIDTH", bw+"'"], ["LENGTH", bl+"'"], ["HEIGHT", bh+"'"]];
+  var pillW = 90, pillGap = 14, pillStartX = PW/2 - (pillW*3 + pillGap*2)/2;
+  for (var di=0; di<3; di++) {
+    var px = pillStartX + di*(pillW+pillGap);
+    setTxt(col.gold); doc.setFont('helvetica','bold'); doc.setFontSize(18);
+    doc.text(dimLabels[di][1], px + pillW/2, 84, {align:'center'});
+    setTxt('#7a8aa5'); doc.setFont('helvetica','normal'); doc.setFontSize(7);
+    doc.text(dimLabels[di][0], px + pillW/2, 96, {align:'center'});
+  }
+
+  // ── CUSTOMER strip ──
+  setFill('#f0ede6'); doc.rect(0, 110, PW, 32, 'F');
+  setDraw('#e0d9cc'); doc.setLineWidth(0.5); doc.line(0, 142, PW, 142);
+  doc.setFont('helvetica','bold'); doc.setFontSize(12); setTxt(col.navy);
+  doc.text(custName, MG, 131);
+  if (custPhone || custCity) {
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); setTxt(col.muted);
+    doc.text([custPhone, custCity].filter(Boolean).join('   \u00B7   '), MG, 141);
+  }
+  doc.setFont('helvetica','bold'); doc.setFontSize(8);
+  setFill(col.navy);
+  var badgeW = doc.getTextWidth(quoteId) + 16;
+  doc.roundedRect(PW - MG - badgeW, 118, badgeW, 16, 4, 4, 'F');
+  setTxt(col.gold); doc.text(quoteId, PW - MG - badgeW/2, 129, {align:'center'});
+
+  // ── BODY ──
+  var y = 158;
+  var bodyW = PW - MG*2;
+
+  // Greeting
+  doc.setFont('helvetica','normal'); doc.setFontSize(11); setTxt(col.text);
+  doc.text('Hi ' + firstName + ',', MG, y); y += 16;
+  doc.setFontSize(10);
+  doc.text('Thanks for giving us the opportunity to quote your building. Here\u2019s your', MG, y);
+  y += 13;
+  doc.text('customized estimate for a ' + dims + ' building.', MG, y);
+  y += 22;
+
+  // ── BUILDING DETAILS section ──
+  function sectionLabel(title, yPos) {
+    setFill('#e2e2e2'); doc.rect(MG, yPos, bodyW, 20, 'F');
+    setFill(col.darkGold); doc.rect(MG, yPos, 3, 20, 'F');
+    doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    setTxt(col.darkGold);
+    doc.text(title.toUpperCase(), MG+10, yPos+13);
+    return yPos + 26;
+  }
+
+  function specRow(label, value, yPos, rowIdx) {
+    setFill(rowIdx%2===0 ? col.lightGray : col.midGray);
+    doc.rect(MG, yPos, bodyW, 18, 'F');
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); setTxt(col.muted);
+    doc.text(label, MG+8, yPos+12);
+    doc.setFont('helvetica','bold'); setTxt(col.navy);
+    doc.text(value, MG+bodyW-8, yPos+12, {align:'right'});
+    return yPos + 18;
+  }
+
+  y = sectionLabel('Building Details', y);
+  var specs = [];
+  specs.push(['Dimensions',      dims]);
+  specs.push(['Roof Pitch',      pitch+'/12']);
+  specs.push(['Truss Type',      truss]);
+  if (roofCol)  specs.push(['Roof Color',    roofCol]);
+  if (wallCol)  specs.push(['Wall Color',    wallCol]);
+  if (trimCol)  specs.push(['Trim Color',    trimCol]);
+  if (wainCol && wainHt && wainHt !== 'None') specs.push(['Wainscot', wainHt + "' " + wainCol]);
+  // Doors & windows from allDoors
+  var allDoors = window._allDoors || [];
+  var gdCounts = {}, wdCount = 0, wnCount = 0, bdCount = 0;
+  for (var ai=0; ai<allDoors.length; ai++) {
+    var d = allDoors[ai];
+    if (d.type === 'garage') { var k=d.w+"x"+d.h; gdCounts[k]=(gdCounts[k]||0)+1; }
+    else if (d.type === 'walk')   wdCount++;
+    else if (d.type === 'window') wnCount++;
+    else if (d.type === 'barn')   bdCount++;
+  }
+  Object.keys(gdCounts).forEach(function(k){ specs.push(['Overhead Door', k.replace('x',"'x")+"'  \u00D7  "+gdCounts[k]]); });
+  if (bdCount)  specs.push(['Barn Door',    bdCount + ' door' + (bdCount>1?'s':'')]);
+  if (wdCount)  specs.push(['Walk Door',    wdCount + ' door' + (wdCount>1?'s':'')]);
+  if (wnCount)  specs.push(['Window',       wnCount + ' window' + (wnCount>1?'s':'')]);
+  var conc = (document.getElementById('sf_concrete')||document.getElementById('st_conc')||{}).value || '';
+  if (conc && conc !== 'None') specs.push(['Concrete', conc]);
+
+  for (var si=0; si<specs.length; si++) { y = specRow(specs[si][0], specs[si][1], y, si); }
+  y += 14;
+
+  // ── INVESTMENT BREAKDOWN ──
+  function priceBlock(entry, yPos) {
+    // Sub-label for this price type
+    setFill('#f0ede6'); doc.rect(MG, yPos, bodyW, 18, 'F');
+    setFill(col.darkGold); doc.rect(MG, yPos, 3, 18, 'F');
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); setTxt(col.darkGold);
+    doc.text(entry.label.toUpperCase(), MG+10, yPos+12);
+    yPos += 22;
+    var r = entry.r || {};
+    var lineItems = [
+      ['Material Package',          r.materialOnly],
+      ['Installation Labor',        r.labor],
+      ['Labor Beyond 200mi',        r.laborBeyond200],
+      ['Concrete',                  r.concrete],
+      ['Engineered Stamped Drawings', r.esd],
+      ['Delivery',                  r.shipping],
+      ['Sales Tax',                 r.tax],
+      ['Additional Items',          r.manualAdders]
+    ];
+    var idx = 0;
+    for (var li=0; li<lineItems.length; li++) {
+      var v = lineItems[li][1];
+      if (!v || v==='$0' || v==='$0.00' || v==='0' || v==='N/A') continue;
+      setFill(idx%2===0 ? col.lightGray : col.midGray);
+      doc.rect(MG, yPos, bodyW, 18, 'F');
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); setTxt(col.muted);
+      doc.text(lineItems[li][0], MG+8, yPos+12);
+      doc.setFont('helvetica','bold'); setTxt(col.navy);
+      doc.text('Included', MG+bodyW-8, yPos+12, {align:'right'});
+      yPos += 18; idx++;
+    }
+    // Total row
+    var totRaw = r.total || r.totalCombined || 0;
+    var totNum = parseFloat(String(totRaw).replace(/[^0-9.]/g,'')) || 0;
+    var totStr = totNum > 0 ? '$' + totNum.toLocaleString('en-US',{minimumFractionDigits:0}) : '$0';
+    setFill(col.navy); doc.rect(MG, yPos, bodyW, 24, 'F');
+    doc.setFont('helvetica','bold'); doc.setFontSize(10); setTxt(col.white);
+    doc.text('Total Investment', MG+8, yPos+16);
+    doc.setFontSize(16); setTxt(col.gold);
+    doc.text(totStr, MG+bodyW-8, yPos+16, {align:'right'});
+    yPos += 24;
+    // Deposit row
+    var matNum = parseFloat((r.materialOnly||'0').toString().replace(/[^0-9.]/g,'')) || 0;
+    if (matNum > 0) {
+      var dep = Math.round(matNum * 0.30);
+      var depStr = '$' + dep.toLocaleString('en-US');
+      setFill('#2a3d66'); doc.rect(MG, yPos, bodyW, 20, 'F');
+      doc.setFont('helvetica','normal'); doc.setFontSize(9);
+      setTxt('rgba(255,255,255,0.7)');
+      var c2 = [122,138,165]; doc.setTextColor(c2[0],c2[1],c2[2]);
+      doc.text('Estimated Deposit (30% of Materials)', MG+8, yPos+13);
+      doc.setFont('helvetica','bold'); doc.setFontSize(12); setTxt(col.gold);
+      doc.text(depStr, MG+bodyW-8, yPos+14, {align:'right'});
+      yPos += 20;
+    }
+    return yPos + 12;
+  }
+
+  y = sectionLabel('Investment Breakdown', y);
+  for (var pi=0; pi<priceEntries.length; pi++) { y = priceBlock(priceEntries[pi], y); }
+
+  // Valid note
+  doc.setFont('helvetica','italic'); doc.setFontSize(8); setTxt('#999999');
+  doc.text('This quote is valid for 14 days from the date above.', PW/2, y+8, {align:'center'});
+  y += 20;
+
+  // ── PAGE 2: 3D IMAGE + FOOTER ──
+  doc.addPage('letter','portrait');
+  setFill(col.navy); doc.rect(0, 0, PW, 50, 'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(14); setTxt(col.white);
+  doc.text('3D Building Visual', PW/2, 24, {align:'center'});
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); setTxt(col.gold);
+  doc.text(dims + '  \u00B7  ' + pitch + '/12 Pitch', PW/2, 38, {align:'center'});
+
+  if (imgData) {
+    var imgW = PW - MG*2;
+    var imgH = imgW * (525/1200);
+    doc.addImage(imgData, 'JPEG', MG, 62, imgW, imgH);
+    setDraw('#cccccc'); doc.setLineWidth(0.5);
+    doc.rect(MG, 62, imgW, imgH);
+    var noteY = 62 + imgH + 12;
+    doc.setFont('helvetica','italic'); doc.setFontSize(8); setTxt('#999999');
+    doc.text('Rendering is representative. Final appearance may vary based on selected colors and options.', PW/2, noteY, {align:'center'});
+    y = noteY + 20;
+  } else {
+    doc.setFont('helvetica','italic'); doc.setFontSize(10); setTxt(col.muted);
+    doc.text('(Configure a building to generate the 3D visual)', PW/2, 140, {align:'center'});
+    y = 160;
+  }
+
+  // ── FOOTER (page 2) ──
+  var footY = PH - 90;
+  setFill(col.navy); doc.rect(0, footY, PW, 90, 'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(13); setTxt(col.white);
+  doc.text(salesName, PW/2, footY+22, {align:'center'});
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); setTxt('#7a8aa5');
+  doc.text('Sales Consultant', PW/2, footY+34, {align:'center'});
+  var contactParts = [salesPhone, salesEmail].filter(Boolean);
+  if (contactParts.length) {
+    setTxt(col.gold); doc.setFont('helvetica','bold'); doc.setFontSize(9);
+    doc.text(contactParts.join('   \u00B7   '), PW/2, footY+50, {align:'center'});
+  }
+  doc.setFont('helvetica','normal'); doc.setFontSize(8); setTxt('#5a6b85');
+  doc.text((salesCo||'Summertown Metals').toUpperCase(), PW/2, footY+66, {align:'center'});
+
+  // ── OUTPUT ──
+  var blob = doc.output('blob');
+  var url  = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+  setTimeout(function(){
+    var a = document.createElement('a');
+    a.href = url; a.download = (custName.replace(/\s+/g,'_') + '_' + dims.replace(/'/g,'').replace(/\s/g,'') + '_quote.pdf');
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 5000);
+  }, 300);
+}
+
 function generatePostLayout() {
     var Q = window._Q, WALLS = window._WALLS, allDoors = window._allDoors, shedCfgs = window._shedConfigs || [];
     if (!Q) { alert('Please configure a building first.'); return; }
@@ -6048,6 +6359,8 @@ async function saveSalesQuote() {
     }
     var emailBtn = document.getElementById('emailQuoteBtn');
     if (emailBtn) emailBtn.style.display = '';
+    var pdfBtn = document.getElementById('quotePdfBtn');
+    if (pdfBtn) pdfBtn.style.display = '';
 
     setTimeout(function(){
       btn.disabled = false;
