@@ -521,19 +521,33 @@
         let currentUser = null;
 
         // Check if user is logged in (sessionStorage clears on browser close)
-        const savedUser = sessionStorage.getItem('sauce_user');
+        const savedUser = sessionStorage.getItem('sauce_user') || localStorage.getItem('sauce_user');
         if (savedUser) {
-            currentUser = JSON.parse(savedUser);
-            if (!currentUser.fullName && currentUser.name) currentUser.fullName = currentUser.name;
-            console.log('User logged in:', currentUser.username);
-            // Show test fill button for admin only
+            try {
+                const u = JSON.parse(savedUser);
+                const notExpired = !u.loginExpiry || Date.now() < u.loginExpiry;
+                const hasToken = u.token && u.token.length > 0;
+                if (u.username && notExpired && hasToken) {
+                    sessionStorage.setItem('sauce_user', savedUser);
+                    currentUser = u;
+                    if (!currentUser.fullName && currentUser.name) currentUser.fullName = currentUser.name;
+                    console.log('User logged in:', currentUser.username);
+                    // Show test fill button for admin only
                     if (currentUser.savedQuote) {
-                const testBtn = document.createElement('button');
-                testBtn.id = 'testFillBtn';
-                testBtn.textContent = '🧪 Test Fill All Fields';
-                testBtn.style.cssText = 'background:#ff6b35;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:600;position:fixed;bottom:10px;right:10px;z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
-                testBtn.onclick = testFillFields;
-                document.body.appendChild(testBtn);
+                        const testBtn = document.createElement('button');
+                        testBtn.id = 'testFillBtn';
+                        testBtn.textContent = '🧪 Test Fill All Fields';
+                        testBtn.style.cssText = 'background:#ff6b35;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:600;position:fixed;bottom:10px;right:10px;z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+                        testBtn.onclick = testFillFields;
+                        document.body.appendChild(testBtn);
+                    }
+                } else {
+                    sessionStorage.removeItem('sauce_user');
+                    localStorage.removeItem('sauce_user');
+                    window.location.replace('index.html?returnTo=' + encodeURIComponent(window.location.href));
+                }
+            } catch(e) {
+                window.location.replace('index.html?returnTo=' + encodeURIComponent(window.location.href));
             }
         } else {
             window.location.replace('index.html?returnTo=' + encodeURIComponent(window.location.href));
@@ -609,7 +623,8 @@
                     method: 'POST',
                     body: JSON.stringify({
                         action: 'lookupAddress',
-                        address: address
+                        address: address,
+                        token: currentUser.token || ''
                     }),
                     headers: { 'Content-Type': 'text/plain' }
                 });
@@ -737,6 +752,7 @@
                     action: 'calculate',
                     calculatorType: 'RGSteel',
                     username: currentUser.username,
+                    token: currentUser.token || '',
                     isDemo: currentUser.isDemo || false,
                     
                     // PRE-CALCULATED LOCATION DATA
@@ -862,6 +878,7 @@
                     action: 'calculate',
                     calculatorType: 'RGSteel',
                     username: currentUser.username,
+                    token: currentUser.token || '',
                     isDemo: currentUser.isDemo || false,
                     taxRate: lastTaxRate,
                     customerName: document.getElementById('customerName').value,
@@ -990,7 +1007,7 @@
                 var resp = await fetch(SCRIPT_URL, {
                     method: 'POST', headers: { 'Content-Type': 'text/plain' },
                     body: JSON.stringify({ action: 'saveQuoteSnapshot', username: currentUser.username,
-                    isDemo: currentUser.isDemo || false, snapshot: snapshot })
+                    token: currentUser.token || '', isDemo: currentUser.isDemo || false, snapshot: snapshot })
                 });
                 var data = await resp.json();
                 if (!data.success) throw new Error(data.error || 'Save failed');
@@ -1015,7 +1032,7 @@
             try {
                 var resp = await fetch(SCRIPT_URL, {
                     method: 'POST', headers: { 'Content-Type': 'text/plain' },
-                    body: JSON.stringify({ action: 'getQuoteSnapshot', quoteId: quoteId })
+                    body: JSON.stringify({ action: 'getQuoteSnapshot', quoteId: quoteId, token: currentUser ? currentUser.token || '' : '' })
                 });
                 var data = await resp.json();
                 if (!data.success || !data.snapshot) { showAlert('Quote ' + quoteId + ' not found.'); return; }
@@ -1124,7 +1141,7 @@
             
             const response = await fetch(SCRIPT_URL, {
                 method: 'POST',
-                body: JSON.stringify({ action: 'getLeadById', leadId: id }),
+                body: JSON.stringify({ action: 'getLeadById', leadId: id, token: currentUser ? currentUser.token || '' : '' }),
                 headers: { 'Content-Type': 'text/plain' }
             });
             
@@ -1441,7 +1458,7 @@
         btn.disabled = true; btn.textContent = 'Sending...';
         try {
             var resp = await fetch(SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
-                body: JSON.stringify({ action: 'sendQuoteEmail', snapshotId: _savedQuoteId, salesmanEmail: salesEmail, customerEmail: custEmail, personalNote: document.getElementById('emailQuoteNote').value.trim(), username: currentUser.username })
+                body: JSON.stringify({ action: 'sendQuoteEmail', snapshotId: _savedQuoteId, salesmanEmail: salesEmail, customerEmail: custEmail, personalNote: document.getElementById('emailQuoteNote').value.trim(), username: currentUser.username, token: currentUser.token || '' })
             });
             var data = await resp.json();
             if (!data.success) throw new Error(data.error || 'Send failed');
