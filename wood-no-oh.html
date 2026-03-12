@@ -1382,12 +1382,25 @@
 
         // Check if already logged in
         window.onload = function() {
-            const savedUser = sessionStorage.getItem('sauce_user');
-            if (savedUser) {
-                currentUser = JSON.parse(savedUser);
-                if (!currentUser.fullName && currentUser.name) currentUser.fullName = currentUser.name;
-                showCalculator();
+            var raw = sessionStorage.getItem('sauce_user') || localStorage.getItem('sauce_user');
+            if (raw) {
+                try {
+                    var u = JSON.parse(raw);
+                    var notExpired = !u.loginExpiry || Date.now() < u.loginExpiry;
+                    var hasToken = u.token && u.token.length > 0;
+                    if (u.username && notExpired && hasToken) {
+                        sessionStorage.setItem('sauce_user', raw);
+                        currentUser = u;
+                        if (!currentUser.fullName && currentUser.name) currentUser.fullName = currentUser.name;
+                        showCalculator();
+                        return;
+                    }
+                } catch(e) {}
             }
+            // No valid session with token — force fresh login
+            sessionStorage.removeItem('sauce_user');
+            localStorage.removeItem('sauce_user');
+            window.location.replace('index.html?returnTo=' + encodeURIComponent(window.location.href));
         };
 
         async function handleLogin(event) {
@@ -1422,9 +1435,12 @@
                         username: data.username,
                         fullName: data.fullName,
                         email: data.email, savedQuote: data.savedQuote || false,
-                        savedQuote: data.savedQuote || false
+                        savedQuote: data.savedQuote || false,
+                        token: data.token || '',
+                        loginExpiry: Date.now() + 24*60*60*1000
                     };
                     sessionStorage.setItem('sauce_user', JSON.stringify(currentUser));
+                    localStorage.setItem('sauce_user', JSON.stringify(currentUser));
                     // Redirect to homepage after login
                     window.location.href = 'home.html';
                 } else {
@@ -1757,7 +1773,8 @@
                             method: 'POST',
                             body: JSON.stringify({
                                 action: 'lookupAddress',
-                                address: address
+                                address: address,
+                                token: currentUser.token || ''
                             }),
                             headers: { 'Content-Type': 'text/plain' }
                         });
@@ -1791,6 +1808,7 @@
                     action: 'calculate',
                     calculatorType: 'WoodNoOH',
                     username: currentUser.username,
+                    token: currentUser.token || '',
                     isDemo: currentUser.isDemo || false,
                     
                     // Location data (pre-calculated)
@@ -2015,7 +2033,8 @@
                     method: 'POST',
                     body: JSON.stringify({
                         action: 'addressLookup',
-                        address: address
+                        address: address,
+                        token: currentUser.token || ''
                     }),
                     headers: { 'Content-Type': 'text/plain' }
                 });
@@ -2086,6 +2105,7 @@
                 body: JSON.stringify({
                     action: 'saveQuoteSnapshot',
                     username: currentUser.username,
+                    token: currentUser.token || '',
                     isDemo: currentUser.isDemo || false,
                     snapshot: snapshot
                 })
@@ -2119,7 +2139,7 @@
             var resp = await fetch(SCRIPT_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'text/plain' },
-                body: JSON.stringify({ action: 'getQuoteSnapshot', quoteId: quoteId })
+                body: JSON.stringify({ action: 'getQuoteSnapshot', quoteId: quoteId, token: currentUser ? currentUser.token || '' : '' })
             });
             var data = await resp.json();
             if (!data.success || !data.snapshot) { showAlert('Quote ' + quoteId + ' not found.'); hideLoading(); return; }
@@ -2259,6 +2279,7 @@
                     action: 'calculate',
                     calculatorType: 'WoodNoOH',
                     username: currentUser.username,
+                    token: currentUser.token || '',
                     isDemo: currentUser.isDemo || false,
                     
                     customerName: document.getElementById('customerName').value,
@@ -2519,7 +2540,7 @@
             
             const response = await fetch(SCRIPT_URL, {
                 method: 'POST',
-                body: JSON.stringify({ action: 'getLeadById', leadId: id }),
+                body: JSON.stringify({ action: 'getLeadById', leadId: id, token: currentUser ? currentUser.token || '' : '' }),
                 headers: { 'Content-Type': 'text/plain' }
             });
             
@@ -2729,7 +2750,7 @@
         btn.disabled = true; btn.textContent = 'Sending...';
         try {
             var resp = await fetch(SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
-                body: JSON.stringify({ action: 'sendQuoteEmail', snapshotId: _savedQuoteId, salesmanEmail: salesEmail, customerEmail: custEmail, personalNote: document.getElementById('emailQuoteNote').value.trim(), username: currentUser.username })
+                body: JSON.stringify({ action: 'sendQuoteEmail', snapshotId: _savedQuoteId, salesmanEmail: salesEmail, customerEmail: custEmail, personalNote: document.getElementById('emailQuoteNote').value.trim(), username: currentUser.username, token: currentUser.token || '' })
             });
             var data = await resp.json();
             if (!data.success) throw new Error(data.error || 'Send failed');
