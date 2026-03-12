@@ -6220,16 +6220,12 @@ async function loadSavedDesign(idx){
       var qid = d.quoteId || d.designId;
       var url = API_URL;
       console.log('[Load] fetching:', url, 'quoteId:', qid);
-      var r = await fetchWithTimeout(url, {
+      var data = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {'Content-Type': 'text/plain'},
         body: JSON.stringify({ action: 'getQuoteSnapshot', quoteId: qid, username: (window.currentUser||{}).username || '', token: getToken() })
       }, 55000);
-      if (r._timedOut) throw new Error('Request timed out — please try again');
-      var rawText = await r.text();
-      console.log('[Load] raw fetch response:', rawText.substring(0,300));
-      var data;
-      try { data = JSON.parse(rawText); } catch(e){ throw new Error('Non-JSON from server: '+rawText.substring(0,100)); }
+      console.log('[Load] parsed response:', JSON.stringify(data).substring(0,300));
       var snap2 = data.snapshot || data;
       console.log('[Load] data.success:', data.success, 'snapshot keys:', Object.keys(snap2).join(','));
       encoded = snap2.configEncoded || data.configEncoded || '';
@@ -6475,7 +6471,7 @@ async function saveSalesQuote() {
     };
 
     // 5. Save snapshot
-    var resp = await fetchWithTimeout(API_URL, {
+    var data = await fetchWithTimeout(API_URL, {
       method: 'POST',
       headers: {'Content-Type': 'text/plain'},
       body: JSON.stringify({
@@ -6486,11 +6482,8 @@ async function saveSalesQuote() {
         snapshot: snapshot
       })
     });
-    var rawText = await resp.text();
-    console.log('[SaveQuote] raw response:', rawText.substring(0, 500));
-    var data;
-    try { data = JSON.parse(rawText); } catch(e) { throw new Error('Server returned non-JSON: ' + rawText.substring(0, 200)); }
-    if (!data.success) throw new Error((data.error || 'Save failed') + ' | raw: ' + rawText.substring(0, 300));
+    console.log('[SaveQuote] parsed response:', JSON.stringify(data).substring(0, 500));
+    if (!data.success) throw new Error(data.error || 'Save failed');
 
     window._savedQuoteId = data.quoteId || ('ST-' + Date.now());
     window._savedSnapshot = snapshot;
@@ -7002,16 +6995,69 @@ function payloadCacheKey() {
 
 // ── FETCH HELPERS ───────────────────────────────────────────────────────────
 function fetchWithTimeout(url, opts, ms) {
-  return new Promise(function(resolve) {
-    var t = setTimeout(function(){ resolve({_timedOut:true}); }, ms || 55000);
-    fetch(url, opts).then(function(r){ clearTimeout(t); resolve(r); }).catch(function(){ clearTimeout(t); resolve({}); });
+  var timeout = ms || 55000;
+  var timerRef = null;
+  var timedOutFlag = false;
+
+  // The timer NEVER resolves/rejects the promise.
+  // It only fires the amber "Working…" UI so the salesman knows GAS is still running.
+  // The real fetch is the ONLY thing that can resolve this promise.
+  return new Promise(function(resolve, reject) {
+    timerRef = setTimeout(function() {
+      timedOutFlag = true;
+      console.warn('[fetchWithTimeout] ' + timeout + 'ms elapsed — GAS still running, waiting for real response');
+      // Show amber "Working…" on all visible price totals so the UI isn't frozen-looking
+      document.querySelectorAll('[id$="total"].pending, [id$="total"]').forEach(function(el) {
+        if (el && el.id && el.id.match(/^ps\d*_total$|^ps_total$/)) {
+          if (el.textContent !== 'Error') {
+            el.textContent = 'Working\u2026';
+            el.style.color = '#f59e0b';
+            el.classList.add('pending');
+            el.classList.remove('highlight');
+          }
+        }
+      });
+    }, timeout);
+
+    fetch(url, opts)
+      .then(function(r) {
+        clearTimeout(timerRef);
+        if (timedOutFlag) {
+          console.log('[fetchWithTimeout] Real response arrived after timeout — processing normally');
+        }
+        return r.text();
+      })
+      .then(function(txt) {
+        console.log('[fetchWithTimeout] raw response (' + txt.length + ' chars):', txt.substring(0, 300));
+        var parsed;
+        try { parsed = JSON.parse(txt); }
+        catch(e) {
+          console.error('[fetchWithTimeout] JSON parse failed:', e.message, '| text:', txt.substring(0,200));
+          parsed = {};
+        }
+        resolve(parsed);
+      })
+      .catch(function(e) {
+        clearTimeout(timerRef);
+        console.error('[fetchWithTimeout] fetch failed:', e.message);
+        reject(e);
+      });
   });
 }
+
+// safeJson: fetchWithTimeout now resolves with already-parsed JSON objects, not raw Response objects.
+// This wrapper exists for backward compatibility — callers that do: var data = await safeJson(resp)
+// will still work because we just pass the already-parsed object straight through.
 function safeJson(r) {
-  if (!r || r._timedOut || !r.json) {
-    console.warn('[safeJson] no response or timed out:', r && r._timedOut ? 'TIMEOUT' : 'null');
+  if (!r || typeof r !== 'object') {
+    console.warn('[safeJson] unexpected value:', r);
     return Promise.resolve({});
   }
+  // Already a plain object (parsed by fetchWithTimeout) — return as-is
+  if (typeof r.json !== 'function') {
+    return Promise.resolve(r);
+  }
+  // Fallback: raw Response object (should not happen with new fetchWithTimeout, but kept for safety)
   return r.text().then(function(txt) {
     console.log('[safeJson] raw response (' + txt.length + ' chars):', txt.substring(0, 300));
     try { return JSON.parse(txt); }
@@ -7763,10 +7809,7 @@ async function updatePriceStrip() {
       var data = await safeJson(resp);
       if (checkTokenResponse(data)) { _calcInFlight=false; _setCalcButtons(false); clearTimeout(_staleGuardTimer); return; }
       var _rLabel = {RGSteel:'Roof & Upper Gables', RGSides:'RG Sides', RGGables:'RG Gables'}[route.type] || route.type;
-      if (data._timedOut) {
-        setPriceStripWaiting('ps_');
-        setCalcBadge('calculating', 'Google is still calculating — please wait…');
-      } else if (data.success && data.results) {
+      if (data.success && data.results) {
         _lastPriceResults = data.results;
         window._lastPriceOH = data.results;
         populatePriceBlock('ps_', data.results);
@@ -7808,24 +7851,16 @@ async function updatePriceStrip() {
 
       if (checkTokenResponse(dataOH)) { _calcInFlight=false; _setCalcButtons(false); clearTimeout(_staleGuardTimer); return; }
 
-      var _encOK = 0, _encTimeout = 0;
-      if (dataOH._timedOut)    { setPriceStripWaiting('ps_');  _encTimeout++; }
-      else if (dataOH.success    && dataOH.results)    { _lastPriceResults=dataOH.results; window._lastPriceOH=dataOH.results;     populatePriceBlock('ps_',  dataOH.results);    _encOK++; } else { setPriceStripError('ps_'); }
-      if (dataNoOH._timedOut)  { setPriceStripWaiting('ps2_'); _encTimeout++; }
-      else if (dataNoOH.success  && dataNoOH.results)  { window._lastPriceNoOH=dataNoOH.results;                                   populatePriceBlock('ps2_', dataNoOH.results);   _encOK++; } else { setPriceStripError('ps2_'); }
-      if (dataSteel._timedOut) { setPriceStripWaiting('ps3_'); _encTimeout++; }
-      else if (dataSteel.success && dataSteel.results) { window._lastPriceSteel=dataSteel.results;                                 populatePriceBlock('ps3_', dataSteel.results);   _encOK++; } else { setPriceStripError('ps3_'); }
-      if (dataStud._timedOut)  { setPriceStripWaiting('ps4_'); _encTimeout++; }
-      else if (dataStud.success  && dataStud.results)  { window._lastPriceStud=dataStud.results;                                   populatePriceBlock('ps4_', dataStud.results);    _encOK++; } else { setPriceStripError('ps4_'); }
+      var _encOK = 0;
+      if (dataOH.success    && dataOH.results)    { _lastPriceResults=dataOH.results; window._lastPriceOH=dataOH.results;     populatePriceBlock('ps_',  dataOH.results);    _encOK++; } else { setPriceStripError('ps_'); }
+      if (dataNoOH.success  && dataNoOH.results)  { window._lastPriceNoOH=dataNoOH.results;                                   populatePriceBlock('ps2_', dataNoOH.results);   _encOK++; } else { setPriceStripError('ps2_'); }
+      if (dataSteel.success && dataSteel.results) { window._lastPriceSteel=dataSteel.results;                                 populatePriceBlock('ps3_', dataSteel.results);   _encOK++; } else { setPriceStripError('ps3_'); }
+      if (dataStud.success  && dataStud.results)  { window._lastPriceStud=dataStud.results;                                   populatePriceBlock('ps4_', dataStud.results);    _encOK++; } else { setPriceStripError('ps4_'); }
 
       setTimeout(adjustShellForBreakdownBar, 50);
       if (_encOK === 4) {
         setCalcBadge('confirmed', '✓ Stud · W/Soffit · No Soffit · Steel');
         setTimeout(function(){ setCalcBadge('confirmed', 'Stud · W/Soffit · No Soffit · Steel'); }, 2000);
-      } else if (_encTimeout > 0 && _encOK === 0) {
-        setCalcBadge('calculating', 'Google is still calculating — please wait…');
-      } else if (_encTimeout > 0) {
-        setCalcBadge('calculating', 'Almost there — waiting on ' + _encTimeout + ' result(s)…');
       } else if (_encOK > 0) {
         setCalcBadge('error', '⚠ Partial (' + _encOK + '/4) — tap Calculate to retry');
       } else {
