@@ -7759,11 +7759,14 @@ async function updatePriceStrip() {
         await doAddressLookup();
       }
       var rgPayload = buildRGPayload(route.type, route);
-      var resp = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(rgPayload) }, 55000);
+      var resp = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(rgPayload) }, 120000);
       var data = await safeJson(resp);
       if (checkTokenResponse(data)) { _calcInFlight=false; _setCalcButtons(false); clearTimeout(_staleGuardTimer); return; }
       var _rLabel = {RGSteel:'Roof & Upper Gables', RGSides:'RG Sides', RGGables:'RG Gables'}[route.type] || route.type;
-      if (data.success && data.results) {
+      if (data._timedOut) {
+        setPriceStripWaiting('ps_');
+        setCalcBadge('calculating', 'Google is still calculating — please wait…');
+      } else if (data.success && data.results) {
         _lastPriceResults = data.results;
         window._lastPriceOH = data.results;
         populatePriceBlock('ps_', data.results);
@@ -7793,10 +7796,10 @@ async function updatePriceStrip() {
 
       var delay = function(ms) { return new Promise(function(r){ setTimeout(r, ms); }); };
       var [respOH, respNoOH, respSteel, respStud] = await Promise.all([
-        fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadOH) }, 55000),
-        delay(300).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadNoOH) }, 55000); }),
-        delay(600).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadSteel) }, 55000); }),
-        delay(900).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadStud) }, 55000); })
+        fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadOH) }, 120000),
+        delay(300).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadNoOH) }, 120000); }),
+        delay(600).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadSteel) }, 120000); }),
+        delay(900).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadStud) }, 120000); })
       ]);
 
       var [dataOH, dataNoOH, dataSteel, dataStud] = await Promise.all([
@@ -7805,16 +7808,24 @@ async function updatePriceStrip() {
 
       if (checkTokenResponse(dataOH)) { _calcInFlight=false; _setCalcButtons(false); clearTimeout(_staleGuardTimer); return; }
 
-      var _encOK = 0;
-      if (dataOH.success    && dataOH.results)    { _lastPriceResults=dataOH.results; window._lastPriceOH=dataOH.results;     populatePriceBlock('ps_',  dataOH.results);    _encOK++; } else { setPriceStripError('ps_'); }
-      if (dataNoOH.success  && dataNoOH.results)  { window._lastPriceNoOH=dataNoOH.results;                                   populatePriceBlock('ps2_', dataNoOH.results);   _encOK++; } else { setPriceStripError('ps2_'); }
-      if (dataSteel.success && dataSteel.results) { window._lastPriceSteel=dataSteel.results;                                 populatePriceBlock('ps3_', dataSteel.results);   _encOK++; } else { setPriceStripError('ps3_'); }
-      if (dataStud.success  && dataStud.results)  { window._lastPriceStud=dataStud.results;                                   populatePriceBlock('ps4_', dataStud.results);    _encOK++; } else { setPriceStripError('ps4_'); }
+      var _encOK = 0, _encTimeout = 0;
+      if (dataOH._timedOut)    { setPriceStripWaiting('ps_');  _encTimeout++; }
+      else if (dataOH.success    && dataOH.results)    { _lastPriceResults=dataOH.results; window._lastPriceOH=dataOH.results;     populatePriceBlock('ps_',  dataOH.results);    _encOK++; } else { setPriceStripError('ps_'); }
+      if (dataNoOH._timedOut)  { setPriceStripWaiting('ps2_'); _encTimeout++; }
+      else if (dataNoOH.success  && dataNoOH.results)  { window._lastPriceNoOH=dataNoOH.results;                                   populatePriceBlock('ps2_', dataNoOH.results);   _encOK++; } else { setPriceStripError('ps2_'); }
+      if (dataSteel._timedOut) { setPriceStripWaiting('ps3_'); _encTimeout++; }
+      else if (dataSteel.success && dataSteel.results) { window._lastPriceSteel=dataSteel.results;                                 populatePriceBlock('ps3_', dataSteel.results);   _encOK++; } else { setPriceStripError('ps3_'); }
+      if (dataStud._timedOut)  { setPriceStripWaiting('ps4_'); _encTimeout++; }
+      else if (dataStud.success  && dataStud.results)  { window._lastPriceStud=dataStud.results;                                   populatePriceBlock('ps4_', dataStud.results);    _encOK++; } else { setPriceStripError('ps4_'); }
 
       setTimeout(adjustShellForBreakdownBar, 50);
       if (_encOK === 4) {
         setCalcBadge('confirmed', '✓ Stud · W/Soffit · No Soffit · Steel');
         setTimeout(function(){ setCalcBadge('confirmed', 'Stud · W/Soffit · No Soffit · Steel'); }, 2000);
+      } else if (_encTimeout > 0 && _encOK === 0) {
+        setCalcBadge('calculating', 'Google is still calculating — please wait…');
+      } else if (_encTimeout > 0) {
+        setCalcBadge('calculating', 'Almost there — waiting on ' + _encTimeout + ' result(s)…');
       } else if (_encOK > 0) {
         setCalcBadge('error', '⚠ Partial (' + _encOK + '/4) — tap Calculate to retry');
       } else {
@@ -7824,8 +7835,14 @@ async function updatePriceStrip() {
 
   } catch(e) {
     console.error('[Price] exception:', e.message);
-    setPriceStripError('ps_'); setPriceStripError('ps2_'); setPriceStripError('ps3_'); setPriceStripError('ps4_');
-    setCalcBadge('error', '✕ Error — tap Calculate to retry');
+    var _isTimeout = e.message && (e.message.toLowerCase().includes('timeout') || e.message.toLowerCase().includes('timed out'));
+    if (_isTimeout) {
+      setPriceStripWaiting('ps_'); setPriceStripWaiting('ps2_'); setPriceStripWaiting('ps3_'); setPriceStripWaiting('ps4_');
+      setCalcBadge('calculating', 'Google is still calculating — please wait…');
+    } else {
+      setPriceStripError('ps_'); setPriceStripError('ps2_'); setPriceStripError('ps3_'); setPriceStripError('ps4_');
+      setCalcBadge('error', '✕ Error — tap Calculate to retry');
+    }
   } finally {
     // Always unlock — no matter what path we took
     _calcInFlight = false;
@@ -7894,7 +7911,12 @@ function showPriceBlock(prefix) {
 function setPriceStripError(prefix) {
   prefix = prefix || 'ps_';
   var tot = document.getElementById(prefix+'total');
-  if (tot) { tot.textContent = 'Error'; tot.classList.add('pending'); tot.classList.remove('highlight'); }
+  if (tot) { tot.textContent = 'Error'; tot.style.color = '#ef4444'; tot.classList.add('pending'); tot.classList.remove('highlight'); }
+}
+function setPriceStripWaiting(prefix) {
+  prefix = prefix || 'ps_';
+  var tot = document.getElementById(prefix+'total');
+  if (tot) { tot.textContent = 'Working…'; tot.style.color = '#f59e0b'; tot.classList.add('pending'); tot.classList.remove('highlight'); }
 }
 
 </script>
