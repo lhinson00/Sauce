@@ -5591,28 +5591,43 @@ function generateQuotePDF() {
   y += 14;
 
   // ── INVESTMENT BREAKDOWN ──
+  // Format a raw number value as $X,XXX
+  function fmtAmt(v) {
+    var n = parseFloat(String(v == null ? 0 : v).replace(/[^0-9.]/g,'')) || 0;
+    return n > 0 ? '$' + Math.round(n).toLocaleString('en-US') : null;
+  }
+
+  // Estimate height of a price block before drawing it (pt)
+  function priceBlockHeight(entry) {
+    var r = entry.r || {};
+    var rows = [r.materialOnly, r.labor, r.laborBeyond200, r.concrete, r.esd, r.shipping, r.tax, r.manualAdders];
+    var visRows = rows.filter(function(v){ return fmtAmt(v); }).length;
+    return 22 + visRows*18 + 24 + (parseFloat(String(r.materialOnly||0).replace(/[^0-9.]/g,''))>0 ? 20 : 0) + 12;
+  }
+
   function priceBlock(entry, yPos) {
-    // Sub-label for this price type
+    var r = entry.r || {};
+    // Sub-label header
     setFill('#f0ede6'); doc.rect(MG, yPos, bodyW, 18, 'F');
     setFill(col.darkGold); doc.rect(MG, yPos, 3, 18, 'F');
     doc.setFont('helvetica','bold'); doc.setFontSize(8); setTxt(col.darkGold);
     doc.text(entry.label.toUpperCase(), MG+10, yPos+12);
     yPos += 22;
-    var r = entry.r || {};
     var lineItems = [
-      ['Material Package',          r.materialOnly],
-      ['Installation Labor',        r.labor],
-      ['Labor Beyond 200mi',        r.laborBeyond200],
-      ['Concrete',                  r.concrete],
+      ['Material Package',            r.materialOnly],
+      ['Installation Labor',          r.labor],
+      ['Labor Beyond 200mi',          r.laborBeyond200],
+      ['Concrete',                    r.concrete],
       ['Engineered Stamped Drawings', r.esd],
-      ['Delivery',                  r.shipping],
-      ['Sales Tax',                 r.tax],
-      ['Additional Items',          r.manualAdders]
+      ['Delivery',                    r.shipping],
+      ['Sales Tax',                   r.tax],
+      ['Additional Items',            r.manualAdders]
     ];
     var idx = 0;
     for (var li=0; li<lineItems.length; li++) {
       var v = lineItems[li][1];
-      if (!v || v==='$0' || v==='$0.00' || v==='0' || v==='N/A') continue;
+      var n = parseFloat(String(v == null ? 0 : v).replace(/[^0-9.]/g,'')) || 0;
+      if (!n) continue;
       setFill(idx%2===0 ? col.lightGray : col.midGray);
       doc.rect(MG, yPos, bodyW, 18, 'F');
       doc.setFont('helvetica','normal'); doc.setFontSize(9); setTxt(col.muted);
@@ -5622,9 +5637,8 @@ function generateQuotePDF() {
       yPos += 18; idx++;
     }
     // Total row
-    var totRaw = r.total || r.totalCombined || 0;
-    var totNum = parseFloat(String(totRaw).replace(/[^0-9.]/g,'')) || 0;
-    var totStr = totNum > 0 ? '$' + totNum.toLocaleString('en-US',{minimumFractionDigits:0}) : '$0';
+    var totNum = parseFloat(String(r.total || r.totalCombined || 0).replace(/[^0-9.]/g,'')) || 0;
+    var totStr = totNum > 0 ? '$' + Math.round(totNum).toLocaleString('en-US') : '$0';
     setFill(col.navy); doc.rect(MG, yPos, bodyW, 24, 'F');
     doc.setFont('helvetica','bold'); doc.setFontSize(10); setTxt(col.white);
     doc.text('Total Investment', MG+8, yPos+16);
@@ -5632,7 +5646,7 @@ function generateQuotePDF() {
     doc.text(totStr, MG+bodyW-8, yPos+16, {align:'right'});
     yPos += 24;
     // Deposit row
-    var matNum = parseFloat((r.materialOnly||'0').toString().replace(/[^0-9.]/g,'')) || 0;
+    var matNum = parseFloat(String(r.materialOnly||0).replace(/[^0-9.]/g,'')) || 0;
     if (matNum > 0) {
       var dep = Math.round(matNum * 0.30);
       var depStr = '$' + dep.toLocaleString('en-US');
@@ -5648,7 +5662,16 @@ function generateQuotePDF() {
   }
 
   y = sectionLabel('Investment Breakdown', y);
-  for (var pi=0; pi<priceEntries.length; pi++) { y = priceBlock(priceEntries[pi], y); }
+  for (var pi=0; pi<priceEntries.length; pi++) {
+    // Page break if not enough room (220pt per block minimum, 60pt bottom margin)
+    var needed = 22 + 8*18 + 24 + 20 + 12; // max block height
+    if (y + needed > PH - 60) {
+      doc.addPage('letter','portrait');
+      y = MG + 20;
+      y = sectionLabel('Investment Breakdown (cont.)', y);
+    }
+    y = priceBlock(priceEntries[pi], y);
+  }
 
   // Valid note
   doc.setFont('helvetica','italic'); doc.setFontSize(8); setTxt('#999999');
