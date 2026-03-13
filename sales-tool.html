@@ -6242,11 +6242,21 @@ async function loadSavedDesign(idx){
     console.log('[Load] cfg keys:', Object.keys(cfg).join(', '));
     console.log('[Load] cfg.Q:', JSON.stringify(cfg.Q));
     restoreConfig(cfg);
+    // Track the loaded quote ID so Save works against the correct snapshot
+    window._savedQuoteId  = d.quoteId || d.designId || null;
+    window._savedSnapshot = null;  // Clear stale snapshot — must re-save before emailing
+    // Show quote ID in status but require re-save before email (snapshot needs fresh prices)
+    var statusEl = document.getElementById('saveQuoteStatus');
+    if (statusEl && window._savedQuoteId) { statusEl.textContent = 'Loaded: ' + window._savedQuoteId + ' — save to update prices'; statusEl.style.display = 'block'; statusEl.style.color = '#f59e0b'; }
+    var emailBtn = document.getElementById('emailQuoteBtn');
+    if (emailBtn) emailBtn.style.display = 'none';  // Hidden until re-saved
+    var pdfBtn = document.getElementById('quotePdfBtn');
+    if (pdfBtn) pdfBtn.style.display = window._savedQuoteId ? '' : 'none';  // PDF reads live UI, always OK
     closeLoadDesignModal();
     setTimeout(function(){
       triggerBuild();
     }, 300);
-    console.log('[Load] restore complete');
+    console.log('[Load] restore complete, quoteId:', window._savedQuoteId);
   } catch(e){ alert('Load failed: ' + e.message); console.error('[Load] error:', e); }
 }
 
@@ -6455,7 +6465,7 @@ async function saveSalesQuote() {
 
     // 4. Build snapshot
     var snapshot = {
-      calculatorName: (function(){ var r=detectCalcRoute(); var n={'RGSteel':'RG Steel','RGSides':'RG Sides','RGGables':'RG Gables','EnclosedSteel':'Enclosed Steel','WoodOH':'Post Frame','WoodNoOH':'Post Frame'}; return n[r.type]||'Sales Tool'; })(),
+      calculatorName: (function(){ var r=detectCalcRoute(); var n={'RGSteel':'RG Steel','RGSides':'RG Sides','RGGables':'RG Gables','EnclosedSteel':'Enclosed Steel','StudFramed':'Stud Framed','WoodOH':'Wood OH','WoodNoOH':'Wood No OH'}; return n[r.type]||'Sales Tool'; })(),
       calculatorFile: 'sales-tool.html',
       salesman:       (window.currentUser || {}).username || '',
       salesmanName:   (window.currentUser || {}).fullName || (window.currentUser || {}).username || '',
@@ -6487,25 +6497,6 @@ async function saveSalesQuote() {
 
     window._savedQuoteId = data.quoteId || ('ST-' + Date.now());
     window._savedSnapshot = snapshot;
-
-    // Also save to Configurator Quotes sheet — this is the loadable file
-    var configEncoded = await safeEncodeCompressed(_cfg);
-    var Q2 = window._Q || {};
-    var specs = Q2.w+"'x"+Q2.l+"'x"+Q2.h+"' | "+(Q2.pitch||4)+"/12 | "+(Q2.truss||'Wood')+" truss";
-    await fetch(API_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'text/plain'},
-      body: JSON.stringify({
-        action: 'saveConfiguratorQuote',
-        token: getToken(),
-        name: name, phone: phone, email: email, city: address,
-        specs: specs,
-        configEncoded: configEncoded,
-        salesman: (window.currentUser||{}).username || '',
-        quoteId: window._savedQuoteId,
-        baseUrl: 'https://lhinson00.github.io/Sauce/sales-tool.html'
-      })
-    }).catch(function(){});
 
     // 6. Update UI
     btn.textContent = '✅ Saved!';
