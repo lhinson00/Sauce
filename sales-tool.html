@@ -3684,19 +3684,6 @@ function vpToggleWalls() {
                     // Enclosed walls: full triangle from 0→peak. Open walls: sh→peak only.
                     const gTriBot = (wCfg && wCfg.encl === 'open') ? sh : 0;
                     const gPanelW = 0.075; // match ribSpacing
-                    const gRibW = 0.006;
-                    // Rib materials for this gable face — computed inline so they're available here
-                    const _gWallHex = pc(wallColorName);
-                    const _gRR = ((_gWallHex>>16)&0xff), _gRG = ((_gWallHex>>8)&0xff), _gRB = (_gWallHex&0xff);
-                    const _gRibHiCol = ((Math.min(255,_gRR+55)<<16)|(Math.min(255,_gRG+55)<<8)|Math.min(255,_gRB+55));
-                    const _gRibShCol = ((Math.max(0,_gRR-40)<<16)|(Math.max(0,_gRG-40)<<8)|Math.max(0,_gRB-40));
-                    const _gMRibHi = new THREE.MeshBasicMaterial({color:_gRibHiCol, side:THREE.DoubleSide});
-                    const _gMRibSh = new THREE.MeshBasicMaterial({color:_gRibShCol, side:THREE.DoubleSide});
-                    // Ribs sit just in front of the panel face (outward from building center)
-                    // zOff = +0.005 for front, -0.005 for back. Panel is at zP+zOff.
-                    // "Outward" for front = more negative Z; for back = more positive Z.
-                    // So ribs go at zP - zOff (one step in the outward direction past the panel).
-                    const gRibZ = zP - zOff;
                     for (let gx = -sw/2; gx < sw/2; gx += gPanelW) {
                         const gxR = Math.min(gx + gPanelW, sw/2);
                         // Height at each vertical strip edge — same formula as rib loop
@@ -3719,14 +3706,6 @@ function vpToggleWalls() {
                             }
                         } else {
                             grps.walls.add(mkQ([gx, botL, z, gxR, botR, z, gxR, topR, z, gx, topL, z], mW));
-                        }
-                        // Rib highlight+shadow strips — drawn at gRibZ (in front of panel) as opaque quads
-                        const ribTopL = Math.min(sh + (Q.w/2 - Math.abs((gx+gRibW)/Sc)) * (Q.pitch/12) * Sc, sr);
-                        const ribTopR = Math.min(sh + (Q.w/2 - Math.abs((gx+gRibW*2)/Sc)) * (Q.pitch/12) * Sc, sr);
-                        const ribBotVal = gTriBot;
-                        if (topL > ribBotVal) {
-                            grps.walls.add(mkQ([gx, ribBotVal, gRibZ, gx+gRibW, ribBotVal, gRibZ, gx+gRibW, ribTopL, gRibZ, gx, topL, gRibZ], _gMRibHi));
-                            grps.walls.add(mkQ([gx+gRibW, ribBotVal, gRibZ, gx+gRibW*2, ribBotVal, gRibZ, gx+gRibW*2, ribTopR, gRibZ, gx+gRibW, ribTopL, gRibZ], _gMRibSh));
                         }
                     }
                 } else {
@@ -3786,10 +3765,6 @@ function vpToggleWalls() {
             const yTop = wCfg.encl === 'partial' ? wTop : wH; // top of metal panel
             const zGable = zP + (wallId === 'front' ? .005 : -.005); // same offset as gable triangle
             if (isG) {
-                // For fully enclosed gable walls the triangle strip loop above already drew
-                // the full face ground→peak, so only run addWallSeg when there are doors
-                // (to fill gaps above doors) or for partial walls.
-                const needsLowerDraw = wCfg.encl === 'partial' || wd.length > 0;
                 let x = 0;
                 wd.forEach(d => {
                     const dL = d.offset || 0, dR = dL + d.w, dh = Math.min(d.h * Sc, yTop);
@@ -3799,7 +3774,7 @@ function vpToggleWalls() {
                     }
                     x = dR;
                 });
-                if (needsLowerDraw && x < wLen) addWallSeg((-wLen / 2 + x) * Sc, (wLen / 2) * Sc, yBot, yTop, mW, true, zGable);
+                if (x < wLen) addWallSeg((-wLen / 2 + x) * Sc, (wLen / 2) * Sc, yBot, yTop, mW, true, zGable);
             } else {
                 let z = 0;
                 wd.forEach(d => {
@@ -4473,12 +4448,43 @@ function vpToggleWalls() {
                     grps.walls.add(mkQ([xBase + s*0.003, eaveRibBot, z + ribW, xBase + s*0.003, eaveRibBot, z + ribW*2, xBase + s*0.003, eaveRibTop, z + ribW*2, xBase + s*0.003, eaveRibTop, z + ribW], mRibSh));
                 }
             });
-            // (Gable wall ribs are now drawn inline in the gable triangle strip loop above)
+            [-1,1].forEach(s => {
+                if (s === -1 && frontOpen) return;
+                if (s === 1 && backOpen) return;
+                const gableId = s === -1 ? 'front' : 'back';
+                const gableWcfg = wallCfgs.find(w => w.id === gableId);
+                const gablePartial = gableWcfg && gableWcfg.encl === 'partial';
+                const gableRibBot = gablePartial ? sh - (gableWcfg.partialH || Math.min(4, Q.h)) * Sc : 0;
+                if (gableRibBot >= sh) return;
+                const zBase = s * sl / 2;
+                for (let x = -sw/2 + ribSpacing; x < sw/2; x += ribSpacing) {
+                    const gableH = sh + (Q.w/2 - Math.abs(x/Sc)) * (Q.pitch/12) * Sc;
+                    const rH = Math.min(gableH, sr);
+                    const ribBot = gablePartial ? gableRibBot : 0;
+                    const ribTop = gablePartial ? sh : rH; // partial: stop at eave, not peak
+                    if (ribTop <= ribBot) continue;
+                    grps.walls.add(mkQ([x, ribBot, zBase + s*0.003, x + ribW, ribBot, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003, x, ribTop, zBase + s*0.003], mRibHi));
+                    grps.walls.add(mkQ([x + ribW, ribBot, zBase + s*0.003, x + ribW*2, ribBot, zBase + s*0.003, x + ribW*2, ribTop, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003], mRibSh));
+                }
+            });
 
             // === OPEN GABLE upper-triangle ribs ===
             // When a gable wall is open the lower wall is skipped but the upper
-            // gable triangle (above eave height sh) still gets drawn — ribs handled in strip loop.
-
+            // gable triangle (above eave height sh) still gets drawn — add ribs to it.
+            [-1,1].forEach(s => {
+                const gableId = s === -1 ? 'front' : 'back';
+                const gableWcfg = wallCfgs.find(w => w.id === gableId);
+                if (!gableWcfg || gableWcfg.encl !== 'open') return; // only for fully open gables
+                const zBase = s * sl / 2;
+                for (let x = -sw/2 + ribSpacing; x < sw/2; x += ribSpacing) {
+                    const gableH = sh + (Q.w/2 - Math.abs(x/Sc)) * (Q.pitch/12) * Sc;
+                    const ribTop = Math.min(gableH, sr);
+                    const ribBot = sh; // upper triangle starts at eave height
+                    if (ribTop <= ribBot) continue;
+                    grps.walls.add(mkQ([x, ribBot, zBase + s*0.003, x + ribW, ribBot, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003, x, ribTop, zBase + s*0.003], mRibHi));
+                    grps.walls.add(mkQ([x + ribW, ribBot, zBase + s*0.003, x + ribW*2, ribBot, zBase + s*0.003, x + ribW*2, ribTop, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003], mRibSh));
+                }
+            });
         }
 
         // === ROOF RIBS — raised quad strips running down the roof slope ===
@@ -4975,8 +4981,8 @@ function vpToggleWalls() {
                 const _wallHex = pc(wallColorName);
                 const _rR=(_wallHex>>16)&0xff, _rG=(_wallHex>>8)&0xff, _rB=_wallHex&0xff;
                 const _mW2 = new THREE.MeshBasicMaterial({color:_wallHex, side:THREE.DoubleSide});
-                const _mRHi = new THREE.MeshBasicMaterial({color:((Math.min(255,_rR+55)<<16)|(Math.min(255,_rG+55)<<8)|Math.min(255,_rB+55)),side:THREE.DoubleSide});
-                const _mRSh = new THREE.MeshBasicMaterial({color:((Math.max(0,_rR-40)<<16)|(Math.max(0,_rG-40)<<8)|Math.max(0,_rB-40)),side:THREE.DoubleSide});
+                const _mRHi = new THREE.MeshBasicMaterial({color:((Math.min(255,_rR+55)<<16)|(Math.min(255,_rG+55)<<8)|Math.min(255,_rB+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
+                const _mRSh = new THREE.MeshBasicMaterial({color:((Math.max(0,_rR-40)<<16)|(Math.max(0,_rG-40)<<8)|Math.max(0,_rB-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
                 const _mTL = new THREE.LineBasicMaterial({color:pc(trimColorName),transparent:true,opacity:0.85});
                 const _mTrim = _mTL;
                 const _ribSp = 0.075;
@@ -5151,8 +5157,8 @@ function vpToggleWalls() {
                 // Rib materials matching main building
                 const wallHexShed = typeof pc === 'function' ? pc(wallColorName || 'Ash Gray') : 0x8a8d8f;
                 const srR = ((wallHexShed >> 16) & 0xff), srG = ((wallHexShed >> 8) & 0xff), srB = (wallHexShed & 0xff);
-                const sRibHi = new THREE.MeshBasicMaterial({ color: ((Math.min(255, srR + 55) << 16) | (Math.min(255, srG + 55) << 8) | Math.min(255, srB + 55)), side: THREE.DoubleSide });
-                const sRibSh = new THREE.MeshBasicMaterial({ color: ((Math.max(0, srR - 40) << 16) | (Math.max(0, srG - 40) << 8) | Math.max(0, srB - 40)), side: THREE.DoubleSide });
+                const sRibHi = new THREE.MeshBasicMaterial({ color: ((Math.min(255, srR + 55) << 16) | (Math.min(255, srG + 55) << 8) | Math.min(255, srB + 55)), side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
+                const sRibSh = new THREE.MeshBasicMaterial({ color: ((Math.max(0, srR - 40) << 16) | (Math.max(0, srG - 40) << 8) | Math.max(0, srB - 40)), side: THREE.DoubleSide, transparent: true, opacity: 0.75 });
                 const sRibSp = 0.075, sRibW = 0.006;
                 if (isEave) {
                     const oX = sc.wall === 'left' ? -sw / 2 - ssw : sw / 2 + ssw;
@@ -5202,8 +5208,8 @@ function vpToggleWalls() {
                         for (let x = xMin + sRibSp; x < xMax; x += sRibSp) {
                             const frac = Math.abs(x - oX) / endWallW;
                             const rH = outerWH + frac * (sh - outerWH);
-                            grps.wallPanels.add(mkQ([x, 0, z1 - 0.006, x + sRibW, 0, z1 - 0.006, x + sRibW, rH, z1 - 0.006, x, rH, z1 - 0.006], sRibHi));
-                            grps.wallPanels.add(mkQ([x + sRibW, 0, z1 - 0.006, x + sRibW*2, 0, z1 - 0.006, x + sRibW*2, rH, z1 - 0.006, x + sRibW, rH, z1 - 0.006], sRibSh));
+                            grps.wallPanels.add(mkQ([x, 0, z1 - s*0.003, x + sRibW, 0, z1 - s*0.003, x + sRibW, rH, z1 - s*0.003, x, rH, z1 - s*0.003], sRibHi));
+                            grps.wallPanels.add(mkQ([x + sRibW, 0, z1 - s*0.003, x + sRibW*2, 0, z1 - s*0.003, x + sRibW*2, rH, z1 - s*0.003, x + sRibW, rH, z1 - s*0.003], sRibSh));
                         }
                         }
                         // Back end wall
@@ -5213,8 +5219,8 @@ function vpToggleWalls() {
                         for (let x = xMin + sRibSp; x < xMax; x += sRibSp) {
                             const frac = Math.abs(x - oX) / endWallW;
                             const rH = outerWH + frac * (sh - outerWH);
-                            grps.wallPanels.add(mkQ([x, 0, z2 + 0.006, x + sRibW, 0, z2 + 0.006, x + sRibW, rH, z2 + 0.006, x, rH, z2 + 0.006], sRibHi));
-                            grps.wallPanels.add(mkQ([x + sRibW, 0, z2 + 0.006, x + sRibW*2, 0, z2 + 0.006, x + sRibW*2, rH, z2 + 0.006, x + sRibW, rH, z2 + 0.006], sRibSh));
+                            grps.wallPanels.add(mkQ([x, 0, z2 + s*0.003, x + sRibW, 0, z2 + s*0.003, x + sRibW, rH, z2 + s*0.003, x, rH, z2 + s*0.003], sRibHi));
+                            grps.wallPanels.add(mkQ([x + sRibW, 0, z2 + s*0.003, x + sRibW*2, 0, z2 + s*0.003, x + sRibW*2, rH, z2 + s*0.003, x + sRibW, rH, z2 + s*0.003], sRibSh));
                         }
                         }
 
@@ -6139,22 +6145,24 @@ async function openLoadDesignModal(){
       var sub   = d.specs || '';
       var date  = d.date || '';
       var qid   = d.quoteId || d.designId || '';
+      var ridx  = d.rowIndex || 0;
       return '<div style="background:#0d1b2a;border:1px solid #2a3d66;border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;">'+
         '<div style="flex:1;min-width:0;">'+
           '<div style="font-weight:700;color:#f0f3f7;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+label+'</div>'+
           '<div style="font-size:11px;color:#7a8aa5;margin-top:2px;">'+sub+'</div>'+
           '<div style="font-size:10px;color:#3a4d65;margin-top:3px;">'+date+(qid?' &nbsp;·&nbsp; '+qid:'')+'</div>'+
         '</div>'+
-        '<button data-load-qid="'+qid+'" style="padding:6px 14px;background:rgba(212,168,67,.12);color:#d4a843;border:1px solid rgba(212,168,67,.25);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Load</button>'+
+        '<button data-load-qid="'+qid+'" data-load-ridx="'+ridx+'" style="padding:6px 14px;background:rgba(212,168,67,.12);color:#d4a843;border:1px solid rgba(212,168,67,.25);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Load</button>'+
       '</div>';
     }).join('');
     window._savedDesigns = quotes;
     list.onclick = function(e) {
       var btn = e.target.closest('[data-load-qid]');
       if (btn) {
-        var qid = btn.getAttribute('data-load-qid');
-        console.log('[Modal] Load clicked, qid:', qid);
-        loadSavedDesignById(qid);
+        var qid  = btn.getAttribute('data-load-qid');
+        var ridx = parseInt(btn.getAttribute('data-load-ridx')||'0');
+        console.log('[Modal] Load clicked, qid:', qid, 'rowIndex:', ridx);
+        loadSavedDesignByRef(qid, ridx);
       }
     };
   } catch(err){
@@ -6170,10 +6178,13 @@ function filterLoadDesigns(q) {
   var all = window._savedDesigns || [];
   var term = (q||'').toLowerCase().trim();
   var filtered = !term ? all : all.filter(function(d) {
+    var digits = term.replace(/[^0-9]/g,'');
     return (d.name||'').toLowerCase().includes(term)
         || (d.specs||'').toLowerCase().includes(term)
         || (d.quoteId||d.designId||'').toLowerCase().includes(term)
-        || String(d.phone||'').replace(/[^0-9]/g,'').includes(term.replace(/[^0-9]/g,''));
+        || (d.city||'').toLowerCase().includes(term)
+        || (d.email||'').toLowerCase().includes(term)
+        || (digits && String(d.phone||'').replace(/[^0-9]/g,'').includes(digits));
   });
   var list = document.getElementById('savedDesignList');
   if (!filtered.length) {
@@ -6185,24 +6196,27 @@ function filterLoadDesigns(q) {
     var sub   = d.specs || '';
     var date  = d.date || '';
     var qid   = d.quoteId || d.designId || '';
+    var ridx  = d.rowIndex || 0;
     return '<div style="background:#0d1b2a;border:1px solid #2a3d66;border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;">'
       + '<div style="flex:1;min-width:0;">'
       + '<div style="font-weight:700;color:#f0f3f7;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+label+'</div>'
       + '<div style="font-size:11px;color:#7a8aa5;margin-top:2px;">'+sub+'</div>'
       + '<div style="font-size:10px;color:#3a4d65;margin-top:3px;">'+date+(qid?' &nbsp;·&nbsp; '+qid:'')+'</div>'
       + '</div>'
-      + '<button data-load-qid="'+qid+'" style="padding:6px 14px;background:rgba(212,168,67,.12);color:#d4a843;border:1px solid rgba(212,168,67,.25);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Load</button>'
+      + '<button data-load-qid="'+qid+'" data-load-ridx="'+ridx+'" style="padding:6px 14px;background:rgba(212,168,67,.12);color:#d4a843;border:1px solid rgba(212,168,67,.25);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Load</button>'
       + '</div>';
   }).join('');
   list.onclick = function(e) {
     var btn = e.target.closest('[data-load-qid]');
-    if (btn) loadSavedDesignById(btn.getAttribute('data-load-qid'));
+    if (btn) loadSavedDesignByRef(btn.getAttribute('data-load-qid'), parseInt(btn.getAttribute('data-load-ridx')||'0'));
   };
 }
 
-async function loadSavedDesignById(qid) {
-  // Find the entry in _savedDesigns for customer name/phone display, but always fetch by qid
-  var d = (window._savedDesigns || []).find(function(x){ return (x.quoteId||x.designId) === qid; }) || { quoteId: qid };
+async function loadSavedDesignByRef(qid, rowIndex) {
+  // Find the exact entry matching both qid AND rowIndex (avoids duplicate ID confusion)
+  var d = (window._savedDesigns || []).find(function(x){
+    return (x.quoteId||x.designId) === qid && (rowIndex ? x.rowIndex === rowIndex : true);
+  }) || { quoteId: qid, rowIndex: rowIndex };
   return loadSavedDesign(d);
 }
 
@@ -6220,7 +6234,7 @@ async function loadSavedDesign(d){
       var data = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {'Content-Type': 'text/plain'},
-        body: JSON.stringify({ action: 'getQuoteSnapshot', quoteId: qid, username: (window.currentUser||{}).username || '', token: getToken() })
+        body: JSON.stringify({ action: 'getQuoteSnapshot', quoteId: qid, rowIndex: d.rowIndex || 0, username: (window.currentUser||{}).username || '', token: getToken() })
       }, 55000);
       console.log('[Load] parsed response:', JSON.stringify(data).substring(0,300));
       var snap2 = data.snapshot || data;
@@ -6228,7 +6242,46 @@ async function loadSavedDesign(d){
       encoded = snap2.configEncoded || data.configEncoded || '';
       console.log('[Load] configEncoded length:', encoded.length);
     }
-    if (!encoded) throw new Error('No config data found — quoteId: '+(d.quoteId||'none'));
+    // If no configEncoded, try to reconstruct minimal config from formFields in the snapshot
+    if (!encoded) {
+      var snap3 = (data && data.snapshot) || {};
+      var ff3 = snap3.formFields || {};
+      if (ff3.width && ff3.length && ff3.height) {
+        console.log('[Load] no configEncoded — rebuilding from formFields');
+        var minCfg = {
+          Q: {
+            w: parseInt(ff3.width)||40, l: parseInt(ff3.length)||60, h: parseInt(ff3.height)||14,
+            pitch: parseInt(ff3.roofPitch)||4, oh: 0, soffit: false,
+            postSpacing: parseInt(ff3.postSpacing||ff3.eavePostSpacing)||10,
+            eavePS: parseInt(ff3.eavePostSpacing)||10, gablePS: 10,
+            truss: ff3.truss||'Wood', frameType: 'post'
+          },
+          walls: [], doors: [], walkDoors: [], windows: [], sheds: [],
+          colors: { roof: 'Charcoal', wall: 'Charcoal', trim: 'White', wainscot: 'Tan' },
+          extras: { wainscot: false, cupolaOn: false, cupolaSize:'24', cupolaQty:'1', concreteOn: false, concreteAreas: {} },
+          contact: { name: snap3.customerName||'', phone: snap3.phone||'', email: snap3.email||'', city: snap3.address||'' },
+          salesFields: {
+            name: snap3.customerName||'', phone: snap3.phone||'', email: snap3.email||'', address: snap3.address||'',
+            mbPostSize: ff3.mbPostSize||'6x6', eavePS: ff3.eavePostSpacing||'10',
+            insulation: ff3.insulation||'None', concrete: ff3.concrete||'None',
+            roofMetal: ff3.roofMetal||'Painted', wallMetal: ff3.wallMetal||'Painted',
+            wainscot: ff3.wainscot||'No', manualAdder: ff3.manualAdder||'0'
+          }
+        };
+        // Add garage doors from formFields
+        for (var gi = 1; gi <= 5; gi++) {
+          var gdType = ff3['garageDoor'+gi+'Type'];
+          if (gdType) {
+            var m = gdType.match(/GD(\d+)(\d{2})(IN)?W/);
+            if (m) minCfg.doors.push({ id: gi, type:'garage', w: parseInt(m[1]), h: parseInt(m[2]), wall:'front', insulated: !!m[3] });
+          }
+        }
+        encoded = await safeEncodeCompressed(minCfg);
+        console.log('[Load] rebuilt config encoded length:', encoded.length);
+      } else {
+        throw new Error('No config data found — quoteId: '+(d.quoteId||'none'));
+      }
+    }
     console.log('[Load] encoded length:', encoded.length, 'preview:', encoded.substring(0,40));
     var cfg;
     try { cfg = await safeDecodeAsync(encoded); } catch(e1){
@@ -6494,6 +6547,24 @@ async function saveSalesQuote() {
 
     window._savedQuoteId = data.quoteId || ('ST-' + Date.now());
     window._savedSnapshot = snapshot;
+
+    // Also save to Configurator Quotes — this is the reliable load source (dedicated configEncoded column)
+    var Q2 = window._Q || {};
+    var specs2 = Q2.w+"'x"+Q2.l+"'x"+Q2.h+"' | "+(Q2.pitch||4)+"/12 | "+(Q2.truss||'Wood')+" truss";
+    fetch(API_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'text/plain'},
+      body: JSON.stringify({
+        action: 'saveConfiguratorQuote',
+        token: getToken(),
+        name: name, phone: phone, email: email, city: address,
+        specs: specs2,
+        configEncoded: await safeEncodeCompressed(_cfg),
+        salesman: (window.currentUser||{}).username || '',
+        quoteId: window._savedQuoteId,
+        baseUrl: 'https://lhinson00.github.io/Sauce/sales-tool.html'
+      })
+    }).catch(function(){});
 
     // 6. Update UI
     btn.textContent = '✅ Saved!';
