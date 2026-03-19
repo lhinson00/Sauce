@@ -806,10 +806,18 @@ body.view-mode #viewCustomerCard {
           <div style="margin-bottom:8px;">
             <div class="sec-title" style="font-size:9px;margin-bottom:5px;letter-spacing:1.5px;">Eave Wall Spacing</div>
             <div class="chip-row" id="psEaveChips"></div>
+            <div style="display:flex;gap:5px;margin-top:5px;" id="psEaveTargetRow">
+              <div style="font-size:9px;color:var(--muted);font-weight:600;align-self:center;white-space:nowrap;">Apply to:</div>
+              <div id="psEaveTargetChips" style="display:flex;gap:4px;flex-wrap:wrap;"></div>
+            </div>
           </div>
           <div>
             <div class="sec-title" style="font-size:9px;margin-bottom:5px;letter-spacing:1.5px;">Gable Wall Spacing</div>
             <div class="chip-row" id="psGableChips"></div>
+            <div style="display:flex;gap:5px;margin-top:5px;" id="psGableTargetRow">
+              <div style="font-size:9px;color:var(--muted);font-weight:600;align-self:center;white-space:nowrap;">Apply to:</div>
+              <div id="psGableTargetChips" style="display:flex;gap:4px;flex-wrap:wrap;"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -1530,17 +1538,77 @@ function buildFrameChips(){
       scheduleBuild();
     });
 }
+// Eave/Gable wall target: 'both', 'left', 'right', 'front', 'back'
+if(typeof Q.eaveTarget==='undefined') Q.eaveTarget='both';
+if(typeof Q.gableTarget==='undefined') Q.gableTarget='both';
+
+function _renderWallTargetChips(containerId, options, getCurrent, setCurrent, onChange){
+  var container=document.getElementById(containerId); if(!container) return;
+  container.innerHTML='';
+  options.forEach(function(opt){
+    var el=document.createElement('div');
+    el.className='chip'+(getCurrent()===opt.val?' active':'');
+    el.style.cssText='padding:3px 9px;font-size:10px;';
+    el.textContent=opt.label;
+    el.onclick=function(){
+      setCurrent(opt.val);
+      _renderWallTargetChips(containerId,options,getCurrent,setCurrent,onChange);
+      onChange(opt.val);
+    };
+    container.appendChild(el);
+  });
+}
+
 function buildPSChips(){
+  // EAVE chips
   chips('psEaveChips',[{val:8,label:"8'"},{val:10,label:"10'"},{val:12,label:"12'"},{val:20,label:"20'"}],
     function(){return Q.eavePS;},function(v){
       Q.eavePS=v; Q.postSpacing=v;
-      WALLS.filter(function(w){return w.id==='left'||w.id==='right';}).forEach(function(w){w.postSpacing=v;});
+      _applyEaveSpacing(v, Q.eaveTarget);
     });
+
+  // Eave target toggles
+  _renderWallTargetChips(
+    'psEaveTargetChips',
+    [{val:'both',label:'Both'},{val:'left',label:'Left Eave'},{val:'right',label:'Right Eave'}],
+    function(){return Q.eaveTarget;},
+    function(v){Q.eaveTarget=v;},
+    function(v){ _applyEaveSpacing(Q.eavePS, v); scheduleBuild(); }
+  );
+
+  // GABLE chips
   chips('psGableChips',[{val:8,label:"8'"},{val:10,label:"10'"},{val:12,label:"12'"}],
     function(){return Q.gablePS;},function(v){
       Q.gablePS=v;
-      WALLS.filter(function(w){return w.id==='front'||w.id==='back';}).forEach(function(w){w.postSpacing=v;});
+      _applyGableSpacing(v, Q.gableTarget);
     });
+
+  // Gable target toggles
+  _renderWallTargetChips(
+    'psGableTargetChips',
+    [{val:'both',label:'Both'},{val:'front',label:'Front Gable'},{val:'back',label:'Back Gable'}],
+    function(){return Q.gableTarget;},
+    function(v){Q.gableTarget=v;},
+    function(v){ _applyGableSpacing(Q.gablePS, v); scheduleBuild(); }
+  );
+}
+
+function _applyEaveSpacing(v, target){
+  target = target || Q.eaveTarget || 'both';
+  WALLS.forEach(function(w){
+    if(w.id==='left'||w.id==='right'){
+      if(target==='both' || w.id===target) w.postSpacing=v;
+    }
+  });
+}
+
+function _applyGableSpacing(v, target){
+  target = target || Q.gableTarget || 'both';
+  WALLS.forEach(function(w){
+    if(w.id==='front'||w.id==='back'){
+      if(target==='both' || w.id===target) w.postSpacing=v;
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -2155,6 +2223,7 @@ function addShed(){
     encl:'roofonly', enclWalls:['outer','gable1','gable2'],
     position:'center', offsetFt:0,
     gablePS:10, gablePitch:4, timberFrame:'metal',
+    eavePS:10,
     ltPitch:1, dropFt:0, frameStyle:'metal',
     _open: true
   };
@@ -2257,7 +2326,11 @@ function renderSheds(){
         +'</select></div>'
         +'<div><div class="shed-label">Drop (ft)</div>'
         +'<input class="shed-inp" type="number" value="'+(sc.dropFt||0)+'" min="0" max="6" step="1" onchange="setShedProp('+sc.id+',\'dropFt\',this.value)"></div>'
-        +'</div>';
+        +'</div>'
+        +'<div class="shed-row"><div><div class="shed-label">Eave Post Spacing</div>'
+        +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'eavePS\',this.value);scheduleBuild()">'
+        +[8,10,12,20].map(function(p){return '<option value="'+p+'"'+(sc.eavePS==p?' selected':'')+'>'+p+"'</option>";}).join('')
+        +'</select></div></div>';
     }
     if(isWrap){
       extraOptions+='<div class="shed-row"><div><div class="shed-label">Wrap Direction</div>'
@@ -2267,7 +2340,11 @@ function renderSheds(){
         +'</select></div>'
         +'<div><div class="shed-label">Wrap Leg (ft)</div>'
         +'<input class="shed-inp" type="number" value="'+(sc.wrapLeg||0)+'" min="0" step="5" onchange="setShedProp('+sc.id+',\'wrapLeg\',this.value)"></div>'
-        +'</div>';
+        +'</div>'
+        +'<div class="shed-row"><div><div class="shed-label">Eave Post Spacing</div>'
+        +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'eavePS\',this.value);scheduleBuild()">'
+        +[8,10,12,20].map(function(p){return '<option value="'+p+'"'+(sc.eavePS==p?' selected':'')+'>'+p+"'</option>";}).join('')
+        +'</select></div></div>';
     }
     if(isGable){
       extraOptions+='<div class="shed-row"><div><div class="shed-label">Gable Pitch</div>'
@@ -2389,7 +2466,7 @@ function buildCupolaChips(){
 // ── CONFIG SERIALIZATION ─────────────────────────────────────────
 function serializeConfig() {
   return {
-    Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,truss:Q.truss,frameType:Q.frameType},
+    Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,eaveTarget:Q.eaveTarget,gableTarget:Q.gableTarget,truss:Q.truss,frameType:Q.frameType},
     walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,partialH:w.partialH};}),
     doors: allDoors,
     walkDoors: window._walkDoors,
@@ -2464,6 +2541,8 @@ function restoreConfig(cfg) {
       // Restore eavePS/gablePS from saved Q or derive from walls
       if(cfg.Q.eavePS) Q.eavePS = cfg.Q.eavePS;
       if(cfg.Q.gablePS) Q.gablePS = cfg.Q.gablePS;
+      if(cfg.Q.eaveTarget) Q.eaveTarget = cfg.Q.eaveTarget;
+      if(cfg.Q.gableTarget) Q.gableTarget = cfg.Q.gableTarget;
     }
     if(cfg.walls) cfg.walls.forEach(function(w){ var ww=WALLS.find(function(x){return x.id===w.id;}); if(ww) Object.assign(ww,w); });
     // Re-sync wall lengths from Q in case walls weren't saved
@@ -3394,9 +3473,9 @@ function vpToggleWalls() {
             const dropHP = (sc.dropFt || 0) * Sc;
             const attachHP = sh - dropHP;
             const shedSh = attachHP - (sc.w * (ltPitchP / 12)) * Sc; // outer post height from pitch
-            // Use the post spacing of the wall the shed attaches to
+            // Use the shed's own eavePS if set, otherwise fall back to attach wall spacing
             const attachWall = wallCfgs.find(w => w.id === sc.wall);
-            const attachPS = attachWall ? attachWall.postSpacing : (Q.postSpacing || 10);
+            const attachPS = (sc.eavePS) ? sc.eavePS : (attachWall ? attachWall.postSpacing : (Q.postSpacing || 10));
 
             // Compute shed offset from wall start (in feet)
             const isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
