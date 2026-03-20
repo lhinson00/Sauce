@@ -2177,9 +2177,11 @@ function setShedProp(id,prop,val){
   if(prop==='wall'){
     var isEave=(val==='left'||val==='right');
     sc.l=isEave?Q.l:Q.w; sc.origL=sc.l;
+    sc.enclFt=sc.l; // reset enclFt to full length on wall change
   }
+  if(prop==='l'){ if(sc.enclFt==null||sc.enclFt>=sc.l) sc.enclFt=sc.l; }
   if(prop==='type'){ sc.encl='roofonly'; sc.enclWalls=['outer','gable1','gable2']; }
-  if(prop==='encl' && val==='enclosed'){ sc.enclWalls = ['outer','gable1','gable2']; }
+  if(prop==='encl' && val==='enclosed'){ sc.enclWalls=['outer','gable1','gable2']; sc.enclFt=sc.l; sc.enclFrom='start'; }
   renderSheds(); scheduleBuild();
 }
 function toggleShedOpen(id){
@@ -2240,7 +2242,14 @@ function renderSheds(){
         +wChk('outer', outerLabel)
         +wChk('gable1', gable1Label)
         +wChk('gable2', gable2Label)
-        +'</div></div>';
+        +'</div></div>'
+        +'<div style="margin-top:7px;"><div class="shed-label" style="margin-bottom:5px;">Enclosed Length (ft)</div>'
+        +'<div style="display:flex;gap:6px;align-items:center;">'
+        +'<input class="shed-inp" type="number" value="'+((sc.enclFt!=null)?sc.enclFt:sc.l)+'" min="0" max="'+sc.l+'" step="1" style="width:70px;" onchange="setShedProp('+sc.id+',\'enclFt\',this.value);scheduleBuild()">'
+        +'<div style="display:flex;gap:4px;">'
+        +'<div class="shed-chip'+(sc.enclFrom!=='end'?' active':'')+'" onclick="setShedProp('+sc.id+',\'enclFrom\',\'start\');scheduleBuild()" style="font-size:10px;padding:3px 8px;">From Start</div>'
+        +'<div class="shed-chip'+(sc.enclFrom==='end'?' active':'')+'" onclick="setShedProp('+sc.id+',\'enclFrom\',\'end\');scheduleBuild()" style="font-size:10px;padding:3px 8px;">From End</div>'
+        +'</div></div></div>';
     }
 
     var posChips=[{val:'start',label:'Start'},{val:'center',label:'Center'},{val:'end',label:'End'},{val:'custom',label:'Custom'}].map(function(p){
@@ -5264,13 +5273,37 @@ function vpToggleWalls() {
                     const aX = sc.wall === 'left' ? -sw / 2 : sw / 2;
                     const s = sc.wall === 'left' ? -1 : 1;
                     const z1 = -ssl/2 + sco, z2 = ssl/2 + sco;
+                    // Partial enclosure clipping
+                    const enclFt = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt * Sc : null;
+                    const enclFrom = sc.enclFrom || 'start';
+                    const ez1 = enclFt ? (enclFrom === 'start' ? z1 : z2 - enclFt) : z1;
+                    const ez2 = enclFt ? (enclFrom === 'start' ? z1 + enclFt : z2) : z2;
+                    // Gable ends only show if enclosed portion reaches that end
+                    const showGable1 = !enclFt || enclFrom === 'start';  // gable1 = start end
+                    const showGable2 = !enclFt || enclFrom === 'end';    // gable2 = end
                     // Outer wall (away from main building)
                     if (hasWall('outer')) {
-                    grps.wallPanels.add(mkQ([oX, 0, z1, oX, outerWH, z1, oX, outerWH, z2, oX, 0, z2], mW));
+                    grps.wallPanels.add(mkQ([oX, 0, ez1, oX, outerWH, ez1, oX, outerWH, ez2, oX, 0, ez2], mW));
                     grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, z1), new THREE.Vector3(oX, outerWH, z1), new THREE.Vector3(oX, outerWH, z2), new THREE.Vector3(oX, 0, z2)], mTrimLine));
-                    for (let z = z1; z <= z2; z += sRibSp) {
+                    grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, ez1), new THREE.Vector3(oX, outerWH, ez1), new THREE.Vector3(oX, outerWH, ez2), new THREE.Vector3(oX, 0, ez2)], mTrimLine));
+                    for (let z = ez1; z <= ez2; z += sRibSp) {
                         grps.wallPanels.add(mkQ([oX + s*0.003, 0, z, oX + s*0.003, 0, z + sRibW, oX + s*0.003, outerWH, z + sRibW, oX + s*0.003, outerWH, z], sRibHi));
                         grps.wallPanels.add(mkQ([oX + s*0.003, 0, z + sRibW, oX + s*0.003, 0, z + sRibW*2, oX + s*0.003, outerWH, z + sRibW*2, oX + s*0.003, outerWH, z + sRibW], sRibSh));
+                    }
+                    // Intermediate end cap at the enclosed/open boundary
+                    if (enclFt) {
+                        const endWallW = Math.abs(oX - aX);
+                        const xMin = Math.min(oX, aX), xMax = Math.max(oX, aX);
+                        const capZ = enclFrom === 'start' ? ez2 : ez1;
+                        const capSign = enclFrom === 'start' ? 1 : -1;
+                        grps.wallPanels.add(mkQ([oX, 0, capZ, oX, outerWH, capZ, aX, sh, capZ, aX, 0, capZ], mW));
+                        grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, capZ), new THREE.Vector3(oX, outerWH, capZ), new THREE.Vector3(aX, sh, capZ)], mTrimLine));
+                        for (let x = xMin + sRibSp; x < xMax; x += sRibSp) {
+                            const frac = Math.abs(x - oX) / endWallW;
+                            const rH = outerWH + frac * (sh - outerWH);
+                            grps.wallPanels.add(mkQ([x, 0, capZ + capSign*0.003, x + sRibW, 0, capZ + capSign*0.003, x + sRibW, rH, capZ + capSign*0.003, x, rH, capZ + capSign*0.003], sRibHi));
+                            grps.wallPanels.add(mkQ([x + sRibW, 0, capZ + capSign*0.003, x + sRibW*2, 0, capZ + capSign*0.003, x + sRibW*2, rH, capZ + capSign*0.003, x + sRibW, rH, capZ + capSign*0.003], sRibSh));
+                        }
                     }
                     }
                     if (isGableExt) {
@@ -5301,7 +5334,7 @@ function vpToggleWalls() {
                         // Front end wall
                         const endWallW = Math.abs(oX - aX);
                         const xMin = Math.min(oX, aX), xMax = Math.max(oX, aX);
-                        if (hasWall('gable1')) {
+                        if (hasWall('gable1') && showGable1) {
                         grps.wallPanels.add(mkQ([oX, 0, z1, oX, outerWH, z1, aX, sh, z1, aX, 0, z1], mW));
                         grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, z1), new THREE.Vector3(oX, outerWH, z1), new THREE.Vector3(aX, sh, z1)], mTrimLine));
                         for (let x = xMin + sRibSp; x < xMax; x += sRibSp) {
@@ -5312,7 +5345,7 @@ function vpToggleWalls() {
                         }
                         }
                         // Back end wall
-                        if (hasWall('gable2')) {
+                        if (hasWall('gable2') && showGable2) {
                         grps.wallPanels.add(mkQ([aX, 0, z2, aX, sh, z2, oX, outerWH, z2, oX, 0, z2], mW));
                         grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, z2), new THREE.Vector3(oX, outerWH, z2), new THREE.Vector3(aX, sh, z2)], mTrimLine));
                         for (let x = xMin + sRibSp; x < xMax; x += sRibSp) {
@@ -7646,7 +7679,13 @@ function buildPricePayload(calcType) {
       enclosedSideShedLinearFt: (function(){
         var sc = window._shedConfigs&&window._shedConfigs[0];
         if (!sc || sc.encl !== 'enclosed') return 0;
-        return Math.round((sc.w * 2 + sc.l) * 10) / 10;
+        var enclLen = (sc.enclFt != null) ? sc.enclFt : sc.l;
+        var isEave = (sc.wall === 'left' || sc.wall === 'right');
+        if (sc.type === 'wrap3') {
+          var gableSpan = isEave ? (Q.w + sc.w) : (Q.l + sc.w);
+          return Math.round((sc.l + gableSpan * 2 + sc.w * 2) * 10) / 10;
+        }
+        return Math.round((sc.w * 2 + enclLen) * 10) / 10;
       })(),
       ss2Width: (window._shedConfigs&&window._shedConfigs[1]) ? window._shedConfigs[1].w : 0,
       ss2Length: (window._shedConfigs&&window._shedConfigs[1]) ? window._shedConfigs[1].l : 0,
@@ -7712,7 +7751,13 @@ function buildPricePayload(calcType) {
     enclosedSideShedLinearFt: (function(){
       var sc = window._shedConfigs&&window._shedConfigs[0];
       if (!sc || sc.encl !== 'enclosed') return 0;
-      return Math.round((sc.w * 2 + sc.l) * 10) / 10;
+      var enclLen = (sc.enclFt != null) ? sc.enclFt : sc.l;
+      var isEave = (sc.wall === 'left' || sc.wall === 'right');
+      if (sc.type === 'wrap3') {
+        var gableSpan = isEave ? (Q.w + sc.w) : (Q.l + sc.w);
+        return Math.round((sc.l + gableSpan * 2 + sc.w * 2) * 10) / 10;
+      }
+      return Math.round((sc.w * 2 + enclLen) * 10) / 10;
     })(),
     ss2Width: (window._shedConfigs&&window._shedConfigs[1]) ? window._shedConfigs[1].w : 0,
     ss2Length: (window._shedConfigs&&window._shedConfigs[1]) ? window._shedConfigs[1].l : 0,
