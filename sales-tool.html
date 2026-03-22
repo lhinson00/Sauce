@@ -2069,15 +2069,27 @@ function buildSwatches(id, getCur, setCur, hiddenId){
 
 // ═══════════════════════════════════════════════════════
 // POSITION STRIP (shared for all openings)
+// Right eave and back gable walls have their coordinate origin
+// on the opposite end from how the strip reads left→right.
+// We mirror for those walls so dragging right = moving right in 3D.
 // ═══════════════════════════════════════════════════════
+function _wallMirrored(wallId) {
+  return wallId === 'right' || wallId === 'back';
+}
+function _mirrorOffset(offset, wallLen, ow) {
+  return Math.max(0, Math.min(wallLen - ow, wallLen - ow - offset));
+}
+
 function makeStrip(obj, getW, wallKey, cls, onUpdate) {
   var wall = WALLS.find(function(w){return w.id===obj.wall;})||{len:Q.l, label:'Wall'};
   var wallLen = wall.len;
   var ow = getW(obj);
-  var pct = wallLen>0?(obj.offset||0)/wallLen*100:0;
-  var bw = wallLen>0?ow/wallLen*100:10;
+  var mirrored = _wallMirrored(obj.wall);
+  var displayOffset = mirrored ? _mirrorOffset(obj.offset||0, wallLen, ow) : (obj.offset||0);
+  var pct = wallLen>0 ? displayOffset/wallLen*100 : 0;
+  var bw  = wallLen>0 ? ow/wallLen*100 : 10;
   var stripId = 'strip_'+cls+'_'+obj.id;
-  var html = '<div class="pos-label">Position — '+fmt(obj.offset||0)+' from left</div>'
+  var html = '<div class="pos-label">Position — '+fmt(displayOffset)+' from left</div>'
     +'<div class="wall-strip" id="'+stripId+'">'
     +'<div class="strip-end"></div><div class="strip-end r"></div>'
     +'<div class="strip-block '+cls+'" style="left:'+pct+'%;width:'+bw+'%"></div>'
@@ -2085,7 +2097,7 @@ function makeStrip(obj, getW, wallKey, cls, onUpdate) {
     +'<div class="nudge-row">'
     +'<button class="nudge-btn" onclick="nudgeOpening(\''+cls+'\','+obj.id+',-1)">← 1\'</button>'
     +'<button class="nudge-btn" onclick="nudgeOpening(\''+cls+'\','+obj.id+',1)">1\' →</button>'
-    +'<span class="nudge-offset" id="off_'+cls+'_'+obj.id+'">'+fmt(obj.offset||0)+'</span>'
+    +'<span class="nudge-offset" id="off_'+cls+'_'+obj.id+'">'+fmt(displayOffset)+'</span>'
     +'<button class="nudge-btn ctr" onclick="centerOpening(\''+cls+'\','+obj.id+')">Center</button>'
     +(cls==='garage'&&allDoors.filter(function(d){return d.wall===obj.wall&&d.type!=='barn';}).length>=2?'<button class="nudge-btn ctr" onclick="spaceDoorsEvenly(\''+obj.wall+'\')" style="background:rgba(255,130,0,.12);color:#cc6800;border-color:rgba(255,130,0,.3);">⇿ Space Evenly</button>':'')
     +(cls==='win'&&window._windows.filter(function(d){return d.wall===obj.wall;}).length>=2?'<button class="nudge-btn ctr" onclick="spaceWindowsEvenly(\''+obj.wall+'\')" style="background:rgba(255,130,0,.12);color:#cc6800;border-color:rgba(255,130,0,.3);">⇿ Space Evenly</button>':'')
@@ -2097,7 +2109,8 @@ function nudgeOpening(cls, id, dir){
   var obj = getOpening(cls,id); if(!obj) return;
   var wall=WALLS.find(function(w){return w.id===obj.wall;})||{len:Q.l};
   var ow=getOpeningW(cls,obj);
-  obj.offset=Math.max(0,Math.min(wall.len-ow,(obj.offset||0)+dir));
+  var actualDir = _wallMirrored(obj.wall) ? -dir : dir;
+  obj.offset=Math.max(0,Math.min(wall.len-ow,(obj.offset||0)+actualDir));
   obj.offset=Math.round(obj.offset*12)/12;
   refreshOpenings(); scheduleBuild();
 }
@@ -2109,69 +2122,26 @@ function centerOpening(cls,id){
   obj.offset=Math.round(obj.offset*12)/12;
   refreshOpenings(); scheduleBuild();
 }
-function spaceDoorsEvenly(wallId) {
-  // Get all non-barn garage doors on this wall, sorted by current offset
-  var wall = WALLS.find(function(w){return w.id===wallId;})||{len:Q.l};
-  var doors = allDoors.filter(function(d){return d.wall===wallId && d.type!=='barn';});
-  if (doors.length < 2) return;
-  doors.sort(function(a,b){return (a.offset||0)-(b.offset||0);});
-  // Total width of all doors
-  var totalDoorW = doors.reduce(function(sum,d){return sum+(d.w||10);}, 0);
-  var totalGap = wall.len - totalDoorW;
-  if (totalGap < 0) return; // doors don't fit
-  var gap = totalGap / (doors.length + 1);
-  var cursor = gap;
-  doors.forEach(function(d){
-    d.offset = Math.round(cursor * 12) / 12;
-    cursor += (d.w||10) + gap;
-  });
-  refreshOpenings(); scheduleBuild();
-}
-
-function spaceWindowsEvenly(wallId) {
-  var wall = WALLS.find(function(w){return w.id===wallId;})||{len:Q.l};
-  var wins = window._windows.filter(function(d){return d.wall===wallId;});
-  if (wins.length < 2) return;
-  wins.sort(function(a,b){return (a.offset||0)-(b.offset||0);});
-  var totalW = wins.reduce(function(sum,d){return sum+winDims(d.type).w;}, 0);
-  var totalGap = wall.len - totalW;
-  if (totalGap < 0) return;
-  var gap = totalGap / (wins.length + 1);
-  var cursor = gap;
-  wins.forEach(function(d){
-    d.offset = Math.round(cursor * 12) / 12;
-    cursor += winDims(d.type).w + gap;
-  });
-  refreshOpenings(); scheduleBuild();
-}
-
-function getOpening(cls,id){
-  if(cls==='garage') return allDoors.find(function(d){return d.id===id;});
-  if(cls==='walk') return window._walkDoors.find(function(d){return d.id===id;});
-  if(cls==='win') return window._windows.find(function(w){return w.id===id;});
-}
-function getOpeningW(cls,obj){
-  if(cls==='garage') return obj.w||10;
-  if(cls==='walk') return wdWidth(obj.type);
-  if(cls==='win') return winDims(obj.type).w;
-}
 
 function setupStripDrag(stripId,cls,id,wallLen){
   var el=document.getElementById(stripId); if(!el) return;
+  var obj0=getOpening(cls,id);
+  var mirrored = obj0 ? _wallMirrored(obj0.wall) : false;
   var dragging=false;
   function setPos(clientX){
     var rect=el.getBoundingClientRect();
     var pct=Math.max(0,Math.min(1,(clientX-rect.left)/rect.width));
     var obj=getOpening(cls,id); if(!obj) return;
     var ow=getOpeningW(cls,obj);
-    obj.offset=Math.round(Math.max(0,Math.min(wallLen-ow,pct*wallLen-ow/2))*12)/12;
-    // Update visually without full rebuild
+    var effectivePct = mirrored ? (1 - pct) : pct;
+    obj.offset=Math.round(Math.max(0,Math.min(wallLen-ow,effectivePct*wallLen-ow/2))*12)/12;
+    var displayOffset = mirrored ? _mirrorOffset(obj.offset, wallLen, ow) : obj.offset;
     var block=el.querySelector('.strip-block');
-    if(block) block.style.left=(obj.offset/wallLen*100)+'%';
+    if(block) block.style.left=(displayOffset/wallLen*100)+'%';
     var lbl=document.getElementById('off_'+cls+'_'+id);
-    if(lbl) lbl.textContent=fmt(obj.offset);
+    if(lbl) lbl.textContent=fmt(displayOffset);
     var posLbl=el.previousElementSibling;
-    if(posLbl&&posLbl.className==='pos-label') posLbl.textContent='Position — '+fmt(obj.offset)+' from left';
+    if(posLbl&&posLbl.className==='pos-label') posLbl.textContent='Position — '+fmt(displayOffset)+' from left';
   }
   el.addEventListener('mousedown',function(e){e.preventDefault();dragging=true;setPos(e.clientX);});
   el.addEventListener('touchstart',function(e){e.preventDefault();dragging=true;setPos(e.touches[0].clientX);},{passive:false});
