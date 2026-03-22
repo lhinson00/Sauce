@@ -1096,10 +1096,21 @@ body.customer-mode #custSpecsBlock { display: block; }
         <!-- ── CUSTOMER MODE: simplified concrete / insulation / cupola ── -->
         <div id="custSpecsBlock">
           <div class="sec-title" style="font-size:9px;margin-bottom:5px;letter-spacing:1.5px;">Concrete Slab</div>
-          <div class="toggle-row">
-            <div class="toggle-info"><div class="toggle-lbl">Add Concrete</div><div class="toggle-sub">Salesman will confirm type</div></div>
-            <label class="tog"><input type="checkbox" id="cust_concreteYN" onchange="custConcreteToggle(this.checked)"><span class="tog-track"></span></label>
+
+          <!-- Main Building concrete -->
+          <div style="margin-bottom:8px;">
+            <div style="font-size:9px;color:var(--muted);font-weight:600;margin-bottom:4px;">Main Building</div>
+            <select id="cust_mainConcrete" onchange="custConcreteChange()" style="width:100%;font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
+              <option value="None">No Concrete</option>
+              <option value="4_inground">4" — Posts In-Ground</option>
+              <option value="6_inground">6" — Posts In-Ground</option>
+              <option value="4_ontop">4" — Footers, Posts Mounted On Top</option>
+              <option value="6_ontop">6" — Footers, Posts Mounted On Top</option>
+            </select>
           </div>
+
+          <!-- Per-shed concrete — rendered dynamically by custRenderShedConcrete() -->
+          <div id="custShedConcreteList"></div>
 
           <div class="sec-title" style="font-size:9px;margin:10px 0 5px;letter-spacing:1.5px;">Insulation</div>
           <div style="margin-bottom:6px;">
@@ -1864,6 +1875,7 @@ function buildFrameChips(){
     function(){return currentFrameType;},function(v){
       currentFrameType=v;Q.frameType=v;
       document.getElementById('psRow').style.display=v==='post'?'':'none';
+      if(window._customerMode) custUpdateConcreteOptions();
       scheduleBuild();
     });
 }
@@ -2704,6 +2716,8 @@ function renderSheds(){
   if(document.getElementById('exConcrete') && document.getElementById('exConcrete').checked){
     renderConcreteOpts();
   }
+  // Customer mode: rebuild shed concrete selectors when sheds change
+  if(window._customerMode) custRenderShedConcrete();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -3193,14 +3207,113 @@ async function submitCustomerDesign() {
   }
 }
 
-// ── Customer Specs helpers ────────────────────────────────────────
-// These mirror the salesman fields into the hidden salesman inputs
-// so serializeConfig() captures them correctly without any changes.
+// ── Customer Concrete helpers ─────────────────────────────────────
+// Maps customer-friendly selections to the salesman fields
+// (st_mainConcrete, st_postsOnTop, st_ssConcrete, st_ss2Concrete)
 
+// Options available for stud frame — no in-ground posts
+var CUST_CONCRETE_OPTS_STUD = [
+  {val:'None',    label:'No Concrete'},
+  {val:'4_ontop', label:'4" — Footers, Posts Mounted On Top'},
+  {val:'6_ontop', label:'6" — Footers, Posts Mounted On Top'},
+];
+var CUST_CONCRETE_OPTS_POST = [
+  {val:'None',      label:'No Concrete'},
+  {val:'4_inground',label:'4" — Posts In-Ground'},
+  {val:'6_inground',label:'6" — Posts In-Ground'},
+  {val:'4_ontop',   label:'4" — Footers, Posts Mounted On Top'},
+  {val:'6_ontop',   label:'6" — Footers, Posts Mounted On Top'},
+];
+
+function _custConcreteMap(val) {
+  // Returns {concrete, postsOnTop}
+  if (!val || val === 'None') return { concrete: 'None', postsOnTop: 'No' };
+  if (val === '4_inground') return { concrete: '4',  postsOnTop: 'No'  };
+  if (val === '6_inground') return { concrete: '6',  postsOnTop: 'No'  };
+  if (val === '4_ontop')    return { concrete: '4 Mono', postsOnTop: 'Yes' };
+  if (val === '6_ontop')    return { concrete: '6 Mono', postsOnTop: 'Yes' };
+  return { concrete: 'None', postsOnTop: 'No' };
+}
+
+function _custConcreteReverseMap(concreteVal, postsOnTopVal) {
+  // Reverse map salesman values back to customer option value
+  if (!concreteVal || concreteVal === 'None') return 'None';
+  var isOnTop = (postsOnTopVal === 'Yes');
+  if (concreteVal === '4' || concreteVal === '4"')  return isOnTop ? '4_ontop' : '4_inground';
+  if (concreteVal === '6' || concreteVal === '6"')  return isOnTop ? '6_ontop' : '6_inground';
+  if (concreteVal.indexOf('4') >= 0) return isOnTop ? '4_ontop' : '4_inground';
+  if (concreteVal.indexOf('6') >= 0) return isOnTop ? '6_ontop' : '6_inground';
+  return 'None';
+}
+
+function custUpdateConcreteOptions() {
+  // Rebuild main building dropdown based on frame type
+  if (!window._customerMode) return;
+  var isStud = (currentFrameType === 'stud');
+  var opts = isStud ? CUST_CONCRETE_OPTS_STUD : CUST_CONCRETE_OPTS_POST;
+  var sel = document.getElementById('cust_mainConcrete');
+  if (!sel) return;
+  var cur = sel.value;
+  sel.innerHTML = opts.map(function(o){
+    return '<option value="'+o.val+'"'+(o.val===cur?' selected':'')+'>'+o.label+'</option>';
+  }).join('');
+  // If current value no longer valid, reset to None
+  if (!opts.find(function(o){return o.val===cur;})) sel.value = 'None';
+  custConcreteChange();
+}
+
+function custConcreteChange() {
+  // Mirror main building selection to salesman fields
+  var sel = document.getElementById('cust_mainConcrete');
+  var val = sel ? sel.value : 'None';
+  var mapped = _custConcreteMap(val);
+  var mc = document.getElementById('st_mainConcrete');
+  if (mc) mc.value = mapped.concrete;
+  var pt = document.getElementById('st_postsOnTop');
+  if (pt) pt.value = mapped.postsOnTop;
+  // Also mirror to shed concrete fields based on shed concrete selects
+  custSyncShedConcrete();
+}
+
+function custSyncShedConcrete() {
+  var sheds = window._shedConfigs || [];
+  sheds.forEach(function(sc, i) {
+    var shedSel = document.getElementById('cust_shedConcrete_' + sc.id);
+    var val = shedSel ? shedSel.value : 'None';
+    var mapped = _custConcreteMap(val);
+    var field = i === 0 ? 'st_ssConcrete' : 'st_ss2Concrete';
+    var el = document.getElementById(field);
+    if (el) el.value = mapped.concrete;
+  });
+}
+
+function custRenderShedConcrete() {
+  if (!window._customerMode) return;
+  var sheds = window._shedConfigs || [];
+  var container = document.getElementById('custShedConcreteList');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!sheds.length) return;
+  var isStud = (currentFrameType === 'stud');
+  var opts = isStud ? CUST_CONCRETE_OPTS_STUD : CUST_CONCRETE_OPTS_POST;
+  sheds.forEach(function(sc, i) {
+    if (i > 1) return; // max 2 sheds
+    var label = sc.label || ('Side Shed ' + (i + 1));
+    var div = document.createElement('div');
+    div.style.marginBottom = '8px';
+    div.innerHTML = '<div style="font-size:9px;color:var(--muted);font-weight:600;margin-bottom:4px;">' + label + '</div>'
+      + '<select id="cust_shedConcrete_' + sc.id + '" onchange="custSyncShedConcrete()" '
+      + 'style="width:100%;font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:\'Outfit\',sans-serif;font-weight:600;color:var(--navy);">'
+      + opts.map(function(o){ return '<option value="'+o.val+'">'+o.label+'</option>'; }).join('')
+      + '</select>';
+    container.appendChild(div);
+  });
+}
+
+// Legacy toggle — kept for any code that still references it
 function custConcreteToggle(on) {
-  // Mirror to salesman concrete field — salesman will choose the exact type
-  var el = document.getElementById('st_mainConcrete');
-  if (el) el.value = on ? '4' : 'None';
+  var sel = document.getElementById('cust_mainConcrete');
+  if (sel) { sel.value = on ? '4_inground' : 'None'; custConcreteChange(); }
 }
 
 function custInsulationChange(val) {
@@ -4867,28 +4980,66 @@ function vpToggleWalls() {
             } else if (isG) {
                 const zo = wd.wall === 'front' ? -0.015 : 0.015;
                 const _mWD = new THREE.MeshBasicMaterial({ color: (wd.doorColor==='Black'?0x1a1a1a:0xf0f2f4), side: THREE.DoubleSide });
-                const pan = new THREE.Mesh(new THREE.PlaneGeometry(dw, dh), _mWD); pan.position.set(center, dh / 2, zP + zo); if (wd.wall === 'back') pan.rotation.y = Math.PI; grps.doors.add(pan);
-                // Trim frame
-                const hd = dw / 2, fz = zP + zo * 1.2;
-                grps.doors.add(mkL([new THREE.Vector3(center - hd, 0, fz), new THREE.Vector3(center - hd, dh, fz), new THREE.Vector3(center + hd, dh, fz), new THREE.Vector3(center + hd, 0, fz)], mTrimLine));
+                const isHalfGlass = wd.type && wd.type.indexOf('1/2 GLASS') >= 0;
+                if (isHalfGlass) {
+                    // Bottom solid panel + top glass panel
+                    const splitY = dh * 0.5;
+                    const mSolid = new THREE.MeshBasicMaterial({ color: (wd.doorColor==='Black'?0x1a1a1a:0xf0f2f4), side: THREE.DoubleSide });
+                    const mGlass = new THREE.MeshBasicMaterial({ color: 0xadd8e6, transparent: true, opacity: 0.45, side: THREE.DoubleSide });
+                    const mFrame = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
+                    const fz = zP + zo; const fz2 = zP + zo * 1.2;
+                    const panBot = new THREE.Mesh(new THREE.PlaneGeometry(dw, splitY), mSolid);
+                    panBot.position.set(center, splitY/2, fz); if(wd.wall==='back') panBot.rotation.y=Math.PI;
+                    grps.doors.add(panBot);
+                    const panTop = new THREE.Mesh(new THREE.PlaneGeometry(dw, splitY), mGlass);
+                    panTop.position.set(center, splitY + splitY/2, fz); if(wd.wall==='back') panTop.rotation.y=Math.PI;
+                    grps.doors.add(panTop);
+                    // Mid rail
+                    const hd2 = dw/2, tb2 = 0.018;
+                    grps.doors.add(mkQ([center-hd2,splitY-tb2,fz2, center+hd2,splitY-tb2,fz2, center+hd2,splitY+tb2,fz2, center-hd2,splitY+tb2,fz2], mFrame));
+                    // Outer frame
+                    grps.doors.add(mkL([new THREE.Vector3(center-hd2,0,fz2),new THREE.Vector3(center-hd2,dh,fz2),new THREE.Vector3(center+hd2,dh,fz2),new THREE.Vector3(center+hd2,0,fz2)], mTrimLine));
+                } else {
+                    const pan = new THREE.Mesh(new THREE.PlaneGeometry(dw, dh), _mWD); pan.position.set(center, dh / 2, zP + zo); if (wd.wall === 'back') pan.rotation.y = Math.PI; grps.doors.add(pan);
+                    // Trim frame
+                    const hd = dw / 2, fz = zP + zo * 1.2;
+                    grps.doors.add(mkL([new THREE.Vector3(center - hd, 0, fz), new THREE.Vector3(center - hd, dh, fz), new THREE.Vector3(center + hd, dh, fz), new THREE.Vector3(center + hd, 0, fz)], mTrimLine));
+                }
                 // Knob — small solid square mesh
                 const knobSize = Math.max(dw * 0.06, 0.018);
-                const knobY = dh * 0.48;
-                const knobX = center + hd * 0.28;
+                const knobY = dh * 0.28;
+                const knobX = center + (dw/2) * 0.28;
                 const mKnob = new THREE.MeshBasicMaterial({ color: 0x8899aa, side: THREE.DoubleSide });
                 const knobMesh = new THREE.Mesh(new THREE.PlaneGeometry(knobSize, knobSize), mKnob);
-                knobMesh.position.set(knobX, knobY, fz + 0.001);
+                knobMesh.position.set(knobX, knobY, zP + (wd.wall==='front'?-0.018:0.018) * 1.2 + 0.001);
                 if (wd.wall === 'back') knobMesh.rotation.y = Math.PI;
                 grps.doors.add(knobMesh);
             } else {
                 const xo = wd.wall === 'left' ? -0.015 : 0.015;
+                const isHalfGlass2 = wd.type && wd.type.indexOf('1/2 GLASS') >= 0;
                 const _mWD2 = new THREE.MeshBasicMaterial({ color: (wd.doorColor==='Black'?0x1a1a1a:0xf0f2f4), side: THREE.DoubleSide });
-                const pan = new THREE.Mesh(new THREE.PlaneGeometry(dw, dh), _mWD2); pan.position.set(xP + xo, dh / 2, center); pan.rotation.y = wd.wall === 'left' ? Math.PI / 2 : -Math.PI / 2; grps.doors.add(pan);
                 const xf2 = xP + xo * 1.2;
-                grps.doors.add(mkL([new THREE.Vector3(xf2, 0, center - dw / 2), new THREE.Vector3(xf2, dh, center - dw / 2), new THREE.Vector3(xf2, dh, center + dw / 2), new THREE.Vector3(xf2, 0, center + dw / 2)], mTrimLine));
+                if (isHalfGlass2) {
+                    const splitY2 = dh * 0.5;
+                    const mSolid2 = new THREE.MeshBasicMaterial({ color: (wd.doorColor==='Black'?0x1a1a1a:0xf0f2f4), side: THREE.DoubleSide });
+                    const mGlass2 = new THREE.MeshBasicMaterial({ color: 0xadd8e6, transparent: true, opacity: 0.45, side: THREE.DoubleSide });
+                    const mFrame2 = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
+                    const panBot2 = new THREE.Mesh(new THREE.PlaneGeometry(dw, splitY2), mSolid2);
+                    panBot2.position.set(xP+xo, splitY2/2, center); panBot2.rotation.y = wd.wall==='left'?Math.PI/2:-Math.PI/2;
+                    grps.doors.add(panBot2);
+                    const panTop2 = new THREE.Mesh(new THREE.PlaneGeometry(dw, splitY2), mGlass2);
+                    panTop2.position.set(xP+xo, splitY2+splitY2/2, center); panTop2.rotation.y = wd.wall==='left'?Math.PI/2:-Math.PI/2;
+                    grps.doors.add(panTop2);
+                    const hd3=dw/2, tb3=0.018;
+                    grps.doors.add(mkQ([xf2,splitY2-tb3,center-hd3, xf2,splitY2-tb3,center+hd3, xf2,splitY2+tb3,center+hd3, xf2,splitY2+tb3,center-hd3], mFrame2));
+                    grps.doors.add(mkL([new THREE.Vector3(xf2,0,center-dw/2),new THREE.Vector3(xf2,dh,center-dw/2),new THREE.Vector3(xf2,dh,center+dw/2),new THREE.Vector3(xf2,0,center+dw/2)], mTrimLine));
+                } else {
+                    const pan2 = new THREE.Mesh(new THREE.PlaneGeometry(dw, dh), _mWD2); pan2.position.set(xP + xo, dh / 2, center); pan2.rotation.y = wd.wall === 'left' ? Math.PI / 2 : -Math.PI / 2; grps.doors.add(pan2);
+                    grps.doors.add(mkL([new THREE.Vector3(xf2, 0, center - dw / 2), new THREE.Vector3(xf2, dh, center - dw / 2), new THREE.Vector3(xf2, dh, center + dw / 2), new THREE.Vector3(xf2, 0, center + dw / 2)], mTrimLine));
+                }
                 // Knob
                 const knobSize2 = Math.max(dw * 0.06, 0.018);
-                const knobY2 = dh * 0.48;
+                const knobY2 = dh * 0.28;
                 const knobZ2 = center + (dw / 2) * (wd.wall === 'left' ? -0.28 : 0.28);
                 const mKnob2 = new THREE.MeshBasicMaterial({ color: 0x8899aa, side: THREE.DoubleSide });
                 const knobMesh2 = new THREE.Mesh(new THREE.PlaneGeometry(knobSize2, knobSize2), mKnob2);
