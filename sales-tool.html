@@ -262,12 +262,12 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
 
 /* ── Desktop/iPad: breakdown bar collapses like mobile — click to open ── */
 @media(min-width:701px){
-  .ps-dropdowns-wrap{display:none;position:fixed;top:44px;left:0;right:0;z-index:198;background:#3a3a3a;border-bottom:2px solid rgba(255,130,0,.2);box-shadow:0 4px 16px rgba(0,0,0,.3);}
-  .ps-dropdowns-wrap.dd-open{display:flex;}
-  /* On desktop all 4 panels are always visible once the wrap is open */
-  .ps-dropdowns-wrap.dd-open .ps-dropdown{display:block;position:static;box-shadow:none;border-bottom:none;flex:1;padding:8px 10px 10px;border-right:1px solid rgba(255,255,255,.07);}
-  .ps-dropdowns-wrap.dd-open .ps-dropdown:last-child{border-right:none;}
-  .ps-chevron{display:inline;}
+  /* Breakdown wrap: always in DOM, collapsed until toggled */
+  .ps-dropdowns-wrap{display:flex;position:fixed;top:44px;left:0;right:0;z-index:198;background:#3a3a3a;border-bottom:2px solid rgba(255,130,0,.2);box-shadow:0 4px 16px rgba(0,0,0,.3);max-height:0;overflow:hidden;transition:max-height .25s ease,border-width .25s ease;border-bottom-width:0;}
+  .ps-dropdowns-wrap.dd-open{max-height:200px;border-bottom-width:2px;}
+  .ps-dropdown{display:block;position:static;box-shadow:none;border-bottom:none;flex:1;padding:8px 10px 10px;border-right:1px solid rgba(255,255,255,.07);}
+  .ps-dropdown:last-child{border-right:none;}
+  .ps-chevron{display:none;}
   .ps-total-btn{cursor:pointer;}
   .shell{padding-top:44px;}
 }
@@ -7358,28 +7358,23 @@ function togglePsDropdown(id) {
   var wrap   = document.querySelector('.ps-dropdowns-wrap');
   var panels = document.querySelectorAll('.ps-dropdown');
   var btns   = document.querySelectorAll('.ps-total-btn');
-  var isDesktop = window.innerWidth > 700;
+  var target = document.getElementById(id);
 
-  if (isDesktop) {
-    // Desktop: any price button toggles the whole breakdown bar open/closed
-    var wrapOpen = wrap && wrap.classList.contains('dd-open');
-    panels.forEach(function(p){p.classList.remove('open');});
+  if (window.innerWidth > 700) {
+    // Desktop: any price button toggles the whole wrap open/closed
+    var isOpen = wrap && wrap.classList.contains('dd-open');
     btns.forEach(function(b){b.classList.remove('active');});
-    if (wrap) wrap.classList.remove('dd-open');
-    if (!wrapOpen) {
-      // Open — show all panels, mark the clicked button active
+    if (isOpen) {
+      if (wrap) wrap.classList.remove('dd-open');
+    } else {
       if (wrap) wrap.classList.add('dd-open');
+      // Highlight the clicked button
       var clickedIdx = ['psd_stud','psd_oh','psd_nooh','psd_steel'].indexOf(id);
-      var allBtns = document.querySelectorAll('.ps-total-btn');
-      if (allBtns[clickedIdx]) allBtns[clickedIdx].classList.add('active');
-    }
-    adjustShellForBreakdownBar();
-    // Close on outside click
-    if (!wrapOpen) {
+      if (btns[clickedIdx]) btns[clickedIdx].classList.add('active');
+      // Close on outside click
       setTimeout(function(){
         function outsideClickD(e){
           if (!e.target.closest('.ps-dropdowns-wrap') && !e.target.closest('.ps-total-btn')) {
-            panels.forEach(function(p){p.classList.remove('open');});
             btns.forEach(function(b){b.classList.remove('active');});
             if (wrap) wrap.classList.remove('dd-open');
             adjustShellForBreakdownBar();
@@ -7389,11 +7384,11 @@ function togglePsDropdown(id) {
         document.addEventListener('click', outsideClickD);
       }, 0);
     }
+    adjustShellForBreakdownBar();
     return;
   }
 
   // Mobile: toggle individual panel
-  var target = document.getElementById(id);
   var isOpen = target && target.classList.contains('open');
   panels.forEach(function(p){p.classList.remove('open');});
   btns.forEach(function(b){b.classList.remove('active');});
@@ -7402,22 +7397,21 @@ function togglePsDropdown(id) {
     target.classList.add('open');
     if (wrap) wrap.classList.add('dd-open');
     var idx = ['psd_stud','psd_oh','psd_nooh','psd_steel'].indexOf(id);
-    var allBtns = document.querySelectorAll('.ps-total-btn');
-    if (allBtns[idx]) allBtns[idx].classList.add('active');
+    if (btns[idx]) btns[idx].classList.add('active');
+    setTimeout(function(){
+      function outsideClick(e){
+        if (!e.target.closest('.ps-dropdown') && !e.target.closest('.ps-total-btn')) {
+          panels.forEach(function(p){p.classList.remove('open');});
+          btns.forEach(function(b){b.classList.remove('active');});
+          if (wrap) wrap.classList.remove('dd-open');
+          adjustShellForBreakdownBar();
+          document.removeEventListener('click', outsideClick);
+        }
+      }
+      document.addEventListener('click', outsideClick);
+    }, 0);
   }
   adjustShellForBreakdownBar();
-  setTimeout(function(){
-    function outsideClick(e){
-      if (!e.target.closest('.ps-dropdown') && !e.target.closest('.ps-total-btn') && !e.target.closest('.ps-dropdowns-wrap')) {
-        panels.forEach(function(p){p.classList.remove('open');});
-        btns.forEach(function(b){b.classList.remove('active');});
-        if (wrap) wrap.classList.remove('dd-open');
-        adjustShellForBreakdownBar();
-        document.removeEventListener('click', outsideClick);
-      }
-    }
-    document.addEventListener('click', outsideClick);
-  }, 0);
 }
 
 function togglePriceStrip() {
@@ -8673,14 +8667,14 @@ function buildPricePayload(calcType) {
   if (calcType === 'StudFramed') {
     // For stud frame, plain 4"/6" concrete must be sent as 4 mono/6 mono.
     // Sanitize at payload time so stale select values never reach the sheet wrong.
-    function _studConcrete(id) {
+    var _studConcrete = function(id) {
       var v = (document.getElementById(id)||{}).value || 'None';
       if (v === '4')         return '4 mono';
       if (v === '6')         return '6 mono';
       if (v === '4 OMT')     return '4 mono omt';
       if (v === '6 OMT')     return '6 mono omt';
       return v;
-    }
+    };
     return Object.assign({
       action: 'calculate',
       calculatorType: 'StudFramed',
@@ -8848,8 +8842,9 @@ function adjustShellForBreakdownBar() {
   }
   if (window.innerWidth <= 700) return;
   var wrap = document.querySelector('.ps-dropdowns-wrap');
-  // Breakdown bar only takes space when it's open
-  var breakH = (wrap && wrap.classList.contains('dd-open')) ? wrap.offsetHeight : 0;
+  // Only count height when the bar is open (max-height transition means offsetHeight
+  // reads 0 when closed, actual height when open — no extra logic needed)
+  var breakH = wrap ? wrap.offsetHeight : 0;
   document.body.style.setProperty('--breakdown-bar-h', breakH + 'px');
   var ib = document.getElementById('inputsBar');
   var ibH = (ib && ib.classList.contains('visible')) ? ib.offsetHeight : 0;
