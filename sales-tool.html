@@ -4029,8 +4029,17 @@ function vpToggleWalls() {
             else if (sPos === 'end') { sOff = mwl - sLen; }
             else if (sPos === 'custom') { sOff = Math.max(0, Math.min(sc.offsetFt || 0, mwl - sLen)); }
             else { sOff = (mwl - sLen) / 2; }
-            const slabOff = (sOff + sLen / 2 - mwl / 2) * Sc;
-            const slabL = ssl;
+            let slabOff = (sOff + sLen / 2 - mwl / 2) * Sc;
+            let slabL = ssl;
+            if (sc.type === 'wrap') {
+                const _fwFt2 = isEW ? Q.l : Q.w;
+                const _pFt2  = Math.min(sc.l, _fwFt2);
+                if (_pFt2 < _fwFt2) {
+                    slabL = _pFt2 * Sc;
+                    const _fwSc2 = _fwFt2 * Sc;
+                    slabOff = sc.wrapDir === 'ccw' ? (_fwSc2/2 - slabL/2) : (-_fwSc2/2 + slabL/2);
+                }
+            }
 
             if (!(concreteOn && conAreas['shed_'+sc.id])) return; // no concrete — grass shows
 
@@ -4291,6 +4300,18 @@ function vpToggleWalls() {
             // Shed center offset from wall center (in scene units)
             const shedCenterOff = (shedOffFt + shedLen / 2 - mainWallLen / 2) * Sc;
 
+            // For partial wrap, compute effective primary leg length and center offset
+            let _wrapEffSsl = ssl, _wrapEffSco = shedCenterOff;
+            if (sc.type === 'wrap') {
+                const _fwFt = isEaveWall ? Q.l : Q.w;
+                const _pFt  = Math.min(sc.l, _fwFt);
+                if (_pFt < _fwFt) {
+                    _wrapEffSsl = _pFt * Sc;
+                    const _fwSc = _fwFt * Sc;
+                    _wrapEffSco = sc.wrapDir === 'ccw' ? (_fwSc/2 - _wrapEffSsl/2) : (-_fwSc/2 + _wrapEffSsl/2);
+                }
+            }
+
             // Place posts along the shed's length only (not full wall)
             function addPostLineAligned(oX, oZ, isAlongZ, shedLength, wallPS, postH, customCenterOff) {
                 const h = postH || shedSh;
@@ -4352,8 +4373,8 @@ function vpToggleWalls() {
                 // Wrap: posts along primary leg + secondary leg(s) + corner post(s) at hip
                 if (sc.wall === 'left' || sc.wall === 'right') {
                     const oX = sc.wall === 'left' ? -sw/2 - ssw : sw/2 + ssw;
-                    // Primary leg posts along shed length
-                    addPostLineAligned(oX, 0, true, sc.l, attachPS);
+                    // Primary leg posts — use partial length/offset for wrap type
+                    addPostLineAligned(oX, _wrapEffSco, true, sc.type==='wrap' ? _wrapEffSsl/Sc : sc.l, attachPS, undefined, _wrapEffSco);
                     const wrapWallCfgF = wallCfgs.find(w => w.id === 'front');
                     const wrapWallCfgB = wallCfgs.find(w => w.id === 'back');
                     const wrapPSF = wrapWallCfgF ? wrapWallCfgF.postSpacing : (Q.postSpacing || 10);
@@ -4407,13 +4428,8 @@ function vpToggleWalls() {
                     } // end else (2-sided wrap eave)
                 } else {
                     const oZ = sc.wall === 'front' ? -sl/2 - ssw : sl/2 + ssw;
-                    // Primary leg posts — position from corner using wrapSco offset
-                    const _mWLenPost = Q.w;
-                    const _pLenPost = Math.min(sc.l, _mWLenPost);
-                    const _cEndPost = sc.wrapDir === 'cw' ? 'start' : 'end';
-                    const _wOffPost = _cEndPost === 'start' ? 0 : _mWLenPost - _pLenPost;
-                    const _wScoPost = (_wOffPost + _pLenPost/2 - _mWLenPost/2) * Sc;
-                    addPostLineAligned(_wScoPost, oZ, false, sc.l, attachPS);
+                    // Primary leg posts — use partial length/offset for wrap type
+                    addPostLineAligned(_wrapEffSco, oZ, false, sc.type==='wrap' ? _wrapEffSsl/Sc : sc.l, attachPS, undefined, _wrapEffSco);
                     if (sc.type === 'wrap3') {
                         // Both eave sides
                         const oXL = -sw/2 - ssw, oXR = sw/2 + ssw;
@@ -5723,6 +5739,18 @@ function vpToggleWalls() {
             else { shedOffFt = (mainWallLen - shedLen) / 2; }
             const sco = (shedOffFt + shedLen / 2 - mainWallLen / 2) * Sc; // shed center offset
 
+            // For partial wrap: effective ssl/sco clips primary leg to sc.l at corner
+            let _effSsl = ssl, _effSco = sco;
+            if (sc.type === 'wrap') {
+                const _fwFt = mainWallLen;
+                const _pFt  = Math.min(sc.l, _fwFt);
+                if (_pFt < _fwFt) {
+                    _effSsl = _pFt * Sc;
+                    const _fwSc = _fwFt * Sc;
+                    _effSco = sc.wrapDir === 'ccw' ? (_fwSc/2 - _effSsl/2) : (-_fwSc/2 + _effSsl/2);
+                }
+            }
+
             // Lean-to heights: attachment at main eave minus drop, outer edge from pitch
             const ltPitch = sc.ltPitch || 1;
             const dropH = (sc.dropFt || 0) * Sc;
@@ -5767,220 +5795,127 @@ function vpToggleWalls() {
             if (sc.type === 'leanto') {
                 addLeanto(sc.wall, ssw, ssl);
             } else if (sc.type === 'wrap' || sc.type === 'wrap3') {
-                // ── WRAP / WRAP3 SHED ROOF ──────────────────────────────────────────────
-                // Coordinate system: building center = (0,0,0)
-                //   X axis = building width (left=-sw/2, right=+sw/2)
-                //   Z axis = building length (front=-sl/2, back=+sl/2)
-                //   Y axis = height
-                //
-                // sc.wall    = which building wall the shed attaches to (primary wall)
-                // sc.wrapDir = which corner to wrap around (cw=front/left, ccw=back/right)
-                // sc.l       = primary leg length in feet
-                // sc.wrapLeg = secondary leg length in feet
-                // ssw        = shed width in scene units (sc.w * Sc)
-                // attachH    = Y where shed meets building wall
-                // outerH     = Y at outer shed edge (attachH minus pitch drop)
-                // oh         = overhang in scene units
-                //
-                // PRIMARY LEG: runs along sc.wall, length sc.l, anchored at wrap corner
-                // SECONDARY LEG: runs along perpendicular wall from corner, length sc.wrapLeg
-                // HIP CORNER: diagonal triangle filling the corner gap
-                // ────────────────────────────────────────────────────────────────────────
-
                 var isEave = (sc.wall === 'left' || sc.wall === 'right');
-                var mShedRoof = new THREE.MeshBasicMaterial({color: pc(roofColorName), side: THREE.DoubleSide});
 
-                // ── Compute primary leg position (always anchored at the wrap corner) ──
-                var pLen, pSco; // pLen = scaled length, pSco = center offset from building center
-                if (sc.type === 'wrap3') {
-                    pLen = isEave ? sl : sw;
-                    pSco = 0;
-                } else {
-                    var fullWall = isEave ? Q.l : Q.w;
-                    var primFt   = Math.min(sc.l, fullWall);
-                    pLen = primFt * Sc;
-                    // Corner: cw=front/left end of wall, ccw=back/right end
-                    // Anchor the primary leg so its far end aligns with the building corner
-                    // For ccw: leg runs from corner inward → center = corner - pLen/2
-                    // For cw:  leg runs from corner inward → center = -corner + pLen/2 (opposite end)
-                    var fullWallSc = fullWall * Sc;  // e.g. 60*Sc for length wall
-                    if (sc.wrapDir === 'ccw') {
-                        // Corner is at +fullWallSc/2; leg center = fullWallSc/2 - pLen/2
-                        pSco = fullWallSc/2 - pLen/2;
-                    } else {
-                        // Corner is at -fullWallSc/2; leg center = -fullWallSc/2 + pLen/2
-                        pSco = -fullWallSc/2 + pLen/2;
+                // For wrap3 or full-wall wrap, use normal addLeanto with ssl/sco
+                // For partial wrap (sc.l < full wall), clip primary leg to sc.l, anchor at corner
+                var _wrapPrimLen = ssl; // default: full wall
+                var _wrapPrimSco = sco; // default: normal offset
+                if (sc.type === 'wrap') {
+                    var _fullWallFt = isEave ? Q.l : Q.w;
+                    var _primFt = Math.min(sc.l, _fullWallFt);
+                    if (_primFt < _fullWallFt) {
+                        _wrapPrimLen = _primFt * Sc;
+                        var _fullWallSc = _fullWallFt * Sc;
+                        // Anchor leg at wrap corner: ccw = high end, cw = low end
+                        _wrapPrimSco = sc.wrapDir === 'ccw'
+                            ? (_fullWallSc/2 - _wrapPrimLen/2)   // right/back corner
+                            : (-_fullWallSc/2 + _wrapPrimLen/2); // left/front corner
                     }
                 }
+                addLeanto(sc.wall, ssw, _wrapPrimLen, _wrapPrimSco);
 
-                // ── Determine secondary wall ──
-                var secWall;
+                // Secondary leg direction
+                var wrapWall;
+                if (isEave) wrapWall = sc.wrapDir === 'cw' ? 'front' : 'back';
+                else        wrapWall = sc.wrapDir === 'cw' ? 'left'  : 'right';
+
+                // wrap3: both ends full-wall secondary legs
                 if (sc.type === 'wrap3') {
-                    secWall = null; // both ends, handled separately
-                } else if (isEave) {
-                    secWall = sc.wrapDir === 'cw' ? 'front' : 'back';
-                } else {
-                    secWall = sc.wrapDir === 'cw' ? 'left' : 'right';
-                }
-
-                // ── Helper: draw one lean-to panel with explicit center offset ──
-                function drawLeantoPanel(wall, sW, panelLen, centerOff) {
-                    var oX2, oZ2, aX2, aZ2, hex = pc(roofColorName);
-                    var oL = oh, oW = oh;
-                    if (wall === 'left') {
-                        oX2 = -sw/2-sW-oW; aX2 = -sw/2;
-                        grps.shed.add(mkQ([oX2,outerH-.01, panelLen/2+centerOff+oL, aX2,attachH-.01, panelLen/2+centerOff+oL,
-                                           aX2,attachH-.01,-panelLen/2+centerOff-oL, oX2,outerH-.01,-panelLen/2+centerOff-oL], mShedRoof));
-                        addShedRoofRibs('left',oX2,aX2,null,null,outerH,attachH,panelLen,centerOff,oL,oW,hex,grps.shed);
-                        grps.shed.add(mkL([new THREE.Vector3(oX2,outerH,-panelLen/2+centerOff-oL),new THREE.Vector3(oX2,outerH, panelLen/2+centerOff+oL)],mHip));
-                        grps.shed.add(mkL([new THREE.Vector3(oX2,outerH,-panelLen/2+centerOff-oL),new THREE.Vector3(aX2,attachH,-panelLen/2+centerOff-oL)],mHip));
-                        grps.shed.add(mkL([new THREE.Vector3(oX2,outerH, panelLen/2+centerOff+oL),new THREE.Vector3(aX2,attachH, panelLen/2+centerOff+oL)],mHip));
-                    } else if (wall === 'right') {
-                        oX2 = sw/2+sW+oW; aX2 = sw/2;
-                        grps.shed.add(mkQ([oX2,outerH-.01,-panelLen/2+centerOff-oL, aX2,attachH-.01,-panelLen/2+centerOff-oL,
-                                           aX2,attachH-.01, panelLen/2+centerOff+oL, oX2,outerH-.01, panelLen/2+centerOff+oL], mShedRoof));
-                        addShedRoofRibs('right',oX2,aX2,null,null,outerH,attachH,panelLen,centerOff,oL,oW,hex,grps.shed);
-                        grps.shed.add(mkL([new THREE.Vector3(oX2,outerH,-panelLen/2+centerOff-oL),new THREE.Vector3(oX2,outerH, panelLen/2+centerOff+oL)],mHip));
-                        grps.shed.add(mkL([new THREE.Vector3(oX2,outerH,-panelLen/2+centerOff-oL),new THREE.Vector3(aX2,attachH,-panelLen/2+centerOff-oL)],mHip));
-                        grps.shed.add(mkL([new THREE.Vector3(oX2,outerH, panelLen/2+centerOff+oL),new THREE.Vector3(aX2,attachH, panelLen/2+centerOff+oL)],mHip));
-                    } else if (wall === 'front') {
-                        oZ2 = -sl/2-sW-oW; aZ2 = -sl/2;
-                        grps.shed.add(mkQ([ panelLen/2+centerOff+oL,outerH-.01,oZ2,  panelLen/2+centerOff+oL,attachH-.01,aZ2,
-                                           -panelLen/2+centerOff-oL,attachH-.01,aZ2, -panelLen/2+centerOff-oL,outerH-.01,oZ2], mShedRoof));
-                        addShedRoofRibs('front',null,null,oZ2,aZ2,outerH,attachH,panelLen,centerOff,oL,oW,hex,grps.shed);
-                        grps.shed.add(mkL([new THREE.Vector3(-panelLen/2+centerOff-oL,outerH,oZ2),new THREE.Vector3( panelLen/2+centerOff+oL,outerH,oZ2)],mHip));
-                        grps.shed.add(mkL([new THREE.Vector3(-panelLen/2+centerOff-oL,outerH,oZ2),new THREE.Vector3(-panelLen/2+centerOff-oL,attachH,aZ2)],mHip));
-                        grps.shed.add(mkL([new THREE.Vector3( panelLen/2+centerOff+oL,outerH,oZ2),new THREE.Vector3( panelLen/2+centerOff+oL,attachH,aZ2)],mHip));
-                    } else { // back
-                        oZ2 = sl/2+sW+oW; aZ2 = sl/2;
-                        grps.shed.add(mkQ([-panelLen/2+centerOff-oL,outerH-.01,oZ2, -panelLen/2+centerOff-oL,attachH-.01,aZ2,
-                                            panelLen/2+centerOff+oL,attachH-.01,aZ2,  panelLen/2+centerOff+oL,outerH-.01,oZ2], mShedRoof));
-                        addShedRoofRibs('back',null,null,oZ2,aZ2,outerH,attachH,panelLen,centerOff,oL,oW,hex,grps.shed);
-                        grps.shed.add(mkL([new THREE.Vector3(-panelLen/2+centerOff-oL,outerH,oZ2),new THREE.Vector3( panelLen/2+centerOff+oL,outerH,oZ2)],mHip));
-                        grps.shed.add(mkL([new THREE.Vector3(-panelLen/2+centerOff-oL,outerH,oZ2),new THREE.Vector3(-panelLen/2+centerOff-oL,attachH,aZ2)],mHip));
-                        grps.shed.add(mkL([new THREE.Vector3( panelLen/2+centerOff+oL,outerH,oZ2),new THREE.Vector3( panelLen/2+centerOff+oL,attachH,aZ2)],mHip));
-                    }
-                }
-
-                // ── Draw primary leg ──
-                drawLeantoPanel(sc.wall, ssw, pLen, pSco);
-
-                // ── Secondary leg and hip corner ──
-                var secLen = (sc.wrapLeg || 0) * Sc;
-
-                function addHipCorner(bX, bZ, oX, oZ) {
-                    // Triangle: building corner at attachH, two outer eave corners at outerH
-                    grps.shed.add(mkQ([
-                        bX, attachH-.01, bZ,
-                        oX, outerH-.01,  bZ,
-                        oX, outerH-.01,  oZ,
-                        bX, outerH-.01,  oZ
-                    ], mShedRoof));
-                    var mHipRidge = new THREE.LineBasicMaterial({color: pc(trimColorName)});
-                    grps.shed.add(mkL([new THREE.Vector3(bX,attachH,bZ), new THREE.Vector3(oX,outerH,oZ)], mHipRidge));
-                }
-
-                if (sc.type === 'wrap3') {
-                    // Both ends — draw secondary panels at both gable/eave ends using full wall span
                     var woh = oh;
                     if (isEave) {
-                        // Primary on eave wall — secondary panels at front and back gables
-                        var outerXp = sc.wall === 'left' ? -sw/2-ssw-woh : sw/2+ssw+woh;
-                        var bldgXp  = sc.wall === 'left' ? -sw/2 : sw/2;
-                        var spanXp  = Math.abs(outerXp - bldgXp); // = ssw+woh
-                        // Front gable secondary
-                        var waZF=-sl/2, woZF=-sl/2-ssw-woh;
-                        grps.shed.add(mkQ([outerXp,outerH-.01,woZF, outerXp,attachH-.01,waZF, bldgXp,attachH-.01,waZF, bldgXp,outerH-.01,woZF], mShedRoof));
-                        grps.shed.add(mkQ([bldgXp,attachH-.01,waZF, -bldgXp,attachH-.01,waZF, -bldgXp,outerH-.01,woZF, bldgXp,outerH-.01,woZF], mShedRoof));
-                        addHipCorner(bldgXp, -sl/2, outerXp, -sl/2-ssw-woh);
-                        // Back gable secondary
-                        var waZB=sl/2, woZB=sl/2+ssw+woh;
-                        grps.shed.add(mkQ([outerXp,outerH-.01,woZB, outerXp,attachH-.01,waZB, bldgXp,attachH-.01,waZB, bldgXp,outerH-.01,woZB], mShedRoof));
-                        grps.shed.add(mkQ([bldgXp,attachH-.01,waZB, -bldgXp,attachH-.01,waZB, -bldgXp,outerH-.01,woZB, bldgXp,outerH-.01,woZB], mShedRoof));
-                        addHipCorner(bldgXp,  sl/2, outerXp,  sl/2+ssw+woh);
+                        var oXp = sc.wall==='left' ? -sw/2-ssw-oh : sw/2+ssw+oh;
+                        var wsZF = sw+oh*2, waZF=-sl/2, woZF=-sl/2-ssw-woh;
+                        grps.shed.add(mkQ([ wsZF/2,outerH-.01,woZF,  wsZF/2,attachH-.01,waZF,
+                                           -wsZF/2,attachH-.01,waZF, -wsZF/2,outerH-.01,woZF], mSh));
+                        grps.shed.add(mkL([new THREE.Vector3(-wsZF/2,outerH,woZF),new THREE.Vector3( wsZF/2,outerH,woZF)],mHip));
+                        grps.shed.add(mkL([new THREE.Vector3(-wsZF/2,outerH,woZF),new THREE.Vector3(-wsZF/2,attachH,waZF)],mHip));
+                        grps.shed.add(mkL([new THREE.Vector3( wsZF/2,outerH,woZF),new THREE.Vector3( wsZF/2,attachH,waZF)],mHip));
+                        var wsZB = sw+oh*2, waZB=sl/2, woZB=sl/2+ssw+woh;
+                        grps.shed.add(mkQ([-wsZB/2,outerH-.01,woZB, -wsZB/2,attachH-.01,waZB,
+                                            wsZB/2,attachH-.01,waZB,  wsZB/2,outerH-.01,woZB], mSh));
+                        grps.shed.add(mkL([new THREE.Vector3(-wsZB/2,outerH,woZB),new THREE.Vector3( wsZB/2,outerH,woZB)],mHip));
+                        grps.shed.add(mkL([new THREE.Vector3(-wsZB/2,outerH,woZB),new THREE.Vector3(-wsZB/2,attachH,waZB)],mHip));
+                        grps.shed.add(mkL([new THREE.Vector3( wsZB/2,outerH,woZB),new THREE.Vector3( wsZB/2,attachH,waZB)],mHip));
+                        addHipCorner(-sw/2,-sl/2,oXp,-sl/2-ssw-oh);
+                        addHipCorner(-sw/2, sl/2,oXp, sl/2+ssw+oh);
                     } else {
-                        // Primary on gable wall — secondary panels at left and right eaves
-                        var outerZp = sc.wall === 'front' ? -sl/2-ssw-woh : sl/2+ssw+woh;
-                        var bldgZp  = sc.wall === 'front' ? -sl/2 : sl/2;
-                        // Left eave secondary
-                        var waXL=-sw/2, woXL=-sw/2-ssw-woh;
-                        grps.shed.add(mkQ([woXL,outerH-.01,outerZp, waXL,attachH-.01,bldgZp, waXL,attachH-.01,-bldgZp, woXL,outerH-.01,-bldgZp], mShedRoof));
-                        addHipCorner(-sw/2, bldgZp, -sw/2-ssw-woh, outerZp);
-                        // Right eave secondary
-                        var waXR=sw/2, woXR=sw/2+ssw+woh;
-                        grps.shed.add(mkQ([woXR,outerH-.01,outerZp, waXR,attachH-.01,bldgZp, waXR,attachH-.01,-bldgZp, woXR,outerH-.01,-bldgZp], mShedRoof));
-                        addHipCorner( sw/2, bldgZp,  sw/2+ssw+woh, outerZp);
+                        var oZp = sc.wall==='front' ? -sl/2-ssw-oh : sl/2+ssw+oh;
+                        var wsXL=sl+oh*2, waXL=-sw/2, woXL=-sw/2-ssw-woh;
+                        grps.shed.add(mkQ([woXL,outerH-.01, wsXL/2, waXL,attachH-.01, wsXL/2,
+                                           waXL,attachH-.01,-wsXL/2, woXL,outerH-.01,-wsXL/2], mSh));
+                        grps.shed.add(mkL([new THREE.Vector3(woXL,outerH,-wsXL/2),new THREE.Vector3(woXL,outerH, wsXL/2)],mHip));
+                        grps.shed.add(mkL([new THREE.Vector3(woXL,outerH,-wsXL/2),new THREE.Vector3(waXL,attachH,-wsXL/2)],mHip));
+                        grps.shed.add(mkL([new THREE.Vector3(woXL,outerH, wsXL/2),new THREE.Vector3(waXL,attachH, wsXL/2)],mHip));
+                        var wsXR=sl+oh*2, waXR=sw/2, woXR=sw/2+ssw+woh;
+                        grps.shed.add(mkQ([woXR,outerH-.01,-wsXR/2, waXR,attachH-.01,-wsXR/2,
+                                           waXR,attachH-.01, wsXR/2, woXR,outerH-.01, wsXR/2], mSh));
+                        grps.shed.add(mkL([new THREE.Vector3(woXR,outerH,-wsXR/2),new THREE.Vector3(woXR,outerH, wsXR/2)],mHip));
+                        grps.shed.add(mkL([new THREE.Vector3(woXR,outerH,-wsXR/2),new THREE.Vector3(waXR,attachH,-wsXR/2)],mHip));
+                        grps.shed.add(mkL([new THREE.Vector3(woXR,outerH, wsXR/2),new THREE.Vector3(waXR,attachH, wsXR/2)],mHip));
+                        addHipCorner(-sw/2,-sl/2,-sw/2-ssw-oh,oZp);
+                        addHipCorner( sw/2,-sl/2, sw/2+ssw+oh,oZp);
                     }
-                } else if (secLen > 0) {
-                    // ── 2-sided partial wrap ──
-                    // The secondary leg attaches to the perpendicular wall and runs from the
-                    // building corner inward by secLen. The outer edge of the secondary is at
-                    // ssw distance from the perpendicular building wall (same as primary outer edge).
-                    // The corner end aligns with the outer edge of the primary leg (ssw from primary wall).
+                }
+
+                // 2-sided partial wrap: secondary leg
+                var secLen = (sc.wrapLeg || 0) * Sc;
+                if (secLen > 0 && sc.type !== 'wrap3') {
                     var woh = oh;
+                    // Building corner coords
+                    var cBX = (sc.wall==='left') ? -sw/2 : (sc.wall==='right') ? sw/2
+                            : (sc.wrapDir==='cw') ? -sw/2 : sw/2;
+                    var cBZ = (sc.wall==='front') ? -sl/2 : (sc.wall==='back') ? sl/2
+                            : (sc.wrapDir==='cw') ? -sl/2 : sl/2;
+                    // Outer corner
+                    var cOX = (sc.wall==='left'||sc.wall==='right')
+                            ? (sc.wall==='left' ? -sw/2-ssw-woh : sw/2+ssw+woh)
+                            : (cBX>0 ? sw/2+ssw+woh : -sw/2-ssw-woh);
+                    var cOZ = (sc.wall==='front'||sc.wall==='back')
+                            ? (sc.wall==='front' ? -sl/2-ssw-woh : sl/2+ssw+woh)
+                            : (cBZ>0 ? sl/2+ssw+woh : -sl/2-ssw-woh);
 
-                    // Corner building coordinates (where the two walls meet)
-                    var cBX, cBZ; // building corner X,Z
-                    if (sc.wall === 'left')  { cBX = -sw/2; cBZ = sc.wrapDir==='cw' ? -sl/2 : sl/2; }
-                    if (sc.wall === 'right') { cBX =  sw/2; cBZ = sc.wrapDir==='cw' ? -sl/2 : sl/2; }
-                    if (sc.wall === 'front') { cBX = sc.wrapDir==='cw' ? -sw/2 : sw/2; cBZ = -sl/2; }
-                    if (sc.wall === 'back')  { cBX = sc.wrapDir==='cw' ? -sw/2 : sw/2; cBZ =  sl/2; }
-
-                    // Outer corner (ssw+oh from primary wall, ssw+oh from secondary wall)
-                    var cOX, cOZ;
-                    if (sc.wall === 'left')  { cOX = -sw/2-ssw-woh; cOZ = cBZ > 0 ?  sl/2+ssw+woh : -sl/2-ssw-woh; }
-                    if (sc.wall === 'right') { cOX =  sw/2+ssw+woh; cOZ = cBZ > 0 ?  sl/2+ssw+woh : -sl/2-ssw-woh; }
-                    if (sc.wall === 'front') { cOX = cBX > 0 ?  sw/2+ssw+woh : -sw/2-ssw-woh; cOZ = -sl/2-ssw-woh; }
-                    if (sc.wall === 'back')  { cOX = cBX > 0 ?  sw/2+ssw+woh : -sw/2-ssw-woh; cOZ =  sl/2+ssw+woh; }
-
-                    // Secondary panel: attaches along perpendicular wall face
-                    // Attachment edge: from building corner (cBX,cBZ) inward by secLen
-                    // Outer edge: at ssw from perpendicular wall, running parallel inward by secLen
-                    // The panel is a proper lean-to quad with correct heights
-                    if (secWall === 'front' || secWall === 'back') {
-                        // Secondary runs along front or back gable wall
-                        // Attachment at Z=±sl/2, spans from cBX inward by secLen along X
-                        var waZ2 = secWall==='front' ? -sl/2 : sl/2;
-                        var woZ2 = secWall==='front' ? -sl/2-ssw-woh : sl/2+ssw+woh;
-                        var dirX = cBX > 0 ? -1 : 1; // inward direction from corner
-                        var x1a = cBX;                // corner X (attachment)
-                        var x2a = cBX + dirX*secLen;  // inner X (attachment)
-                        var x1o = cOX;                // corner X (outer, = cBX ± ssw+woh)
-                        var x2o = cBX + dirX*secLen;  // inner X (outer, same as attachment inner — no overhang on inner end for partial)
-                        // Sloped panel: outer edge at outerH (woZ2), attachment edge at attachH (waZ2)
-                        grps.shed.add(mkQ([
-                            x1o, outerH-.01, woZ2,
-                            x1a, attachH-.01, waZ2,
-                            x2a, attachH-.01, waZ2,
-                            x2o, outerH-.01, woZ2
-                        ], mShedRoof));
+                    if (wrapWall==='front' || wrapWall==='back') {
+                        var waZ2 = wrapWall==='front' ? -sl/2 : sl/2;
+                        var woZ2 = wrapWall==='front' ? -sl/2-ssw-woh : sl/2+ssw+woh;
+                        var dX   = cBX>0 ? -1 : 1;
+                        var x1a=cBX, x2a=cBX+dX*secLen;
+                        var x1o=cOX, x2o=cBX+dX*secLen;
+                        grps.shed.add(mkQ([x1o,outerH-.01,woZ2, x1a,attachH-.01,waZ2,
+                                           x2a,attachH-.01,waZ2, x2o,outerH-.01,woZ2], mSh));
                         grps.shed.add(mkL([new THREE.Vector3(x2o,outerH,woZ2),new THREE.Vector3(x1o,outerH,woZ2)],mHip));
                         grps.shed.add(mkL([new THREE.Vector3(x1o,outerH,woZ2),new THREE.Vector3(x1a,attachH,waZ2)],mHip));
                         grps.shed.add(mkL([new THREE.Vector3(x2o,outerH,woZ2),new THREE.Vector3(x2a,attachH,waZ2)],mHip));
                     } else {
-                        // Secondary runs along left or right eave wall
-                        // Attachment at X=±sw/2, spans from cBZ inward by secLen along Z
-                        var waX2 = secWall==='left' ? -sw/2 : sw/2;
-                        var woX2 = secWall==='left' ? -sw/2-ssw-woh : sw/2+ssw+woh;
-                        var dirZ = cBZ > 0 ? -1 : 1; // inward direction from corner
-                        var z1a = cBZ;                // corner Z (attachment)
-                        var z2a = cBZ + dirZ*secLen;  // inner Z (attachment)
-                        var z1o = cOZ;                // corner Z (outer)
-                        var z2o = cBZ + dirZ*secLen;  // inner Z (outer, parallel to attachment inner)
-                        // Sloped quad: outer edge at outerH, attachment at attachH
-                        grps.shed.add(mkQ([
-                            woX2, outerH-.01, z1o,
-                            waX2, attachH-.01, z1a,
-                            waX2, attachH-.01, z2a,
-                            woX2, outerH-.01, z2o
-                        ], mShedRoof));
+                        var waX2 = wrapWall==='left' ? -sw/2 : sw/2;
+                        var woX2 = wrapWall==='left' ? -sw/2-ssw-woh : sw/2+ssw+woh;
+                        var dZ   = cBZ>0 ? -1 : 1;
+                        var z1a=cBZ, z2a=cBZ+dZ*secLen;
+                        var z1o=cOZ, z2o=cBZ+dZ*secLen;
+                        grps.shed.add(mkQ([woX2,outerH-.01,z1o, waX2,attachH-.01,z1a,
+                                           waX2,attachH-.01,z2a, woX2,outerH-.01,z2o], mSh));
                         grps.shed.add(mkL([new THREE.Vector3(woX2,outerH,z1o),new THREE.Vector3(woX2,outerH,z2o)],mHip));
                         grps.shed.add(mkL([new THREE.Vector3(woX2,outerH,z1o),new THREE.Vector3(waX2,attachH,z1a)],mHip));
                         grps.shed.add(mkL([new THREE.Vector3(woX2,outerH,z2o),new THREE.Vector3(waX2,attachH,z2a)],mHip));
                     }
+                }
 
-                    // Hip corner triangle
-                    addHipCorner(cBX, cBZ, cOX, cOZ);
+                // Hip corner triangle
+                function addHipCorner(bX, bZ, oX, oZ) {
+                    grps.shed.add(mkQ([bX,attachH-.01,bZ, oX,outerH-.01,bZ,
+                                       oX,outerH-.01,oZ,  bX,outerH-.01,oZ], mSh));
+                    var mHR = new THREE.LineBasicMaterial({color:pc(trimColorName)});
+                    grps.shed.add(mkL([new THREE.Vector3(bX,attachH,bZ),new THREE.Vector3(oX,outerH,oZ)],mHR));
+                }
+                if (sc.type !== 'wrap3') {
+                    if      (sc.wall==='left'  && wrapWall==='front') addHipCorner(-sw/2,-sl/2,-sw/2-ssw-oh,-sl/2-ssw-oh);
+                    else if (sc.wall==='left'  && wrapWall==='back')  addHipCorner(-sw/2, sl/2,-sw/2-ssw-oh, sl/2+ssw+oh);
+                    else if (sc.wall==='right' && wrapWall==='front') addHipCorner( sw/2,-sl/2, sw/2+ssw+oh,-sl/2-ssw-oh);
+                    else if (sc.wall==='right' && wrapWall==='back')  addHipCorner( sw/2, sl/2, sw/2+ssw+oh, sl/2+ssw+oh);
+                    else if (sc.wall==='front' && wrapWall==='left')  addHipCorner(-sw/2,-sl/2,-sw/2-ssw-oh,-sl/2-ssw-oh);
+                    else if (sc.wall==='front' && wrapWall==='right') addHipCorner( sw/2,-sl/2, sw/2+ssw+oh,-sl/2-ssw-oh);
+                    else if (sc.wall==='back'  && wrapWall==='left')  addHipCorner(-sw/2, sl/2,-sw/2-ssw-oh, sl/2+ssw+oh);
+                    else if (sc.wall==='back'  && wrapWall==='right') addHipCorner( sw/2, sl/2, sw/2+ssw+oh, sl/2+ssw+oh);
                 }
 
             } else if (sc.type === 'gable') {
@@ -6195,7 +6130,7 @@ function vpToggleWalls() {
                     const _oX = sc.wall==='left' ? -sw/2-ssw : sw/2+ssw;
                     const _aX = sc.wall==='left' ? -sw/2 : sw/2;
                     const _s  = sc.wall==='left' ? -1 : 1;
-                    const _z1 = -ssl/2+sco, _z2 = ssl/2+sco;
+                    const _z1 = -_effSsl/2+_effSco, _z2 = _effSsl/2+_effSco;
                     // Offset outward by 0.028 to cover corner post face (post=0.05 wide)
                     if (!hasWall('gable1')) _drawEndCap(_oX, _aX, _z1 - 0.028,  _s*0.006);
                     if (!hasWall('gable2')) _drawEndCap(_oX, _aX, _z2 + 0.028, -_s*0.006);
@@ -6239,7 +6174,7 @@ function vpToggleWalls() {
                 if (sc.wall === 'left' || sc.wall === 'right') {
                     const _oX = sc.wall==='left' ? -sw/2-ssw : sw/2+ssw;
                     const _s  = sc.wall==='left' ? -1 : 1;
-                    const _z1 = -ssl/2+sco, _z2 = ssl/2+sco;
+                    const _z1 = -_effSsl/2+_effSco, _z2 = _effSsl/2+_effSco;
                     const _hX = _oX + _s*0.028; // just outside post face
                     // Header panel
                     grps.wallPanels.add(mkQ([_hX, hBot, _z1, _hX, hTop, _z1, _hX, hTop, _z2, _hX, hBot, _z2], _hMW));
@@ -6336,7 +6271,7 @@ function vpToggleWalls() {
                     const oX = sc.wall === 'left' ? -sw / 2 - ssw : sw / 2 + ssw;
                     const aX = sc.wall === 'left' ? -sw / 2 : sw / 2;
                     const s = sc.wall === 'left' ? -1 : 1;
-                    const z1 = -ssl/2 + sco, z2 = ssl/2 + sco;
+                    const z1 = -_effSsl/2 + _effSco, z2 = _effSsl/2 + _effSco;
                     // Partial enclosure clipping
                     const enclFt = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt * Sc : null;
                     const enclFrom = sc.enclFrom || 'start';
