@@ -4104,43 +4104,51 @@ function vpToggleWalls() {
         const ps = .05; // post size
         const postPositions = new Set();
         const isStudFrame = currentFrameType === 'stud';
-        const postsOnTop = (document.getElementById('st_postsOnTop')||{}).value === 'Yes';
+        // postsOnTop only applies to post frame (not stud frame)
+        const postsOnTop = !isStudFrame && (document.getElementById('st_postsOnTop')||{}).value === 'Yes';
+        // shed posts on top when a mono concrete is selected for that shed
+        const _ss1ConcreteVal = (document.getElementById('st_ssConcrete')||{}).value || 'None';
+        const _ss2ConcreteVal = (document.getElementById('st_ss2Concrete')||{}).value || 'None';
         const slabH = 0.04; // 4" slab thickness in scene units
-        const postBase = postsOnTop ? slabH : 0; // bottom of post
-        const postH = postsOnTop ? sh - slabH : sh; // post height (doesn't penetrate slab)
+        const postBase = postsOnTop ? slabH : 0;
+        const postH = postsOnTop ? sh - slabH : sh;
 
-        // Materials for bracket
+        // Bracket materials
         const mBracket = new THREE.MeshBasicMaterial({ color: 0x8A9098, side: THREE.DoubleSide });
         const mBracketDark = new THREE.MeshBasicMaterial({ color: 0x5A6268 });
 
-        // Helper: add a post at (x, z) with optional bracket
+        // Helper: draw bracket at (x, z) on a given group, sitting on slab at slabY
+        function addBracket(x, z, group, slabY) {
+            const sy = slabY !== undefined ? slabY : slabH;
+            // Wide base plate
+            const plate = new THREE.Mesh(new THREE.BoxGeometry(ps * 2.8, 0.008, ps * 2.8), mBracket);
+            plate.position.set(x, sy + 0.004, z);
+            group.add(plate);
+            // Two flanges on Z axis (front/back of post — visible from the side)
+            const flange = new THREE.BoxGeometry(ps * 2.4, ps * 0.9, ps * 0.12);
+            const fl1 = new THREE.Mesh(flange, mBracketDark);
+            fl1.position.set(x, sy + ps * 0.45, z - ps * 0.6);
+            group.add(fl1);
+            const fl2 = new THREE.Mesh(flange, mBracketDark);
+            fl2.position.set(x, sy + ps * 0.45, z + ps * 0.6);
+            group.add(fl2);
+            // Anchor bolt stubs
+            const boltGeo = new THREE.BoxGeometry(0.006, 0.018, 0.006);
+            [[-ps*0.7,-ps*0.7],[ps*0.7,-ps*0.7],[-ps*0.7,ps*0.7],[ps*0.7,ps*0.7]].forEach(function(off) {
+                const bolt = new THREE.Mesh(boltGeo, mBracketDark);
+                bolt.position.set(x + off[0], sy - 0.009, z + off[1]);
+                group.add(bolt);
+            });
+        }
+
+        // Helper: add a main building post at (x, z) with optional bracket
         function addMainPost(x, z, postH_, mat) {
             const h = postH_ !== undefined ? postH_ : postH;
             const p = new THREE.Mesh(new THREE.BoxGeometry(ps, h, ps), mat);
             p.position.set(x, postBase + h / 2, z);
             p.castShadow = true;
             grps.mainPosts.add(p);
-            if (postsOnTop) {
-                // Wide base plate sitting on slab
-                const plate = new THREE.Mesh(new THREE.BoxGeometry(ps * 2.8, 0.008, ps * 2.8), mBracket);
-                plate.position.set(x, slabH + 0.004, z);
-                grps.mainPosts.add(plate);
-                // Two side flanges (front and back of post)
-                const flange = new THREE.BoxGeometry(ps * 0.12, ps * 0.9, ps * 2.4);
-                const fl1 = new THREE.Mesh(flange, mBracketDark);
-                fl1.position.set(x - ps * 0.6, slabH + ps * 0.45, z);
-                grps.mainPosts.add(fl1);
-                const fl2 = new THREE.Mesh(flange, mBracketDark);
-                fl2.position.set(x + ps * 0.6, slabH + ps * 0.45, z);
-                grps.mainPosts.add(fl2);
-                // Anchor bolt stubs
-                const boltGeo = new THREE.BoxGeometry(0.006, 0.018, 0.006);
-                [[-ps*0.7, -ps*0.7],[ps*0.7,-ps*0.7],[-ps*0.7,ps*0.7],[ps*0.7,ps*0.7]].forEach(function(off) {
-                    const bolt = new THREE.Mesh(boltGeo, mBracketDark);
-                    bolt.position.set(x + off[0], slabH - 0.009, z + off[1]);
-                    grps.mainPosts.add(bolt);
-                });
-            }
+            if (postsOnTop) addBracket(x, z, grps.mainPosts, slabH);
         }
 
         // Build set of main building corner positions hidden behind shed gable end caps
@@ -4358,17 +4366,26 @@ function vpToggleWalls() {
             }
 
             // Place posts along the shed's length only (not full wall)
+            // Is mono concrete selected for this shed? (index 0 = shed 1, index 1 = shed 2)
+            const _scIdx = (window._shedConfigs||[]).indexOf(sc);
+            const _shedConcreteVal = _scIdx === 0 ? _ss1ConcreteVal : (_scIdx === 1 ? _ss2ConcreteVal : 'None');
+            const _isMono = _shedConcreteVal.toLowerCase().indexOf('mono') >= 0;
+            const shedPostBase = _isMono ? slabH : 0;
+            const shedPostH = _isMono ? shedSh - slabH : shedSh;
+
             function addPostLineAligned(oX, oZ, isAlongZ, shedLength, wallPS, postH, customCenterOff) {
-                const h = postH || shedSh;
+                const h = (postH || shedSh);
+                const hAdj = _isMono ? Math.max(0.01, h - slabH) : h;
                 const cOff = (customCenterOff !== undefined) ? customCenterOff : shedCenterOff;
                 const numBays = Math.max(1, Math.floor(shedLength / wallPS));
                 for (let i = 0; i <= numBays; i++) {
                     const ft = i * (shedLength / numBays);
                     const pos = (-shedLength / 2 + ft) * Sc;
-                    const p = new THREE.Mesh(new THREE.BoxGeometry(ps, h, ps), mP);
-                    if (isAlongZ) p.position.set(oX, h / 2, pos + cOff);
-                    else p.position.set(pos + cOff, h / 2, oZ);
+                    const p = new THREE.Mesh(new THREE.BoxGeometry(ps, hAdj, ps), mP);
+                    if (isAlongZ) { p.position.set(oX, shedPostBase + hAdj / 2, pos + cOff); }
+                    else          { p.position.set(pos + cOff, shedPostBase + hAdj / 2, oZ); }
                     p.castShadow = true; grps.posts.add(p);
+                    if (_isMono) { if (isAlongZ) addBracket(oX, pos + cOff, grps.posts, slabH); else addBracket(pos + cOff, oZ, grps.posts, slabH); }
                 }
             }
 
@@ -4390,11 +4407,14 @@ function vpToggleWalls() {
                         // Skip post at attachment wall (i=0) — main building wall already has posts
                         if (i === 0) continue;
                         // Front side eave post
-                        const pf = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mP);
-                        pf.position.set(xPos, sh/2, z1); pf.castShadow = true; grps.posts.add(pf);
+                        const _pfH = _isMono ? Math.max(0.01, sh - slabH) : sh;
+                        const pf = new THREE.Mesh(new THREE.BoxGeometry(ps, _pfH, ps), mP);
+                        pf.position.set(xPos, shedPostBase + _pfH/2, z1); pf.castShadow = true; grps.posts.add(pf);
+                        if (_isMono) addBracket(xPos, z1, grps.posts, slabH);
                         // Back side eave post
-                        const pb = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mP);
-                        pb.position.set(xPos, sh/2, z2); pb.castShadow = true; grps.posts.add(pb);
+                        const pb = new THREE.Mesh(new THREE.BoxGeometry(ps, _pfH, ps), mP);
+                        pb.position.set(xPos, shedPostBase + _pfH/2, z2); pb.castShadow = true; grps.posts.add(pb);
+                        if (_isMono) addBracket(xPos, z2, grps.posts, slabH);
                     }
                     // No posts across the gable end (outer tip) — clear span
                 } else {
@@ -4408,10 +4428,13 @@ function vpToggleWalls() {
                         const zFt = i * (sc.w / numBays);
                         const zPos = baseZ + dir * zFt * Sc;
                         if (i === 0) continue;
-                        const pl = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mP);
-                        pl.position.set(x1, sh/2, zPos); pl.castShadow = true; grps.posts.add(pl);
-                        const pr = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mP);
-                        pr.position.set(x2, sh/2, zPos); pr.castShadow = true; grps.posts.add(pr);
+                        const _plH = _isMono ? Math.max(0.01, sh - slabH) : sh;
+                        const pl = new THREE.Mesh(new THREE.BoxGeometry(ps, _plH, ps), mP);
+                        pl.position.set(x1, shedPostBase + _plH/2, zPos); pl.castShadow = true; grps.posts.add(pl);
+                        if (_isMono) addBracket(x1, zPos, grps.posts, slabH);
+                        const pr = new THREE.Mesh(new THREE.BoxGeometry(ps, _plH, ps), mP);
+                        pr.position.set(x2, shedPostBase + _plH/2, zPos); pr.castShadow = true; grps.posts.add(pr);
+                        if (_isMono) addBracket(x2, zPos, grps.posts, slabH);
                     }
                 }
             } else if (sc.type === 'wrap' || sc.type === 'wrap3') {
@@ -4434,8 +4457,9 @@ function vpToggleWalls() {
                             addPostLineAligned(0, oZB, false, Q.w, wrapPSB, undefined, 0);
                             // Corner posts
                             [oZF, oZB].forEach(oZ => {
-                                const hipPost = new THREE.Mesh(new THREE.BoxGeometry(ps, shedSh, ps), mP);
-                                hipPost.position.set(oX, shedSh/2, oZ); hipPost.castShadow = true; grps.posts.add(hipPost);
+                                const hipPost = new THREE.Mesh(new THREE.BoxGeometry(ps, _isMono ? Math.max(0.01, shedSh - slabH) : shedSh, ps), mP);
+                        hipPost.position.set(oX, shedPostBase + (_isMono ? Math.max(0.01, shedSh - slabH) : shedSh)/2, oZ); hipPost.castShadow = true; grps.posts.add(hipPost);
+                        if (_isMono) addBracket(oX, oZ, grps.posts, slabH);
                             });
                         }
                     } else {
@@ -4452,23 +4476,26 @@ function vpToggleWalls() {
                         const secPostOffE = bldgCornerXsc + (sc.wall === 'left' ? 1 : -1) * (wrapLegFtE/2) * Sc;
                         addPostLineAligned(0, oZ, false, wrapLegFtE, wrapPS, undefined, secPostOffE);
                         // HIP CORNER POST
-                        const hipPost = new THREE.Mesh(new THREE.BoxGeometry(ps, shedSh, ps), mP);
-                        hipPost.position.set(oX, shedSh/2, oZ); hipPost.castShadow = true; grps.posts.add(hipPost);
+                        const hipPost = new THREE.Mesh(new THREE.BoxGeometry(ps, _isMono ? Math.max(0.01, shedSh - slabH) : shedSh, ps), mP);
+                        hipPost.position.set(oX, shedPostBase + (_isMono ? Math.max(0.01, shedSh - slabH) : shedSh)/2, oZ); hipPost.castShadow = true; grps.posts.add(hipPost);
+                        if (_isMono) addBracket(oX, oZ, grps.posts, slabH);
                         // CORNER VOID POSTS — fill the square where eave and gable sheds meet
                         const cornerNumBays = Math.max(1, Math.floor(sc.w / attachPS));
                         const bldgCornerZ = wrapWall === 'front' ? -sl/2 : sl/2;
                         const zDir = wrapWall === 'front' ? -1 : 1;
                         for (let ci = 1; ci < cornerNumBays; ci++) {
                             const cz = bldgCornerZ + zDir * (ci * sc.w / cornerNumBays) * Sc;
-                            const cp = new THREE.Mesh(new THREE.BoxGeometry(ps, shedSh, ps), mP);
-                            cp.position.set(oX, shedSh/2, cz); cp.castShadow = true; grps.posts.add(cp);
+                            const cp = new THREE.Mesh(new THREE.BoxGeometry(ps, _isMono ? Math.max(0.01, shedSh - slabH) : shedSh, ps), mP);
+                            cp.position.set(oX, shedPostBase + (_isMono ? Math.max(0.01, shedSh - slabH) : shedSh)/2, cz); cp.castShadow = true; grps.posts.add(cp);
+                            if (_isMono) addBracket(oX, cz, grps.posts, slabH);
                         }
                         const bldgCornerX = sc.wall === 'left' ? -sw/2 : sw/2;
                         const xDir = sc.wall === 'left' ? -1 : 1;
                         for (let ci = 1; ci < cornerNumBays; ci++) {
                             const cx = bldgCornerX + xDir * (ci * sc.w / cornerNumBays) * Sc;
-                            const cp = new THREE.Mesh(new THREE.BoxGeometry(ps, shedSh, ps), mP);
-                            cp.position.set(cx, shedSh/2, oZ); cp.castShadow = true; grps.posts.add(cp);
+                            const cp = new THREE.Mesh(new THREE.BoxGeometry(ps, _isMono ? Math.max(0.01, shedSh - slabH) : shedSh, ps), mP);
+                            cp.position.set(cx, shedPostBase + (_isMono ? Math.max(0.01, shedSh - slabH) : shedSh)/2, oZ); cp.castShadow = true; grps.posts.add(cp);
+                            if (_isMono) addBracket(cx, oZ, grps.posts, slabH);
                         }
                     }
                     } // end else (2-sided wrap eave)
@@ -4485,8 +4512,9 @@ function vpToggleWalls() {
                         addPostLineAligned(oXL, 0, true, Q.l, wrapPSL, undefined, 0);
                         addPostLineAligned(oXR, 0, true, Q.l, wrapPSR, undefined, 0);
                         [oXL, oXR].forEach(oX => {
-                            const hipPost = new THREE.Mesh(new THREE.BoxGeometry(ps, shedSh, ps), mP);
-                            hipPost.position.set(oX, shedSh/2, oZ); hipPost.castShadow = true; grps.posts.add(hipPost);
+                            const hipPost = new THREE.Mesh(new THREE.BoxGeometry(ps, _isMono ? Math.max(0.01, shedSh - slabH) : shedSh, ps), mP);
+                        hipPost.position.set(oX, shedPostBase + (_isMono ? Math.max(0.01, shedSh - slabH) : shedSh)/2, oZ); hipPost.castShadow = true; grps.posts.add(hipPost);
+                        if (_isMono) addBracket(oX, oZ, grps.posts, slabH);
                         });
                     } else {
                         const secLen = (sc.wrapLeg || 0) * Sc;
@@ -4502,22 +4530,25 @@ function vpToggleWalls() {
                             // Center of secondary post line = corner + (inward direction) * wrapLeg/2
                             const secPostOff = bldgCornerZsc + (sc.wall === 'front' ? 1 : -1) * (wrapLegFt/2) * Sc;
                             addPostLineAligned(oX, 0, true, wrapLegFt, wrapPS, undefined, secPostOff);
-                            const hipPost = new THREE.Mesh(new THREE.BoxGeometry(ps, shedSh, ps), mP);
-                            hipPost.position.set(oX, shedSh/2, oZ); hipPost.castShadow = true; grps.posts.add(hipPost);
+                            const hipPost = new THREE.Mesh(new THREE.BoxGeometry(ps, _isMono ? Math.max(0.01, shedSh - slabH) : shedSh, ps), mP);
+                        hipPost.position.set(oX, shedPostBase + (_isMono ? Math.max(0.01, shedSh - slabH) : shedSh)/2, oZ); hipPost.castShadow = true; grps.posts.add(hipPost);
+                        if (_isMono) addBracket(oX, oZ, grps.posts, slabH);
                             const cornerNumBays = Math.max(1, Math.floor(sc.w / attachPS));
                             const bldgCornerX = wrapWall === 'left' ? -sw/2 : sw/2;
                             const xDir = wrapWall === 'left' ? -1 : 1;
                             for (let ci = 1; ci < cornerNumBays; ci++) {
                                 const cx = bldgCornerX + xDir * (ci * sc.w / cornerNumBays) * Sc;
-                                const cp = new THREE.Mesh(new THREE.BoxGeometry(ps, shedSh, ps), mP);
-                                cp.position.set(cx, shedSh/2, oZ); cp.castShadow = true; grps.posts.add(cp);
+                                const cp = new THREE.Mesh(new THREE.BoxGeometry(ps, _isMono ? Math.max(0.01, shedSh - slabH) : shedSh, ps), mP);
+                            cp.position.set(cx, shedPostBase + (_isMono ? Math.max(0.01, shedSh - slabH) : shedSh)/2, oZ); cp.castShadow = true; grps.posts.add(cp);
+                            if (_isMono) addBracket(cx, oZ, grps.posts, slabH);
                             }
                             const bldgCornerZ = sc.wall === 'front' ? -sl/2 : sl/2;
                             const zDir = sc.wall === 'front' ? -1 : 1;
                             for (let ci = 1; ci < cornerNumBays; ci++) {
                                 const cz = bldgCornerZ + zDir * (ci * sc.w / cornerNumBays) * Sc;
-                                const cp = new THREE.Mesh(new THREE.BoxGeometry(ps, shedSh, ps), mP);
-                                cp.position.set(oX, shedSh/2, cz); cp.castShadow = true; grps.posts.add(cp);
+                                const cp = new THREE.Mesh(new THREE.BoxGeometry(ps, _isMono ? Math.max(0.01, shedSh - slabH) : shedSh, ps), mP);
+                            cp.position.set(oX, shedPostBase + (_isMono ? Math.max(0.01, shedSh - slabH) : shedSh)/2, cz); cp.castShadow = true; grps.posts.add(cp);
+                            if (_isMono) addBracket(oX, cz, grps.posts, slabH);
                             }
                         }
                     }
