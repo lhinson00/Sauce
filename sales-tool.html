@@ -3966,19 +3966,18 @@ function vpToggleWalls() {
             const mShadow = new THREE.MeshBasicMaterial({color:shCol,side:THREE.DoubleSide,transparent:true,opacity:0.65});
             const rSp = 0.075, rW = 0.005;
             const isEW = (wall==='left'||wall==='right');
-            const loZ = (isEW ? -sL/2+sco-ohL : -sL/2+sco-ohL);
-            const hiZ = (isEW ?  sL/2+sco+ohL :  sL/2+sco+ohL);
-            for (let v = (isEW?loZ:oX+(oX<aX?0:-(hiZ-loZ))); v <= (isEW?hiZ:aX+(oX<aX?(hiZ-loZ):0)); v += rSp) {
+            // loZ/hiZ = shed extent along the parallel axis (Z for eave walls, X for gable walls)
+            const loZ = -sL/2 + sco - ohL;
+            const hiZ =  sL/2 + sco + ohL;
+            for (let v = loZ; v <= hiZ; v += rSp) {
                 if (isEW) {
-                    // Slope goes from oX@outerH to aX@attachH along Z ribs
-                    const t0 = (v-loZ)/(hiZ-loZ), t1 = (v+rW-loZ)/(hiZ-loZ);
-                    const t2 = (v+rW*2-loZ)/(hiZ-loZ);
-                    const y0=outerH+(attachH-outerH)*t0, y1=outerH+(attachH-outerH)*t1, y2=outerH+(attachH-outerH)*t2;
-                    // Rib along X slope at this Z slice
+                    // Eave wall shed: slope oX→aX, ribs run along Z
+                    const t0 = (v-loZ)/(hiZ-loZ);
+                    const y0 = outerH + (attachH-outerH)*t0;
                     group.add(mkQ([oX,y0-0.004,v, aX,attachH-0.004,v, aX,attachH-0.004,v+rW, oX,y0-0.004,v+rW], mHi));
                     group.add(mkQ([oX,y0-0.004,v+rW, aX,attachH-0.004,v+rW, aX,attachH-0.004,v+rW*2, oX,y0-0.004,v+rW*2], mShadow));
                 } else {
-                    // Slope goes from oZ@outerH to aZ@attachH along X ribs
+                    // Gable wall shed: slope oZ→aZ, ribs run along X — v is the X position
                     group.add(mkQ([v,outerH-0.004,oZ, v+rW,outerH-0.004,oZ, v+rW,attachH-0.004,aZ, v,attachH-0.004,aZ], mHi));
                     group.add(mkQ([v+rW,outerH-0.004,oZ, v+rW*2,outerH-0.004,oZ, v+rW*2,attachH-0.004,aZ, v+rW,attachH-0.004,aZ], mShadow));
                 }
@@ -4105,6 +4104,44 @@ function vpToggleWalls() {
         const ps = .05; // post size
         const postPositions = new Set();
         const isStudFrame = currentFrameType === 'stud';
+        const postsOnTop = (document.getElementById('st_postsOnTop')||{}).value === 'Yes';
+        const slabH = 0.04; // 4" slab thickness in scene units
+        const postBase = postsOnTop ? slabH : 0; // bottom of post
+        const postH = postsOnTop ? sh - slabH : sh; // post height (doesn't penetrate slab)
+
+        // Materials for bracket
+        const mBracket = new THREE.MeshBasicMaterial({ color: 0x8A9098, side: THREE.DoubleSide });
+        const mBracketDark = new THREE.MeshBasicMaterial({ color: 0x5A6268 });
+
+        // Helper: add a post at (x, z) with optional bracket
+        function addMainPost(x, z, postH_, mat) {
+            const h = postH_ !== undefined ? postH_ : postH;
+            const p = new THREE.Mesh(new THREE.BoxGeometry(ps, h, ps), mat);
+            p.position.set(x, postBase + h / 2, z);
+            p.castShadow = true;
+            grps.mainPosts.add(p);
+            if (postsOnTop) {
+                // Wide base plate sitting on slab
+                const plate = new THREE.Mesh(new THREE.BoxGeometry(ps * 2.8, 0.008, ps * 2.8), mBracket);
+                plate.position.set(x, slabH + 0.004, z);
+                grps.mainPosts.add(plate);
+                // Two side flanges (front and back of post)
+                const flange = new THREE.BoxGeometry(ps * 0.12, ps * 0.9, ps * 2.4);
+                const fl1 = new THREE.Mesh(flange, mBracketDark);
+                fl1.position.set(x - ps * 0.6, slabH + ps * 0.45, z);
+                grps.mainPosts.add(fl1);
+                const fl2 = new THREE.Mesh(flange, mBracketDark);
+                fl2.position.set(x + ps * 0.6, slabH + ps * 0.45, z);
+                grps.mainPosts.add(fl2);
+                // Anchor bolt stubs
+                const boltGeo = new THREE.BoxGeometry(0.006, 0.018, 0.006);
+                [[-ps*0.7, -ps*0.7],[ps*0.7,-ps*0.7],[-ps*0.7,ps*0.7],[ps*0.7,ps*0.7]].forEach(function(off) {
+                    const bolt = new THREE.Mesh(boltGeo, mBracketDark);
+                    bolt.position.set(x + off[0], slabH - 0.009, z + off[1]);
+                    grps.mainPosts.add(bolt);
+                });
+            }
+        }
 
         // Build set of main building corner positions hidden behind shed gable end caps
         const _shedCoveredCorners = new Set();
@@ -4192,8 +4229,7 @@ function vpToggleWalls() {
             [[-sw/2, -sl/2], [-sw/2, sl/2], [sw/2, -sl/2], [sw/2, sl/2]].forEach(([x, z]) => {
                 const key = Math.round(x*1000) + ',' + Math.round(z*1000);
                 if (_shedCoveredCorners.has(key)) return; // hidden behind shed gable cap
-                const cp = new THREE.Mesh(new THREE.BoxGeometry(cornerPS, sh, cornerPS), mPencl);
-                cp.position.set(x, sh / 2, z); cp.castShadow = true; grps.mainPosts.add(cp);
+                addMainPost(x, z, postsOnTop ? sh - slabH : sh, mPencl);
             });
 
         } else {
@@ -4227,8 +4263,7 @@ function vpToggleWalls() {
                     if (!postPositions.has(key) && !_shedCoveredCorners.has(key)) {
                         postPositions.add(key);
                         const mPeave = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
-                        const p = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mPeave);
-                        p.position.set(xSide, sh / 2, z); p.castShadow = true; grps.mainPosts.add(p);
+                        addMainPost(xSide, z, postH, mPeave);
                     }
                 }
 
@@ -4241,8 +4276,7 @@ function vpToggleWalls() {
                         if (!postPositions.has(key)) {
                             postPositions.add(key);
                             const mPeave = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
-                            const p = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mPeave);
-                            p.position.set(xSide, sh / 2, z); p.castShadow = true; grps.mainPosts.add(p);
+                            addMainPost(xSide, z, postH, mPeave);
                         }
                     });
                 });
@@ -4269,8 +4303,7 @@ function vpToggleWalls() {
                     const distC = Math.abs(xFt - Q.w / 2);
                     const pH = (Q.h + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc;
                     const mPgable = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
-                    const p = new THREE.Mesh(new THREE.BoxGeometry(ps, pH, ps), mPgable);
-                    p.position.set(xPos, pH / 2, zPos); p.castShadow = true; grps.mainPosts.add(p);
+                    addMainPost(xPos, zPos, pH, mPgable);
                 }
 
                 // Jamb posts at each door edge
@@ -4284,8 +4317,7 @@ function vpToggleWalls() {
                             const distC = Math.abs(posFt - Q.w / 2);
                             const pH = (Q.h + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc;
                             const mPgable = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
-                            const p = new THREE.Mesh(new THREE.BoxGeometry(ps, pH, ps), mPgable);
-                            p.position.set(xPos, pH / 2, zPos); p.castShadow = true; grps.mainPosts.add(p);
+                            addMainPost(xPos, zPos, pH, mPgable);
                         }
                     });
                 });
