@@ -6768,6 +6768,31 @@ async function generateQuotePDF() {
   var J = window.jspdf && window.jspdf.jsPDF;
   if (!J) { alert('PDF library not loaded. Please wait and try again.'); return; }
 
+  // ── Pre-encode 3D link FIRST (only await in this function) ──
+  // Must happen before blob creation so blob+share are synchronous (iOS gesture chain)
+  var configLink3d = '';
+  try {
+    var _cfg3d = serializeConfig();
+    var _cu3d = window.currentUser || {};
+    _cfg3d._viewData = {
+      pricingResults: {
+        totalOH:    (window._lastPriceOH||{}).total    ? fmtPriceFull((window._lastPriceOH||{}).total)    : '',
+        totalNoOH:  (window._lastPriceNoOH||{}).total  ? fmtPriceFull((window._lastPriceNoOH||{}).total)  : '',
+        totalSteel: (window._lastPriceSteel||{}).total ? fmtPriceFull((window._lastPriceSteel||{}).total) : '',
+        totalStud:  (window._lastPriceStud||{}).total  ? fmtPriceFull((window._lastPriceStud||{}).total)  : '',
+        total:      (window._lastPriceOH||{}).total    ? fmtPriceFull((window._lastPriceOH||{}).total)    : ''
+      },
+      salesmanName:    _cu3d.fullName  || _cu3d.username || '',
+      salesmanPhone:   _cu3d.phone    || '',
+      salesmanEmail:   _cu3d.email    || '',
+      salesmanCompany: _cu3d.company  || ''
+    };
+    var _enc3d = await safeEncodeCompressed(_cfg3d);
+    configLink3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + _enc3d;
+  } catch(e3d) {}
+
+  // ── Everything below is synchronous — blob created, then share called immediately ──
+
   // ── Collect customer info ──
   var custName  = (document.getElementById('st_name')  ||{}).value || 'Customer';
   var custPhone = (document.getElementById('st_phone') ||{}).value || '';
@@ -7028,40 +7053,23 @@ async function generateQuotePDF() {
     y = priceBlock(priceEntries[pi], y);
   }
 
-  // ── 3D VIEW LINK ──
-  var configLink3d = '';
-  try {
-    var _cfg3d = serializeConfig();
-    var _cu3d = window.currentUser || {};
-    _cfg3d._viewData = {
-      pricingResults: {
-        totalOH:    (window._lastPriceOH||{}).total    ? fmtPriceFull((window._lastPriceOH||{}).total)    : '',
-        totalNoOH:  (window._lastPriceNoOH||{}).total  ? fmtPriceFull((window._lastPriceNoOH||{}).total)  : '',
-        totalSteel: (window._lastPriceSteel||{}).total ? fmtPriceFull((window._lastPriceSteel||{}).total) : '',
-        totalStud:  (window._lastPriceStud||{}).total  ? fmtPriceFull((window._lastPriceStud||{}).total)  : '',
-        total:      (window._lastPriceOH||{}).total    ? fmtPriceFull((window._lastPriceOH||{}).total)    : ''
-      },
-      salesmanName: _cu3d.fullName || _cu3d.username || '',
-      salesmanPhone: _cu3d.phone || '',
-      salesmanEmail: _cu3d.email || '',
-      salesmanCompany: _cu3d.company || ''
-    };
-    // Build the 3D link using encoded config + _viewData so customer needs no login
-    // (quoteId links require a session token — customers don't have one)
-    var _enc3d = await safeEncodeCompressed(_cfg3d);
-    configLink3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + _enc3d;
-  } catch(e3d) {}
-
+  // ── 3D VIEW LINK — pre-encoded at top of function ──
   if (configLink3d) {
     if (y + 60 > PH - 120) { doc.addPage('letter','portrait'); y = MG + 20; }
     setFill('#1a2744'); doc.roundedRect(MG, y, bodyW, 52, 6, 6, 'F');
     doc.setFont('helvetica','bold'); doc.setFontSize(8); setTxt(col.gold);
     doc.text('INTERACTIVE 3-D BUILDING MODEL', PW/2, y+14, {align:'center'});
     doc.setFont('helvetica','normal'); doc.setFontSize(8); setTxt('#c8d0dc');
-    doc.text('Rotate, zoom and explore your building — open this link in any browser:', PW/2, y+26, {align:'center'});
-    doc.setFont('helvetica','bold'); doc.setFontSize(8); setTxt(col.gold);
-    doc.textWithLink(configLink3d, PW/2, y+40, {align:'center', url: configLink3d});
-    y += 62;
+    doc.text('Rotate, zoom and explore your building — click the link below:', PW/2, y+26, {align:'center'});
+    // Underlined hyperlink text — short label, long URL hidden behind it
+    doc.setFont('helvetica','bold'); doc.setFontSize(11); setTxt(col.gold);
+    var linkLabel = 'View Your 3-D Building Model \u2192';
+    var linkW = doc.getTextWidth(linkLabel);
+    var linkX = PW/2 - linkW/2;
+    doc.textWithLink(linkLabel, linkX, y+42, {url: configLink3d});
+    doc.setLineWidth(0.5); setDraw(col.gold);
+    doc.line(linkX, y+44, linkX + linkW, y+44);
+    y += 58;
   }
 
   // ── SALESMAN SIGNATURE BLOCK ──
@@ -7090,9 +7098,11 @@ async function generateQuotePDF() {
 
   // ── PAGE 2: 5-VIEW 3D SNAPSHOTS (identical to post layout) ──
   var d3 = window._3d;
+  var isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
   if (d3 && d3.rrx) {
     var origTh = d3.th, origPh = d3.ph, origDi = d3.di;
-    var capW = 1200, capH = 700;
+    // Lower resolution on mobile to avoid memory crashes
+    var capW = isMobile ? 600 : 1200, capH = isMobile ? 350 : 700;
     d3.rrx.setSize(capW, capH);
     if (d3.dimLabels) d3.dimLabels.forEach(function(l){ l.visible = false; });
     var views = [
@@ -7153,13 +7163,48 @@ async function generateQuotePDF() {
     doc.text(dateStr, LW-MG, LH-MG+2, {align:'right'});
   }
 
-  // ── OUTPUT ──
+  // ── OUTPUT — mobile-aware ──
   var blob = doc.output('blob');
-  var url  = URL.createObjectURL(blob);
-  window.open(url, '_blank');
+  var fileName = (custName.replace(/\s+/g,'_') + '_' + dims.replace(/'/g,'').replace(/\s/g,'') + '_quote.pdf');
+  var isMobileDevice = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+
+  // iOS/Android: Web Share API — navigator.share must be the FIRST async call
+  // to preserve the user gesture chain (any await before it breaks iOS Safari)
+  if (isMobileDevice && navigator.share) {
+    try {
+      var shareFile = new File([blob], fileName, { type: 'application/pdf' });
+      if (navigator.canShare && navigator.canShare({ files: [shareFile] })) {
+        await navigator.share({
+          title: 'Building Quote — ' + dims,
+          text: 'Quote from ' + salesName,
+          files: [shareFile]
+        });
+        return;
+      }
+    } catch(shareErr) {
+      if (shareErr.name === 'AbortError') return; // user cancelled — do nothing
+      // Share failed — fall through to data URI approach
+    }
+
+    // iOS fallback: navigate to data URI (works without popup permission)
+    try {
+      var dataUri = doc.output('datauristring');
+      window.location.href = dataUri;
+      return;
+    } catch(e) {}
+  }
+
+  // Desktop: open in new tab + trigger download
+  var url = URL.createObjectURL(blob);
+  var newTab = window.open(url, '_blank');
+  // If popup blocked, fall back to direct navigation
+  if (!newTab || newTab.closed || typeof newTab.closed === 'undefined') {
+    window.location.href = URL.createObjectURL(blob);
+    return;
+  }
   setTimeout(function(){
     var a = document.createElement('a');
-    a.href = url; a.download = (custName.replace(/\s+/g,'_') + '_' + dims.replace(/'/g,'').replace(/\s/g,'') + '_quote.pdf');
+    a.href = url; a.download = fileName;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(function(){ URL.revokeObjectURL(url); }, 5000);
   }, 300);
