@@ -6660,8 +6660,31 @@ function vpToggleWalls() {
 
 <script>
 
-function openQuotePDFModal() {
+async function openQuotePDFModal() {
   if (!window._Q) { alert('Please configure a building first.'); return; }
+
+  // Require a customer name before saving
+  var custName = (document.getElementById('st_name')||{}).value || '';
+  if (!custName.trim()) {
+    alert('Please enter a customer name in the Sales Info panel before generating a PDF.');
+    var el = document.getElementById('st_name'); if (el) el.focus();
+    return;
+  }
+
+  // Force save so the 3D link uses a stable server-side quote ID
+  if (!window._savedQuoteId) {
+    var saveBtn = document.getElementById('saveQuoteBtn');
+    var origTxt = saveBtn ? saveBtn.textContent : '';
+    if (saveBtn) { saveBtn.textContent = '💾 Saving…'; saveBtn.disabled = true; }
+    try {
+      await saveSalesQuote();
+    } catch(e) {
+      if (saveBtn) { saveBtn.textContent = origTxt; saveBtn.disabled = false; }
+      alert('Could not save quote before generating PDF: ' + e.message);
+      return;
+    }
+  }
+
   var modal = document.getElementById('quotePDFModal');
   if (!modal) { buildQuotePDFModal(); modal = document.getElementById('quotePDFModal'); }
 
@@ -6735,12 +6758,12 @@ function buildQuotePDFModal() {
     + '<input type="checkbox" id="pqChkSteel" style="width:16px;height:16px;accent-color:#FF8200;cursor:pointer;justify-self:center;">'
     + '</div>'
     + '</div>'
-    + '<button onclick="generateQuotePDF();closeQuotePDFModal();" style="margin-top:20px;width:100%;padding:12px;background:#FF8200;color:#4B4B4B;border:none;border-radius:8px;font-size:13px;font-weight:800;cursor:pointer;letter-spacing:0.5px;">Generate PDF</button>'
+    + '<button onclick="this.disabled=true;this.textContent=\'Generating…\';generateQuotePDF().then(function(){closeQuotePDFModal();}).catch(function(){closeQuotePDFModal();});" style="margin-top:20px;width:100%;padding:12px;background:#FF8200;color:#4B4B4B;border:none;border-radius:8px;font-size:13px;font-weight:800;cursor:pointer;letter-spacing:0.5px;">Generate PDF</button>'
     + '</div>';
   document.body.appendChild(m);
 }
 
-function generateQuotePDF() {
+async function generateQuotePDF() {
   var Q = window._Q || {};
   var J = window.jspdf && window.jspdf.jsPDF;
   if (!J) { alert('PDF library not loaded. Please wait and try again.'); return; }
@@ -7023,19 +7046,11 @@ function generateQuotePDF() {
       salesmanEmail: _cu3d.email || '',
       salesmanCompany: _cu3d.company || ''
     };
-    // Use saved quote ID if available, otherwise encode full config
-    if (window._savedQuoteId) {
-      configLink3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&quoteId=' + window._savedQuoteId;
-    } else {
-      safeEncodeCompressed(_cfg3d).then(function(enc){
-        configLink3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + enc;
-      });
-    }
+    // Build the 3D link using encoded config + _viewData so customer needs no login
+    // (quoteId links require a session token — customers don't have one)
+    var _enc3d = await safeEncodeCompressed(_cfg3d);
+    configLink3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + _enc3d;
   } catch(e3d) {}
-  // Fallback sync link using saved quote ID
-  if (!configLink3d && window._savedQuoteId) {
-    configLink3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&quoteId=' + window._savedQuoteId;
-  }
 
   if (configLink3d) {
     if (y + 60 > PH - 120) { doc.addPage('letter','portrait'); y = MG + 20; }
