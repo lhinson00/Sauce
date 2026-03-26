@@ -2636,6 +2636,26 @@ function toggleShedWall(id, wallKey) {
   renderSheds(); scheduleBuild();
 }
 
+function addShedDoor(shedId) {
+  var sc = window._shedConfigs.find(function(s){ return s.id === shedId; });
+  if (!sc) return;
+  if (!sc.doors) sc.doors = [];
+  sc.doors.push({ size: '10x10', offset: 0 });
+  renderSheds(); scheduleBuild();
+}
+function removeShedDoor(shedId, idx) {
+  var sc = window._shedConfigs.find(function(s){ return s.id === shedId; });
+  if (!sc || !sc.doors) return;
+  sc.doors.splice(idx, 1);
+  renderSheds(); scheduleBuild();
+}
+function setShedDoor(shedId, idx, prop, val) {
+  var sc = window._shedConfigs.find(function(s){ return s.id === shedId; });
+  if (!sc || !sc.doors || !sc.doors[idx]) return;
+  sc.doors[idx][prop] = prop === 'offset' ? parseFloat(val) || 0 : val;
+  renderSheds(); scheduleBuild();
+}
+
 function renderSheds(){
   var list=document.getElementById('shedList'); list.innerHTML='';
   var addBtn=document.getElementById('addShedBtn');
@@ -2769,6 +2789,27 @@ function renderSheds(){
       +'<div class="shed-type-chips">'+posChips+'</div>'
       +customOffRow+'</div>'
       +extraOptions
+      +(function(){
+        // Garage door section — only for enclosed/partial sheds
+        if (sc.encl !== 'enclosed' && sc.encl !== 'partial') return '';
+        var shedDoors = sc.doors || [];
+        var SHED_GD_SIZES = ['8x7','9x7','10x8','10x10','12x10','12x12','14x12','14x14','16x14'];
+        return '<div style="margin-bottom:7px;border-top:1px solid rgba(255,255,255,.1);padding-top:8px;">'
+          + '<div class="shed-label" style="margin-bottom:5px;">\u{1F6AA} Garage Doors</div>'
+          + '<div id="shedDoorList_'+sc.id+'">'
+          + shedDoors.map(function(gd, gi) {
+              var sizeOpts = SHED_GD_SIZES.map(function(s){ return '<option'+(s===gd.size?' selected':'')+'>'+s+'</option>'; }).join('');
+              return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">'
+                + '<select class="shed-sel" style="flex:1;" onchange="setShedDoor('+sc.id+','+gi+',\'size\',this.value)">'+sizeOpts+'</select>'
+                + '<span style="font-size:9px;color:var(--muted);white-space:nowrap;">Pos(ft)</span>'
+                + '<input class="shed-inp" type="number" value="'+(gd.offset||0)+'" min="0" step="1" style="width:44px;" onchange="setShedDoor('+sc.id+','+gi+',\'offset\',this.value)">'
+                + '<button style="padding:3px 8px;border-radius:5px;border:none;background:rgba(239,68,68,.15);color:#ef4444;font-size:10px;font-weight:700;cursor:pointer;" onclick="removeShedDoor('+sc.id+','+gi+')">\u2715</button>'
+                + '</div>';
+            }).join('')
+          + '</div>'
+          + '<button class="opening-add-btn" onclick="addShedDoor('+sc.id+')">+ Add Garage Door</button>'
+          + '</div>';
+      })()
       +'</div>';
     list.appendChild(div);
   });
@@ -4807,16 +4848,87 @@ function vpToggleWalls() {
                 });
                 if (x < wLen) addWallSeg((-wLen / 2 + x) * Sc, (wLen / 2) * Sc, yBot, yTop, mW, true, zGable);
             } else {
-                let z = 0;
-                wd.forEach(d => {
-                    const dL = d.offset || 0, dR = dL + d.w, dh = Math.min(d.h * Sc, yTop);
-                    if (dL > z) addWallSeg((-wLen / 2 + z) * Sc, (-wLen / 2 + dL) * Sc, yBot, yTop, mW, false);
-                    if (dh < yTop && dh > yBot) {
-                        grps.wallPanels.add(mkQ([xP, dh, (-wLen / 2 + dL) * Sc, xP, dh, (-wLen / 2 + dR) * Sc, xP, yTop, (-wLen / 2 + dR) * Sc, xP, yTop, (-wLen / 2 + dL) * Sc], mW));
-                    }
-                    z = dR;
+                // Build a list of Z-range height clamps from enclosed lean-to sheds
+                // on this eave wall — within those Z spans, the main wall is hidden
+                // behind the shed wall and should only draw up to the shed's outer height
+                const shedHeightClamps = [];
+                (shedCfgs || []).forEach(sc2 => {
+                    if (sc2.wall !== wallId) return;
+                    if (sc2.encl !== 'enclosed' && sc2.encl !== 'partial') return;
+                    if (sc2.type === 'gable') return; // gable ext has no outer height mismatch
+                    const d2 = (sc2.dropFt || 0) * Sc;
+                    const ltP2 = sc2.ltPitch || 1;
+                    const sSh2 = (sh - d2) - (sc2.w * (ltP2 / 12)) * Sc;
+                    // Compute shed Z extent on this wall
+                    const mainWallLen2 = Q.l; // eave walls run along Z
+                    const shedLen2 = sc2.l;
+                    let shedOff2 = 0;
+                    if (shedLen2 >= mainWallLen2) shedOff2 = 0;
+                    else if ((sc2.position || 'center') === 'start') shedOff2 = 0;
+                    else if (sc2.position === 'end') shedOff2 = mainWallLen2 - shedLen2;
+                    else if (sc2.position === 'custom') shedOff2 = Math.max(0, Math.min(sc2.offsetFt || 0, mainWallLen2 - shedLen2));
+                    else shedOff2 = (mainWallLen2 - shedLen2) / 2;
+                    const sco2 = (shedOff2 + shedLen2 / 2 - mainWallLen2 / 2) * Sc;
+                    const ssl2 = shedLen2 * Sc;
+                    const zLo2 = (-ssl2 / 2 + sco2) / Sc; // in feet from wall center
+                    const zHi2 = ( ssl2 / 2 + sco2) / Sc;
+                    shedHeightClamps.push({ zLo: zLo2, zHi: zHi2, maxH: Math.max(sSh2, 0) });
                 });
-                if (z < wLen) addWallSeg((-wLen / 2 + z) * Sc, (wLen / 2) * Sc, yBot, yTop, mW, false);
+
+                // Helper: get max wall height at a given Z position (in feet from center)
+                function wallYTop(zFt) {
+                    let h = yTop;
+                    shedHeightClamps.forEach(clamp => {
+                        if (zFt >= clamp.zLo - 0.01 && zFt <= clamp.zHi + 0.01) {
+                            h = Math.min(h, clamp.maxH);
+                        }
+                    });
+                    return h;
+                }
+
+                // Draw eave wall in small segments, respecting height clamps from sheds
+                // Segment width in feet — small enough to snap cleanly at shed boundaries
+                const eaveSegW = 0.5; // 6 inch segments
+                const totalEaveFt = wLen;
+
+                // Collect door openings for cutout logic
+                const eaveDoorRanges = wd.map(d => ({ dL: d.offset || 0, dR: (d.offset || 0) + d.w, dh: Math.min(d.h * Sc, yTop) }));
+
+                let zFt = 0;
+                while (zFt < totalEaveFt - 0.001) {
+                    const zFtEnd = Math.min(zFt + eaveSegW, totalEaveFt);
+                    const zFtCenter = (zFt + zFtEnd) / 2;
+                    // Map from feet-from-wall-start to feet-from-wall-center
+                    const zFtCenterFromMid = zFtCenter - totalEaveFt / 2;
+                    const effectiveYTop = wallYTop(zFtCenterFromMid);
+                    const z1sc = (-wLen / 2 + zFt)    * Sc;
+                    const z2sc = (-wLen / 2 + zFtEnd)  * Sc;
+
+                    // Check if this segment is inside a door opening
+                    let doorH = 0;
+                    eaveDoorRanges.forEach(dr => {
+                        if (zFt >= dr.dL - 0.01 && zFtEnd <= dr.dR + 0.01) doorH = dr.dh;
+                    });
+
+                    if (doorH > yBot) {
+                        // Draw above door only
+                        if (effectiveYTop > doorH) {
+                            grps.wallPanels.add(mkQ([xP, doorH, z1sc, xP, doorH, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], mW));
+                        }
+                    } else {
+                        // Full segment
+                        if (effectiveYTop > yBot) {
+                            if (hasWainscot && wsH > yBot && effectiveYTop > wsH && wCfg.encl !== 'partial') {
+                                grps.wallPanels.add(mkQ([xP, yBot, z1sc, xP, yBot, z2sc, xP, wsH, z2sc, xP, wsH, z1sc], mWainscot));
+                                grps.wallPanels.add(mkQ([xP, wsH, z1sc, xP, wsH, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], mW));
+                            } else {
+                                const useMat = (hasWainscot && effectiveYTop <= wsH) ? mWainscot : mW;
+                                grps.wallPanels.add(mkQ([xP, yBot, z1sc, xP, yBot, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], useMat));
+                            }
+                        }
+                    }
+                    zFt = zFtEnd;
+                }
             }
         }
         wallCfgs.forEach(w => buildWS(w.id));
@@ -6438,13 +6550,66 @@ function vpToggleWalls() {
                     const showGable2 = !enclFt || enclFrom === 'end';    // gable2 = end
                     // Outer wall (away from main building)
                     if (hasWall('outer')) {
-                    grps.wallPanels.add(mkQ([oX, 0, ez1, oX, outerWH, ez1, oX, outerWH, ez2, oX, 0, ez2], mW));
-                    grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, z1), new THREE.Vector3(oX, outerWH, z1), new THREE.Vector3(oX, outerWH, z2), new THREE.Vector3(oX, 0, z2)], mTrimLine));
-                    grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, ez1), new THREE.Vector3(oX, outerWH, ez1), new THREE.Vector3(oX, outerWH, ez2), new THREE.Vector3(oX, 0, ez2)], mTrimLine));
-                    for (let z = ez1; z <= ez2; z += sRibSp) {
-                        grps.wallPanels.add(mkQ([oX + s*0.003, 0, z, oX + s*0.003, 0, z + sRibW, oX + s*0.003, outerWH, z + sRibW, oX + s*0.003, outerWH, z], sRibHi));
-                        grps.wallPanels.add(mkQ([oX + s*0.003, 0, z + sRibW, oX + s*0.003, 0, z + sRibW*2, oX + s*0.003, outerWH, z + sRibW*2, oX + s*0.003, outerWH, z + sRibW], sRibSh));
+                    // Build door cutout list for the outer shed wall
+                    const shedGDs = sc.doors || [];
+                    // Door widths/heights from size string e.g. '10x10'
+                    const parseShedGD = (sz) => {
+                        const p = (sz||'10x10').split('x');
+                        return { w: parseFloat(p[0])||10, h: parseFloat(p[1])||10 };
+                    };
+                    // Shed outer wall spans from ez1 to ez2 in Z, oX in X
+                    // Doors are positioned by offset (ft from start of shed encl zone)
+                    // Outer wall draws along Z at fixed X=oX; s=-1 for left, +1 for right
+                    // ez1 is the start Z edge of enclosed zone, ez2 is end
+                    const shedEnclLenSc = ez2 - ez1; // scene units
+                    const shedEnclLenFt = shedEnclLenSc / Sc;
+                    // Draw outer wall in segments with door gaps
+                    let curZ = ez1;
+                    const sortedDoors = shedGDs.slice().sort((a,b) => (a.offset||0)-(b.offset||0));
+                    sortedDoors.forEach(gd => {
+                        const gdims = parseShedGD(gd.size);
+                        const gdW = gdims.w * Sc, gdH = Math.min(gdims.h * Sc, outerWH);
+                        const gdZ1 = ez1 + (gd.offset||0) * Sc;
+                        const gdZ2 = gdZ1 + gdW;
+                        // Clamp to wall bounds
+                        const gdZ1c = Math.max(gdZ1, ez1), gdZ2c = Math.min(gdZ2, ez2);
+                        if (gdZ1c >= gdZ2c) return; // out of bounds
+                        // Panel before door
+                        if (curZ < gdZ1c - 0.001) {
+                            grps.wallPanels.add(mkQ([oX, 0, curZ, oX, outerWH, curZ, oX, outerWH, gdZ1c, oX, 0, gdZ1c], mW));
+                            for (let z = curZ; z <= gdZ1c; z += sRibSp) {
+                                grps.wallPanels.add(mkQ([oX+s*0.003, 0, z, oX+s*0.003, 0, z+sRibW, oX+s*0.003, outerWH, z+sRibW, oX+s*0.003, outerWH, z], sRibHi));
+                                grps.wallPanels.add(mkQ([oX+s*0.003, 0, z+sRibW, oX+s*0.003, 0, z+sRibW*2, oX+s*0.003, outerWH, z+sRibW*2, oX+s*0.003, outerWH, z+sRibW], sRibSh));
+                            }
+                        }
+                        // Panel above door opening
+                        if (gdH < outerWH - 0.001) {
+                            grps.wallPanels.add(mkQ([oX, gdH, gdZ1c, oX, outerWH, gdZ1c, oX, outerWH, gdZ2c, oX, gdH, gdZ2c], mW));
+                        }
+                        // Door panel — flat dark color representing garage door
+                        const mGDoor = new THREE.MeshBasicMaterial({ color: 0xe8e0d8, side: THREE.DoubleSide });
+                        grps.doors.add(mkQ([oX+s*0.006, 0, gdZ1c, oX+s*0.006, gdH, gdZ1c, oX+s*0.006, gdH, gdZ2c, oX+s*0.006, 0, gdZ2c], mGDoor));
+                        // Door panel lines (horizontal rails)
+                        const mGDLine = new THREE.LineBasicMaterial({ color: 0x999090, transparent: true, opacity: 0.7 });
+                        const numPanels = Math.max(2, Math.round(gdims.h / 2.2));
+                        for (let pi = 1; pi < numPanels; pi++) {
+                            const ry = (gdH / numPanels) * pi;
+                            grps.doors.add(mkL([new THREE.Vector3(oX+s*0.007, ry, gdZ1c), new THREE.Vector3(oX+s*0.007, ry, gdZ2c)], mGDLine));
+                        }
+                        // Door outline trim
+                        grps.doors.add(mkL([new THREE.Vector3(oX+s*0.007, 0, gdZ1c), new THREE.Vector3(oX+s*0.007, gdH, gdZ1c), new THREE.Vector3(oX+s*0.007, gdH, gdZ2c), new THREE.Vector3(oX+s*0.007, 0, gdZ2c)], mGDLine));
+                        curZ = gdZ2c;
+                    });
+                    // Remaining panel after last door
+                    if (curZ < ez2 - 0.001) {
+                        grps.wallPanels.add(mkQ([oX, 0, curZ, oX, outerWH, curZ, oX, outerWH, ez2, oX, 0, ez2], mW));
+                        for (let z = curZ; z <= ez2; z += sRibSp) {
+                            grps.wallPanels.add(mkQ([oX+s*0.003, 0, z, oX+s*0.003, 0, z+sRibW, oX+s*0.003, outerWH, z+sRibW, oX+s*0.003, outerWH, z], sRibHi));
+                            grps.wallPanels.add(mkQ([oX+s*0.003, 0, z+sRibW, oX+s*0.003, 0, z+sRibW*2, oX+s*0.003, outerWH, z+sRibW*2, oX+s*0.003, outerWH, z+sRibW], sRibSh));
+                        }
                     }
+                    // Outline trim for whole wall
+                    grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, ez1), new THREE.Vector3(oX, outerWH, ez1), new THREE.Vector3(oX, outerWH, ez2), new THREE.Vector3(oX, 0, ez2)], mTrimLine));
                     // Intermediate end cap at the enclosed/open boundary
                     if (enclFt) {
                         const endWallW = Math.abs(oX - aX);
