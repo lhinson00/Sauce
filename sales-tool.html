@@ -3515,7 +3515,7 @@ async function submitQuote(){
       var note='Customer: '+name+(city?' - '+city:'')+' | Phone: '+(phone||'-')+' | Email: '+(email||'-')+'\n\nBuilding: '+specs;
       var r2=await fetchWithTimeout(GAS,{method:'POST',headers:{'Content-Type':'text/plain'},
         body:JSON.stringify({action:'sendQuoteEmail',token:getToken(),snapshotId:snapshotId,
-          salesmanEmail:'lain.hinson@summertownmetals.com',
+          salesmanEmail:(window.currentUser||{}).email||'',
           customerEmail:'',
           personalNote:note,
           configLink:shareLink,
@@ -6993,6 +6993,69 @@ function generateQuotePDF() {
     y = priceBlock(priceEntries[pi], y);
   }
 
+  // ── 3D VIEW LINK ──
+  var configLink3d = '';
+  try {
+    var _cfg3d = serializeConfig();
+    var _cu3d = window.currentUser || {};
+    _cfg3d._viewData = {
+      pricingResults: {
+        totalOH:    (window._lastPriceOH||{}).total    ? fmtPriceFull((window._lastPriceOH||{}).total)    : '',
+        totalNoOH:  (window._lastPriceNoOH||{}).total  ? fmtPriceFull((window._lastPriceNoOH||{}).total)  : '',
+        totalSteel: (window._lastPriceSteel||{}).total ? fmtPriceFull((window._lastPriceSteel||{}).total) : '',
+        totalStud:  (window._lastPriceStud||{}).total  ? fmtPriceFull((window._lastPriceStud||{}).total)  : '',
+        total:      (window._lastPriceOH||{}).total    ? fmtPriceFull((window._lastPriceOH||{}).total)    : ''
+      },
+      salesmanName: _cu3d.fullName || _cu3d.username || '',
+      salesmanPhone: _cu3d.phone || '',
+      salesmanEmail: _cu3d.email || '',
+      salesmanCompany: _cu3d.company || ''
+    };
+    // Use saved quote ID if available, otherwise encode full config
+    if (window._savedQuoteId) {
+      configLink3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&quoteId=' + window._savedQuoteId;
+    } else {
+      safeEncodeCompressed(_cfg3d).then(function(enc){
+        configLink3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + enc;
+      });
+    }
+  } catch(e3d) {}
+  // Fallback sync link using saved quote ID
+  if (!configLink3d && window._savedQuoteId) {
+    configLink3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&quoteId=' + window._savedQuoteId;
+  }
+
+  if (configLink3d) {
+    if (y + 60 > PH - 120) { doc.addPage('letter','portrait'); y = MG + 20; }
+    setFill('#1a2744'); doc.roundedRect(MG, y, bodyW, 52, 6, 6, 'F');
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); setTxt(col.gold);
+    doc.text('INTERACTIVE 3-D BUILDING MODEL', PW/2, y+14, {align:'center'});
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); setTxt('#c8d0dc');
+    doc.text('Rotate, zoom and explore your building — open this link in any browser:', PW/2, y+26, {align:'center'});
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); setTxt(col.gold);
+    doc.textWithLink(configLink3d, PW/2, y+40, {align:'center', url: configLink3d});
+    y += 62;
+  }
+
+  // ── SALESMAN SIGNATURE BLOCK ──
+  if (y + 70 > PH - 60) { doc.addPage('letter','portrait'); y = MG + 20; }
+  setFill('#4B4B4B'); doc.rect(MG, y, bodyW, 60, 'F');
+  setFill(col.darkGold); doc.rect(MG, y, 3, 60, 'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(12); setTxt(col.white);
+  doc.text(salesName, MG+16, y+18);
+  doc.setFont('helvetica','normal'); doc.setFontSize(8); setTxt('#7a8aa5');
+  doc.text('Sales Consultant', MG+16, y+30);
+  if (salesPhone || salesEmail) {
+    var contactParts = [salesPhone, salesEmail].filter(Boolean).join('   ·   ');
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); setTxt(col.gold);
+    doc.text(contactParts, MG+16, y+44);
+  }
+  if (salesCo) {
+    doc.setFont('helvetica','normal'); doc.setFontSize(7); setTxt('#5a6b85');
+    doc.text(salesCo.toUpperCase(), MG+16, y+56);
+  }
+  y += 70;
+
   // Valid note
   doc.setFont('helvetica','italic'); doc.setFontSize(8); setTxt('#999999');
   doc.text('This quote is valid for 14 days from the date above.', PW/2, y+8, {align:'center'});
@@ -7388,10 +7451,10 @@ function initLainFeatures(){
   if (!raw) return;
   try {
     var u = JSON.parse(raw);
-    var uname = (u.username || '').toLowerCase();
-    // lain.hinson is the username stored by index.html
-    if (uname !== 'lain.hinson' && uname !== 'lain') return;
+    // Any active logged-in salesperson gets full features (not just lain.hinson)
+    if (!u || !u.username) return;
     if (u.loginExpiry && Date.now() > u.loginExpiry) return;
+    if (!u.token) return; // must have a valid session token
 
     var btn = document.getElementById('vpSaveDesign');
     if (btn) btn.style.display = 'block';
@@ -7400,7 +7463,6 @@ function initLainFeatures(){
     if (toggleRow) toggleRow.style.display = 'flex';
     var submitBtn = document.getElementById('qSubmitBtn');
     if (submitBtn) submitBtn.textContent = 'Save Design →';
-
 
   } catch(e){}
 }
@@ -7699,9 +7761,9 @@ async function loadSavedDesign(d){
     var statusEl = document.getElementById('saveQuoteStatus');
     if (statusEl && window._savedQuoteId) { statusEl.textContent = 'Loaded: ' + window._savedQuoteId + ' — recalculate to enable email'; statusEl.style.display = 'block'; statusEl.style.color = '#f59e0b'; }
     var emailBtn = document.getElementById('emailQuoteBtn');
-    if (emailBtn) emailBtn.style.display = 'none';  // Hidden until re-saved
+    if (emailBtn) emailBtn.style.display = 'none'; // Hidden until re-saved (lain only anyway)
     var pdfBtn = document.getElementById('quotePdfBtn');
-    if (pdfBtn) pdfBtn.style.display = window._savedQuoteId ? '' : 'none';  // PDF reads live UI, always OK
+    if (pdfBtn) pdfBtn.style.display = ''; // PDF reads live UI, always available
     closeLoadDesignModal();
     setTimeout(function(){
       triggerBuild();
@@ -8029,7 +8091,7 @@ async function saveSalesQuote() {
       status.style.display = 'block';
     }
     var emailBtn = document.getElementById('emailQuoteBtn');
-    if (emailBtn) emailBtn.style.display = '';
+    if (emailBtn) emailBtn.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none';
     var pdfBtn = document.getElementById('quotePdfBtn');
     if (pdfBtn) pdfBtn.style.display = '';
 
@@ -8459,6 +8521,7 @@ async function doSalesLogin() {
       localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       setTimeout(warmPing, 500);
       hideSalesLoginModal();
+      initLainFeatures(); // unlock save/email/pdf for this user
       // Demo badge
       var smTxt = document.querySelector('.salesman-txt');
       var smDot = document.querySelector('.salesman-dot');
@@ -9674,6 +9737,11 @@ async function updatePriceStrip() {
         setCalcBadge('error', '⚠ Partial (' + _encOK + '/4) — tap Calculate to retry');
       } else {
         setCalcBadge('error', '✕ No results — tap Calculate to retry');
+      }
+      // Show PDF button as soon as any price comes back — no save required
+      if (_encOK > 0) {
+        var _pdfBtn = document.getElementById('quotePdfBtn');
+        if (_pdfBtn) _pdfBtn.style.display = '';
       }
 
       // ── After a Load+Recalc, rebuild snapshot in memory so email works
