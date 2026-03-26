@@ -4895,6 +4895,12 @@ function vpToggleWalls() {
                 // Segment width in feet — small enough to snap cleanly at shed boundaries
                 const eaveSegW = 0.5; // 6 inch segments
                 const totalEaveFt = wLen;
+                const eaveRibSp = 0.075, eaveRibW = 0.006;
+                const eaveSide = (wallId === 'left') ? -1 : 1; // outward direction for rib offset
+                const eaveRibHex = pc(wallColorName);
+                const eRR = (eaveRibHex >> 16) & 0xff, eRG = (eaveRibHex >> 8) & 0xff, eRB = eaveRibHex & 0xff;
+                const mEaveRibHi = new THREE.MeshBasicMaterial({ color: ((Math.min(255, eRR + 55) << 16) | (Math.min(255, eRG + 55) << 8) | Math.min(255, eRB + 55)), side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
+                const mEaveRibSh = new THREE.MeshBasicMaterial({ color: ((Math.max(0, eRR - 40) << 16) | (Math.max(0, eRG - 40) << 8) | Math.max(0, eRB - 40)), side: THREE.DoubleSide, transparent: true, opacity: 0.75 });
 
                 // Collect door openings for cutout logic
                 const eaveDoorRanges = wd.map(d => ({ dL: d.offset || 0, dR: (d.offset || 0) + d.w, dh: Math.min(d.h * Sc, yTop) }));
@@ -4929,6 +4935,11 @@ function vpToggleWalls() {
                             } else {
                                 const useMat = (hasWainscot && effectiveYTop <= wsH) ? mWainscot : mW;
                                 grps.wallPanels.add(mkQ([xP, yBot, z1sc, xP, yBot, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], useMat));
+                            }
+                            // Add ribs for this segment so clamped zones get proper metal texture
+                            for (let rz = z1sc; rz <= z2sc; rz += eaveRibSp) {
+                                grps.wallPanels.add(mkQ([xP + eaveSide*0.003, yBot, rz, xP + eaveSide*0.003, yBot, rz + eaveRibW, xP + eaveSide*0.003, effectiveYTop, rz + eaveRibW, xP + eaveSide*0.003, effectiveYTop, rz], mEaveRibHi));
+                                grps.wallPanels.add(mkQ([xP + eaveSide*0.003, yBot, rz + eaveRibW, xP + eaveSide*0.003, yBot, rz + eaveRibW*2, xP + eaveSide*0.003, effectiveYTop, rz + eaveRibW*2, xP + eaveSide*0.003, effectiveYTop, rz + eaveRibW], mEaveRibSh));
                             }
                         }
                     }
@@ -5696,17 +5707,28 @@ function vpToggleWalls() {
                     _eaveRibClamps.push({ zLo: -_ssl2/2 + _sco2, zHi: _ssl2/2 + _sco2, maxH: Math.max(_attachH2, 0) });
                 });
                 for (let z = -sl/2; z <= sl/2; z += ribSpacing) {
-                    // Clamp rib top to sSh within enclosed shed span (scene units)
+                    // Clamp rib top to attachH within enclosed shed span (scene units)
                     let _ribTop = sh;
+                    let _ribBot = eaveRibBot;
                     _eaveRibClamps.forEach(clamp => {
                         if (z >= clamp.zLo - ribSpacing && z <= clamp.zHi + ribSpacing) {
                             _ribTop = Math.min(_ribTop, clamp.maxH);
                         }
                     });
-                    if (_ribTop <= eaveRibBot) continue;
-                    grps.walls.add(mkQ([xBase + s*0.003, eaveRibBot, z, xBase + s*0.003, eaveRibBot, z + ribW, xBase + s*0.003, _ribTop, z + ribW, xBase + s*0.003, _ribTop, z], mRibHi));
-                    grps.walls.add(mkQ([xBase + s*0.003, eaveRibBot, z + ribW, xBase + s*0.003, eaveRibBot, z + ribW*2, xBase + s*0.003, _ribTop, z + ribW*2, xBase + s*0.003, _ribTop, z + ribW], mRibSh));
+                    if (_ribTop <= _ribBot) continue;
+                    grps.walls.add(mkQ([xBase + s*0.003, _ribBot, z, xBase + s*0.003, _ribBot, z + ribW, xBase + s*0.003, _ribTop, z + ribW, xBase + s*0.003, _ribTop, z], mRibHi));
+                    grps.walls.add(mkQ([xBase + s*0.003, _ribBot, z + ribW, xBase + s*0.003, _ribBot, z + ribW*2, xBase + s*0.003, _ribTop, z + ribW*2, xBase + s*0.003, _ribTop, z + ribW], mRibSh));
                 }
+                // Second pass: draw ribs on the drop-down band (attachH → sh) for the main
+                // building wall face within the shed Z span. This band is exposed above the
+                // shed roof when drop > 0 and needs ribs — the first pass stops at attachH.
+                _eaveRibClamps.forEach(clamp => {
+                    if (clamp.maxH >= sh - 0.001) return; // no drop gap, nothing to add
+                    for (let z = clamp.zLo; z <= clamp.zHi; z += ribSpacing) {
+                        grps.walls.add(mkQ([xBase + s*0.003, clamp.maxH, z, xBase + s*0.003, clamp.maxH, z + ribW, xBase + s*0.003, sh, z + ribW, xBase + s*0.003, sh, z], mRibHi));
+                        grps.walls.add(mkQ([xBase + s*0.003, clamp.maxH, z + ribW, xBase + s*0.003, clamp.maxH, z + ribW*2, xBase + s*0.003, sh, z + ribW*2, xBase + s*0.003, sh, z + ribW], mRibSh));
+                    }
+                });
             });
             [-1,1].forEach(s => {
                 if (s === -1 && frontOpen) return;
@@ -6620,6 +6642,10 @@ function vpToggleWalls() {
                         // Panel above door opening
                         if (gdH < outerWH - 0.001) {
                             grps.wallPanels.add(mkQ([oX, gdH, gdZ1c, oX, outerWH, gdZ1c, oX, outerWH, gdZ2c, oX, gdH, gdZ2c], mW));
+                            for (let z = gdZ1c; z <= gdZ2c; z += sRibSp) {
+                                grps.wallPanels.add(mkQ([oX+s*0.003, gdH, z, oX+s*0.003, gdH, z+sRibW, oX+s*0.003, outerWH, z+sRibW, oX+s*0.003, outerWH, z], sRibHi));
+                                grps.wallPanels.add(mkQ([oX+s*0.003, gdH, z+sRibW, oX+s*0.003, gdH, z+sRibW*2, oX+s*0.003, outerWH, z+sRibW*2, oX+s*0.003, outerWH, z+sRibW], sRibSh));
+                            }
                         }
                         // Door panel — flat dark color representing garage door
                         const mGDoor = new THREE.MeshBasicMaterial({ color: 0xe8e0d8, side: THREE.DoubleSide });
@@ -6677,8 +6703,8 @@ function vpToggleWalls() {
                         grps.wallPanels.add(mkQ([oX, 0, z1, oX, sh, z1, aX, sh, z1, aX, 0, z1], mW));
                         grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, z1), new THREE.Vector3(oX, sh, z1), new THREE.Vector3(aX, sh, z1), new THREE.Vector3(aX, 0, z1)], mTrimLine));
                         for (let x = Math.min(oX, aX) + sRibSp; x < Math.max(oX, aX); x += sRibSp) {
-                            grps.wallPanels.add(mkQ([x, 0, z1 - s*0.003, x + sRibW, 0, z1 - s*0.003, x + sRibW, sh, z1 - s*0.003, x, sh, z1 - s*0.003], sRibHi));
-                            grps.wallPanels.add(mkQ([x + sRibW, 0, z1 - s*0.003, x + sRibW*2, 0, z1 - s*0.003, x + sRibW*2, sh, z1 - s*0.003, x + sRibW, sh, z1 - s*0.003], sRibSh));
+                            grps.wallPanels.add(mkQ([x, 0, z1 - 0.003, x + sRibW, 0, z1 - 0.003, x + sRibW, sh, z1 - 0.003, x, sh, z1 - 0.003], sRibHi));
+                            grps.wallPanels.add(mkQ([x + sRibW, 0, z1 - 0.003, x + sRibW*2, 0, z1 - 0.003, x + sRibW*2, sh, z1 - 0.003, x + sRibW, sh, z1 - 0.003], sRibSh));
                         }
                         }
                         // Back end wall (rectangle sh + gable triangle)
@@ -6686,8 +6712,8 @@ function vpToggleWalls() {
                         grps.wallPanels.add(mkQ([aX, 0, z2, aX, sh, z2, oX, sh, z2, oX, 0, z2], mW));
                         grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, z2), new THREE.Vector3(oX, sh, z2), new THREE.Vector3(aX, sh, z2), new THREE.Vector3(aX, 0, z2)], mTrimLine));
                         for (let x = Math.min(oX, aX) + sRibSp; x < Math.max(oX, aX); x += sRibSp) {
-                            grps.wallPanels.add(mkQ([x, 0, z2 + s*0.003, x + sRibW, 0, z2 + s*0.003, x + sRibW, sh, z2 + s*0.003, x, sh, z2 + s*0.003], sRibHi));
-                            grps.wallPanels.add(mkQ([x + sRibW, 0, z2 + s*0.003, x + sRibW*2, 0, z2 + s*0.003, x + sRibW*2, sh, z2 + s*0.003, x + sRibW, sh, z2 + s*0.003], sRibSh));
+                            grps.wallPanels.add(mkQ([x, 0, z2 + 0.003, x + sRibW, 0, z2 + 0.003, x + sRibW, sh, z2 + 0.003, x, sh, z2 + 0.003], sRibHi));
+                            grps.wallPanels.add(mkQ([x + sRibW, 0, z2 + 0.003, x + sRibW*2, 0, z2 + 0.003, x + sRibW*2, sh, z2 + 0.003, x + sRibW, sh, z2 + 0.003], sRibSh));
                         }
                         }
                     } else {
@@ -6702,8 +6728,8 @@ function vpToggleWalls() {
                         for (let x = xMin + sRibSp; x < xMax; x += sRibSp) {
                             const frac = Math.abs(x - oX) / endWallW;
                             const rH = outerWH + frac * (innerTopH - outerWH);
-                            grps.wallPanels.add(mkQ([x, 0, z1 - s*0.003, x + sRibW, 0, z1 - s*0.003, x + sRibW, rH, z1 - s*0.003, x, rH, z1 - s*0.003], sRibHi));
-                            grps.wallPanels.add(mkQ([x + sRibW, 0, z1 - s*0.003, x + sRibW*2, 0, z1 - s*0.003, x + sRibW*2, rH, z1 - s*0.003, x + sRibW, rH, z1 - s*0.003], sRibSh));
+                            grps.wallPanels.add(mkQ([x, 0, z1 - 0.003, x + sRibW, 0, z1 - 0.003, x + sRibW, rH, z1 - 0.003, x, rH, z1 - 0.003], sRibHi));
+                            grps.wallPanels.add(mkQ([x + sRibW, 0, z1 - 0.003, x + sRibW*2, 0, z1 - 0.003, x + sRibW*2, rH, z1 - 0.003, x + sRibW, rH, z1 - 0.003], sRibSh));
                         }
                         }
                         // Back end wall
@@ -6713,8 +6739,8 @@ function vpToggleWalls() {
                         for (let x = xMin + sRibSp; x < xMax; x += sRibSp) {
                             const frac = Math.abs(x - oX) / endWallW;
                             const rH = outerWH + frac * (innerTopH - outerWH);
-                            grps.wallPanels.add(mkQ([x, 0, z2 + s*0.003, x + sRibW, 0, z2 + s*0.003, x + sRibW, rH, z2 + s*0.003, x, rH, z2 + s*0.003], sRibHi));
-                            grps.wallPanels.add(mkQ([x + sRibW, 0, z2 + s*0.003, x + sRibW*2, 0, z2 + s*0.003, x + sRibW*2, rH, z2 + s*0.003, x + sRibW, rH, z2 + s*0.003], sRibSh));
+                            grps.wallPanels.add(mkQ([x, 0, z2 + 0.003, x + sRibW, 0, z2 + 0.003, x + sRibW, rH, z2 + 0.003, x, rH, z2 + 0.003], sRibHi));
+                            grps.wallPanels.add(mkQ([x + sRibW, 0, z2 + 0.003, x + sRibW*2, 0, z2 + 0.003, x + sRibW*2, rH, z2 + 0.003, x + sRibW, rH, z2 + 0.003], sRibSh));
                         }
                         }
 
@@ -6751,8 +6777,8 @@ function vpToggleWalls() {
                         grps.wallPanels.add(mkQ([x1, 0, oZ, x1, sh, oZ, x1, sh, aZ, x1, 0, aZ], mW));
                         grps.wallPanels.add(mkL([new THREE.Vector3(x1, 0, oZ), new THREE.Vector3(x1, sh, oZ), new THREE.Vector3(x1, sh, aZ), new THREE.Vector3(x1, 0, aZ)], mTrimLine));
                         for (let z = Math.min(oZ, aZ) + sRibSp; z < Math.max(oZ, aZ); z += sRibSp) {
-                            grps.wallPanels.add(mkQ([x1 + s*0.003, 0, z, x1 + s*0.003, 0, z + sRibW, x1 + s*0.003, sh, z + sRibW, x1 + s*0.003, sh, z], sRibHi));
-                            grps.wallPanels.add(mkQ([x1 + s*0.003, 0, z + sRibW, x1 + s*0.003, 0, z + sRibW*2, x1 + s*0.003, sh, z + sRibW*2, x1 + s*0.003, sh, z + sRibW], sRibSh));
+                            grps.wallPanels.add(mkQ([x1 - 0.003, 0, z, x1 - 0.003, 0, z + sRibW, x1 - 0.003, sh, z + sRibW, x1 - 0.003, sh, z], sRibHi));
+                            grps.wallPanels.add(mkQ([x1 - 0.003, 0, z + sRibW, x1 - 0.003, 0, z + sRibW*2, x1 - 0.003, sh, z + sRibW*2, x1 - 0.003, sh, z + sRibW], sRibSh));
                         }
                         }
                         // Right end wall
@@ -6760,8 +6786,8 @@ function vpToggleWalls() {
                         grps.wallPanels.add(mkQ([x2, 0, aZ, x2, sh, aZ, x2, sh, oZ, x2, 0, oZ], mW));
                         grps.wallPanels.add(mkL([new THREE.Vector3(x2, 0, oZ), new THREE.Vector3(x2, sh, oZ), new THREE.Vector3(x2, sh, aZ), new THREE.Vector3(x2, 0, aZ)], mTrimLine));
                         for (let z = Math.min(oZ, aZ) + sRibSp; z < Math.max(oZ, aZ); z += sRibSp) {
-                            grps.wallPanels.add(mkQ([x2 - s*0.003, 0, z, x2 - s*0.003, 0, z + sRibW, x2 - s*0.003, sh, z + sRibW, x2 - s*0.003, sh, z], sRibHi));
-                            grps.wallPanels.add(mkQ([x2 - s*0.003, 0, z + sRibW, x2 - s*0.003, 0, z + sRibW*2, x2 - s*0.003, sh, z + sRibW*2, x2 - s*0.003, sh, z + sRibW], sRibSh));
+                            grps.wallPanels.add(mkQ([x2 + 0.003, 0, z, x2 + 0.003, 0, z + sRibW, x2 + 0.003, sh, z + sRibW, x2 + 0.003, sh, z], sRibHi));
+                            grps.wallPanels.add(mkQ([x2 + 0.003, 0, z + sRibW, x2 + 0.003, 0, z + sRibW*2, x2 + 0.003, sh, z + sRibW*2, x2 + 0.003, sh, z + sRibW], sRibSh));
                         }
                         }
                     } else {
@@ -6776,8 +6802,8 @@ function vpToggleWalls() {
                         for (let z = zMin + sRibSp; z < zMax; z += sRibSp) {
                             const frac = Math.abs(z - oZ) / endWallD;
                             const rH = outerWH + frac * (innerTopH - outerWH);
-                            grps.wallPanels.add(mkQ([x1 + s*0.003, 0, z, x1 + s*0.003, 0, z + sRibW, x1 + s*0.003, rH, z + sRibW, x1 + s*0.003, rH, z], sRibHi));
-                            grps.wallPanels.add(mkQ([x1 + s*0.003, 0, z + sRibW, x1 + s*0.003, 0, z + sRibW*2, x1 + s*0.003, rH, z + sRibW*2, x1 + s*0.003, rH, z + sRibW], sRibSh));
+                            grps.wallPanels.add(mkQ([x1 - 0.003, 0, z, x1 - 0.003, 0, z + sRibW, x1 - 0.003, rH, z + sRibW, x1 - 0.003, rH, z], sRibHi));
+                            grps.wallPanels.add(mkQ([x1 - 0.003, 0, z + sRibW, x1 - 0.003, 0, z + sRibW*2, x1 - 0.003, rH, z + sRibW*2, x1 - 0.003, rH, z + sRibW], sRibSh));
                         }
                         }
                         // Right end wall
@@ -6787,8 +6813,8 @@ function vpToggleWalls() {
                         for (let z = zMin + sRibSp; z < zMax; z += sRibSp) {
                             const frac = Math.abs(z - oZ) / endWallD;
                             const rH = outerWH + frac * (innerTopH - outerWH);
-                            grps.wallPanels.add(mkQ([x2 - s*0.003, 0, z, x2 - s*0.003, 0, z + sRibW, x2 - s*0.003, rH, z + sRibW, x2 - s*0.003, rH, z], sRibHi));
-                            grps.wallPanels.add(mkQ([x2 - s*0.003, 0, z + sRibW, x2 - s*0.003, 0, z + sRibW*2, x2 - s*0.003, rH, z + sRibW*2, x2 - s*0.003, rH, z + sRibW], sRibSh));
+                            grps.wallPanels.add(mkQ([x2 + 0.003, 0, z, x2 + 0.003, 0, z + sRibW, x2 + 0.003, rH, z + sRibW, x2 + 0.003, rH, z], sRibHi));
+                            grps.wallPanels.add(mkQ([x2 + 0.003, 0, z + sRibW, x2 + 0.003, 0, z + sRibW*2, x2 + 0.003, rH, z + sRibW*2, x2 + 0.003, rH, z + sRibW], sRibSh));
                         }
                         }
 
