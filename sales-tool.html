@@ -864,7 +864,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
   <div id="mobileCalcBadge" class="state-calculating" style="display:flex;align-items:center;gap:5px;font-size:10px;font-weight:700;color:rgba(255,255,255,.7);letter-spacing:.3px;">
     <div class="csb-dot"></div><span id="mobileCalcText">Ready</span>
   </div>
-  <button onclick="forceRefreshPrice()" title="Calculate price" style="background:rgba(34,197,94,.12);border:1.5px solid rgba(34,197,94,.5);border-radius:8px;color:rgba(34,197,94,.95);font-size:11px;font-weight:800;padding:4px 16px;cursor:pointer;line-height:1.5;font-family:Outfit,sans-serif;letter-spacing:.8px;text-transform:uppercase;transition:all .2s;box-shadow:0 0 10px rgba(34,197,94,.12);" onmouseover="this.style.background='rgba(34,197,94,.22)';this.style.boxShadow='0 0 18px rgba(34,197,94,.3)'" onmouseout="this.style.background='rgba(34,197,94,.12)';this.style.boxShadow='0 0 10px rgba(34,197,94,.12)'">⟳ Calculate</button>
+  <button id="mobileCalcBtn" onclick="forceRefreshPrice()" title="Calculate price" style="background:rgba(34,197,94,.12);border:1.5px solid rgba(34,197,94,.5);border-radius:8px;color:rgba(34,197,94,.95);font-size:11px;font-weight:800;padding:4px 16px;cursor:pointer;line-height:1.5;font-family:Outfit,sans-serif;letter-spacing:.8px;text-transform:uppercase;transition:all .2s;box-shadow:0 0 10px rgba(34,197,94,.12);" onmouseover="this.style.background='rgba(34,197,94,.22)';this.style.boxShadow='0 0 18px rgba(34,197,94,.3)'" onmouseout="this.style.background='rgba(34,197,94,.12)';this.style.boxShadow='0 0 10px rgba(34,197,94,.12)'">⟳ Calculate</button>
 </div>
 
 <!-- Breakdown panels — static on desktop/iPad, dropdown on mobile -->
@@ -8760,13 +8760,14 @@ function setCalcBadge(state, text) {
   label.textContent = text;
 }
 var _staleGuardTimer = null;
+var _hardUnlockTimer = null;
 
 
 var _calcInFlight = false;
 
 function _setCalcButtons(busy) {
-  // Lock/unlock all Calculate buttons visually
-  ['priceRefreshBtn'].forEach(function(id) {
+  // Lock/unlock all Calculate buttons by ID (reliable on both mobile and desktop)
+  ['priceRefreshBtn', 'mobileCalcBtn'].forEach(function(id) {
     var btn = document.getElementById(id);
     if (!btn) return;
     if (busy) {
@@ -8780,23 +8781,6 @@ function _setCalcButtons(busy) {
       btn.textContent = btn.dataset.origText || '⟳ Calculate';
       btn.style.opacity = '';
       btn.style.cursor = '';
-    }
-  });
-  // Also handle the mobile button (no fixed id — find by text)
-  document.querySelectorAll('button').forEach(function(btn) {
-    if (!btn.id && btn.textContent.trim() === '⟳ Calculate') {
-      if (busy) {
-        btn.disabled = true;
-        btn.dataset.origText = btn.textContent;
-        btn.textContent = '⏳ Calculating…';
-        btn.style.opacity = '0.6';
-        btn.style.cursor = 'not-allowed';
-      } else {
-        btn.disabled = false;
-        btn.textContent = btn.dataset.origText || '⟳ Calculate';
-        btn.style.opacity = '';
-        btn.style.cursor = '';
-      }
     }
   });
 }
@@ -9644,7 +9628,9 @@ function showInputsBar(payloads) {
 async function updatePriceStrip() {
   if (!window.currentUser) return;
   if (window._skipPriceCalc) return;  // customer mode — no token, no pricing
+  if (_calcInFlight) return;          // already running — don't stack calls
 
+  var _fetchTimeout = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? 60000 : 120000;
   _calcInFlight = true;
   _setCalcButtons(true);
   clearTimeout(_staleGuardTimer);
@@ -9667,16 +9653,18 @@ async function updatePriceStrip() {
     });
     setCalcBadge('calculating', 'Google is still calculating — results will appear shortly…');
   }, 20000);
-  // Hard unlock after 130s — if fetch never resolves (mobile network drop), free the button
-  var _hardUnlockTimer = setTimeout(function() {
+  // Hard unlock timer — fires if fetch never resolves (network drop on mobile)
+  // Mobile: 70s (just past 60s fetch timeout). Desktop: 130s.
+  var _hardUnlockMs = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? 70000 : 130000;
+  _hardUnlockTimer = setTimeout(function() {
     if (_calcInFlight) {
       _calcInFlight = false;
       _setCalcButtons(false);
       setPriceStripError('ps_'); setPriceStripError('ps2_'); setPriceStripError('ps3_'); setPriceStripError('ps4_');
       setCalcBadge('error', '✕ Timed out — tap Calculate to retry');
-      console.warn('[Price] Hard unlock fired — fetch never resolved after 130s');
+      console.warn('[Price] Hard unlock fired');
     }
-  }, 130000);
+  }, _hardUnlockMs);
 
   try {
     var route = detectCalcRoute();
@@ -9693,7 +9681,7 @@ async function updatePriceStrip() {
       }
       var rgPayload = buildRGPayload(route.type, route);
       showInputsBar({ RG: rgPayload }); // show inputs immediately on fire
-      var resp = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(rgPayload) }, 120000);
+      var resp = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(rgPayload) }, _fetchTimeout);
       var data = await safeJson(resp);
       if (checkTokenResponse(data)) { _calcInFlight=false; _setCalcButtons(false); clearTimeout(_staleGuardTimer); return; }
       var _rLabel = {RGSteel:'Roof & Upper Gables', RGSides:'RG Sides', RGGables:'RG Gables'}[route.type] || route.type;
@@ -9728,10 +9716,10 @@ async function updatePriceStrip() {
 
       var delay = function(ms) { return new Promise(function(r){ setTimeout(r, ms); }); };
       var [respOH, respNoOH, respSteel, respStud] = await Promise.all([
-        fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadOH) }, 120000),
-        delay(300).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadNoOH) }, 120000); }),
-        delay(600).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadSteel) }, 120000); }),
-        delay(900).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadStud) }, 120000); })
+        fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadOH) }, _fetchTimeout),
+        delay(300).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadNoOH) }, _fetchTimeout); }),
+        delay(600).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadSteel) }, _fetchTimeout); }),
+        delay(900).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadStud) }, _fetchTimeout); })
       ]);
 
       var [dataOH, dataNoOH, dataSteel, dataStud] = await Promise.all([
@@ -9830,7 +9818,7 @@ async function updatePriceStrip() {
     _calcInFlight = false;
     _setCalcButtons(false);
     clearTimeout(_staleGuardTimer);
-    if (typeof _hardUnlockTimer !== 'undefined') clearTimeout(_hardUnlockTimer);
+    clearTimeout(_hardUnlockTimer);
   }
 }
 
