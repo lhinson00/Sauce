@@ -4876,10 +4876,12 @@ function vpToggleWalls() {
                 });
 
                 // Helper: get max wall height at a given Z position (in feet from center)
+                // Within the shed span, clamp the main wall to sSh so it doesn't
+                // show above the shed's outer eave height
                 function wallYTop(zFt) {
                     let h = yTop;
                     shedHeightClamps.forEach(clamp => {
-                        if (zFt >= clamp.zLo - 0.01 && zFt <= clamp.zHi + 0.01) {
+                        if (zFt >= clamp.zLo - 0.05 && zFt <= clamp.zHi + 0.05) {
                             h = Math.min(h, clamp.maxH);
                         }
                     });
@@ -5665,12 +5667,38 @@ function vpToggleWalls() {
                 const eaveWcfg = wallCfgs.find(w => w.id === eaveId);
                 const eavePartial = eaveWcfg && eaveWcfg.encl === 'partial';
                 const eaveRibBot = eavePartial ? sh - (eaveWcfg.partialH || Math.min(4, Q.h)) * Sc : 0;
-                const eaveRibTop = sh;
-                if (eaveRibBot >= eaveRibTop) return; // nothing to draw
                 const xBase = s * sw / 2;
+                // Build height clamps from enclosed lean-to sheds on this eave wall
+                const _eaveRibClamps = [];
+                (shedCfgs || []).forEach(sc2 => {
+                    if (sc2.wall !== eaveId) return;
+                    if (sc2.encl !== 'enclosed' && sc2.encl !== 'partial') return;
+                    if (sc2.type === 'gable') return;
+                    const _d2 = (sc2.dropFt || 0) * Sc;
+                    const _ltP2 = sc2.ltPitch || 1;
+                    const _sSh2 = (sh - _d2) - (sc2.w * (_ltP2 / 12)) * Sc;
+                    const _mwLen2 = Q.l, _sLen2 = sc2.l;
+                    let _sOff2 = 0;
+                    if (_sLen2 >= _mwLen2) _sOff2 = 0;
+                    else if ((sc2.position || 'center') === 'start') _sOff2 = 0;
+                    else if (sc2.position === 'end') _sOff2 = _mwLen2 - _sLen2;
+                    else if (sc2.position === 'custom') _sOff2 = Math.max(0, Math.min(sc2.offsetFt || 0, _mwLen2 - _sLen2));
+                    else _sOff2 = (_mwLen2 - _sLen2) / 2;
+                    const _sco2 = (_sOff2 + _sLen2 / 2 - _mwLen2 / 2) * Sc;
+                    const _ssl2 = _sLen2 * Sc;
+                    _eaveRibClamps.push({ zLo: -_ssl2/2 + _sco2, zHi: _ssl2/2 + _sco2, maxH: Math.max(_sSh2, 0) });
+                });
                 for (let z = -sl/2; z <= sl/2; z += ribSpacing) {
-                    grps.walls.add(mkQ([xBase + s*0.003, eaveRibBot, z, xBase + s*0.003, eaveRibBot, z + ribW, xBase + s*0.003, eaveRibTop, z + ribW, xBase + s*0.003, eaveRibTop, z], mRibHi));
-                    grps.walls.add(mkQ([xBase + s*0.003, eaveRibBot, z + ribW, xBase + s*0.003, eaveRibBot, z + ribW*2, xBase + s*0.003, eaveRibTop, z + ribW*2, xBase + s*0.003, eaveRibTop, z + ribW], mRibSh));
+                    // Clamp rib top to sSh within enclosed shed span (scene units)
+                    let _ribTop = sh;
+                    _eaveRibClamps.forEach(clamp => {
+                        if (z >= clamp.zLo - ribSpacing && z <= clamp.zHi + ribSpacing) {
+                            _ribTop = Math.min(_ribTop, clamp.maxH);
+                        }
+                    });
+                    if (_ribTop <= eaveRibBot) continue;
+                    grps.walls.add(mkQ([xBase + s*0.003, eaveRibBot, z, xBase + s*0.003, eaveRibBot, z + ribW, xBase + s*0.003, _ribTop, z + ribW, xBase + s*0.003, _ribTop, z], mRibHi));
+                    grps.walls.add(mkQ([xBase + s*0.003, eaveRibBot, z + ribW, xBase + s*0.003, eaveRibBot, z + ribW*2, xBase + s*0.003, _ribTop, z + ribW*2, xBase + s*0.003, _ribTop, z + ribW], mRibSh));
                 }
             });
             [-1,1].forEach(s => {
