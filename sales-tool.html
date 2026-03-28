@@ -10238,194 +10238,195 @@ function setPriceStripWaiting(prefix) {
 </script>
   <div id="sauceToast"></div>
 
-<!-- ═══════════════════════════════════════════════════════
-     SAUCE MATERIALS CALCULATOR
-     Additive only — no existing functions modified.
-     All logic lives under window.SauceMaterials namespace.
-     Items are added one building type at a time, verified
-     against known configurations before each addition.
-     Current: WoodOH — Eave Posts
-     ═══════════════════════════════════════════════════════ -->
+
+
+<!-- SAUCE MATERIALS CALCULATOR — additive only, no existing code modified -->
 <script>
-(function() {
+window.SauceMaterials = window.SauceMaterials || {};
 
-  // ── NAMESPACE ──────────────────────────────────────────
-  window.SauceMaterials = window.SauceMaterials || {};
+// ── HELPERS ──────────────────────────────────────────────────────────────────
+
+window.SauceMaterials.getPostsForWall = function(wallId, Q, WALLS, allDoors) {
+  var isEave = (wallId === 'left' || wallId === 'right');
+  var wCfg = (WALLS || []).find(function(w) { return w.id === wallId; }) || null;
+  if (!isEave && wCfg && wCfg.encl === 'open') return [];
+  var wLen = isEave ? Q.l : Q.w;
+  var ps = wCfg ? (wCfg.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  var wd = (allDoors || []).filter(function(d) { return d.wall === wallId; });
+  var posts = [];
+  var nB = Math.floor(wLen / ps);
+  for (var i = 0; i <= nB; i++) {
+    var p = i * (wLen / nB);
+    var isCorner = (i === 0 || i === nB);
+    var inside = false;
+    wd.forEach(function(d) { var dL = d.offset||0; if (p > dL+0.25 && p < dL+d.w-0.25) inside = true; });
+    if (!inside) posts.push({ ft: p, jamb: false, corner: isCorner });
+  }
+  wd.forEach(function(d) {
+    [d.offset||0, (d.offset||0)+d.w].forEach(function(e) {
+      if (!posts.some(function(p) { return Math.abs(p.ft-e) < 0.01; }))
+        posts.push({ ft: e, jamb: true, corner: false });
+    });
+  });
+  posts.sort(function(a, b) { return a.ft - b.ft; });
+  posts = posts.filter(function(post, idx) {
+    if (post.corner || post.jamb) return true;
+    var prev = idx > 0 ? post.ft - posts[idx-1].ft : Infinity;
+    var next = idx < posts.length-1 ? posts[idx+1].ft - post.ft : Infinity;
+    return (prev >= ps && next >= ps);
+  });
+  return posts;
+};
+
+// ── ITEM 1: EAVE POSTS ───────────────────────────────────────────────────────
+
+window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
   var SM = window.SauceMaterials;
-
-  // ── HELPERS ────────────────────────────────────────────
-
-  // Format feet as ft-in string e.g. 6.667 -> "6'-8\""
-  SM.ftIn = function(ft) {
-    var f = Math.floor(ft);
-    var inches = Math.round((ft - f) * 12);
-    if (inches === 12) { f++; inches = 0; }
-    if (inches === 0) return f + "\'";
-    return f + "\'-" + inches + '\"';
+  var left  = SM.getPostsForWall('left',  Q, WALLS, allDoors);
+  var right = SM.getPostsForWall('right', Q, WALLS, allDoors);
+  var qty   = left.length + right.length;
+  var onTop = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
+  var len   = onTop ? Q.h : Q.h + 4;
+  var map   = { '6x6':'PT66', '8x8':'PT88', '10x10':'PT1010', '12x12':'PT1212' };
+  var sku   = (map[sf.mbPostSize || '6x6'] || 'PT66') + len;
+  return {
+    category: 'Posts',
+    description: 'Main Building Eave Posts',
+    sku: sku,
+    quantity: qty,
+    detail: left.length + ' left / ' + right.length + ' right  |  ' + (sf.mbPostSize||'6x6') + ' x ' + len + "ft" + (onTop ? ' (posts on top)' : ' (in-ground)')
   };
+};
 
-  // ── CORRECTED POST PLACEMENT ───────────────────────────
-  // Fixes bug in getWP() where a structural post is incorrectly
-  // placed between two garage doors when the gap is less than
-  // the selected post spacing. Rule applies to all walls.
-  SM.getPostsForWall = function(wallId, Q, WALLS, allDoors) {
-    var isEave = (wallId === 'left' || wallId === 'right');
-    var wCfg   = (WALLS || []).find(function(w) { return w.id === wallId; }) || null;
+// ── CALCULATE ────────────────────────────────────────────────────────────────
 
-    // Open gable walls have no posts
-    if (!isEave && wCfg && wCfg.encl === 'open') return [];
-
-    var wLen = isEave ? Q.l : Q.w;
-    var ps   = wCfg ? (wCfg.postSpacing || Q.postSpacing || 10)
-                    : (Q.postSpacing || 10);
-
-    var wd = (allDoors || []).filter(function(d) { return d.wall === wallId; });
-
-    // Step 1 — regular structural posts at equal spacing intervals
-    var posts = [];
-    var nB    = Math.floor(wLen / ps);
-    for (var i = 0; i <= nB; i++) {
-      var p        = i * (wLen / nB);
-      var isCorner = (i === 0 || i === nB);
-      var insideDoor = false;
-      wd.forEach(function(d) {
-        var dL = d.offset || 0;
-        if (p > dL + 0.25 && p < dL + d.w - 0.25) insideDoor = true;
-      });
-      if (!insideDoor) posts.push({ ft: p, jamb: false, corner: isCorner });
-    }
-
-    // Step 2 — jamb posts at each edge of every door opening
-    wd.forEach(function(d) {
-      var edges = [d.offset || 0, (d.offset || 0) + d.w];
-      edges.forEach(function(e) {
-        var exists = posts.some(function(p) { return Math.abs(p.ft - e) < 0.01; });
-        if (!exists) posts.push({ ft: e, jamb: true, corner: false });
-      });
-    });
-
-    // Step 3 — sort
-    posts.sort(function(a, b) { return a.ft - b.ft; });
-
-    // Step 4 — drop non-corner structural posts where gap to
-    // nearest neighbor on either side is less than the spacing.
-    // Corner posts and jamb posts are never dropped.
-    // UI enforces minimum 2' between doors/corners so no edge cases.
-    posts = posts.filter(function(post, idx) {
-      if (post.corner || post.jamb) return true;
-      var prevGap = idx > 0               ? post.ft - posts[idx - 1].ft : Infinity;
-      var nextGap = idx < posts.length - 1 ? posts[idx + 1].ft - post.ft : Infinity;
-      return (prevGap >= ps && nextGap >= ps);
-    });
-
-    return posts;
+window.SauceMaterials.calculate = function() {
+  var SM = window.SauceMaterials;
+  var Q = window._Q;
+  var WALLS = window._WALLS;
+  var allDoors = window._allDoors;
+  if (!Q) return { error: 'No building configured. Please set dimensions first.' };
+  var sf = {
+    mbPostSize: (document.getElementById('st_mbPostSize')||{}).value || '6x6',
+    postsOnTop: (document.getElementById('st_postsOnTop')||{}).value || 'No'
   };
+  var items = [];
+  items.push(SM.calcEavePosts(Q, WALLS, allDoors, sf));
+  return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "'" };
+};
 
-  // ── WOOD OH — MATERIAL ITEMS ───────────────────────────
+// ── MODAL ────────────────────────────────────────────────────────────────────
 
-  // Item 1: Main Building Eave Posts
-  SM.calcEavePosts = function(Q, WALLS, allDoors, sf) {
-    var leftPosts  = SM.getPostsForWall('left',  Q, WALLS, allDoors);
-    var rightPosts = SM.getPostsForWall('right', Q, WALLS, allDoors);
-    var quantity   = leftPosts.length + rightPosts.length;
+window.closeMaterialsModal = function() {
+  var m = document.getElementById('sauceMaterialsModal');
+  if (m) m.remove();
+};
 
-    var postsOnTop = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
-    var postLength = postsOnTop ? Q.h : Q.h + 4;
+window.openMaterialsModal = function() {
+  window.closeMaterialsModal();
+  var result = window.SauceMaterials.calculate();
 
-    var sizeMap = { '6x6':'PT66', '8x8':'PT88', '10x10':'PT1010', '12x12':'PT1212' };
-    var postSize = sf.mbPostSize || '6x6';
-    var sku      = (sizeMap[postSize] || 'PT66') + postLength;
+  var overlay = document.createElement('div');
+  overlay.id = 'sauceMaterialsModal';
+  overlay.style.cssText = [
+    'display:flex', 'position:fixed', 'inset:0',
+    'background:rgba(0,0,0,.6)', 'z-index:9999',
+    'align-items:center', 'justify-content:center'
+  ].join(';');
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
 
-    return {
-      category:    'Posts',
-      description: 'Main Building Eave Posts',
-      sku:         sku,
-      quantity:    quantity,
-      detail:      leftPosts.length + ' left / ' + rightPosts.length + ' right  |  '
-                   + postSize + ' × ' + postLength + "\'"
-                   + (postsOnTop ? '  (posts on top)' : '  (in-ground)')
-    };
-  };
+  var panel = document.createElement('div');
+  panel.style.cssText = [
+    'background:#2e2e2e', 'border:1px solid rgba(255,130,0,.25)',
+    'border-radius:16px', 'padding:28px 28px 24px',
+    'width:90%', 'max-width:560px', 'max-height:80vh',
+    'display:flex', 'flex-direction:column', 'font-family:Outfit,sans-serif'
+  ].join(';');
 
-  // ── CALCULATE ALL ITEMS FOR CURRENT CONFIGURATION ──────
-  SM.calculate = function() {
-    var Q        = window._Q;
-    var WALLS    = window._WALLS;
-    var allDoors = window._allDoors;
+  // Header
+  var hdr = document.createElement('div');
+  hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;';
+  var title = document.createElement('div');
+  title.style.cssText = 'font-size:15px;font-weight:800;color:#f0f3f7;';
+  title.textContent = 'Material List';
+  var xBtn = document.createElement('button');
+  xBtn.textContent = 'x';
+  xBtn.style.cssText = 'background:none;border:none;color:#888;font-size:18px;cursor:pointer;line-height:1;';
+  xBtn.onclick = window.closeMaterialsModal;
+  hdr.appendChild(title);
+  hdr.appendChild(xBtn);
+  panel.appendChild(hdr);
 
-    if (!Q) return { error: 'No building configured. Please set dimensions first.' };
+  // Subtitle
+  var sub = document.createElement('div');
+  sub.style.cssText = 'font-size:11px;color:#888;margin-bottom:12px;';
+  sub.textContent = result.error ? '' : result.building;
+  panel.appendChild(sub);
 
-    var sf = {
-      mbPostSize: (document.getElementById('st_mbPostSize') || {}).value || '6x6',
-      postsOnTop: (document.getElementById('st_postsOnTop') || {}).value || 'No'
-    };
+  // Warning badge
+  var warn = document.createElement('div');
+  warn.style.cssText = 'font-size:10px;font-weight:600;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:6px;padding:6px 10px;margin-bottom:12px;';
+  warn.textContent = 'Material list is under construction — currently shows verified items only';
+  panel.appendChild(warn);
 
-    var items = [];
-    items.push(SM.calcEavePosts(Q, WALLS, allDoors, sf));
-    // Additional items will be added here as each is verified
+  // Content area
+  var body = document.createElement('div');
+  body.style.cssText = 'overflow-y:auto;flex:1;';
 
-    return { items: items, building: Q.w + "\' × " + Q.l + "\' × " + Q.h + "\'" };
-  };
-
-  // ── MODAL UI ───────────────────────────────────────────
-  window.openMaterialsModal = function() {
-    var existing = document.getElementById('sauceMaterialsModal');
-    if (existing) existing.parentNode.removeChild(existing);
-
-    var result = SM.calculate();
-
-    var m = document.createElement('div');
-    m.id = 'sauceMaterialsModal';
-    m.style.cssText = 'display:flex;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center;';
-
-    if (result.error) {
-      m.innerHTML = '<div style="background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:28px;width:90%;max-width:480px;font-family:Outfit,sans-serif;">'
-        + '<div style="font-size:15px;font-weight:800;color:#f0f3f7;margin-bottom:16px;">📦 Material List</div>'
-        + '<div style="font-size:12px;color:#ef4444;">' + result.error + '</div>'
-        + '<button onclick="document.getElementById('sauceMaterialsModal').remove()" style="margin-top:20px;width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Close</button>'
-        + '</div>';
-      document.body.appendChild(m);
-      return;
-    }
-
-    // Group items by category
-    var categories = {};
+  if (result.error) {
+    var errEl = document.createElement('div');
+    errEl.style.cssText = 'font-size:12px;color:#ef4444;padding:12px 0;';
+    errEl.textContent = result.error;
+    body.appendChild(errEl);
+  } else {
+    // Group by category
+    var cats = {};
     result.items.forEach(function(item) {
-      if (!categories[item.category]) categories[item.category] = [];
-      categories[item.category].push(item);
+      if (!cats[item.category]) cats[item.category] = [];
+      cats[item.category].push(item);
     });
-
-    var rows = '';
-    Object.keys(categories).forEach(function(cat) {
-      rows += '<div style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:rgba(255,130,0,.8);margin:14px 0 6px;">' + cat + '</div>';
-      categories[cat].forEach(function(item) {
-        rows += '<div style="display:grid;grid-template-columns:1fr auto auto;align-items:start;gap:8px;padding:8px 10px;background:#1e293b;border-radius:7px;margin-bottom:4px;">'
-          + '<div>'
-          +   '<div style="font-size:12px;font-weight:700;color:#f0f3f7;">' + item.description + '</div>'
-          +   '<div style="font-size:10px;color:#888;margin-top:2px;">' + item.detail + '</div>'
-          + '</div>'
-          + '<div style="font-size:11px;font-weight:800;color:#FF8200;white-space:nowrap;">' + item.sku + '</div>'
-          + '<div style="font-size:13px;font-weight:900;color:#f0f3f7;text-align:right;min-width:28px;">×' + item.quantity + '</div>'
-          + '</div>';
+    Object.keys(cats).forEach(function(cat) {
+      var catLabel = document.createElement('div');
+      catLabel.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:rgba(255,130,0,.8);margin:14px 0 6px;';
+      catLabel.textContent = cat;
+      body.appendChild(catLabel);
+      cats[cat].forEach(function(item) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:grid;grid-template-columns:1fr auto auto;align-items:start;gap:8px;padding:8px 10px;background:#1e293b;border-radius:7px;margin-bottom:4px;';
+        var info = document.createElement('div');
+        var desc = document.createElement('div');
+        desc.style.cssText = 'font-size:12px;font-weight:700;color:#f0f3f7;';
+        desc.textContent = item.description;
+        var detail = document.createElement('div');
+        detail.style.cssText = 'font-size:10px;color:#888;margin-top:2px;';
+        detail.textContent = item.detail;
+        info.appendChild(desc);
+        info.appendChild(detail);
+        var skuEl = document.createElement('div');
+        skuEl.style.cssText = 'font-size:11px;font-weight:800;color:#FF8200;white-space:nowrap;';
+        skuEl.textContent = item.sku;
+        var qtyEl = document.createElement('div');
+        qtyEl.style.cssText = 'font-size:13px;font-weight:900;color:#f0f3f7;text-align:right;min-width:28px;';
+        qtyEl.textContent = 'x' + item.quantity;
+        row.appendChild(info);
+        row.appendChild(skuEl);
+        row.appendChild(qtyEl);
+        body.appendChild(row);
       });
     });
+  }
+  panel.appendChild(body);
 
-    m.innerHTML = '<div style="background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:28px 28px 24px;width:90%;max-width:560px;max-height:80vh;display:flex;flex-direction:column;font-family:Outfit,sans-serif;">'
-      + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">'
-      +   '<div style="font-size:15px;font-weight:800;color:#f0f3f7;">📦 Material List</div>'
-      +   '<button onclick="document.getElementById('sauceMaterialsModal').remove()" style="background:none;border:none;color:#888;font-size:18px;cursor:pointer;line-height:1;">✕</button>'
-      + '</div>'
-      + '<div style="font-size:11px;color:#888;margin-bottom:16px;">' + result.building + '</div>'
-      + '<div style="font-size:10px;font-weight:600;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:6px;padding:6px 10px;margin-bottom:12px;">⚠️ Material list is under construction — currently shows verified items only</div>'
-      + '<div style="overflow-y:auto;flex:1;">' + rows + '</div>'
-      + '<button onclick="document.getElementById('sauceMaterialsModal').remove()" style="margin-top:16px;width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Close</button>'
-      + '</div>';
+  // Close button
+  var closeBtn = document.createElement('button');
+  closeBtn.textContent = 'Close';
+  closeBtn.style.cssText = 'margin-top:16px;width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+  closeBtn.onclick = window.closeMaterialsModal;
+  panel.appendChild(closeBtn);
 
-    m.addEventListener('click', function(e) { if (e.target === m) m.remove(); });
-    document.body.appendChild(m);
-  };
-
-})();
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+};
 </script>
 
 </body>
