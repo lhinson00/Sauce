@@ -11651,6 +11651,336 @@ window.SauceMaterials.calcWoodOHShedPurlins = function(Q, shedCfgs) {
   });
 };
 
+// ── ITEM 19: TRUSS BRACING ───────────────────────────────────────────────────
+// Wood truss only. SKU: SYP2420. Always 20' boards.
+// Quantity = floor(width / 5) × ceil(length / 20)
+
+window.SauceMaterials.calcTrussBracing = function(Q) {
+  if (Q.truss !== 'Wood') return [];
+  var runs     = Math.ceil(Q.l / 20);
+  var quantity = Math.ceil(Math.floor(Q.w / 5) * runs * 1.1);
+  if (quantity <= 0) return [];
+  return [{
+    category:    'Roofing',
+    description: 'Truss Bracing',
+    sku:         'SYP2420',
+    quantity:    quantity,
+    detail:      Math.floor(Q.w/5) + ' braces/run × ' + runs + ' runs  |  ' + Q.w + "' wide  |  " + Q.l + "' long"
+  }];
+};
+
+// ── ITEM 20: FLY RAFTERS ─────────────────────────────────────────────────────
+// Wood truss + overhang only. SKU: SYP24xx.
+// Length = top chord metal length (from chart by width/pitch/OH) → round up to next even.
+// Board selection = minimum waste to cover that length.
+// Main building: ×4 (2 slopes × 2 gable ends).
+// Side sheds: ×2 per shed (single slope × 2 gable ends).
+
+window.SauceMaterials.calcFlyRafters = function(Q, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+  if (Q.oh === 0) return [];
+
+  // Metal length chart: width → [noOH_412, noOH_612, OH12_412, OH12_612, OH18_412, OH18_612]
+  // Stored as decimal feet
+  var chart = {
+    10:  [5.583,5.917,6.583,7.000,7.167,7.583],
+    12:  [6.583,7.000,7.667,8.083,8.167,8.667],
+    14:  [7.667,8.083,8.750,9.250,9.250,9.833],
+    16:  [8.750,9.250,9.750,10.333,10.333,10.917],
+    18:  [9.750,10.333,10.833,11.500,11.333,12.000],
+    20:  [10.833,11.500,11.917,12.583,12.417,13.167],
+    22:  [11.917,12.583,12.917,13.667,13.500,14.250],
+    24:  [12.917,13.667,14.000,14.833,14.500,15.417],
+    25:  [13.500,14.250,14.500,15.417,15.083,15.917],
+    26:  [14.000,14.833,15.083,15.917,15.583,16.500],
+    28:  [15.083,15.917,16.083,17.083,16.667,17.583],
+    30:  [16.083,17.083,17.167,18.167,17.667,18.750],
+    32:  [17.167,18.167,18.250,19.333,18.750,19.833],
+    34:  [18.250,19.333,19.250,20.417,19.750,21.000],
+    36:  [19.250,20.417,20.333,21.500,20.833,22.083],
+    38:  [20.333,21.500,21.333,22.667,21.917,23.250],
+    40:  [21.333,22.667,22.417,23.750,22.917,24.333],
+    42:  [22.417,23.750,23.500,24.917,24.000,25.417],
+    44:  [23.417,24.917,24.500,26.000,25.083,26.583],
+    46:  [24.500,26.000,25.583,27.083,26.083,27.667],
+    48:  [25.583,27.083,26.667,28.250,27.167,28.833],
+    50:  [26.667,28.250,27.667,29.333,28.250,29.917],
+    52:  [27.667,29.333,28.750,30.500,29.250,31.000],
+    54:  [28.750,30.500,29.833,31.583,30.333,32.167],
+    56:  [29.833,31.583,30.833,32.750,31.417,33.250],
+    60:  [31.917,33.833,33.000,34.917,33.500,35.500]
+  };
+
+  // SS metal length chart: width → [noOH_212, OH12_212]
+  var ssChart = {
+    6:  [6.333,7.417],  8:  [8.417,9.417],  10: [10.417,11.417],
+    12: [12.417,13.500], 14: [14.500,15.500], 16: [16.500,17.500],
+    18: [18.500,19.583], 20: [20.583,21.583], 22: [22.583,23.583],
+    24: [24.583,25.667], 26: [26.667,27.667], 28: [28.667,29.667],
+    30: [30.667,31.750]
+  };
+
+  function nextEven(n) { var c=Math.ceil(n); return c%2===0?c:c+1; }
+
+  function coverLength(len) {
+    var boards = {};
+    if (len <= 20) { boards[20] = 1; }
+    else if (len <= 24) { boards[12] = 2; }
+    else {
+      // Over 24 — 20s first, then one 12 for remainder
+      var remaining = len;
+      if (remaining >= 20) { boards[20] = Math.floor(remaining/20); remaining = remaining%20; }
+      if (remaining > 0) boards[12] = (boards[12]||0) + 1;
+    }
+    // +1 extra of longest board
+    var longest = Object.keys(boards).map(Number).sort(function(a,b){return b-a;})[0];
+    boards[longest]++;
+    return boards;
+  }
+
+  function getColIdx(oh, pitch) {
+    var ohIdx  = oh === 0 ? 0 : (oh <= 12 ? 2 : 4);
+    var pOffset = pitch <= 4 ? 0 : 1;
+    return ohIdx + pOffset;
+  }
+
+  var colIdx  = getColIdx(Q.oh, Q.pitch);
+  var widthRow = chart[Q.w];
+  if (!widthRow) return [];
+  var metalLen = widthRow[colIdx];
+  var rounded  = nextEven(metalLen);
+  var boards   = coverLength(rounded);
+  var groups   = {};
+
+  // Main building: ×4
+  Object.keys(boards).forEach(function(len) {
+    var sku = 'SYP24' + len;
+    groups[sku] = (groups[sku]||0) + boards[len] * 4;
+  });
+
+  // Side sheds: ×2 per shed (single slope × 2 gable ends)
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+
+    if (sc.type === 'gable') {
+      // Gable extension on eave wall: fly rafters along the two eave edges
+      // Top chord length = sc.w (extension depth), using main building pitch/OH
+      var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
+      if (isEaveWall) {
+        var gWidthRow = chart[sc.w];
+        if (gWidthRow) {
+          var gMetalLen = gWidthRow[colIdx];
+          var gRounded  = nextEven(gMetalLen);
+          var gBoards   = coverLength(gRounded);
+          // ×4: 2 slopes × 2 ends of extension
+          Object.keys(gBoards).forEach(function(len) {
+            var sku = 'SYP24' + len;
+            groups[sku] = (groups[sku]||0) + gBoards[len] * 4;
+          });
+        }
+      }
+      return;
+    }
+
+    var ssRow = ssChart[sc.w];
+    if (!ssRow) return;
+    var ssColIdx   = 1; // OH12 column
+    var ssMetalLen = ssRow[ssColIdx];
+    var ssRounded  = nextEven(ssMetalLen);
+    var ssBoards   = coverLength(ssRounded);
+    Object.keys(ssBoards).forEach(function(len) {
+      var sku = 'SYP24' + len;
+      groups[sku] = (groups[sku]||0) + ssBoards[len] * 2;
+    });
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Roofing',
+      description: 'Fly Rafters',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      Q.w + "' wide  |  " + Q.oh + '" O/H  |  ' + Q.pitch + '/12  |  rounded to ' + rounded + "'"
+    };
+  });
+};
+
+// ── ITEM 21: EAVE FASCIA ─────────────────────────────────────────────────────
+// Wood truss + overhang only. Always SYP26xx (12' or 20' boards).
+// Run length = wall/shed length + overhang both ends.
+// +1 extra board per run for safety.
+// Shed on eave wall at eave height replaces that main building eave.
+// Shed dropped → keep main building eave AND add shed eave.
+
+window.SauceMaterials.calcEaveFascia = function(Q, WALLS, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+  if (Q.oh === 0) return [];
+
+  var ohFt = Q.oh / 12;
+
+  function fillFascia(runLen) {
+    var boards = {}, remaining = runLen;
+    if (remaining % 20 === 0) { boards[20] = remaining/20; }
+    else if (remaining % 12 === 0) { boards[12] = remaining/12; }
+    else {
+      if (remaining >= 20) { boards[20] = Math.floor(remaining/20); remaining = remaining%20; }
+      if (remaining > 0)   { boards[12] = (boards[12]||0) + Math.ceil(remaining/12); }
+    }
+    // +1 extra of longest board
+    var longest = Object.keys(boards).map(Number).sort(function(a,b){return b-a;})[0];
+    boards[longest]++;
+    return boards;
+  }
+
+  var groups = {};
+  function addRun(runLen) {
+    var b = fillFascia(runLen);
+    Object.keys(b).forEach(function(len) {
+      var sku = 'SYP26' + len;
+      groups[sku] = (groups[sku]||0) + b[len];
+    });
+  }
+
+  // Determine which main building eave walls are replaced by sheds
+  var replacedEaves = { left: false, right: false };
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.type === 'gable') return; // gable extensions don't replace eave walls
+    var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
+    if (isEaveWall && sc.dropFt === 0) {
+      replacedEaves[sc.wall] = true;
+    }
+  });
+
+  // Main building eave fascia
+  ['left','right'].forEach(function(wallId) {
+    if (!replacedEaves[wallId]) {
+      addRun(Q.l + ohFt * 2);
+    }
+  });
+
+  // Side shed fascia
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
+
+    if (sc.type === 'gable') {
+      // Two eave edges along shed width
+      addRun(sc.w + ohFt * 2);
+      addRun(sc.w + ohFt * 2);
+      return;
+    }
+
+    if (sc.type === 'leanto') {
+      // One outer eave run
+      addRun(sc.l + ohFt * 2);
+      // If dropped, main building eave was kept above — shed eave is extra
+      return;
+    }
+
+    if (sc.type === 'wrap') {
+      // Primary leg outer eave
+      addRun(sc.l + ohFt * 2);
+      // Secondary leg outer eave
+      if (sc.wrapLeg > 0) addRun(sc.wrapLeg + ohFt * 2);
+      return;
+    }
+
+    if (sc.type === 'wrap3') {
+      // Primary leg outer eave
+      addRun(sc.l + ohFt * 2);
+      // Both secondary legs
+      var secLen = isEaveWall ? Q.w : Q.l;
+      addRun(secLen + ohFt * 2);
+      addRun(secLen + ohFt * 2);
+      return;
+    }
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Roofing',
+      description: 'Eave Fascia',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      '2x6  |  ' + Q.oh + '" O/H  |  +1 extra per run'
+    };
+  });
+};
+
+// ── ITEM 22: SIDEWALL GIRTS ──────────────────────────────────────────────────
+// All buildings. Enclosed eave walls only (main + side sheds).
+// Always SYP26xx. Rows = floor(wallHeight / 2). +10%.
+// 12' spacing → 12' boards. 10' spacing → 20' first then 10' fill.
+
+window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
+
+  function wallPS(wallId) {
+    var w = (WALLS||[]).find(function(w){return w.id===wallId;});
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+
+  function fillRuns(wallLen, ps) {
+    // Returns map of boardLen → runCount
+    if (ps === 12) {
+      if (wallLen % 12 === 0) return { 12: wallLen/12 };
+    }
+    // Default: 20' first then 10'
+    var boards = {}, remaining = wallLen;
+    if (remaining % 20 === 0) { boards[20] = remaining/20; return boards; }
+    if (remaining >= 20) { boards[20] = Math.floor(remaining/20); remaining = remaining%20; }
+    if (remaining > 0.01) { boards[10] = (boards[10]||0) + Math.ceil(remaining/10); }
+    return boards;
+  }
+
+  var groups = {};
+
+  function addGirts(wallLen, wallHeight, ps) {
+    var rows = Math.floor(wallHeight / 2);
+    if (rows <= 0) return;
+    var runs = fillRuns(wallLen, ps);
+    Object.keys(runs).forEach(function(len) {
+      var sku = 'SYP26' + len;
+      var qty = Math.ceil(rows * runs[len] * 1.1);
+      groups[sku] = (groups[sku]||0) + qty;
+    });
+  }
+
+  // Main building eave walls (left + right)
+  ['left','right'].forEach(function(wallId) {
+    var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
+    if (!wCfg) return;
+    if (wCfg.encl === 'open') return;
+    var wallLen = Q.l;
+    var ps      = wCfg.postSpacing || Q.postSpacing || 10;
+    var wallH   = wCfg.encl === 'partial'
+      ? (wCfg.partialH || Math.min(4, Q.h))
+      : Q.h;
+    addGirts(wallLen, wallH, ps);
+  });
+
+  // Enclosed side sheds (outer eave wall)
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.encl !== 'enclosed') return;
+    if (!(sc.enclWalls||[]).includes('outer')) return;
+    var attachWall = (WALLS||[]).find(function(w){return w.id===sc.wall;});
+    var ps = attachWall ? (attachWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
+    // Use main building eave height for shed girts
+    addGirts(sc.l, Q.h, ps);
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Girts & Trim',
+      description: 'Sidewall Girts',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'Every 2ft up wall  |  +10%'
+    };
+  });
+};
+
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -11683,6 +12013,10 @@ window.SauceMaterials.calculate = function() {
   SM.calcWoodShedPurlins(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcWoodOHPurlins(Q).forEach(function(item) { items.push(item); });
   SM.calcWoodOHShedPurlins(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcTrussBracing(Q).forEach(function(item) { items.push(item); });
+  SM.calcFlyRafters(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcEaveFascia(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcSidewallGirts(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
