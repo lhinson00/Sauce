@@ -10447,6 +10447,123 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
   });
 };
 
+// ── ITEM 4: WALK DOOR POSTS ──────────────────────────────────────────────────
+
+window.SauceMaterials.calcWalkDoorPosts = function(allDoors) {
+  var walkDoors = (window._walkDoors || []);
+  var qty = walkDoors.length * 2;
+  if (qty === 0) return null;
+  return {
+    category:    'Posts',
+    description: 'Walk Door Posts (Field Located)',
+    sku:         'PT4610',
+    quantity:    qty,
+    detail:      walkDoors.length + ' walk door(s)  |  2 posts each'
+  };
+};
+
+// ── ITEM 5: SACKCRETE ────────────────────────────────────────────────────────
+// Only when posts are in-ground (not posts on top)
+// 2 bags per post (6x6, 10x10, 12x12), 3 bags per post (8x8)
+// 5 bags per post if ESD applies (overrides size rule)
+// Applies to: eave posts + gable posts + shed posts + walk door posts
+// ESD is determined by county after price calculation — read from _lastPriceOH
+
+window.SauceMaterials.calcSackcrete = function(Q, WALLS, allDoors, shedCfgs, sf) {
+  var onTop = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
+  if (onTop) return null; // no sackcrete needed for posts on top
+
+  var SM = window.SauceMaterials;
+
+  // Check if ESD applies — any pricing result with esd > 0
+  var esdApplies = false;
+  var priceResults = [window._lastPriceOH, window._lastPriceNoOH, window._lastPriceSteel, window._lastPriceStud];
+  priceResults.forEach(function(r) {
+    if (r && r.esd && r.esd > 0) esdApplies = true;
+  });
+
+  // Bags per post based on size
+  function bagsForSize(postSize) {
+    if (esdApplies) return 5;
+    return (postSize === '8x8') ? 3 : 2;
+  }
+
+  // Count all in-ground posts
+  var totalBags = 0;
+
+  // Eave posts (MB post size)
+  var eavePosts = SM.getPostsForWall('left', Q, WALLS, allDoors).length
+                + SM.getPostsForWall('right', Q, WALLS, allDoors).length;
+  totalBags += eavePosts * bagsForSize(sf.mbPostSize || '6x6');
+
+  // Gable posts (MB post size)
+  ['front', 'back'].forEach(function(wallId) {
+    var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
+    if (wCfg && wCfg.encl === 'open') return;
+    var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
+    var gablePosts = posts.filter(function(p){return !p.corner;}).length;
+    totalBags += gablePosts * bagsForSize(sf.mbPostSize || '6x6');
+  });
+
+  // Walk door posts (always 6x6 equivalent — PT4610)
+  var walkDoorPostCount = (window._walkDoors || []).length * 2;
+  totalBags += walkDoorPostCount * bagsForSize('6x6');
+
+  // Shed posts (SS post size)
+  var ssSize = sf.ssPostSize || '6x6';
+  var ssGround = 4; // always in ground for shed posts
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    var attachWall = (WALLS||[]).find(function(w){return w.id===sc.wall;});
+    var ps = attachWall ? (attachWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
+    var count = 0;
+    if (sc.type === 'gable') {
+      count = 2;
+    } else if (sc.type === 'leanto') {
+      count = Math.max(1, Math.floor(sc.l / ps)) + 1;
+    } else if (sc.type === 'wrap') {
+      count = Math.max(1, Math.floor(sc.l / ps)) + 1;
+      if (sc.wrapLeg > 0) {
+        var secWallId = (sc.wall==='left'||sc.wall==='right')
+          ? (sc.wrapDir==='cw'?'front':'back')
+          : (sc.wrapDir==='cw'?'left':'right');
+        var secWall = (WALLS||[]).find(function(w){return w.id===secWallId;});
+        var secPS = secWall ? (secWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
+        count += Math.max(1, Math.floor(sc.wrapLeg / secPS)) + 1;
+        count += 1; // hip corner
+        var cornerBays = Math.max(1, Math.floor(sc.w / ps));
+        count += (cornerBays - 1) * 2;
+      }
+    } else if (sc.type === 'wrap3') {
+      var isEave = (sc.wall==='left'||sc.wall==='right');
+      count = Math.max(1, Math.floor(sc.l / ps)) + 1;
+      if (isEave) {
+        count += Math.max(1, Math.floor(Q.w / (((WALLS||[]).find(function(w){return w.id==='front';})||{}).postSpacing||Q.postSpacing||10))) + 1;
+        count += Math.max(1, Math.floor(Q.w / (((WALLS||[]).find(function(w){return w.id==='back';})||{}).postSpacing||Q.postSpacing||10))) + 1;
+      } else {
+        count += Math.max(1, Math.floor(Q.l / (((WALLS||[]).find(function(w){return w.id==='left';})||{}).postSpacing||Q.postSpacing||10))) + 1;
+        count += Math.max(1, Math.floor(Q.l / (((WALLS||[]).find(function(w){return w.id==='right';})||{}).postSpacing||Q.postSpacing||10))) + 1;
+      }
+      count += 2; // hip corners
+    }
+    totalBags += count * bagsForSize(ssSize);
+  });
+
+  if (totalBags === 0) return null;
+
+  // Check if price has been calculated yet
+  var priceCalculated = priceResults.some(function(r){ return r && r.total; });
+
+  return {
+    category:    'Concrete',
+    description: 'Sackcrete' + (esdApplies ? ' (ESD — 5 bags/post)' : ''),
+    sku:         'QCR',
+    quantity:    totalBags,
+    detail:      (esdApplies ? '5 bags/post (ESD)' : (sf.mbPostSize==='8x8'||sf.ssPostSize==='8x8') ? '2-3 bags/post' : '2 bags/post')
+               + (priceCalculated ? '' : '  |  ⚠️ Calculate price to verify ESD')
+  };
+};
+
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -10461,9 +10578,13 @@ window.SauceMaterials.calculate = function() {
     postsOnTop: (document.getElementById('st_postsOnTop')||{}).value || 'No'
   };
   var items = [];
+  SM.calcShedPosts(Q, WALLS, window._shedConfigs || [], sf).forEach(function(item) { items.push(item); });
   items.push(SM.calcEavePosts(Q, WALLS, allDoors, sf));
   SM.calcGablePosts(Q, WALLS, allDoors, sf).forEach(function(item) { items.push(item); });
-  SM.calcShedPosts(Q, WALLS, window._shedConfigs || [], sf).forEach(function(item) { items.push(item); });
+  var wdPosts = SM.calcWalkDoorPosts(allDoors);
+  if (wdPosts) items.push(wdPosts);
+  var sackcrete = SM.calcSackcrete(Q, WALLS, allDoors, window._shedConfigs||[], sf);
+  if (sackcrete) items.push(sackcrete);
   return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "'" };
 };
 
