@@ -12786,7 +12786,137 @@ window.SauceMaterials.calcOpenGableMetal = function(Q, WALLS, shedCfgs) {
   return results;
 };
 
-// ── ITEM 36: WAINSCOT METAL ──────────────────────────────────────────────────
+// ── ITEM 38: SOFFIT METAL ────────────────────────────────────────────────────
+// Wood truss with overhang only.
+// Top chord length: from wood chart, round up to nearest whole foot.
+//   Main building: top chord × 4 (2 slopes × 2 gable ends).
+//   Each lean-to:  top chord × 2 (single slope × 2 gable ends).
+// Eave soffit runs: length + ohFt×2.
+//   Normal (non-dropped eave lean-to): 2 eave runs for main building minus
+//     whichever eave sides are covered by non-dropped lean-tos.
+//   Dropped lean-to or gable shed: main building eave restored on that side
+//     + lean-to/gable gets its own eave run.
+// All footage summed → divide by 3 for quantity.
+// Length: 1'1" for 12" OH, 1'7" for 18" OH.
+
+window.SauceMaterials.calcSoffitMetal = function(Q, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+  if (Q.oh === 0) return [];
+
+  var metalType = (document.getElementById('st_roofMetal')||{}).value || 'Painted';
+  var skuPrefix = metalType==='26-Gauge'?'T6PW':metalType==='Galvalume'?'T9GA':metalType==='PBR'?'P6PW':'T9PW';
+
+  var ohFt      = Q.oh / 12;
+  var panelLen  = Q.oh <= 12 ? "1'1\"" : "1'7\"";
+
+  // Wood chart: width → [noOH_412, noOH_612, OH12_412, OH12_612, OH18_412, OH18_612]
+  var chart = {
+    10:[5.583,5.917,6.583,7.000,7.167,7.583],   12:[6.583,7.000,7.667,8.083,8.167,8.667],
+    14:[7.667,8.083,8.750,9.250,9.250,9.833],   16:[8.750,9.250,9.750,10.333,10.333,10.917],
+    18:[9.750,10.333,10.833,11.500,11.333,12.000],20:[10.833,11.500,11.917,12.583,12.417,13.167],
+    22:[11.917,12.583,12.917,13.667,13.500,14.250],24:[12.917,13.667,14.000,14.833,14.500,15.417],
+    25:[13.500,14.250,14.500,15.417,15.083,15.917],26:[14.000,14.833,15.083,15.917,15.583,16.500],
+    28:[15.083,15.917,16.083,17.083,16.667,17.583],30:[16.083,17.083,17.167,18.167,17.667,18.750],
+    32:[17.167,18.167,18.250,19.333,18.750,19.833],34:[18.250,19.333,19.250,20.417,19.750,21.000],
+    36:[19.250,20.417,20.333,21.500,20.833,22.083],38:[20.333,21.500,21.333,22.667,21.917,23.250],
+    40:[21.333,22.667,22.417,23.750,22.917,24.333],42:[22.417,23.750,23.500,24.917,24.000,25.417],
+    44:[23.417,24.917,24.500,26.000,25.083,26.583],46:[24.500,26.000,25.583,27.083,26.083,27.667],
+    48:[25.583,27.083,26.667,28.250,27.167,28.833],50:[26.667,28.250,27.667,29.333,28.250,29.917],
+    52:[27.667,29.333,28.750,30.500,29.250,31.000],54:[28.750,30.500,29.833,31.583,30.333,32.167],
+    56:[29.833,31.583,30.833,32.750,31.417,33.250],60:[31.917,33.833,33.000,34.917,33.500,35.500]
+  };
+
+  // SS chart for lean-to top chords: width → [noOH_212, OH12_212]
+  var ssChart = {
+    6:[6.333,7.417],8:[8.417,9.417],10:[10.417,11.417],12:[12.417,13.500],
+    14:[14.500,15.500],16:[16.500,17.500],18:[18.500,19.583],20:[20.583,21.583],
+    22:[22.583,23.583],24:[24.583,25.667],26:[26.667,27.667],28:[28.667,29.667],
+    30:[30.667,31.750]
+  };
+
+  function colIdx(oh, pitch) {
+    var ohIdx  = oh <= 12 ? 2 : 4;
+    var pOff   = pitch <= 4 ? 0 : 1;
+    return ohIdx + pOff;
+  }
+
+  var ci       = colIdx(Q.oh, Q.pitch);
+  var mbRow    = chart[Q.w];
+  if (!mbRow) return [];
+
+  var totalFt  = 0;
+
+  // ── Gable soffit: top chord × 4 for main building ──
+  var mbTopChord = Math.ceil(mbRow[ci]); // round up to whole foot
+  totalFt += mbTopChord * 4;
+
+  // ── Eave soffit for main building ──
+  // Tracks which eave sides have a non-dropped lean-to (those sides lose their main eave soffit)
+  var eaveReplaced = { left: false, right: false };
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if ((sc.wall === 'left' || sc.wall === 'right') && parseFloat(sc.dropFt||0) === 0) {
+      eaveReplaced[sc.wall] = true;
+    }
+  });
+
+  ['left','right'].forEach(function(side) {
+    if (!eaveReplaced[side]) {
+      totalFt += Q.l + ohFt * 2;
+    }
+  });
+
+  // ── Side sheds ──
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    var isEave = (sc.wall === 'left' || sc.wall === 'right');
+
+    if (sc.type === 'gable') {
+      // Gable extension: top chord based on extension width, using main building pitch/OH
+      var gRow = chart[sc.w];
+      if (gRow) {
+        var gTopChord = Math.ceil(gRow[ci]);
+        totalFt += gTopChord * 4; // 2 slopes × 2 ends
+      }
+      // Gable shed restores both main building eave soffit runs for its depth
+      totalFt += (sc.w + ohFt * 2) * 2; // two eave runs (front + back of extension)
+      return;
+    }
+
+    if (!isEave) return; // front/back non-gable sheds handled by main building
+
+    var dropped = parseFloat(sc.dropFt||0) > 0;
+
+    // Lean-to top chord (SS chart, OH12 column = index 1)
+    var ssRow = ssChart[sc.w];
+    if (ssRow) {
+      var ssTopChord = Math.ceil(ssRow[1]); // always use OH12 column for soffit
+      totalFt += ssTopChord * 2; // single slope × 2 gable ends
+    }
+
+    // Lean-to eave soffit
+    totalFt += sc.l + ohFt * 2;
+
+    // Dropped lean-to: main building eave above it is restored
+    if (dropped) {
+      totalFt += Q.l + ohFt * 2;
+    }
+  });
+
+  var qty = Math.ceil(totalFt / 3);
+
+  return [{
+    category:    'Metal',
+    description: 'Soffit Metal',
+    sku:         skuPrefix,
+    quantity:    qty,
+    metalLength: panelLen,
+    detail:      metalType + "  |  3' wide panels  |  " + Q.oh + '" O/H'
+  }];
+};
+
+
 // When wainscot is selected: enclosed perimeter ÷ 3 panels, always 4' length.
 // Enclosed perimeter = main building enclosed eave walls (both sides × length)
 //   + enclosed gable walls (width each) + enclosed side shed outer walls.
@@ -12925,6 +13055,7 @@ window.SauceMaterials.calculate = function() {
   SM.calcGarageDoorHeaders(allDoors).forEach(function(item) { items.push(item); });
   SM.calcBarnDoors().forEach(function(item) { items.push(item); });
   SM.calcRoofMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcSoffitMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSidewallMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcGableMetal(Q, WALLS).forEach(function(item) { items.push(item); });
   SM.calcLeantoUpperGable(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
