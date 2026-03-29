@@ -13501,6 +13501,306 @@ window.SauceMaterials.calcRETTrim = function(Q, WALLS, shedCfgs) {
   });
 };
 
+// ── TRIM: END WALL FLASHING ───────────────────────────────────────────────────
+// Used when a side shed is dropped or is a gable extension (both treated as dropped).
+// One run per qualifying shed at the shed's length.
+// SKU: EWF9PW10 (10' spacing) or EWF9PW12 (12' spacing).
+
+window.SauceMaterials.calcEndWallFlashing = function(Q, WALLS, shedCfgs) {
+  function wallPS(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+
+  var groups = {};
+  function addRun(runLen, ps) {
+    var boardLen = (ps === 12) ? 12 : 10;
+    var sku      = 'EWF9PW' + boardLen;
+    groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen);
+  }
+
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.type === 'gable') return; // gable extensions don't get flashing
+    var ps = wallPS(sc.wall);
+
+    // Dropped eave lean-to
+    if ((sc.wall === 'left' || sc.wall === 'right') && parseFloat(sc.dropFt||0) > 0) {
+      addRun(sc.l, ps);
+      return;
+    }
+
+    // Lean-to on a gable end wall (front or back) — always treated as dropped
+    if (sc.wall === 'front' || sc.wall === 'back') {
+      addRun(sc.l, ps);
+    }
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Trim',
+      description: 'End Wall Flashing',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'dropped eave lean-tos + gable wall lean-tos'
+    };
+  });
+};
+
+// ── TRIM: POST WRAP ───────────────────────────────────────────────────────────
+// Only when st_postWraps is checked. SKU: PW669PW12.
+// Quantity = total side shed post count (reuses calcShedPosts).
+
+window.SauceMaterials.calcPostWrap = function(Q, WALLS, shedCfgs, sf) {
+  var on = !!(document.getElementById('st_postWraps')||{}).checked;
+  if (!on) return [];
+
+  var shedPostItems = window.SauceMaterials.calcShedPosts(Q, WALLS, shedCfgs, sf);
+  var total = shedPostItems.reduce(function(sum, item) { return sum + item.quantity; }, 0);
+  if (!total) return [];
+
+  return [{
+    category:    'Trim',
+    description: 'Post Wrap',
+    sku:         'PW669PW12',
+    quantity:    total,
+    detail:      total + ' side shed posts'
+  }];
+};
+
+// ── TRIM: RAT GUARD ───────────────────────────────────────────────────────────
+// Enclosed walls only. RG9PW10 (10' spacing) or RG9PW12 (12' spacing).
+// Quantity = ceil(wallLength / boardLen) per enclosed wall.
+// Covers: main building enclosed eave walls + enclosed side shed outer walls.
+
+window.SauceMaterials.calcRatGuard = function(Q, WALLS, shedCfgs) {
+  function wallPS(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+
+  function wallEncl(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? w.encl : 'enclosed';
+  }
+
+  var groups = {};
+  function addRun(runLen, ps) {
+    var boardLen = (ps === 12) ? 12 : 10;
+    var sku      = 'RG9PW' + boardLen;
+    groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen);
+  }
+
+  // Main building enclosed eave walls
+  ['left','right'].forEach(function(side) {
+    if (wallEncl(side) !== 'open') {
+      addRun(Q.l, wallPS(side));
+    }
+  });
+
+  // Main building enclosed gable walls
+  ['front','back'].forEach(function(side) {
+    if (wallEncl(side) !== 'open') {
+      addRun(Q.w, wallPS(side));
+    }
+  });
+
+  // Enclosed side shed outer walls
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if (sc.encl !== 'enclosed') return;
+    if (!(sc.enclWalls||[]).includes('outer')) return;
+    var wallLen = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
+    addRun(wallLen, wallPS(sc.wall));
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Trim',
+      description: 'Rat Guard',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'enclosed walls'
+    };
+  });
+};
+
+// ── TRIM: DOUBLE ANGLE ────────────────────────────────────────────────────────
+// Only when wainscot is selected. DA9PW10 (10' spacing) or DA9PW12 (12' spacing).
+// Runs along all enclosed walls where wainscot appears:
+//   main building enclosed eave + gable walls, enclosed side shed outer walls.
+
+window.SauceMaterials.calcDoubleAngle = function(Q, WALLS, shedCfgs) {
+  var wainscot = (document.getElementById('st_wainscot')||{}).value === 'Yes';
+  if (!wainscot) return [];
+
+  function wallPS(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+
+  function wallEncl(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? w.encl : 'enclosed';
+  }
+
+  var groups = {};
+  function addRun(runLen, ps) {
+    var boardLen = (ps === 12) ? 12 : 10;
+    var sku      = 'DA9PW' + boardLen;
+    groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen);
+  }
+
+  // Main building enclosed eave walls
+  ['left','right'].forEach(function(side) {
+    if (wallEncl(side) !== 'open') addRun(Q.l, wallPS(side));
+  });
+
+  // Main building enclosed gable walls
+  ['front','back'].forEach(function(side) {
+    if (wallEncl(side) !== 'open') addRun(Q.w, wallPS(side));
+  });
+
+  // Enclosed side shed outer walls
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if (sc.encl !== 'enclosed') return;
+    if (!(sc.enclWalls||[]).includes('outer')) return;
+    var wallLen = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
+    addRun(wallLen, wallPS(sc.wall));
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Trim',
+      description: 'Double Angle',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'wainscot buildings  |  enclosed walls'
+    };
+  });
+};
+
+// ── TRIM: INSIDE CORNER TRIM ─────────────────────────────────────────────────
+// Used when an enclosed side shed is partially enclosed (enclFt < sc.l).
+// One ISC9PW12 per instance.
+
+window.SauceMaterials.calcInsideCornerTrim = function(Q, shedCfgs) {
+  var qty = (shedCfgs||[]).filter(function(sc) {
+    return sc.encl === 'enclosed' &&
+           sc.enclFt != null &&
+           parseFloat(sc.enclFt) < sc.l &&
+           sc.w && sc.l;
+  }).length;
+
+  if (!qty) return [];
+
+  return [{
+    category:    'Trim',
+    description: 'Inside Corner Trim',
+    sku:         'ISC9PW12',
+    quantity:    qty,
+    detail:      qty + ' partial enclosed shed(s)'
+  }];
+};
+
+// ── TRIM: OUTSIDE CORNER ─────────────────────────────────────────────────────
+// OC9PWxx — lengths 10,12,14,16,18,20. Pick shortest that covers needed height.
+// Main building corners: Q.h + 2. Only where both adjacent walls are enclosed.
+// Flush (non-dropped) eave lean-to replaces main building corners on that side.
+// Enclosed side shed outer corners: outer wall height + 2. Two per shed.
+
+window.SauceMaterials.calcOutsideCornerTrim = function(Q, WALLS, shedCfgs) {
+  var LENGTHS = [10, 12, 14, 16, 18, 20];
+
+  function wallEncl(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? w.encl : 'enclosed';
+  }
+
+  function pickLen(neededFt) {
+    for (var i = 0; i < LENGTHS.length; i++) {
+      if (LENGTHS[i] >= neededFt) return LENGTHS[i];
+    }
+    return LENGTHS[LENGTHS.length - 1];
+  }
+
+  var ocGroups  = {}; // OC trim
+  var furGroups = {}; // furring lumber
+
+  function addOC(neededFt, qty) {
+    var sku = 'OC9PW' + pickLen(neededFt);
+    ocGroups[sku] = (ocGroups[sku] || 0) + qty;
+  }
+  function addFur(neededFt, qty) {
+    var sku = 'SYP24' + pickLen(neededFt);
+    furGroups[sku] = (furGroups[sku] || 0) + qty;
+  }
+
+  // Main building: 4 corners, each shared by one eave wall and one gable wall
+  // front-left, front-right, back-left, back-right
+  var frontEncl = wallEncl('front') !== 'open';
+  var backEncl  = wallEncl('back')  !== 'open';
+  var leftEncl  = wallEncl('left')  !== 'open';
+  var rightEncl = wallEncl('right') !== 'open';
+  var mbH = Q.h + 2;
+
+  var corners = [
+    { eave: leftEncl,  gable: frontEncl }, // front-left
+    { eave: rightEncl, gable: frontEncl }, // front-right
+    { eave: leftEncl,  gable: backEncl  }, // back-left
+    { eave: rightEncl, gable: backEncl  }, // back-right
+  ];
+
+  corners.forEach(function(c) {
+    if (c.eave || c.gable) {
+      addOC(mbH, 1);
+      if (c.eave !== c.gable) addFur(mbH, 1); // one enclosed, one open → furring
+    }
+  });
+
+  // Enclosed side shed outer corners: 2 per shed (front + back of outer wall)
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if (sc.encl !== 'enclosed') return;
+    if (!(sc.enclWalls||[]).includes('outer')) return;
+    var dropFt  = parseFloat(sc.dropFt||0);
+    var outerH  = (Q.h - dropFt) - (sc.w * (sc.ltPitch||1) / 12);
+    addOC(outerH + 2, 2);
+  });
+
+  var results = [];
+
+  Object.keys(ocGroups).sort(function(a, b) {
+    return parseInt(a.replace('OC9PW','')) - parseInt(b.replace('OC9PW',''));
+  }).forEach(function(sku) {
+    results.push({
+      category:    'Trim',
+      description: 'Outside Corner',
+      sku:         sku,
+      quantity:    ocGroups[sku],
+      detail:      'enclosed wall corners'
+    });
+  });
+
+  Object.keys(furGroups).sort(function(a, b) {
+    return parseInt(a.replace('SYP24','')) - parseInt(b.replace('SYP24',''));
+  }).forEach(function(sku) {
+    results.push({
+      category:    'Lumber',
+      description: 'Furring Lumber',
+      sku:         sku,
+      quantity:    furGroups[sku],
+      detail:      'corner backing where enclosed wall meets open wall'
+    });
+  });
+
+  return results;
+};
+
 window.SauceMaterials.calculate = function() {
   var SM = window.SauceMaterials;
   var Q = window._Q;
@@ -13559,6 +13859,12 @@ window.SauceMaterials.calculate = function() {
   SM.calcSoffitFJTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcPC3Trim(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcRETTrim(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcEndWallFlashing(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcPostWrap(Q, WALLS, window._shedConfigs||[], sf).forEach(function(item) { items.push(item); });
+  SM.calcRatGuard(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcDoubleAngle(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcInsideCornerTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcOutsideCornerTrim(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
