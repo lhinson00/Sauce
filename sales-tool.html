@@ -11231,6 +11231,140 @@ window.SauceMaterials.calcSteelShedTrusses = function(Q, WALLS, shedCfgs) {
   });
 };
 
+// ── ITEM 13: STEEL TRUSS ROOF PURLINS ───────────────────────────────────────
+// Steel truss buildings only. Always 2x6.
+// Board length selected by: even division first (longest wins), then greedy fill.
+// Runs = total boards needed to cover building length.
+// Quantity = runs × cups (cups by building width).
+// SKU: SYP2610, SYP2612, SYP2620
+
+window.SauceMaterials.calcSteelPurlins = function(Q) {
+  if (Q.truss !== 'Steel') return [];
+
+  var PURLIN_LENGTHS = [20, 12, 10];
+
+  var cupsMap = {
+    10:11, 12:13, 14:14, 16:15, 18:15, 20:16, 22:18, 24:19, 25:21,
+    26:21, 28:23, 30:23, 32:25, 34:25, 36:27, 38:29, 40:29, 42:29,
+    44:32, 46:32, 48:34, 50:34, 52:36, 54:38, 56:39, 60:41, 70:47,
+    75:50, 80:50, 85:57, 100:72
+  };
+
+  var spacing = parseFloat((document.getElementById('st_steelPS')||{}).value || 10) || 10;
+
+  function fillLength(totalLen) {
+    // 1. Post spacing takes priority if it's a valid purlin length and divides evenly
+    if (PURLIN_LENGTHS.indexOf(spacing) !== -1 && totalLen % spacing === 0) {
+      var r = {}; r[spacing] = totalLen / spacing; return r;
+    }
+    // 2. Even division — longest board that divides evenly
+    for (var ei = 0; ei < PURLIN_LENGTHS.length; ei++) {
+      var l = PURLIN_LENGTHS[ei];
+      if (totalLen % l === 0) {
+        var r2 = {}; r2[l] = totalLen / l; return r2;
+      }
+    }
+    // 3. Greedy fill — no even divisor found
+    var boards = {}, remaining = totalLen;
+    while (remaining > 0.01) {
+      var longest = null;
+      for (var gi = 0; gi < PURLIN_LENGTHS.length; gi++) {
+        if (PURLIN_LENGTHS[gi] <= remaining) { longest = PURLIN_LENGTHS[gi]; break; }
+      }
+      if (!longest) break;
+      boards[longest] = (boards[longest] || 0) + 1;
+      remaining = Math.round((remaining - longest) * 100) / 100;
+    }
+    return boards;
+  }
+
+  var cups = cupsMap[Q.w];
+  if (!cups) return [];
+
+  var boards = fillLength(Q.l);
+  var results = [];
+
+  Object.keys(boards).forEach(function(len) {
+    var runs     = boards[len];
+    var quantity = Math.ceil(runs * cups * 1.1);
+    var sku      = 'SYP26' + len;
+    results.push({
+      category:    'Roofing',
+      description: 'Steel Truss Roof Purlins',
+      sku:         sku,
+      quantity:    quantity,
+      detail:      runs + ' runs × ' + cups + ' cups  |  ' + Q.w + "' wide  |  2x6x" + len + "'"
+    });
+  });
+
+  return results;
+};
+
+// ── ITEM 14: STEEL SIDE SHED PURLINS ────────────────────────────────────────
+// Steel truss buildings only. Always 2x6.
+// Same board length logic as main building purlins.
+// Cups determined by shed width (from side shed truss cup table).
+// Runs based on shed length.
+
+window.SauceMaterials.calcSteelShedPurlins = function(Q, shedCfgs) {
+  if (Q.truss !== 'Steel') return [];
+
+  var PURLIN_LENGTHS = [20, 12, 10];
+
+  var ssCupsMap = {
+    10: 7,  12: 8,  14: 10, 16: 11, 18: 12,
+    20: 13, 24: 15, 26: 16, 28: 18, 30: 19, 36: 28
+  };
+
+  var spacing = parseFloat((document.getElementById('st_steelPS')||{}).value || 10) || 10;
+
+  function fillLength(totalLen) {
+    if (PURLIN_LENGTHS.indexOf(spacing) !== -1 && totalLen % spacing === 0) {
+      var r = {}; r[spacing] = totalLen / spacing; return r;
+    }
+    for (var ei = 0; ei < PURLIN_LENGTHS.length; ei++) {
+      var l = PURLIN_LENGTHS[ei];
+      if (totalLen % l === 0) { var r2 = {}; r2[l] = totalLen / l; return r2; }
+    }
+    var boards = {}, remaining = totalLen;
+    while (remaining > 0.01) {
+      var longest = null;
+      for (var gi = 0; gi < PURLIN_LENGTHS.length; gi++) {
+        if (PURLIN_LENGTHS[gi] <= remaining) { longest = PURLIN_LENGTHS[gi]; break; }
+      }
+      if (!longest) break;
+      boards[longest] = (boards[longest] || 0) + 1;
+      remaining = Math.round((remaining - longest) * 100) / 100;
+    }
+    return boards;
+  }
+
+  var groups = {};
+
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    var cups = ssCupsMap[sc.w];
+    if (!cups) return;
+    var boards = fillLength(sc.l);
+    Object.keys(boards).forEach(function(len) {
+      var runs     = boards[len];
+      var quantity = Math.ceil(runs * cups * 1.1);
+      var sku      = 'SYP26' + len;
+      groups[sku]  = (groups[sku] || 0) + quantity;
+    });
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Roofing',
+      description: 'Steel Side Shed Purlins',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      '2x6  |  +10%  |  shed length fill'
+    };
+  });
+};
+
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -11257,6 +11391,8 @@ window.SauceMaterials.calculate = function() {
   SM.calcWoodTrusses(Q).forEach(function(item) { items.push(item); });
   SM.calcSteelTrusses(Q).forEach(function(item) { items.push(item); });
   SM.calcSteelShedTrusses(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcSteelPurlins(Q).forEach(function(item) { items.push(item); });
+  SM.calcSteelShedPurlins(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
