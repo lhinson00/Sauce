@@ -10659,10 +10659,12 @@ window.SauceMaterials.calcFootingPads = function(Q, WALLS, allDoors, shedCfgs, s
 // Side sheds: always 2x12
 // Fill wall length with longest standard lumber first (greedy)
 
-window.SauceMaterials.calcHeaders = function(Q, WALLS, shedCfgs) {
+window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
   if (Q.truss === 'Steel') return [];
 
-  var STANDARD_LENGTHS = [20, 16, 12, 10, 8];
+  var SM = window.SauceMaterials;
+  var STANDARD_LENGTHS = [20, 16, 12, 10, 8]; // for shed fill
+  var HEADER_LENGTHS = [20, 12, 10]; // for main building eave headers
 
   // Fill a wall length with standard lumber pieces, greedy longest first
   function fillWall(wallLen) {
@@ -10688,12 +10690,48 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, shedCfgs) {
   var mbGroups   = {}; // main building headers
   var shedGroups = {}; // side shed headers
 
-  // Main building — both eave walls, inside + outside (×4)
+  // Main building — both eave walls, inside + outside (×2 per wall, ×2 walls = ×4)
+  // Headers land on posts (structural + jambs). Use greedy algorithm:
+  // from each post, span as far as possible using shortest board that reaches furthest post.
   var mbPrefix = skuPrefix(Q.w);
-  var mbPieces = fillWall(Q.l);
-  Object.keys(mbPieces).forEach(function(len) {
-    var sku = mbPrefix + len;
-    mbGroups[sku] = (mbGroups[sku] || 0) + mbPieces[len] * 4;
+
+  ['left', 'right'].forEach(function(wallId) {
+    var wallDoors = allDoors.filter(function(d) { return d.wall === wallId; });
+    var wLen = Q.l;
+    var sku;
+
+    if (wallDoors.length === 0) {
+      // No doors — simple fill of full wall length (most efficient board usage)
+      var remaining = wLen;
+      while (remaining > 0.01) {
+        var longest = HEADER_LENGTHS.find(function(l) { return l <= remaining; });
+        if (!longest) break;
+        sku = mbPrefix + longest;
+        mbGroups[sku] = (mbGroups[sku] || 0) + 2; // ×2 inside+outside
+        remaining = Math.round((remaining - longest) * 100) / 100;
+      }
+    } else {
+      // Garage doors present — headers must land on posts
+      // Greedy: from each post, span as far as possible using shortest board that reaches furthest post
+      var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
+      if (posts.length < 2) return;
+      var postFts = posts.map(function(p) { return Math.round(p.ft * 1000) / 1000; });
+      var i = 0;
+      while (i < postFts.length - 1) {
+        var start = postFts[i];
+        var furthestIdx = i;
+        for (var j = postFts.length - 1; j > i; j--) {
+          var dist = postFts[j] - start;
+          if (HEADER_LENGTHS.some(function(l) { return l >= dist - 0.01; })) { furthestIdx = j; break; }
+        }
+        if (furthestIdx === i) break;
+        var span = postFts[furthestIdx] - start;
+        var board = HEADER_LENGTHS.slice().reverse().find(function(l) { return l >= span - 0.01; });
+        sku = mbPrefix + board;
+        mbGroups[sku] = (mbGroups[sku] || 0) + 2; // ×2 inside+outside
+        i = furthestIdx;
+      }
+    }
   });
 
   // Side sheds — always 2x12, inside + outside (×2 per eave edge)
@@ -10889,37 +10927,37 @@ window.SauceMaterials.calcSteelTrusses = function(Q) {
   if (Q.truss !== 'Steel') return [];
 
   var skuMap = {
-    10:  '10TSGT10',
-    12:  '12TSGT12',
-    14:  '14TSGT14',
-    16:  '16TSGT1666',
-    18:  '18TSGT1866',
-    20:  '20TSGT2066',
-    22:  '22TSGT22',
-    24:  '24TSGT2466',
-    25:  '25TSGT25',
-    26:  '26TSGT26',
-    28:  '28TSGT2866',
-    30:  '30TSGT3066KBNO-O',
-    32:  '32TSGT3266KB',
-    34:  '34TSGT34',
-    36:  '36TSGT3666KB',
-    38:  '38TSGT3866KB',
-    40:  '40TSGT401266KBNO-O',
-    42:  '42TSGT42',
-    44:  '44TSGT44',
-    46:  '46TSGT46',
-    48:  '48TSGT481266KB',
-    50:  '50TSGT501088KB',
-    52:  '52TSGT52',
-    54:  '54TSGT54',
-    56:  '56TSGT56',
-    60:  '60TSGT601088KB',
-    70:  '70TSGT70',
-    75:  '75TSGT75',
-    80:  '80TSGT80',
-    85:  '85TSGT85',
-    100: '100TSGT100'
+    10:  'TSGT10',
+    12:  'TSGT12',
+    14:  'TSGT14',
+    16:  'TSGT1666',
+    18:  'TSGT1866',
+    20:  'TSGT2066',
+    22:  'TSGT22',
+    24:  'TSGT2466',
+    25:  'TSGT25',
+    26:  'TSGT26',
+    28:  'TSGT2866',
+    30:  'TSGT3066KBNO-O',
+    32:  'TSGT3266KB',
+    34:  'TSGT34',
+    36:  'TSGT3666KB',
+    38:  'TSGT3866KB',
+    40:  'TSGT401266KBNO-O',
+    42:  'TSGT42',
+    44:  'TSGT44',
+    46:  'TSGT46',
+    48:  'TSGT481266KB',
+    50:  'TSGT501088KB',
+    52:  'TSGT52',
+    54:  'TSGT54',
+    56:  'TSGT56',
+    60:  'TSGT601088KB',
+    70:  'TSGT70',
+    75:  'TSGT75',
+    80:  'TSGT80',
+    85:  'TSGT85',
+    100: 'TSGT100'
   };
 
   var sku = skuMap[Q.w] || ('WIDTH ' + Q.w + "' — SKU NOT FOUND");
@@ -10957,7 +10995,7 @@ window.SauceMaterials.calculate = function() {
   var sackcrete = SM.calcSackcrete(Q, WALLS, allDoors, window._shedConfigs||[], sf);
   var footingPads = SM.calcFootingPads(Q, WALLS, allDoors, window._shedConfigs||[], sf);
   footingPads.forEach(function(item) { items.push(item); });
-  SM.calcHeaders(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcHeaders(Q, WALLS, allDoors, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcWoodTrusses(Q).forEach(function(item) { items.push(item); });
   SM.calcSteelTrusses(Q).forEach(function(item) { items.push(item); });
   if (sackcrete) {
