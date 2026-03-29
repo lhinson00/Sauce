@@ -14102,7 +14102,377 @@ window.SauceMaterials.calcWalkDoors = function() {
   return results;
 };
 
+// ── WINDOWS ───────────────────────────────────────────────────────────────────
+// One line per window type (grouped). Window tape: 1 roll per 2 windows (TAPWT).
 
+window.SauceMaterials.calcWindows = function() {
+  var windows = (window._windows||[]);
+  if (!windows.length) return [];
+
+  var groups = {};
+  windows.forEach(function(w) {
+    var sku = w.type || w.size || 'WINDOW';
+    groups[sku] = (groups[sku] || 0) + 1;
+  });
+
+  var results = Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Windows',
+      description: 'Window',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'window'
+    };
+  });
+
+  results.push({
+    category:    'Windows',
+    description: 'Window Tape',
+    sku:         'TAPWT',
+    quantity:    Math.ceil(windows.length / 2),
+    detail:      windows.length + ' window(s)  |  1 roll per 2'
+  });
+
+  return results;
+};
+
+// ── HARDWARE ─────────────────────────────────────────────────────────────────
+// 5" Lag Bolts: 2 per post (all post types). SKU: LAG5
+
+window.SauceMaterials.calcLagBolts = function(Q, WALLS, shedCfgs, allDoors, sf) {
+  var total = 0;
+
+  // Eave posts
+  var eaveItem = window.SauceMaterials.calcEavePosts(Q, WALLS, allDoors, sf);
+  if (eaveItem) total += eaveItem.quantity || 0;
+
+  // Gable posts
+  window.SauceMaterials.calcGablePosts(Q, WALLS, allDoors, sf).forEach(function(item) {
+    total += item.quantity || 0;
+  });
+
+  // Shed posts
+  window.SauceMaterials.calcShedPosts(Q, WALLS, shedCfgs, sf).forEach(function(item) {
+    total += item.quantity || 0;
+  });
+
+  // Walk door posts
+  var wdItem = window.SauceMaterials.calcWalkDoorPosts(allDoors);
+  if (wdItem) total += wdItem.quantity || 0;
+
+  if (!total) return [];
+
+  return [{
+    category:    'Hardware',
+    description: '5" Lag Bolts',
+    sku:         'LAG5',
+    quantity:    total * 2,
+    detail:      total + ' posts  |  2 per post'
+  }];
+};
+
+// Outside Solid Closure: 1 per main building roof panel. SKU: CLOOSC
+
+window.SauceMaterials.calcOutsideSolidClosure = function(Q, shedCfgs) {
+  var roofItems = window.SauceMaterials.calcRoofMetal(Q, shedCfgs);
+  var mainQty = roofItems
+    .filter(function(item) { return item.category === 'Roof Metal'; })
+    .reduce(function(sum, item) { return sum + item.quantity; }, 0);
+
+  if (!mainQty) return [];
+
+  return [{
+    category:    'Hardware',
+    description: 'Outside Solid Closure',
+    sku:         'CLOOSC',
+    quantity:    mainQty,
+    detail:      '1 per main building roof panel'
+  }];
+};
+
+// Joist Hangers: wood truss + side shed only. SKU matches rafter depth.
+// JH206, JH208, JH210, JH212. One per rafter (ceil(sc.l / spacing) + 1).
+
+window.SauceMaterials.calcJoistHangers = function(Q, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+
+  var rafterDepth = { 6:6, 8:6, 10:6, 12:8, 14:10, 16:10, 18:12, 20:12 };
+
+  var groups = {};
+
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if (sc.wall !== 'left' && sc.wall !== 'right') return;
+
+    var depth = rafterDepth[sc.w] || 10;
+    var sku   = 'JH0' + depth;
+    var count = Math.floor(sc.l / 2) + 2;
+    groups[sku] = (groups[sku] || 0) + count;
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Hardware',
+      description: 'Joist Hangers',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'wood truss  |  1 per shed rafter'
+    };
+  });
+};
+
+// Hurricane Brackets: wood truss only. SKU: HB2S.
+// Main building: 2 per truss (floor(Q.l / spacing) + 1).
+// Each eave side shed: 1 per rafter (floor(sc.l / 2) + 2).
+
+window.SauceMaterials.calcHurricaneBrackets = function(Q, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+
+  var spacing      = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
+  var totalTrusses = Math.floor(Q.l / spacing) + 1;
+  var qty          = totalTrusses * 2;
+
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if (sc.wall !== 'left' && sc.wall !== 'right') return;
+    qty += Math.floor(sc.l / 2) + 2;
+  });
+
+  return [{
+    category:    'Hardware',
+    description: 'Hurricane Brackets',
+    sku:         'HB2S',
+    quantity:    qty,
+    detail:      totalTrusses + ' trusses × 2  +  shed rafters'
+  }];
+};
+
+// Head Lock Screws: 6 per post with a header.
+// Wood truss: eave posts + shed posts get headers.
+// All truss types: garage door posts always have headers.
+// HL6 for 6x6 posts, HL8 for 8x8 posts.
+
+window.SauceMaterials.calcHeadLockScrews = function(Q, WALLS, shedCfgs, allDoors, sf) {
+  var postSize = sf.mbPostSize || '6x6';
+  var ssPostSize = sf.ssPostSize || '6x6';
+  var sku      = postSize === '8x8' ? 'HL8' : 'HL6';
+  var ssSku    = ssPostSize === '8x8' ? 'HL8' : 'HL6';
+
+  var groups = {};
+  function add(s, count) { groups[s] = (groups[s] || 0) + count; }
+
+  if (Q.truss === 'Wood') {
+    // Eave posts
+    var eaveItem = window.SauceMaterials.calcEavePosts(Q, WALLS, allDoors, sf);
+    if (eaveItem) add(sku, (eaveItem.quantity || 0) * 6);
+
+    // Shed posts
+    window.SauceMaterials.calcShedPosts(Q, WALLS, shedCfgs, sf).forEach(function(item) {
+      add(ssSku, (item.quantity || 0) * 6);
+    });
+  }
+
+  // Garage door posts: 2 per door, always
+  var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
+  if (garageDoors.length) add(sku, garageDoors.length * 2 * 6);
+
+  return Object.keys(groups).sort().map(function(s) {
+    return {
+      category:    'Hardware',
+      description: 'Head Lock Screws',
+      sku:         s,
+      quantity:    groups[s],
+      detail:      '6 per post with header'
+    };
+  });
+};
+
+// ── INSULATION ────────────────────────────────────────────────────────────────
+// Roof: linear ft from roof metal (main + side shed) × 3 = sqft
+// Walls: linear ft from sidewall metal + wainscot metal × 3 = sqft
+// Vinyl Back → 300 sqft rolls. All others → 750 sqft rolls.
+
+window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
+  var insulType  = (document.getElementById('st_insulation')||{}).value || 'None';
+  if (insulType === 'None') return [];
+
+  var insulRoof  = !!(document.getElementById('st_insulRoof')||{}).checked;
+  var insulWalls = !!(document.getElementById('st_insulWalls')||{}).checked;
+  if (!insulRoof && !insulWalls) return [];
+
+  var isVinyl  = insulType.indexOf('Vinyl Back') !== -1;
+  var rollSize = isVinyl ? 300 : 750;
+
+  function parseLenFt(s) {
+    if (!s) return 0;
+    var ftM = s.match(/(\d+)'/);
+    var inM = s.match(/(\d+(?:\.\d+)?)"/) ;
+    return (ftM ? parseFloat(ftM[1]) : 0) + (inM ? parseFloat(inM[1]) / 12 : 0);
+  }
+
+  function linearFtFromItems(items) {
+    return items.reduce(function(sum, item) {
+      return sum + parseLenFt(item.metalLength) * (item.quantity || 0);
+    }, 0);
+  }
+
+  var results = [];
+
+  if (insulRoof) {
+    var roofItems = window.SauceMaterials.calcRoofMetal(Q, shedCfgs);
+    var linFt     = linearFtFromItems(roofItems);
+    var sqFt      = linFt * 3;
+    var qty       = Math.ceil(sqFt / rollSize);
+    if (qty > 0) results.push({
+      category:    'Hardware',
+      description: 'Insulation — Roof',
+      sku:         insulType.toUpperCase().replace(/\s+/g, ''),
+      quantity:    qty,
+      detail:      insulType + '  |  ' + Math.round(linFt) + ' ln ft × 3 = ' + Math.round(sqFt) + ' sqft  |  ' + rollSize + ' sqft rolls'
+    });
+  }
+
+  if (insulWalls) {
+    var wallItems = window.SauceMaterials.calcSidewallMetal(Q, WALLS, shedCfgs);
+    var wainItems = window.SauceMaterials.calcWainscotMetal(Q, WALLS, shedCfgs);
+    var linFt     = linearFtFromItems(wallItems) + linearFtFromItems(wainItems);
+    var sqFt      = linFt * 3;
+    var qty       = Math.ceil(sqFt / rollSize);
+    if (qty > 0) results.push({
+      category:    'Hardware',
+      description: 'Insulation — Walls',
+      sku:         insulType.toUpperCase().replace(/\s+/g, ''),
+      quantity:    qty,
+      detail:      insulType + '  |  ' + Math.round(linFt) + ' ln ft × 3 = ' + Math.round(sqFt) + ' sqft  |  ' + rollSize + ' sqft rolls'
+    });
+  }
+
+  return results;
+};
+
+// ── SCREWS: MRSWB1.5BK ────────────────────────────────────────────────────────
+// Steel truss only. cups × 4 × trussCount for main building + each side shed.
+// Divide total by 250 (per box), round up.
+
+window.SauceMaterials.calcScrewsMRSWB = function(Q, shedCfgs) {
+  if (Q.truss !== 'Steel') return [];
+
+  var cupsMap = {
+    10:11, 12:13, 14:14, 16:15, 18:15, 20:16, 22:18, 24:19, 25:21,
+    26:21, 28:23, 30:23, 32:25, 34:25, 36:27, 38:29, 40:29, 42:29,
+    44:32, 46:32, 48:34, 50:34, 52:36, 54:38, 56:39, 60:41, 70:47,
+    75:50, 80:50, 85:57, 100:72
+  };
+  var ssCupsMap = {
+    10:7, 12:8, 14:10, 16:11, 18:12, 20:13, 24:15, 26:16, 28:18, 30:19, 36:28
+  };
+
+  var eaveWall = (window._WALLS||[]).find(function(w){ return w.id==='left'; });
+  var spacing  = eaveWall ? (eaveWall.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+
+  var totalScrews = 0;
+
+  // Main building
+  var cups = cupsMap[Q.w];
+  if (cups) {
+    var trussCount = Math.floor(Q.l / spacing) + 1;
+    totalScrews += cups * 4 * trussCount;
+  }
+
+  // Side sheds
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    var ssCups = ssCupsMap[sc.w];
+    if (!ssCups) return;
+    var shedTrussCount = Math.floor(sc.l / spacing) + 1;
+    totalScrews += ssCups * 4 * shedTrussCount;
+  });
+
+  if (!totalScrews) return [];
+
+  return [{
+    category:    'Hardware',
+    description: 'Screws',
+    sku:         'MRSWB1.5BK',
+    quantity:    Math.ceil(totalScrews / 250),
+    detail:      totalScrews + ' screws  |  250 per box'
+  }];
+};
+
+// ── SCREWS: METAL PANELS (MRSWB1.5PW / MRSZXL1.5PW) ─────────────────────────
+// Roof: linear ft of all roof metal × 1.25 ÷ 250, ceil.
+// Walls: linear ft of sidewall + gable + wainscot + soffit + skirt × 1.25 ÷ 250, ceil.
+// Trim: always 2 boxes, listed separately.
+// PBR metal → MRSZXL1.5PW. All others → MRSWB1.5PW.
+
+window.SauceMaterials.calcMetalScrews = function(Q, WALLS, shedCfgs) {
+  var metalType = (document.getElementById('st_roofMetal')||{}).value || 'Painted';
+  var sku       = metalType === 'PBR' ? 'MRSZXL1.5PW' : 'MRSWB1.5PW';
+
+  function parseLenFt(s) {
+    if (!s) return 0;
+    var ftM = s.match(/(\d+)'/);
+    var inM = s.match(/(\d+(?:\.\d+)?)"/) ;
+    return (ftM ? parseFloat(ftM[1]) : 0) + (inM ? parseFloat(inM[1]) / 12 : 0);
+  }
+  function linFt(items) {
+    return items.reduce(function(sum, item) {
+      return sum + parseLenFt(item.metalLength) * (item.quantity || 0);
+    }, 0);
+  }
+  function boxes(lf) { return Math.ceil(lf * 1.25 / 250); }
+
+  var SM = window.SauceMaterials;
+  var results = [];
+
+  // Roof: main building + side shed roof metal
+  var roofLF = linFt(SM.calcRoofMetal(Q, shedCfgs));
+  if (roofLF > 0) results.push({
+    category:    'Hardware',
+    description: 'Screws — Roof Metal',
+    sku:         sku,
+    quantity:    boxes(roofLF),
+    detail:      Math.round(roofLF) + ' ln ft × 1.25 ÷ 250'
+  });
+
+  // Walls: sidewall + gable (enclosed + open) + wainscot + soffit + skirt
+  var wallLF = [
+    SM.calcSidewallMetal(Q, WALLS, shedCfgs),
+    SM.calcGableMetal(Q, WALLS),
+    SM.calcLeantoUpperGable(Q, shedCfgs),
+    SM.calcOpenGableMetal(Q, WALLS, shedCfgs),
+    SM.calcWainscotMetal(Q, WALLS, shedCfgs),
+    SM.calcSoffitMetal(Q, shedCfgs),
+    SM.calcSkirtMetal(Q, shedCfgs)
+  ].reduce(function(sum, arr) { return sum + linFt(arr); }, 0);
+
+  if (wallLF > 0) results.push({
+    category:    'Hardware',
+    description: 'Screws — Wall Metal',
+    sku:         sku,
+    quantity:    boxes(wallLF),
+    detail:      Math.round(wallLF) + ' ln ft × 1.25 ÷ 250'
+  });
+
+  // Trim: always 2 boxes
+  results.push({
+    category:    'Hardware',
+    description: 'Screws — Trim',
+    sku:         sku,
+    quantity:    2,
+    detail:      'always 2 boxes for trim'
+  });
+
+  return results;
+};
+
+window.SauceMaterials.calculate = function() {
+  var SM = window.SauceMaterials;
+  var Q = window._Q;
+  var WALLS = window._WALLS;
+  var allDoors = window._allDoors || [];
   if (!Q) return { error: 'No building configured. Please set dimensions first.' };
   var sf = {
     mbPostSize: (document.getElementById('st_mbPostSize')||{}).value || '6x6',
@@ -14143,6 +14513,39 @@ window.SauceMaterials.calcWalkDoors = function() {
   SM.calcGarageDoorOpeners(allDoors).forEach(function(item) { items.push(item); });
   SM.calcBarnDoors().forEach(function(item) { items.push(item); });
   SM.calcWalkDoors().forEach(function(item) { items.push(item); });
+  SM.calcWindows().forEach(function(item) { items.push(item); });
+  SM.calcLagBolts(Q, WALLS, window._shedConfigs||[], allDoors, sf).forEach(function(item) { items.push(item); });
+  SM.calcOutsideSolidClosure(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  items.push({ category: 'Hardware', description: 'Joist Hanger Nails', sku: 'JHNS1.255LB', quantity: 1, detail: 'always 1 box' });
+  SM.calcJoistHangers(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcHurricaneBrackets(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  items.push({ category: 'Hardware', description: 'Corner Brackets', sku: 'HBBA', quantity: 16, detail: 'always 16' });
+  SM.calcHeadLockScrews(Q, WALLS, window._shedConfigs||[], allDoors, sf).forEach(function(item) { items.push(item); });
+  items.push({ category: 'Hardware', description: 'Nails', sku: 'HDGRS10D30', quantity: Q.truss === 'Wood' ? 3 : 2, detail: Q.truss === 'Wood' ? 'wood truss — 3' : 'steel truss — 2' });
+  SM.calcInsulation(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+
+  // Staples: STP38AR — 1 per 5 insulation rolls (non-vinyl), 1 per 10 rolls (vinyl back)
+  (function() {
+    var insulType  = (document.getElementById('st_insulation')||{}).value || 'None';
+    if (insulType === 'None') return;
+    var insulRoof  = !!(document.getElementById('st_insulRoof')||{}).checked;
+    var insulWalls = !!(document.getElementById('st_insulWalls')||{}).checked;
+    if (!insulRoof && !insulWalls) return;
+    var insulItems = window.SauceMaterials.calcInsulation(Q, WALLS, window._shedConfigs||[]);
+    var totalRolls = insulItems.reduce(function(sum, item) { return sum + item.quantity; }, 0);
+    if (!totalRolls) return;
+    var isVinyl = insulType.indexOf('Vinyl Back') !== -1;
+    var divisor = isVinyl ? 10 : 5;
+    var qty     = Math.ceil(totalRolls / divisor);
+    items.push({ category: 'Hardware', description: 'Staples', sku: 'STP38AR', quantity: qty, detail: totalRolls + ' rolls  |  1 per ' + divisor + ' rolls' });
+  })();
+  SM.calcScrewsMRSWB(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcMetalScrews(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  (function() {
+    var openings = (window._windows||[]).length + (window._allDoors||[]).filter(function(d){ return d.type !== 'barn'; }).length + (window._walkDoors||[]).length;
+    var qty = 1 + Math.floor(openings / 4);
+    items.push({ category: 'Hardware', description: 'Roofing Sealant', sku: 'RS00', quantity: qty, detail: '1 base  +  ' + openings + ' openings ÷ 4' });
+  })();
   SM.calcGarageDoorHeaders(allDoors).forEach(function(item) { items.push(item); });
   SM.calcRoofMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSoffitMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
@@ -14253,7 +14656,7 @@ window.openMaterialsModal = function() {
       'Roof Metal','Side Shed Roof Metal',
       'Sidewall Metal','Gable Metal','Side Shed Gable Metal',
       'Wainscot Metal','Soffit Metal','Skirt Metal',
-      'Metal', 'Trim', 'Doors', 'Barn Doors', 'Walk Doors'
+      'Metal', 'Trim', 'Doors', 'Barn Doors', 'Walk Doors', 'Windows', 'Hardware'
     ];
     var catKeys = Object.keys(cats).sort(function(a, b) {
       var ai = CATEGORY_ORDER.indexOf(a);
