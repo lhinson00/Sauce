@@ -10371,6 +10371,72 @@ window.SauceMaterials.calcGablePosts = function(Q, WALLS, allDoors, sf) {
   });
 };
 
+// ── ITEM 3: SIDE SHED POSTS ───────────────────────────────────────────────────
+
+window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
+  var sizeMap = { '6x6':'PT66', '8x8':'PT88', '10x10':'PT1010', '12x12':'PT1212' };
+  var postSize = sf.ssPostSize || '6x6';
+  var skuBase  = sizeMap[postSize] || 'PT66';
+  var postsOnTop = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
+  var groundExtra = postsOnTop ? 0 : 4;
+
+  var allShedPosts = [];
+
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+
+    // Gable extensions: only 2 corner posts at eave height (clear span)
+    if (sc.type === 'gable') {
+      var postH = Q.h + groundExtra;
+      var postLen = Math.ceil(postH / 2) * 2;
+      var sku = skuBase + postLen;
+      // 2 corner posts per gable extension (front and back tip corners)
+      allShedPosts.push({ sku: sku, postLength: postLen, quantity: 2 });
+      return;
+    }
+
+    // Leanto / wrap / wrap3: posts along outer edge at shed length using attached wall spacing
+    // Shed is open — no door offsets needed, full regular spacing
+    var attachWall = (WALLS || []).find(function(w) { return w.id === sc.wall; });
+    var ps = attachWall ? (attachWall.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+
+    // Outer post height:
+    // attachHeight = eave height - drop attachment
+    // outerPostHeight = attachHeight - (shedWidth * ltPitch / 12)
+    var attachHeight = Q.h - (sc.dropFt || 0);
+    var outerHeight  = attachHeight - (sc.w * (sc.ltPitch || 1) / 12);
+    var totalHeight  = outerHeight + groundExtra;
+    var postLen      = Math.ceil(totalHeight / 2) * 2;
+    var sku          = skuBase + postLen;
+
+    // Post count: regular spacing along shed length, no doors to skip
+    var nB      = Math.floor(sc.l / ps);
+    var count   = nB + 1; // posts = bays + 1
+
+    // Wrap3 has posts on both sides (two outer legs)
+    if (sc.type === 'wrap3') count = count * 2;
+
+    allShedPosts.push({ sku: sku, postLength: postLen, quantity: count });
+  });
+
+  // Group by SKU
+  var skuGroups = {};
+  allShedPosts.forEach(function(p) {
+    if (!skuGroups[p.sku]) skuGroups[p.sku] = { sku: p.sku, postLength: p.postLength, quantity: 0 };
+    skuGroups[p.sku].quantity += p.quantity;
+  });
+
+  return Object.values(skuGroups).sort(function(a, b) { return a.postLength - b.postLength; }).map(function(g) {
+    return {
+      category:    'Posts',
+      description: 'Side Shed Posts',
+      sku:         g.sku,
+      quantity:    g.quantity,
+      detail:      postSize + ' x ' + g.postLength + "ft shed posts"
+    };
+  });
+};
+
 // ── CALCULATE ────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -10389,6 +10455,7 @@ window.SauceMaterials.calculate = function() {
   var items = [];
   items.push(SM.calcEavePosts(Q, WALLS, allDoors, sf));
   SM.calcGablePosts(Q, WALLS, allDoors, sf).forEach(function(item) { items.push(item); });
+  SM.calcShedPosts(Q, WALLS, window._shedConfigs || [], sf).forEach(function(item) { items.push(item); });
   // Additional items will be added here as each is verified
   return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "'" };
 };
