@@ -13031,7 +13031,73 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
   }];
 };
 
-// ── TRIM: PC2 GABLE TRIM ─────────────────────────────────────────────────────
+// ── TRIM: J-CHANNEL ──────────────────────────────────────────────────────────
+// SKU: JC9PW10 (10' spacing) or JC9PW12 (12' spacing).
+// Sources:
+//   3 per walk door
+//   2 per window
+//   Side shed length ÷ ps  (under skirt + ledger)
+//   Open lean-to width ÷ ps  (under upper gable metal)
+//   Open main gable end width ÷ ps + 1 extra per open end
+
+window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, windows) {
+  var groups = {}; // boardLen → qty
+
+  function wallPS(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+
+  function add(ps, qty) {
+    var len = (ps === 12) ? 12 : 10;
+    groups[len] = (groups[len] || 0) + qty;
+  }
+
+  // Walk doors: 3 each — always 10'
+  var walkDoors = (allDoors||[]).filter(function(d){ return d.type === 'walk'; });
+  if (walkDoors.length) add(10, walkDoors.length * 3);
+
+  // Windows: 2 each — always 10'
+  if ((windows||[]).length) add(10, windows.length * 2);
+
+  // Side sheds
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    var isEave = (sc.wall === 'left' || sc.wall === 'right');
+    if (!isEave) return;
+
+    var ps = wallPS(sc.wall);
+
+    // Under skirt + ledger: shed length ÷ ps × 2 (one run each)
+    add(ps, Math.ceil(sc.l / ps) * 2);
+
+    // Open/roofonly lean-to: under upper gable metal — shed width ÷ ps
+    if (sc.encl === 'roofonly' || sc.encl === 'open') {
+      add(ps, Math.ceil(sc.w / ps));
+    }
+  });
+
+  // Open main gable ends: width ÷ ps + 1 per open end
+  (WALLS||[]).forEach(function(w) {
+    if ((w.id === 'front' || w.id === 'back') && w.encl === 'open') {
+      var ps = wallPS(w.id);
+      add(ps, Math.ceil(Q.w / ps) + 1);
+    }
+  });
+
+  return Object.keys(groups).sort().map(function(len) {
+    return {
+      category:    'Trim',
+      description: 'J-Channel',
+      sku:         'JC9PW' + len,
+      quantity:    groups[len],
+      detail:      len + "' sticks"
+    };
+  });
+};
+
+
 // Wood truss + overhang only. Follows fly rafters along top chord of each gable.
 // SKU: PC29PWxx where xx = board length (10,12,14,16,18,20).
 // Top chord length: same chart + rounding as fly rafters (nextEven to whole foot).
@@ -13154,10 +13220,57 @@ window.SauceMaterials.calcPC2Trim = function(Q, shedCfgs) {
 // Board length matches post spacing: 10' spacing → 10' boards, 12' spacing → 12' boards.
 // Quantity per run = ceil(runLength / boardLen).  No safety extra.
 // Run length = wall/shed length + ohFt × 2 (overhang on both gable ends).
-// Dropped lean-to restores main building eave on that side.
-// Gable shed adds two runs of its own width + ohFt×2.
+// ── TRIM: SOFFIT F&J TRIM ────────────────────────────────────────────────────
+// Wood truss + overhang only. SKU: FJ9PW10.
+// qty = floor(soffitPanels × 3 / 10) + 1
 
-window.SauceMaterials.calcPC3Trim = function(Q, WALLS, shedCfgs) {
+window.SauceMaterials.calcSoffitFJTrim = function(Q, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+  if (Q.oh === 0) return [];
+
+  var soffitItems = window.SauceMaterials.calcSoffitMetal(Q, shedCfgs);
+  if (!soffitItems.length) return [];
+
+  var soffitPanels = soffitItems[0].quantity;
+  var qty = Math.floor(soffitPanels * 3 / 10) + 1;
+
+  return [{
+    category:    'Trim',
+    description: 'Soffit F&J Trim',
+    sku:         'FJ9PW10',
+    quantity:    qty,
+    detail:      soffitPanels + ' soffit panels × 3 ÷ 10 + 1'
+  }];
+};
+// Wood truss + overhang only. SKU: PC129PW10.
+// Base: 3 pieces per building.
+// +1 per dropped eave lean-to (dropFt > 0).
+// +1 per gable extension shed (treated as dropped).
+
+window.SauceMaterials.calcBirdBoxTrim = function(Q, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+  if (Q.oh === 0) return [];
+
+  var qty = 3;
+
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.type === 'gable') { qty += 1; return; }
+    if ((sc.wall === 'left' || sc.wall === 'right') && parseFloat(sc.dropFt||0) > 0) {
+      qty += 1;
+    }
+  });
+
+  return [{
+    category:    'Trim',
+    description: 'Bird Box Trim',
+    sku:         'PC129PW10',
+    quantity:    qty,
+    detail:      '3 base  |  +1 per dropped or gable shed'
+  }];
+};
+
+// ── TRIM: PC3 EAVE TRIM ──────────────────────────────────────────────────────
   if (Q.truss !== 'Wood') return [];
   if (Q.oh === 0) return [];
 
@@ -13292,7 +13405,10 @@ window.SauceMaterials.calculate = function() {
   SM.calcOpenGableMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcWainscotMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSkirtMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcJChannel(Q, WALLS, window._shedConfigs||[], allDoors, window._windows||[]).forEach(function(item) { items.push(item); });
   SM.calcPC2Trim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcBirdBoxTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcSoffitFJTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcPC3Trim(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
