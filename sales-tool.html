@@ -12451,31 +12451,48 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
     return i === 0 ? f + "'" : f + "'" + i + '"';
   }
 
-  var groups = {}; // key → {qty, lenFt}
+  var mainGroups = {};  // key → {qty, lenFt}  — main building runs
+  var extGroups  = {};  // key → {qty, lenFt}  — side shed extensions
 
-  function addPanel(lenFt, qty) {
+  function addPanel(lenFt, qty, isExt) {
+    var store = isExt ? extGroups : mainGroups;
     var key = lenFt.toFixed(4);
-    if (!groups[key]) groups[key] = { lenFt: lenFt, qty: 0 };
-    groups[key].qty += qty;
+    if (!store[key]) store[key] = { lenFt: lenFt, qty: 0 };
+    store[key].qty += qty;
   }
 
   // Main building
   var ohFt = Q.oh / 12;
   var metalLen = getMetalLen(Q.w, Q.truss, Q.oh, Q.pitch);
   if (metalLen) {
-    var steelEaveAdder = 0;
-    if (Q.truss === 'Steel') {
-      // Steel: eave-attached shed with no drop → main building roof metal +1'
-      var hasEaveAttached = (shedCfgs||[]).some(function(sc) {
-        return (sc.wall==='left'||sc.wall==='right') && parseFloat(sc.dropFt||0)===0 && sc.w && sc.l;
-      });
-      if (hasEaveAttached) steelEaveAdder = 1;
-    }
-    var adjMetalLen = metalLen + steelEaveAdder;
     // Wood with OH: add overhang to both gable ends for quantity
     // Steel with OH: overhang only affects panel length, not quantity
     var runLength = (Q.truss === 'Wood' && ohFt > 0) ? Q.l + ohFt * 2 : Q.l;
-    addPanel(adjMetalLen, Math.ceil(runLength / 3) * 2);
+    var panelsPerRun = Math.ceil(runLength / 3);
+
+    if (Q.truss === 'Steel') {
+      // Steel: check each eave side independently — only the side with a no-drop lean-to gets +1'
+      var leftShedNoD  = (shedCfgs||[]).some(function(sc) {
+        return sc.wall==='left'  && sc.w && sc.l && parseFloat(sc.dropFt||0)===0;
+      });
+      var rightShedNoD = (shedCfgs||[]).some(function(sc) {
+        return sc.wall==='right' && sc.w && sc.l && parseFloat(sc.dropFt||0)===0;
+      });
+
+      if (leftShedNoD || rightShedNoD) {
+        // Split into two runs so each side can get its own length
+        var leftLen  = metalLen + (leftShedNoD  ? 1 : 0);
+        var rightLen = metalLen + (rightShedNoD ? 1 : 0);
+        addPanel(leftLen,  panelsPerRun);
+        addPanel(rightLen, panelsPerRun);
+      } else {
+        // No lean-to adjustment — both runs are the same length, combine
+        addPanel(metalLen, panelsPerRun * 2);
+      }
+    } else {
+      // Wood: both runs always same length
+      addPanel(metalLen, panelsPerRun * 2);
+    }
   }
 
   // Side sheds
@@ -12491,20 +12508,36 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
         sc.type !== 'gable') {
       ssAdder = 10/12;
     }
-    addPanel(ssLen + ssAdder, Math.ceil(sc.l / 3));
+    addPanel(ssLen + ssAdder, Math.ceil(sc.l / 3), true);
   });
 
-  return Object.keys(groups).sort().map(function(key) {
-    var g = groups[key];
-    return {
+  var results = [];
+
+  Object.keys(mainGroups).sort().forEach(function(key) {
+    var g = mainGroups[key];
+    results.push({
       category:    'Metal',
-      description: 'Roof Metal',
+      description: 'Roof Metal — Main Building',
       sku:         skuPrefix,
       quantity:    g.qty,
       metalLength: fmtFtIn(g.lenFt),
       detail:      metalType + "  |  3' wide panels"
-    };
+    });
   });
+
+  Object.keys(extGroups).sort().forEach(function(key) {
+    var g = extGroups[key];
+    results.push({
+      category:    'Metal',
+      description: 'Roof Metal — Extension',
+      sku:         skuPrefix,
+      quantity:    g.qty,
+      metalLength: fmtFtIn(g.lenFt),
+      detail:      metalType + "  |  3' wide panels"
+    });
+  });
+
+  return results;
 };
 
 // ── ITEM 32: SIDEWALL METAL ──────────────────────────────────────────────────
@@ -12518,6 +12551,7 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
 
   var metalType = (document.getElementById('st_roofMetal')||{}).value || 'Painted';
   var skuPrefix = metalType==='26-Gauge' ? 'T6PW' : metalType==='Galvalume' ? 'T9GA' : metalType==='PBR' ? 'P6PW' : 'T9PW';
+  var wainscot  = (document.getElementById('st_wainscot')||{}).value === 'Yes';
 
   function fmtFtIn2(ft) {
     var totalIn = Math.ceil(ft * 12);
@@ -12535,7 +12569,7 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
 
   // Main building eave walls
   var hasOH = Q.oh > 0 && Q.truss === 'Wood';
-  var mbHeight = hasOH ? Q.h : Q.h + 1;
+  var mbHeight = (hasOH ? Q.h : Q.h + 1) - (wainscot ? 4 : 0);
   add(mbHeight, Math.ceil(Q.l / 3) * 2);
 
   // Enclosed side sheds — outer eave wall only
@@ -12543,7 +12577,7 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
     if (!sc.wall || !sc.w || !sc.l) return;
     if (sc.encl !== 'enclosed') return;
     if (!(sc.enclWalls||[]).includes('outer')) return;
-    var shedH = (Q.h + 1) - (sc.w * (sc.ltPitch||1) / 12);
+    var shedH = (Q.h + 1) - (sc.w * (sc.ltPitch||1) / 12) - (wainscot ? 4 : 0);
     var wallLen = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
     add(shedH, Math.ceil(wallLen / 3));
   });
@@ -12570,6 +12604,7 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
 
   var metalType = (document.getElementById('st_roofMetal')||{}).value || 'Painted';
   var skuPrefix = metalType==='26-Gauge'?'T6PW':metalType==='Galvalume'?'T9GA':metalType==='PBR'?'P6PW':'T9PW';
+  var wainscot  = (document.getElementById('st_wainscot')||{}).value === 'Yes';
 
   function fmtFt(ft) { return ft + "'"; }
 
@@ -12581,7 +12616,7 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
   if (enclCount === 0) return [];
 
   var pieces    = Math.ceil((Q.w / 2) / 3);
-  var base      = Q.h + 2;
+  var base      = (Q.h + 2) - (wainscot ? 4 : 0);
   var increment = 3 * Q.pitch / 12; // exact — no rounding
   var results   = [];
 
@@ -12621,6 +12656,7 @@ window.SauceMaterials.calcLeantoUpperGable = function(Q, shedCfgs) {
 
   var metalType = (document.getElementById('st_roofMetal')||{}).value || 'Painted';
   var skuPrefix = metalType==='26-Gauge'?'T6PW':metalType==='Galvalume'?'T9GA':metalType==='PBR'?'P6PW':'T9PW';
+  var wainscot  = (document.getElementById('st_wainscot')||{}).value === 'Yes';
 
   function fmtFtInExact(ft) {
     var totalIn = ft * 12;
@@ -12643,7 +12679,7 @@ window.SauceMaterials.calcLeantoUpperGable = function(Q, shedCfgs) {
 
     if (sc.encl === 'enclosed') {
       // Enclosed: start at main eave+1, decrease outward
-      var base = Q.h + 1;
+      var base = (Q.h + 1) - (wainscot ? 4 : 0);
       for (var i = 0; i < pieces; i++) {
         var lenFt = base - i * step;
         results.push({
@@ -12750,6 +12786,52 @@ window.SauceMaterials.calcOpenGableMetal = function(Q, WALLS, shedCfgs) {
   return results;
 };
 
+// ── ITEM 36: WAINSCOT METAL ──────────────────────────────────────────────────
+// When wainscot is selected: enclosed perimeter ÷ 3 panels, always 4' length.
+// Enclosed perimeter = main building enclosed eave walls (both sides × length)
+//   + enclosed gable walls (width each) + enclosed side shed outer walls.
+
+window.SauceMaterials.calcWainscotMetal = function(Q, WALLS, shedCfgs) {
+
+  var wainscot = (document.getElementById('st_wainscot')||{}).value === 'Yes';
+  if (!wainscot) return [];
+
+  var metalType = (document.getElementById('st_roofMetal')||{}).value || 'Painted';
+  var skuPrefix = metalType==='26-Gauge'?'T6PW':metalType==='Galvalume'?'T9GA':metalType==='PBR'?'P6PW':'T9PW';
+
+  var perimeterFt = 0;
+
+  // Main building: both eave walls (always enclosed for metal purposes)
+  perimeterFt += Q.l * 2;
+
+  // Main building: enclosed gable walls
+  (WALLS||[]).forEach(function(w) {
+    if ((w.id === 'front' || w.id === 'back') && w.encl !== 'open') {
+      perimeterFt += Q.w;
+    }
+  });
+
+  // Enclosed side shed outer walls
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.encl !== 'enclosed') return;
+    if (!(sc.enclWalls||[]).includes('outer')) return;
+    var wallLen = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
+    perimeterFt += wallLen;
+  });
+
+  var qty = Math.ceil(perimeterFt / 3);
+
+  return [{
+    category:    'Metal',
+    description: 'Wainscot Metal',
+    sku:         skuPrefix,
+    quantity:    qty,
+    metalLength: "4'",
+    detail:      metalType + "  |  3' wide panels  |  4' height"
+  }];
+};
+
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -12799,6 +12881,7 @@ window.SauceMaterials.calculate = function() {
   SM.calcGableMetal(Q, WALLS).forEach(function(item) { items.push(item); });
   SM.calcLeantoUpperGable(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcOpenGableMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcWainscotMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
