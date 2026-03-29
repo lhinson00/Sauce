@@ -13031,7 +13031,124 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
   }];
 };
 
-// ── TRIM: PC3 EAVE TRIM ──────────────────────────────────────────────────────
+// ── TRIM: PC2 GABLE TRIM ─────────────────────────────────────────────────────
+// Wood truss + overhang only. Follows fly rafters along top chord of each gable.
+// SKU: PC29PWxx where xx = board length (10,12,14,16,18,20).
+// Top chord length: same chart + rounding as fly rafters (nextEven to whole foot).
+// Board selection: minimize seams — use the longest available board that fits,
+//   then fill remainder with next best. Available lengths: 20,18,16,14,12,10.
+// Quantities: main building ×4 (2 slopes × 2 gable ends),
+//             lean-to ×2 (1 slope × 2 gable ends),
+//             gable extension ×4 (2 slopes × 2 ends).
+
+window.SauceMaterials.calcPC2Trim = function(Q, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+  if (Q.oh === 0) return [];
+
+  var metalType = (document.getElementById('st_roofMetal')||{}).value || 'Painted';
+  var is26g     = metalType === '26-Gauge';
+  var skuBase   = is26g ? 'PC26PW' : 'PC29PW';
+
+  // Same charts as fly rafters
+  var chart = {
+    10:[5.583,5.917,6.583,7.000,7.167,7.583],   12:[6.583,7.000,7.667,8.083,8.167,8.667],
+    14:[7.667,8.083,8.750,9.250,9.250,9.833],   16:[8.750,9.250,9.750,10.333,10.333,10.917],
+    18:[9.750,10.333,10.833,11.500,11.333,12.000],20:[10.833,11.500,11.917,12.583,12.417,13.167],
+    22:[11.917,12.583,12.917,13.667,13.500,14.250],24:[12.917,13.667,14.000,14.833,14.500,15.417],
+    25:[13.500,14.250,14.500,15.417,15.083,15.917],26:[14.000,14.833,15.083,15.917,15.583,16.500],
+    28:[15.083,15.917,16.083,17.083,16.667,17.583],30:[16.083,17.083,17.167,18.167,17.667,18.750],
+    32:[17.167,18.167,18.250,19.333,18.750,19.833],34:[18.250,19.333,19.250,20.417,19.750,21.000],
+    36:[19.250,20.417,20.333,21.500,20.833,22.083],38:[20.333,21.500,21.333,22.667,21.917,23.250],
+    40:[21.333,22.667,22.417,23.750,22.917,24.333],42:[22.417,23.750,23.500,24.917,24.000,25.417],
+    44:[23.417,24.917,24.500,26.000,25.083,26.583],46:[24.500,26.000,25.583,27.083,26.083,27.667],
+    48:[25.583,27.083,26.667,28.250,27.167,28.833],50:[26.667,28.250,27.667,29.333,28.250,29.917],
+    52:[27.667,29.333,28.750,30.500,29.250,31.000],54:[28.750,30.500,29.833,31.583,30.333,32.167],
+    56:[29.833,31.583,30.833,32.750,31.417,33.250],60:[31.917,33.833,33.000,34.917,33.500,35.500]
+  };
+  var ssChart = {
+    6:[6.333,7.417],8:[8.417,9.417],10:[10.417,11.417],12:[12.417,13.500],
+    14:[14.500,15.500],16:[16.500,17.500],18:[18.500,19.583],20:[20.583,21.583],
+    22:[22.583,23.583],24:[24.583,25.667],26:[26.667,27.667],28:[28.667,29.667],
+    30:[30.667,31.750]
+  };
+
+  function getColIdx(oh, pitch) {
+    var ohIdx  = oh <= 12 ? 2 : 4;
+    var pOff   = pitch <= 4 ? 0 : 1;
+    return ohIdx + pOff;
+  }
+
+  function nextEven(n) { var c = Math.ceil(n); return c % 2 === 0 ? c : c + 1; }
+
+  // Minimize seams: use longest available boards first to cover the run
+  var LENGTHS = [20, 18, 16, 14, 12, 10];
+  function coverRun(roundedLen) {
+    var boards = {};
+    var remaining = roundedLen;
+    for (var i = 0; i < LENGTHS.length && remaining > 0; i++) {
+      var l = LENGTHS[i];
+      if (l <= remaining) {
+        var n = Math.floor(remaining / l);
+        boards[l] = (boards[l] || 0) + n;
+        remaining -= n * l;
+      }
+    }
+    // Any small remainder covered by shortest available (10')
+    if (remaining > 0) boards[10] = (boards[10] || 0) + 1;
+    return boards;
+  }
+
+  var groups = {}; // sku → qty
+  function addBoards(roundedLen, mult) {
+    var b = coverRun(roundedLen);
+    Object.keys(b).forEach(function(len) {
+      var sku = skuBase + len;
+      groups[sku] = (groups[sku] || 0) + b[len] * mult;
+    });
+  }
+
+  var ci      = getColIdx(Q.oh, Q.pitch);
+  var mbRow   = chart[Q.w];
+  if (!mbRow) return [];
+
+  // Main building: ×4
+  addBoards(nextEven(mbRow[ci]), 4);
+
+  // Side sheds
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+
+    if (sc.type === 'gable') {
+      var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
+      if (isEaveWall) {
+        var gRow = chart[sc.w];
+        if (gRow) addBoards(nextEven(gRow[ci]), 4); // ×4: 2 slopes × 2 ends
+      }
+      return;
+    }
+
+    // Lean-to: SS chart, OH12 column = index 1
+    var ssRow = ssChart[sc.w];
+    if (!ssRow) return;
+    addBoards(nextEven(ssRow[1]), 2); // ×2: 1 slope × 2 gable ends
+  });
+
+  return Object.keys(groups).sort(function(a, b) {
+    var la = parseInt(a.replace(skuBase,''));
+    var lb = parseInt(b.replace(skuBase,''));
+    return lb - la;
+  }).map(function(sku) {
+    return {
+      category:    'Trim',
+      description: 'Gable Trim (PC2)',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      (is26g ? '26-Gauge' : 'Painted') + '  |  gable top chord cover  |  ' + Q.oh + '" O/H'
+    };
+  });
+};
+
+
 // Wood truss + overhang only. Covers eave fascia boards.
 // SKU: PC39PW10/PC39PW12 (Painted/Galvalume/PBR), PC36PW10/PC36PW12 (26-Gauge).
 // Board length matches post spacing: 10' spacing → 10' boards, 12' spacing → 12' boards.
@@ -13175,6 +13292,7 @@ window.SauceMaterials.calculate = function() {
   SM.calcOpenGableMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcWainscotMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSkirtMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcPC2Trim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcPC3Trim(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
