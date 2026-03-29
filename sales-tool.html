@@ -10564,6 +10564,195 @@ window.SauceMaterials.calcSackcrete = function(Q, WALLS, allDoors, shedCfgs, sf)
   };
 };
 
+// ── ITEM 6: POST FOOTING PADS ────────────────────────────────────────────────
+// Only for in-ground posts. 1 per post.
+// 6x6, 10x10, 12x12 → PBFP16
+// 8x8 → PBFP20
+// Walk door posts always → PBFP16
+
+window.SauceMaterials.calcFootingPads = function(Q, WALLS, allDoors, shedCfgs, sf) {
+  var onTop = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
+  if (onTop) return [];
+
+  var SM = window.SauceMaterials;
+
+  function skuForSize(postSize) {
+    return (postSize === '8x8') ? 'PBFP20' : 'PBFP16';
+  }
+
+  var groups = {};
+  function add(sku, count) {
+    if (!groups[sku]) groups[sku] = 0;
+    groups[sku] += count;
+  }
+
+  // Eave posts (MB post size)
+  var eavePosts = SM.getPostsForWall('left', Q, WALLS, allDoors).length
+                + SM.getPostsForWall('right', Q, WALLS, allDoors).length;
+  add(skuForSize(sf.mbPostSize || '6x6'), eavePosts);
+
+  // Gable posts (MB post size)
+  ['front', 'back'].forEach(function(wallId) {
+    var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
+    if (wCfg && wCfg.encl === 'open') return;
+    var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
+    add(skuForSize(sf.mbPostSize || '6x6'), posts.filter(function(p){return !p.corner;}).length);
+  });
+
+  // Walk door posts — always PBFP16
+  add('PBFP16', (window._walkDoors || []).length * 2);
+
+  // Shed posts (SS post size)
+  var ssSize = sf.ssPostSize || '6x6';
+  var ssSku  = skuForSize(ssSize);
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    var attachWall = (WALLS||[]).find(function(w){return w.id===sc.wall;});
+    var ps = attachWall ? (attachWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
+    var count = 0;
+    if (sc.type === 'gable') {
+      count = 2;
+    } else if (sc.type === 'leanto') {
+      count = Math.max(1, Math.floor(sc.l / ps)) + 1;
+    } else if (sc.type === 'wrap') {
+      count = Math.max(1, Math.floor(sc.l / ps)) + 1;
+      if (sc.wrapLeg > 0) {
+        var secWallId = (sc.wall==='left'||sc.wall==='right')
+          ? (sc.wrapDir==='cw'?'front':'back')
+          : (sc.wrapDir==='cw'?'left':'right');
+        var secWall = (WALLS||[]).find(function(w){return w.id===secWallId;});
+        var secPS = secWall ? (secWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
+        count += Math.max(1, Math.floor(sc.wrapLeg / secPS)) + 1;
+        count += 1;
+        var cornerBays = Math.max(1, Math.floor(sc.w / ps));
+        count += (cornerBays - 1) * 2;
+      }
+    } else if (sc.type === 'wrap3') {
+      var isEave = (sc.wall==='left'||sc.wall==='right');
+      count = Math.max(1, Math.floor(sc.l / ps)) + 1;
+      if (isEave) {
+        count += Math.max(1, Math.floor(Q.w / (((WALLS||[]).find(function(w){return w.id==='front';})||{}).postSpacing||Q.postSpacing||10))) + 1;
+        count += Math.max(1, Math.floor(Q.w / (((WALLS||[]).find(function(w){return w.id==='back';})||{}).postSpacing||Q.postSpacing||10))) + 1;
+      } else {
+        count += Math.max(1, Math.floor(Q.l / (((WALLS||[]).find(function(w){return w.id==='left';})||{}).postSpacing||Q.postSpacing||10))) + 1;
+        count += Math.max(1, Math.floor(Q.l / (((WALLS||[]).find(function(w){return w.id==='right';})||{}).postSpacing||Q.postSpacing||10))) + 1;
+      }
+      count += 2;
+    }
+    add(ssSku, count);
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Concrete',
+      description: 'Post Footing Pads',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      '1 per post  |  ' + (sku === 'PBFP20' ? '8x8 posts' : '6x6/10x10/12x12 posts')
+    };
+  });
+};
+
+// ── ITEM 7: BUILDING HEADERS ────────────────────────────────────────────────
+// Wood truss only. Both eave walls × inside + outside = ×4 per run.
+// Main building: width < 41' uses 2x12, width 41-60' uses LVL 11 7/8
+// Side sheds: always 2x12
+// Fill wall length with longest standard lumber first (greedy)
+
+window.SauceMaterials.calcHeaders = function(Q, WALLS, shedCfgs) {
+  if (Q.truss === 'Steel') return [];
+
+  var STANDARD_LENGTHS = [20, 16, 12, 10, 8];
+
+  // Fill a wall length with standard lumber pieces, greedy longest first
+  function fillWall(wallLen) {
+    var pieces = {};
+    var remaining = wallLen;
+    while (remaining > 0) {
+      var longest = null;
+      for (var i = 0; i < STANDARD_LENGTHS.length; i++) {
+        if (STANDARD_LENGTHS[i] <= remaining) { longest = STANDARD_LENGTHS[i]; break; }
+      }
+      if (!longest) break;
+      pieces[longest] = (pieces[longest] || 0) + 1;
+      remaining -= longest;
+    }
+    return pieces;
+  }
+
+  // SKU prefix based on width
+  function skuPrefix(width) {
+    return (width >= 41 && width <= 60) ? 'LVL1178' : 'SYP212';
+  }
+
+  var groups = {}; // { sku: quantity }
+  function addPieces(pieces, prefix) {
+    Object.keys(pieces).forEach(function(len) {
+      var sku = prefix + len;
+      groups[sku] = (groups[sku] || 0) + pieces[len];
+    });
+  }
+
+  // Main building — both eave walls, inside + outside (×4)
+  var mbPrefix = skuPrefix(Q.w);
+  var mbPieces = fillWall(Q.l);
+  // Each piece × 4 (2 sides of post × 2 walls)
+  Object.keys(mbPieces).forEach(function(len) {
+    var sku = mbPrefix + len;
+    groups[sku] = (groups[sku] || 0) + mbPieces[len] * 4;
+  });
+
+  // Side sheds — leanto/wrap eave edges, always 2x12, inside + outside (×2 per eave edge)
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.type === 'gable') return; // gable extensions don't need eave headers
+    var shedPrefix = 'SYP212';
+
+    if (sc.type === 'leanto') {
+      // One outer eave edge × 2 (inside + outside)
+      var pieces = fillWall(sc.l);
+      Object.keys(pieces).forEach(function(len) {
+        var sku = shedPrefix + len;
+        groups[sku] = (groups[sku] || 0) + pieces[len] * 2;
+      });
+    } else if (sc.type === 'wrap' || sc.type === 'wrap3') {
+      // Primary leg × 2
+      var primary = fillWall(sc.l);
+      Object.keys(primary).forEach(function(len) {
+        var sku = shedPrefix + len;
+        groups[sku] = (groups[sku] || 0) + primary[len] * 2;
+      });
+      if (sc.type === 'wrap3') {
+        // Both secondary legs (gable ends) × 2 each
+        var isEave = (sc.wall === 'left' || sc.wall === 'right');
+        var secLen = isEave ? Q.w : Q.l;
+        var secondary = fillWall(secLen);
+        Object.keys(secondary).forEach(function(len) {
+          var sku = shedPrefix + len;
+          groups[sku] = (groups[sku] || 0) + secondary[len] * 4; // 2 legs × 2 sides
+        });
+      } else if (sc.wrapLeg > 0) {
+        // One secondary leg × 2
+        var secPieces = fillWall(sc.wrapLeg);
+        Object.keys(secPieces).forEach(function(len) {
+          var sku = shedPrefix + len;
+          groups[sku] = (groups[sku] || 0) + secPieces[len] * 2;
+        });
+      }
+    }
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Lumber',
+      description: 'Building Headers',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      sku.indexOf('LVL') === 0 ? 'LVL 11 7/8 (cut to length)' : '2x12'
+    };
+  });
+};
+
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -10584,7 +10773,21 @@ window.SauceMaterials.calculate = function() {
   var wdPosts = SM.calcWalkDoorPosts(allDoors);
   if (wdPosts) items.push(wdPosts);
   var sackcrete = SM.calcSackcrete(Q, WALLS, allDoors, window._shedConfigs||[], sf);
-  if (sackcrete) items.push(sackcrete);
+  var footingPads = SM.calcFootingPads(Q, WALLS, allDoors, window._shedConfigs||[], sf);
+  footingPads.forEach(function(item) { items.push(item); });
+  SM.calcHeaders(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  if (sackcrete) {
+    items.push(sackcrete);
+    // Pallet charge: 1 per 42 bags of sackcrete
+    var pallets = Math.ceil(sackcrete.quantity / 42);
+    if (pallets > 0) items.push({
+      category:    'Concrete',
+      description: 'Pallet Charge',
+      sku:         'PAL',
+      quantity:    pallets,
+      detail:      sackcrete.quantity + ' bags  |  1 pallet per 42 bags'
+    });
+  }
   return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "'" };
 };
 
