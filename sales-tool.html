@@ -13031,7 +13031,67 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
   }];
 };
 
-// ── TRIM: J-CHANNEL ──────────────────────────────────────────────────────────
+// ── TRIM: VALLEY PANELS ───────────────────────────────────────────────────────
+// Used only when a gable extension is on an eave wall (left or right).
+// Send 6 × VP9PW10 per gable extension.
+
+window.SauceMaterials.calcValleyPanels = function(Q, shedCfgs) {
+  var count = (shedCfgs||[]).filter(function(sc) {
+    return sc.type === 'gable' &&
+           (sc.wall === 'left' || sc.wall === 'right') &&
+           sc.w && sc.l;
+  }).length;
+
+  if (!count) return [];
+
+  return [{
+    category:    'Trim',
+    description: 'Valley Panels',
+    sku:         'VP9PW10',
+    quantity:    count * 6,
+    detail:      count + ' gable extension(s)  |  6 per extension'
+  }];
+};
+
+
+// One trim kit per garage door.
+// 6x6 posts → ODT8.59PWxx,  8x8 posts → ODT10.59PWxx.
+// Width dimension: 1 piece at door width.
+// Height dimension: 2 pieces at door height.
+
+window.SauceMaterials.calcOverheadDoorTrim = function(Q, allDoors, sf) {
+  var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
+  if (!garageDoors.length) return [];
+
+  var postSize  = (sf && sf.mbPostSize) || (document.getElementById('st_mbPostSize')||{}).value || '6x6';
+  var skuPrefix = postSize === '8x8' ? 'ODT10.59PW' : 'ODT8.59PW';
+
+  var groups = {}; // sku → qty
+  function add(sku, qty) { groups[sku] = (groups[sku] || 0) + qty; }
+
+  garageDoors.forEach(function(d) {
+    var wLen = d.w < 10 ? 10 : d.w;
+    var hLen = d.h < 10 ? 10 : d.h;
+    add(skuPrefix + wLen, 1); // 1 piece at door width
+    add(skuPrefix + hLen, 2); // 2 pieces at door height
+  });
+
+  return Object.keys(groups).sort(function(a, b) {
+    var na = parseInt(a.replace(skuPrefix, ''));
+    var nb = parseInt(b.replace(skuPrefix, ''));
+    return na - nb;
+  }).map(function(sku) {
+    return {
+      category:    'Trim',
+      description: 'Overhead Door Trim',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      postSize + ' posts  |  ' + garageDoors.length + ' door(s)'
+    };
+  });
+};
+
+
 // SKU: JC9PW10 (10' spacing) or JC9PW12 (12' spacing).
 // Sources:
 //   3 per walk door
@@ -13271,6 +13331,11 @@ window.SauceMaterials.calcBirdBoxTrim = function(Q, shedCfgs) {
 };
 
 // ── TRIM: PC3 EAVE TRIM ──────────────────────────────────────────────────────
+// Wood truss + overhang only. Covers eave fascia boards.
+// SKU: PC39PW10/PC39PW12 (Painted/Galvalume/PBR), PC36PW10/PC36PW12 (26-Gauge).
+// Board length matches post spacing: 10' spacing → 10' boards, 12' spacing → 12' boards.
+
+window.SauceMaterials.calcPC3Trim = function(Q, WALLS, shedCfgs) {
   if (Q.truss !== 'Wood') return [];
   if (Q.oh === 0) return [];
 
@@ -13353,7 +13418,88 @@ window.SauceMaterials.calcBirdBoxTrim = function(Q, shedCfgs) {
   });
 };
 
-// ── CALCULATE ─────────────────────────────────────────────────────────────────
+// ── TRIM: RESIDENTIAL EAVE TRIM ──────────────────────────────────────────────
+// All buildings/truss types.
+// Runs along enclosed eave walls + open lean-to skirt lines.
+// Non-dropped flush lean-to replaces main building eave on that side.
+// SKU: RET9PW10 (10' post spacing) or RET9PW12 (12' post spacing).
+
+window.SauceMaterials.calcRETTrim = function(Q, WALLS, shedCfgs) {
+  var ohFt = (Q.truss === 'Wood' && Q.oh > 0) ? Q.oh / 12 : 0;
+
+  function wallPS(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+
+  function wallEncl(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? w.encl : 'enclosed';
+  }
+
+  var groups = {};
+  function addRun(runLen, ps) {
+    var boardLen = (ps === 12) ? 12 : 10;
+    var sku      = 'RET9PW' + boardLen;
+    groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen);
+  }
+
+  // Determine which main building eave sides are replaced by flush (non-dropped) lean-tos
+  var replacedEaves = { left: false, right: false };
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if ((sc.wall === 'left' || sc.wall === 'right') && parseFloat(sc.dropFt||0) === 0) {
+      replacedEaves[sc.wall] = true;
+    }
+  });
+
+  // Main building enclosed eave walls
+  ['left','right'].forEach(function(side) {
+    if (!replacedEaves[side] && wallEncl(side) !== 'open') {
+      addRun(Q.l + ohFt * 2, wallPS(side));
+    }
+  });
+
+  // Side sheds
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
+    var ps = wallPS(sc.wall);
+
+    if (sc.type === 'gable') {
+      // Gable extension: two enclosed eave runs along extension depth
+      addRun(sc.w + ohFt * 2, ps);
+      addRun(sc.w + ohFt * 2, ps);
+      return;
+    }
+
+    if (!isEaveWall) return;
+
+    // Enclosed lean-to outer eave wall
+    if (sc.encl === 'enclosed') {
+      var wallLen = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
+      addRun(wallLen + ohFt * 2, ps);
+      return;
+    }
+
+    // Open/roofonly lean-to — skirt line
+    if (sc.encl === 'roofonly' || sc.encl === 'open') {
+      addRun(sc.l + ohFt * 2, ps);
+      return;
+    }
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Trim',
+      description: 'Residential Eave Trim',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'enclosed walls + open lean-to skirt lines'
+    };
+  });
+};
 
 window.SauceMaterials.calculate = function() {
   var SM = window.SauceMaterials;
@@ -13405,11 +13551,14 @@ window.SauceMaterials.calculate = function() {
   SM.calcOpenGableMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcWainscotMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSkirtMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcValleyPanels(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcOverheadDoorTrim(Q, allDoors, sf).forEach(function(item) { items.push(item); });
   SM.calcJChannel(Q, WALLS, window._shedConfigs||[], allDoors, window._windows||[]).forEach(function(item) { items.push(item); });
   SM.calcPC2Trim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcBirdBoxTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSoffitFJTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcPC3Trim(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcRETTrim(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
