@@ -12232,8 +12232,142 @@ window.SauceMaterials.calcDoorJacks = function(allDoors, sf) {
 };
 
 // ── ITEM 29: GARAGE DOOR HEADERS ────────────────────────────────────────────
-// 2 per garage door. Header length = door width + 2'.
-// Width ≤ 14' → SYP212xx. Width > 14' → LVL1178xx.
+// ── GARAGE DOORS ─────────────────────────────────────────────────────────────
+// SKU lookup by width × height × insulated flag.
+// Standard: GD{w}{h}W  |  Insulated: GD{w}{h}INW or GD{w}{h}INSW
+
+window.SauceMaterials.calcGarageDoors = function(allDoors) {
+  var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
+  if (!garageDoors.length) return [];
+
+  // SKU map: key = "WxH:insulated" → sku
+  var skuMap = {
+    '8x8:0':'GD88W',     '8x8:1':'GD88INW',
+    '9x8:0':'GD98W',     '9x8:1':'GD98INSW',
+    '10x8:0':'GD108W',   '10x8:1':'GD108INW',
+    '10x10:0':'GD1010W', '10x10:1':'GD1010INW',
+    '10x12:0':'GD1012W', '10x12:1':'GD1012INW',
+    '10x14:0':'GD1014W', '10x14:1':'GD1014INW',
+    '12x8:0':'GD128W',   '12x8:1':'GD128INW',
+    '12x10:0':'GD1210W', '12x10:1':'GD1210INW',
+    '12x12:0':'GD1212W', '12x12:1':'GD1212INW',
+    '12x14:0':'GD1214W', '12x14:1':'GD1214INW',
+    '14x10:0':'GD1410W', '14x10:1':'GD1410INW',
+    '14x12:0':'GD1412W', '14x12:1':'GD1412INW',
+    '14x14:0':'GD1414W', '14x14:1':'GD1414INW',
+    '16x8:0':'GD168W',   '16x8:1':'GD168INW',
+    '16x10:0':'GD1610W', '16x10:1':'GD1610INSW',
+    '16x12:0':'GD1612W', '16x12:1':'GD1612INW',
+    '16x14:0':'GD1614W', '16x14:1':'GD1614INW',
+    '18x8:0':'GD188W',   '18x8:1':'GD188INSW',
+    '18x10:0':'GD1810W', '18x10:1':'GD1810INSW',
+    '18x12:0':'GD1812W', '18x12:1':'GD1812INSW',
+    '18x14:0':'GD1814W', '18x14:1':'GD1814INSW',
+    '20x14:0':'GD2014W', '20x14:1':'GD2014INSW'
+  };
+
+  var groups = {};
+  garageDoors.forEach(function(d) {
+    var key = d.w + 'x' + d.h + ':' + (d.insulated ? '1' : '0');
+    var sku = skuMap[key];
+    if (!sku) sku = 'GD' + d.w + d.h + (d.insulated ? 'INW' : 'W'); // fallback
+    groups[sku] = (groups[sku] || 0) + 1;
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Doors',
+      description: 'Garage Door',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'overhead door'
+    };
+  });
+};
+
+// ── GARAGE DOOR INSTALL FEE ───────────────────────────────────────────────────
+// Total sq ft of all garage doors × rate based on mileage.
+// <100 mi: $4.25/sqft | 101-150: $4.50 | 151-205: $5.00
+// >205: $5.00 base + $6.00 per mile beyond 205.
+
+window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
+  var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
+  if (!garageDoors.length) return [];
+
+  var totalSqFt = garageDoors.reduce(function(sum, d) { return sum + (d.w * d.h); }, 0);
+  var miles     = window._cachedMileage || 0;
+
+  var rate, detail;
+  if (miles <= 100) {
+    rate   = 4.25;
+    detail = miles + ' mi  |  $4.25/sqft';
+  } else if (miles <= 150) {
+    rate   = 4.50;
+    detail = miles + ' mi  |  $4.50/sqft';
+  } else if (miles <= 205) {
+    rate   = 5.00;
+    detail = miles + ' mi  |  $5.00/sqft';
+  } else {
+    rate   = 5.00;
+    var extraMiles = miles - 205;
+    var extraFee   = extraMiles * 6.00;
+    detail = miles + ' mi  |  $5.00/sqft base + $6.00 × ' + extraMiles + ' extra mi ($' + extraFee.toFixed(2) + ' added)';
+  }
+
+  var baseCost  = totalSqFt * rate;
+  var extraCost = miles > 205 ? (miles - 205) * 6.00 : 0;
+  var total     = baseCost + extraCost;
+
+  return [{
+    category:    'Doors',
+    description: 'Garage Door Install Fee',
+    sku:         'GDINSTALL',
+    quantity:    1,
+    detail:      totalSqFt + ' sqft  |  ' + detail + '  |  $' + total.toFixed(2)
+  }];
+};
+
+
+
+// ── GARAGE DOOR OPENERS ───────────────────────────────────────────────────────
+// SKU determined per door: w×h < 196 (14×14) → GDOJACKSHAFT98022
+//                          w×h ≥ 196         → GDOJACKSHAFT98032
+// Total qty from sf_gdOpenerQty, assigned door by door then remainder to largest.
+
+window.SauceMaterials.calcGarageDoorOpeners = function(allDoors) {
+  var openerVal = (document.getElementById('sf_gdOpener')||{}).value || 'None';
+  var openerQty = parseInt((document.getElementById('sf_gdOpenerQty')||{}).value||0) || 0;
+  if (openerVal === 'None' || openerQty === 0) return [];
+
+  var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
+  if (!garageDoors.length) return [];
+
+  var groups = {};
+  var assigned = 0;
+  garageDoors.forEach(function(d) {
+    if (assigned >= openerQty) return;
+    var sku = (d.w * d.h) < 196 ? 'GDOJACKSHAFT98022' : 'GDOJACKSHAFT98032';
+    groups[sku] = (groups[sku] || 0) + 1;
+    assigned++;
+  });
+
+  // Remaining qty beyond door count → use largest door's SKU
+  if (assigned < openerQty) {
+    var largest = garageDoors.reduce(function(a, b) { return (a.w*a.h) >= (b.w*b.h) ? a : b; });
+    var sku = (largest.w * largest.h) < 196 ? 'GDOJACKSHAFT98022' : 'GDOJACKSHAFT98032';
+    groups[sku] = (groups[sku] || 0) + (openerQty - assigned);
+  }
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Doors',
+      description: 'Garage Door Opener',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      sku === 'GDOJACKSHAFT98022' ? 'Jackshaft — under 14×14' : 'Jackshaft — 14×14 and larger'
+    };
+  });
+};
 
 window.SauceMaterials.calcGarageDoorHeaders = function(allDoors) {
   var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
@@ -13206,31 +13340,29 @@ window.SauceMaterials.calcPC2Trim = function(Q, shedCfgs) {
 
   function nextEven(n) { var c = Math.ceil(n); return c % 2 === 0 ? c : c + 1; }
 
-  // Minimize seams: use longest available boards first to cover the run
-  var LENGTHS = [20, 18, 16, 14, 12, 10];
-  function coverRun(roundedLen) {
-    var boards = {};
-    var remaining = roundedLen;
-    for (var i = 0; i < LENGTHS.length && remaining > 0; i++) {
-      var l = LENGTHS[i];
-      if (l <= remaining) {
-        var n = Math.floor(remaining / l);
-        boards[l] = (boards[l] || 0) + n;
-        remaining -= n * l;
-      }
+  // Board selection: if top chord ≤ 20' → 1 board that covers it.
+  // If > 20' → split in half, round each half up to next available length, send 2.
+  var LENGTHS = [10, 12, 14, 16, 18, 20];
+  function pickLen(roundedLen) {
+    for (var i = 0; i < LENGTHS.length; i++) {
+      if (LENGTHS[i] >= roundedLen) return LENGTHS[i];
     }
-    // Any small remainder covered by shortest available (10')
-    if (remaining > 0) boards[10] = (boards[10] || 0) + 1;
-    return boards;
+    return LENGTHS[LENGTHS.length - 1];
   }
 
   var groups = {}; // sku → qty
   function addBoards(roundedLen, mult) {
-    var b = coverRun(roundedLen);
-    Object.keys(b).forEach(function(len) {
-      var sku = skuBase + len;
-      groups[sku] = (groups[sku] || 0) + b[len] * mult;
-    });
+    // mult = number of slope ends (4 for main, 2 for lean-to)
+    if (roundedLen <= 20) {
+      // Single board covers it
+      var sku = skuBase + pickLen(roundedLen);
+      groups[sku] = (groups[sku] || 0) + mult;
+    } else {
+      // Split in half, round each half up to next available length
+      var half = roundedLen / 2;
+      var sku = skuBase + pickLen(Math.ceil(half));
+      groups[sku] = (groups[sku] || 0) + mult * 2;
+    }
   }
 
   var ci      = getColIdx(Q.oh, Q.pitch);
@@ -13801,6 +13933,121 @@ window.SauceMaterials.calcOutsideCornerTrim = function(Q, WALLS, shedCfgs) {
   return results;
 };
 
+// ── TRIM: GABLE RAKE TRIM ────────────────────────────────────────────────────
+// Same SKU as outside corner (OC9PWxx), same PC2 board logic.
+// Lengths [10,12,14,16,18,20]. ≤20' → 1 board; >20' → split in half, round up.
+// Main building: ×4 (2 slopes × 2 gable ends).
+// Lean-to: ×2 (1 slope × 2 gable ends).
+// Gable extension (eave wall): ×4 (2 slopes × 2 ends).
+
+window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+  if (Q.oh === 0) return [];
+
+  var chart = {
+    10:[5.583,5.917,6.583,7.000,7.167,7.583],   12:[6.583,7.000,7.667,8.083,8.167,8.667],
+    14:[7.667,8.083,8.750,9.250,9.250,9.833],   16:[8.750,9.250,9.750,10.333,10.333,10.917],
+    18:[9.750,10.333,10.833,11.500,11.333,12.000],20:[10.833,11.500,11.917,12.583,12.417,13.167],
+    22:[11.917,12.583,12.917,13.667,13.500,14.250],24:[12.917,13.667,14.000,14.833,14.500,15.417],
+    25:[13.500,14.250,14.500,15.417,15.083,15.917],26:[14.000,14.833,15.083,15.917,15.583,16.500],
+    28:[15.083,15.917,16.083,17.083,16.667,17.583],30:[16.083,17.083,17.167,18.167,17.667,18.750],
+    32:[17.167,18.167,18.250,19.333,18.750,19.833],34:[18.250,19.333,19.250,20.417,19.750,21.000],
+    36:[19.250,20.417,20.333,21.500,20.833,22.083],38:[20.333,21.500,21.333,22.667,21.917,23.250],
+    40:[21.333,22.667,22.417,23.750,22.917,24.333],42:[22.417,23.750,23.500,24.917,24.000,25.417],
+    44:[23.417,24.917,24.500,26.000,25.083,26.583],46:[24.500,26.000,25.583,27.083,26.083,27.667],
+    48:[25.583,27.083,26.667,28.250,27.167,28.833],50:[26.667,28.250,27.667,29.333,28.250,29.917],
+    52:[27.667,29.333,28.750,30.500,29.250,31.000],54:[28.750,30.500,29.833,31.583,30.333,32.167],
+    56:[29.833,31.583,30.833,32.750,31.417,33.250],60:[31.917,33.833,33.000,34.917,33.500,35.500]
+  };
+  var ssChart = {
+    6:[6.333,7.417],8:[8.417,9.417],10:[10.417,11.417],12:[12.417,13.500],
+    14:[14.500,15.500],16:[16.500,17.500],18:[18.500,19.583],20:[20.583,21.583],
+    22:[22.583,23.583],24:[24.583,25.667],26:[26.667,27.667],28:[28.667,29.667],
+    30:[30.667,31.750]
+  };
+
+  function getColIdx(oh, pitch) {
+    var ohIdx = oh <= 12 ? 2 : 4;
+    var pOff  = pitch <= 4 ? 0 : 1;
+    return ohIdx + pOff;
+  }
+  function nextEven(n) { var c = Math.ceil(n); return c % 2 === 0 ? c : c + 1; }
+
+  var LENGTHS = [10, 12, 14, 16, 18, 20];
+  function pickLen(n) {
+    for (var i = 0; i < LENGTHS.length; i++) { if (LENGTHS[i] >= n) return LENGTHS[i]; }
+    return 20;
+  }
+
+  var groups = {};
+  function addBoards(roundedLen, mult) {
+    var sku;
+    if (roundedLen <= 20) {
+      sku = 'OC9PW' + pickLen(roundedLen);
+      groups[sku] = (groups[sku] || 0) + mult;
+    } else {
+      sku = 'OC9PW' + pickLen(Math.ceil(roundedLen / 2));
+      groups[sku] = (groups[sku] || 0) + mult * 2;
+    }
+  }
+
+  var ci    = getColIdx(Q.oh, Q.pitch);
+  var mbRow = chart[Q.w];
+  if (!mbRow) return [];
+
+  // Main building: ×4
+  addBoards(nextEven(mbRow[ci]), 4);
+
+  // Side sheds
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+
+    if (sc.type === 'gable') {
+      var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
+      if (isEaveWall) {
+        var gRow = chart[sc.w];
+        if (gRow) addBoards(nextEven(gRow[ci]), 4); // ×4: 2 slopes × 2 ends
+      }
+      return;
+    }
+
+    var ssRow = ssChart[sc.w];
+    if (!ssRow) return;
+    addBoards(nextEven(ssRow[1]), 2); // ×2: 1 slope × 2 gable ends
+  });
+
+  return Object.keys(groups).sort(function(a, b) {
+    return parseInt(a.replace('OC9PW','')) - parseInt(b.replace('OC9PW',''));
+  }).map(function(sku) {
+    return {
+      category:    'Trim',
+      description: 'Gable Rake Trim',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'gable rake  |  ' + Q.oh + '" O/H'
+    };
+  });
+};
+
+// ── TRIM: RIDGE CAP ───────────────────────────────────────────────────────────
+// RC9PW10 (10' post spacing) or RC9PW12 (12' post spacing).
+// Quantity = ceil(Q.l / boardLen) + 1.
+
+window.SauceMaterials.calcRidgeCap = function(Q) {
+  var ps      = Q.postSpacing || 10;
+  var boardLen = (ps === 12) ? 12 : 10;
+  var sku      = 'RC9PW' + boardLen;
+  var qty      = Math.ceil(Q.l / boardLen) + 1;
+
+  return [{
+    category:    'Trim',
+    description: 'Ridge Cap',
+    sku:         sku,
+    quantity:    qty,
+    detail:      boardLen + "' sticks  |  " + Q.l + "' building length  +1"
+  }];
+};
+
 window.SauceMaterials.calculate = function() {
   var SM = window.SauceMaterials;
   var Q = window._Q;
@@ -13841,6 +14088,9 @@ window.SauceMaterials.calculate = function() {
   SM.calcCornerBracing(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcBottomBands(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcDoorJacks(allDoors, sf).forEach(function(item) { items.push(item); });
+  SM.calcGarageDoors(allDoors).forEach(function(item) { items.push(item); });
+  SM.calcGarageDoorInstall(allDoors).forEach(function(item) { items.push(item); });
+  SM.calcGarageDoorOpeners(allDoors).forEach(function(item) { items.push(item); });
   SM.calcGarageDoorHeaders(allDoors).forEach(function(item) { items.push(item); });
   SM.calcBarnDoors().forEach(function(item) { items.push(item); });
   SM.calcRoofMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
@@ -13865,6 +14115,8 @@ window.SauceMaterials.calculate = function() {
   SM.calcDoubleAngle(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcInsideCornerTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcOutsideCornerTrim(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcGableRakeTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcRidgeCap(Q).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
@@ -13950,7 +14202,7 @@ window.openMaterialsModal = function() {
       'Roof Metal','Side Shed Roof Metal',
       'Sidewall Metal','Gable Metal','Side Shed Gable Metal',
       'Wainscot Metal','Soffit Metal','Skirt Metal',
-      'Metal', 'Trim'
+      'Metal', 'Trim', 'Doors'
     ];
     var catKeys = Object.keys(cats).sort(function(a, b) {
       var ai = CATEGORY_ORDER.indexOf(a);
