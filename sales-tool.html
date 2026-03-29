@@ -11520,8 +11520,10 @@ window.SauceMaterials.calcWoodOHPurlins = function(Q) {
 
   var trussSpacing = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
   var endBoard     = trussSpacing === 4 ? 16 : 12;
-  var covered      = trussSpacing * 2;
-  var remaining    = Q.l - covered;
+  // Each end board covers: 5' spacing → 10' roof per end, 4' spacing → 12' roof per end
+  var coveragePerEnd = trussSpacing === 4 ? 12 : 10;
+  var covered        = coveragePerEnd * 2;
+  var remaining      = Q.l - covered;
 
   // Build run board map
   var runBoards = {};
@@ -11573,6 +11575,80 @@ window.SauceMaterials.calcWoodOHPurlins = function(Q) {
   return results;
 };
 
+// ── ITEM 18: WOOD OH SIDE SHED PURLINS ──────────────────────────────────────
+// Wood truss + overhang buildings only. Always SYP24xx.
+// Same end board logic as main building OH purlins.
+// Purlin count from SS metal length chart (12" O/H column).
+// Run length based on shed length.
+
+window.SauceMaterials.calcWoodOHShedPurlins = function(Q, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+  if (Q.oh === 0) return [];
+
+  var ssPurlinsPerRun = {
+    6:10, 8:12, 10:14, 12:16, 14:18, 16:20,
+    18:22, 20:24, 22:26, 24:28, 26:30, 28:32, 30:34
+  };
+
+  var trussSpacing    = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
+  var endBoard        = trussSpacing === 4 ? 16 : 12;
+  var coveragePerEnd  = trussSpacing === 4 ? 12 : 10;
+  var covered         = coveragePerEnd * 2;
+
+  function fillRemaining(remaining, spacing) {
+    var boards = {};
+    if (spacing === 4) {
+      if (remaining % 12 === 0) { boards[12]=remaining/12; return boards; }
+      var r=remaining;
+      if(r%20===0){boards[20]=r/20;return boards;}
+      if(r>=20){boards[20]=Math.floor(r/20);r=r%20;}
+      if(r>=12){boards[12]=(boards[12]||0)+Math.floor(r/12);r=r%12;}
+      if(r>0.01){boards[10]=(boards[10]||0)+Math.ceil(r/10);}
+    } else {
+      var r=remaining;
+      if(r%20===0){boards[20]=r/20;return boards;}
+      if(r>=20){boards[20]=Math.floor(r/20);r=r%20;}
+      if(r>0.01){boards[10]=(boards[10]||0)+Math.ceil(r/10);}
+    }
+    return boards;
+  }
+
+  var groups = {};
+
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    var count = ssPurlinsPerRun[sc.w];
+    if (!count) return;
+
+    var remaining  = sc.l - covered;
+    var runBoards  = {};
+    runBoards[endBoard] = 2;
+    if (remaining > 0) {
+      var fill = fillRemaining(remaining, trussSpacing);
+      Object.keys(fill).forEach(function(len) {
+        runBoards[len] = (runBoards[len]||0) + fill[len];
+      });
+    }
+
+    Object.keys(runBoards).forEach(function(len) {
+      var runs     = runBoards[len];
+      var quantity = Math.ceil(runs * count * 1.1);
+      var sku      = 'SYP24' + len;
+      groups[sku]  = (groups[sku]||0) + quantity;
+    });
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Roofing',
+      description: 'Wood Side Shed Purlins (O/H)',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      '2x4  |  +10%  |  ' + Q.oh + '" O/H'
+    };
+  });
+};
+
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -11604,6 +11680,7 @@ window.SauceMaterials.calculate = function() {
   SM.calcWoodPurlins(Q).forEach(function(item) { items.push(item); });
   SM.calcWoodShedPurlins(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcWoodOHPurlins(Q).forEach(function(item) { items.push(item); });
+  SM.calcWoodOHShedPurlins(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
