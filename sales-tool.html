@@ -10685,21 +10685,15 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, shedCfgs) {
     return (width >= 41 && width <= 60) ? 'LVL1178' : 'SYP212';
   }
 
-  var groups = {}; // { sku: quantity }
-  function addPieces(pieces, prefix) {
-    Object.keys(pieces).forEach(function(len) {
-      var sku = prefix + len;
-      groups[sku] = (groups[sku] || 0) + pieces[len];
-    });
-  }
+  var mbGroups   = {}; // main building headers
+  var shedGroups = {}; // side shed headers
 
   // Main building — both eave walls, inside + outside (×4)
   var mbPrefix = skuPrefix(Q.w);
   var mbPieces = fillWall(Q.l);
-  // Each piece × 4 (2 sides of post × 2 walls)
   Object.keys(mbPieces).forEach(function(len) {
     var sku = mbPrefix + len;
-    groups[sku] = (groups[sku] || 0) + mbPieces[len] * 4;
+    mbGroups[sku] = (mbGroups[sku] || 0) + mbPieces[len] * 4;
   });
 
   // Side sheds — always 2x12, inside + outside (×2 per eave edge)
@@ -10713,7 +10707,7 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, shedCfgs) {
       var pieces = fillWall(len);
       Object.keys(pieces).forEach(function(l) {
         var sku = shedPrefix + l;
-        groups[sku] = (groups[sku] || 0) + pieces[l] * multiplier;
+        shedGroups[sku] = (shedGroups[sku] || 0) + pieces[l] * multiplier;
       });
     }
 
@@ -10743,15 +10737,202 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, shedCfgs) {
     }
   });
 
-  return Object.keys(groups).sort().map(function(sku) {
-    return {
+  // Build separate results for main building and side shed headers
+  var results = [];
+
+  Object.keys(mbGroups).sort().forEach(function(sku) {
+    results.push({
       category:    'Lumber',
-      description: 'Building Headers',
+      description: 'Main Building Headers',
       sku:         sku,
-      quantity:    groups[sku],
+      quantity:    mbGroups[sku],
       detail:      sku.indexOf('LVL') === 0 ? 'LVL 11 7/8 (cut to length)' : '2x12'
-    };
+    });
   });
+
+  Object.keys(shedGroups).sort().forEach(function(sku) {
+    results.push({
+      category:    'Lumber',
+      description: 'Side Shed Headers',
+      sku:         sku,
+      quantity:    shedGroups[sku],
+      detail:      '2x12'
+    });
+  });
+
+  return results;
+};
+
+// ── ITEM 8: WOOD TRUSSES ─────────────────────────────────────────────────────
+// Wood truss only. Quantity = floor(length / spacing) + 1
+// 2 of total are gable trusses, remainder are regular trusses
+// SKU based on building width and whether overhang is selected
+
+window.SauceMaterials.calcWoodTrusses = function(Q) {
+  if (Q.truss !== 'Wood') return [];
+
+  var w  = Q.w;
+  var hasOH   = Q.oh > 0; // overhang selected
+
+  // SKU lookup maps — width → SKU
+  var regularOH = {
+    12:  'TWT12O',
+    16:  'TWT16O26',
+    18:  'TWT18O',
+    20:  'TWT20O26',
+    24:  'TWT24O26',
+    30:  'TWT30O26',
+    36:  'TWT36O26',
+    40:  'TWT40O',
+    48:  'TWT48O',
+    50:  'TWT50412OH',
+    60:  'TWT60412OH',
+    100: 'TWT100O'
+  };
+
+  var gableOH = {
+    12:  'TWGT12O',
+    16:  'TWGT16O26',
+    18:  'TWT18O',
+    20:  'TWGT20O26',
+    24:  'TWGT24O26',
+    30:  'TWGT30O26',
+    36:  'TWGT36O26',
+    40:  'TWGT40O',
+    48:  'TWT48O',
+    50:  'TWGT50412OH',
+    60:  'TWGT60412OH',
+    100: 'TWT100O'
+  };
+
+  var regularNoOH = {
+    12:  'TWT12',
+    18:  'TWT18',
+    20:  'TWT2026',
+    24:  'TWT2426',
+    30:  'TWT3026',
+    36:  'TWT36',
+    40:  'TWT40',
+    48:  'TWT48412',
+    50:  'TWT50412',
+    60:  'TWT60412'
+  };
+
+  var gableNoOH = {
+    12:  'TWT12',
+    18:  'TWT18',
+    20:  'TWGT2026',
+    24:  'TWGT2426',
+    30:  'TWGT3026',
+    36:  'TWGT36',
+    40:  'TWGT40',
+    48:  'TWGT48412',
+    50:  'TWGT50412',
+    60:  'TWGT60412'
+  };
+
+  var regularMap = hasOH ? regularOH : regularNoOH;
+  var gableMap   = hasOH ? gableOH   : gableNoOH;
+
+  var regularSKU = regularMap[w] || null;
+  var gableSKU   = gableMap[w]   || null;
+
+  // Truss spacing from UI
+  var spacing = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
+
+  var totalTrusses  = Math.floor(Q.l / spacing) + 1;
+  var gableCount    = 2;
+  var regularCount  = totalTrusses - gableCount;
+
+  var results = [];
+
+  if (gableSKU && gableCount > 0) {
+    results.push({
+      category:    'Trusses',
+      description: 'Gable Trusses',
+      sku:         gableSKU,
+      quantity:    gableCount,
+      detail:      Q.w + "' width  |  " + (hasOH ? '12" overhang' : 'no overhang')
+    });
+  }
+
+  if (regularSKU && regularCount > 0) {
+    results.push({
+      category:    'Trusses',
+      description: 'Regular Trusses',
+      sku:         regularSKU,
+      quantity:    regularCount,
+      detail:      Q.w + "' width  |  " + spacing + "' spacing  |  " + (hasOH ? '12" overhang' : 'no overhang')
+    });
+  }
+
+  if (!regularSKU && !gableSKU) {
+    results.push({
+      category:    'Trusses',
+      description: 'Trusses',
+      sku:         'WIDTH ' + w + "' — SKU NOT FOUND",
+      quantity:    totalTrusses,
+      detail:      'Please verify SKU for ' + w + "' width"
+    });
+  }
+
+  return results;
+};
+
+// ── ITEM 9: STEEL TRUSSES ────────────────────────────────────────────────────
+// Steel truss only. One truss per structural post on eave wall.
+// Quantity = floor(eaveWallLength / steelSpacing) + 1
+// No gable/regular split — all same SKU based on building width.
+// Garage door posts NOT counted — structural posts only.
+
+window.SauceMaterials.calcSteelTrusses = function(Q) {
+  if (Q.truss !== 'Steel') return [];
+
+  var skuMap = {
+    10:  '10TSGT10',
+    12:  '12TSGT12',
+    14:  '14TSGT14',
+    16:  '16TSGT1666',
+    18:  '18TSGT1866',
+    20:  '20TSGT2066',
+    22:  '22TSGT22',
+    24:  '24TSGT2466',
+    25:  '25TSGT25',
+    26:  '26TSGT26',
+    28:  '28TSGT2866',
+    30:  '30TSGT3066KBNO-O',
+    32:  '32TSGT3266KB',
+    34:  '34TSGT34',
+    36:  '36TSGT3666KB',
+    38:  '38TSGT3866KB',
+    40:  '40TSGT401266KBNO-O',
+    42:  '42TSGT42',
+    44:  '44TSGT44',
+    46:  '46TSGT46',
+    48:  '48TSGT481266KB',
+    50:  '50TSGT501088KB',
+    52:  '52TSGT52',
+    54:  '54TSGT54',
+    56:  '56TSGT56',
+    60:  '60TSGT601088KB',
+    70:  '70TSGT70',
+    75:  '75TSGT75',
+    80:  '80TSGT80',
+    85:  '85TSGT85',
+    100: '100TSGT100'
+  };
+
+  var sku = skuMap[Q.w] || ('WIDTH ' + Q.w + "' — SKU NOT FOUND");
+  var spacing  = parseFloat((document.getElementById('st_steelPS')||{}).value || 10) || 10;
+  var quantity = Math.floor(Q.l / spacing) + 1;
+
+  return [{
+    category:    'Trusses',
+    description: 'Steel Trusses',
+    sku:         sku,
+    quantity:    quantity,
+    detail:      Q.w + "' width  |  " + spacing + "' spacing  |  " + quantity + " total"
+  }];
 };
 
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
@@ -10777,6 +10958,8 @@ window.SauceMaterials.calculate = function() {
   var footingPads = SM.calcFootingPads(Q, WALLS, allDoors, window._shedConfigs||[], sf);
   footingPads.forEach(function(item) { items.push(item); });
   SM.calcHeaders(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcWoodTrusses(Q).forEach(function(item) { items.push(item); });
+  SM.calcSteelTrusses(Q).forEach(function(item) { items.push(item); });
   if (sackcrete) {
     items.push(sackcrete);
     // Pallet charge: 1 per 42 bags of sackcrete
