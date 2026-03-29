@@ -4295,40 +4295,45 @@ function vpToggleWalls() {
                 return false;
             }
 
+            // Shared helper: build post list for a wall.
+            // Anchor-and-fill: place jambs first at door edges, then fill each
+            // segment between anchors so no gap exceeds the selected spacing.
+            function buildPostList(wallLen, wPS, wallDoors) {
+                const anchors = [0, wallLen];
+                wallDoors.forEach(d => { anchors.push(d.offset||0); anchors.push((d.offset||0)+d.w); });
+                const uniq = [...new Set(anchors)].sort((a,b) => a-b);
+                const posts = [];
+                for (let si = 0; si < uniq.length-1; si++) {
+                    const segS = uniq[si], segE = uniq[si+1], segL = segE-segS;
+                    const nB = Math.ceil(segL / wPS);
+                    for (let b = 0; b <= nB; b++) {
+                        const ft = segS + b*(segL/nB);
+                        if (!posts.some(p => Math.abs(p.ft-ft) < 0.01)) {
+                            const isJ = wallDoors.some(d => Math.abs(ft-(d.offset||0))<0.01 || Math.abs(ft-((d.offset||0)+d.w))<0.01);
+                            const isC = (Math.abs(ft)<0.01 || Math.abs(ft-wallLen)<0.01);
+                            posts.push({ ft, jamb: isJ, corner: isC });
+                        }
+                    }
+                }
+                posts.sort((a,b) => a.ft-b.ft);
+                return posts;
+            }
+
             // EAVE WALLS (left/right) — post spacing along length
             ['left', 'right'].forEach(wallId => {
                 const wCfg = wallCfgs.find(w => w.id === wallId);
                 const wPS = wCfg ? wCfg.postSpacing : Q.postSpacing;
                 const xSide = wallId === 'left' ? -sw / 2 : sw / 2;
                 const wd = placed.filter(d => d.wall === wallId);
-
-                // Regular posts from corner at fixed spacing
-                const numBays = Math.floor(Q.l / wPS);
-                for (let i = 0; i <= numBays; i++) {
-                    const zFt = i * (Q.l / numBays);
-                    const z = (-Q.l / 2 + zFt) * Sc;
-                    // Skip if inside a door opening
-                    if (isInsideDoor(wd, zFt)) continue;
+                const posts = buildPostList(Q.l, wPS, wd);
+                posts.forEach(post => {
+                    const z = (-Q.l / 2 + post.ft) * Sc;
                     const key = Math.round(xSide * 1000) + ',' + Math.round(z * 1000);
                     if (!postPositions.has(key) && !_shedCoveredCorners.has(key)) {
                         postPositions.add(key);
                         const mPeave = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
                         addMainPost(xSide, z, postH, mPeave);
                     }
-                }
-
-                // Jamb posts at each door edge
-                wd.forEach(d => {
-                    const dL = (d.offset || 0), dR = dL + d.w;
-                    [dL, dR].forEach(posFt => {
-                        const z = (-Q.l / 2 + posFt) * Sc;
-                        const key = Math.round(xSide * 1000) + ',' + Math.round(z * 1000);
-                        if (!postPositions.has(key)) {
-                            postPositions.add(key);
-                            const mPeave = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
-                            addMainPost(xSide, z, postH, mPeave);
-                        }
-                    });
                 });
             });
 
@@ -4339,37 +4344,17 @@ function vpToggleWalls() {
                 const wPS = wCfg ? wCfg.postSpacing : Q.postSpacing;
                 const zPos = wallId === 'front' ? -sl / 2 : sl / 2;
                 const wd = placed.filter(d => d.wall === wallId);
-
-                // Regular posts from corner at fixed spacing
-                const numBays = Math.floor(Q.w / wPS);
-                for (let i = 0; i <= numBays; i++) {
-                    const xFt = i * (Q.w / numBays);
-                    const xPos = (-Q.w / 2 + xFt) * Sc;
+                const posts = buildPostList(Q.w, wPS, wd);
+                posts.forEach(post => {
+                    const xPos = (-Q.w / 2 + post.ft) * Sc;
                     const key = Math.round(xPos * 1000) + ',' + Math.round(zPos * 1000);
-                    if (postPositions.has(key)) continue; // corner already placed
-                    if (_shedCoveredCorners.has(key)) continue; // hidden behind shed gable cap
-                    if (isInsideDoor(wd, xFt)) continue; // inside door opening
+                    if (postPositions.has(key)) return; // corner already placed
+                    if (_shedCoveredCorners.has(key)) return; // hidden behind shed gable cap
                     postPositions.add(key);
-                    const distC = Math.abs(xFt - Q.w / 2);
+                    const distC = Math.abs(post.ft - Q.w / 2);
                     const pH = (Q.h + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc;
                     const mPgable = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
                     addMainPost(xPos, zPos, pH, mPgable);
-                }
-
-                // Jamb posts at each door edge
-                wd.forEach(d => {
-                    const dL = (d.offset || 0), dR = dL + d.w;
-                    [dL, dR].forEach(posFt => {
-                        const xPos = (-Q.w / 2 + posFt) * Sc;
-                        const key = Math.round(xPos * 1000) + ',' + Math.round(zPos * 1000);
-                        if (!postPositions.has(key)) {
-                            postPositions.add(key);
-                            const distC = Math.abs(posFt - Q.w / 2);
-                            const pH = (Q.h + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc;
-                            const mPgable = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
-                            addMainPost(xPos, zPos, pH, mPgable);
-                        }
-                    });
                 });
             });
         }
@@ -7500,28 +7485,19 @@ function generatePostLayout() {
         var wLen=isE?bl:bw,ps=wCfg?wCfg.postSpacing:(Q.postSpacing||10);
         var wd=[];for(var i=0;i<allDoors.length;i++)if(allDoors[i].wall===wid)wd.push(allDoors[i]);
         if(!isE&&wCfg&&wCfg.encl==='open')return[];
-        // Step 1 — regular structural posts at equal spacing intervals
-        var posts=[],nB=Math.floor(wLen/ps);
-        for(var i=0;i<=nB;i++){
-            var p=i*(wLen/nB),isCorner=(i===0||i===nB),insideDoor=false;
-            for(var j=0;j<wd.length;j++){var dL=wd[j].offset||0;if(p>dL+0.25&&p<dL+wd[j].w-0.25)insideDoor=true;}
-            if(!insideDoor)posts.push({ft:p,jamb:false,corner:isCorner});
-        }
-        // Step 2 — jamb posts at each edge of every door opening
-        for(var i=0;i<wd.length;i++){var es=[wd[i].offset||0,(wd[i].offset||0)+wd[i].w];
-            for(var e=0;e<2;e++){var ex=false;for(var k=0;k<posts.length;k++)if(Math.abs(posts[k].ft-es[e])<0.01)ex=true;
-                if(!ex)posts.push({ft:es[e],jamb:true,corner:false});}}
-        // Step 3 — sort
-        posts.sort(function(a,b){return a.ft-b.ft;});
-        // Step 4 — drop non-corner structural posts where gap to nearest STRUCTURAL
-        // neighbor on either side is less than spacing. Jamb proximity does not trigger drop.
-        posts=posts.filter(function(post,idx){
-            if(post.corner||post.jamb)return true;
-            var prevGap=Infinity,nextGap=Infinity;
-            for(var pi=idx-1;pi>=0;pi--){if(!posts[pi].corner){prevGap=post.ft-posts[pi].ft;break;}}
-            for(var ni=idx+1;ni<posts.length;ni++){if(!posts[ni].corner){nextGap=posts[ni].ft-post.ft;break;}}
-            return(prevGap>=ps&&nextGap>=ps);
-        });
+        // Anchor-and-fill: place jambs first, then fill each segment to max spacing
+        var anchors=[0,wLen];
+        for(var i=0;i<wd.length;i++){anchors.push(wd[i].offset||0);anchors.push((wd[i].offset||0)+wd[i].w);}
+        anchors=anchors.filter(function(v,i,a){return a.indexOf(v)===i;});
+        anchors.sort(function(a,b){return a-b;});
+        var posts=[];
+        for(var si=0;si<anchors.length-1;si++){
+            var segS=anchors[si],segE=anchors[si+1],segL=segE-segS,nB=Math.ceil(segL/ps);
+            for(var b=0;b<=nB;b++){var ft=segS+b*(segL/nB);
+                if(!posts.some(function(p){return Math.abs(p.ft-ft)<0.01;})){
+                    var isJ=wd.some(function(d){return Math.abs(ft-(d.offset||0))<0.01||Math.abs(ft-((d.offset||0)+d.w))<0.01;});
+                    var isC=(Math.abs(ft)<0.01||Math.abs(ft-wLen)<0.01);
+                    posts.push({ft:ft,jamb:isJ,corner:isC});}}}
         posts.sort(function(a,b){return a.ft-b.ft;});return posts;
     }
     var wp={};['left','right','front','back'].forEach(function(w){wp[w]=getWP(w);});
@@ -10249,42 +10225,43 @@ window.SauceMaterials = window.SauceMaterials || {};
 
 window.SauceMaterials.getPostsForWall = function(wallId, Q, WALLS, allDoors) {
   var isEave = (wallId === 'left' || wallId === 'right');
-  var wCfg = (WALLS || []).find(function(w) { return w.id === wallId; }) || null;
+  var wCfg   = (WALLS || []).find(function(w) { return w.id === wallId; }) || null;
   if (!isEave && wCfg && wCfg.encl === 'open') return [];
   var wLen = isEave ? Q.l : Q.w;
-  var ps = wCfg ? (wCfg.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
-  var wd = (allDoors || []).filter(function(d) { return d.wall === wallId; });
-  var posts = [];
-  var nB = Math.floor(wLen / ps);
-  for (var i = 0; i <= nB; i++) {
-    var p = i * (wLen / nB);
-    var isCorner = (i === 0 || i === nB);
-    var inside = false;
-    wd.forEach(function(d) { var dL = d.offset||0; if (p > dL+0.25 && p < dL+d.w-0.25) inside = true; });
-    if (!inside) posts.push({ ft: p, jamb: false, corner: isCorner });
-  }
-  wd.forEach(function(d) {
-    [d.offset||0, (d.offset||0)+d.w].forEach(function(e) {
-      if (!posts.some(function(p) { return Math.abs(p.ft-e) < 0.01; }))
-        posts.push({ ft: e, jamb: true, corner: false });
+  var ps   = wCfg ? (wCfg.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  var wd   = (allDoors || []).filter(function(d) { return d.wall === wallId; });
+
+  // Build post list for a wall:
+  // 1. Collect anchor points — corners + jambs at every door edge
+  // 2. For each segment between anchors, fill with evenly spaced posts
+  //    so no gap exceeds the selected spacing
+  function buildWallPosts(wallLen, ps, doors) {
+    var anchors = [0, wallLen];
+    doors.forEach(function(d) {
+      anchors.push(d.offset || 0);
+      anchors.push((d.offset || 0) + d.w);
     });
-  });
-  posts.sort(function(a, b) { return a.ft - b.ft; });
-  posts = posts.filter(function(post, idx) {
-    if (post.corner || post.jamb) return true;
-    // Drop a structural post if the gap to the nearest post of ANY type
-    // on either side is less than the selected spacing.
-    // Corner posts on either side are ignored in this check (they never trigger a drop).
-    var prevGap = Infinity, nextGap = Infinity;
-    for (var pi = idx-1; pi >= 0; pi--) {
-      if (!posts[pi].corner) { prevGap = post.ft - posts[pi].ft; break; }
+    anchors = anchors.filter(function(v, i, a) { return a.indexOf(v) === i; });
+    anchors.sort(function(a, b) { return a - b; });
+    var posts = [];
+    for (var si = 0; si < anchors.length - 1; si++) {
+      var segStart = anchors[si], segEnd = anchors[si + 1];
+      var segLen = segEnd - segStart;
+      var numBays = Math.ceil(segLen / ps);
+      for (var b = 0; b <= numBays; b++) {
+        var ft = segStart + b * (segLen / numBays);
+        if (!posts.some(function(p) { return Math.abs(p.ft - ft) < 0.01; })) {
+          var isJamb   = doors.some(function(d) { return Math.abs(ft-(d.offset||0)) < 0.01 || Math.abs(ft-((d.offset||0)+d.w)) < 0.01; });
+          var isCorner = (Math.abs(ft) < 0.01 || Math.abs(ft - wallLen) < 0.01);
+          posts.push({ ft: ft, jamb: isJamb, corner: isCorner });
+        }
+      }
     }
-    for (var ni = idx+1; ni < posts.length; ni++) {
-      if (!posts[ni].corner) { nextGap = posts[ni].ft - post.ft; break; }
-    }
-    return (prevGap >= ps && nextGap >= ps);
-  });
-  return posts;
+    posts.sort(function(a, b) { return a.ft - b.ft; });
+    return posts;
+  }
+
+  return buildWallPosts(wLen, ps, wd);
 };
 
 // ── ITEM 1: EAVE POSTS ───────────────────────────────────────────────────────
