@@ -12471,7 +12471,9 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
       if (hasEaveAttached) steelEaveAdder = 1;
     }
     var adjMetalLen = metalLen + steelEaveAdder;
-    var runLength   = Q.l + ohFt * 2;
+    // Wood with OH: add overhang to both gable ends for quantity
+    // Steel with OH: overhang only affects panel length, not quantity
+    var runLength = (Q.truss === 'Wood' && ohFt > 0) ? Q.l + ohFt * 2 : Q.l;
     addPanel(adjMetalLen, Math.ceil(runLength / 3) * 2);
   }
 
@@ -12555,6 +12557,46 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
   });
 };
 
+// ── ITEM 33: GABLE METAL (ENCLOSED) ─────────────────────────────────────────
+// Quantity = ceil((width/2) / 3) measurements × 4 pieces each.
+// First piece = Q.h + 2'. Each step increases by round(3 × pitch/12) feet.
+// 4 pieces per measurement (2 gable ends × 2 sides).
+
+window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
+
+  var metalType = (document.getElementById('st_roofMetal')||{}).value || 'Painted';
+  var skuPrefix = metalType==='26-Gauge'?'T6PW':metalType==='Galvalume'?'T9GA':metalType==='PBR'?'P6PW':'T9PW';
+
+  function fmtFt(ft) { return ft + "'"; }
+
+  // Only for enclosed gable walls
+  var frontCfg = (WALLS||[]).find(function(w){return w.id==='front';});
+  var backCfg  = (WALLS||[]).find(function(w){return w.id==='back';});
+  var anyEnclosed = (frontCfg && frontCfg.encl !== 'open') || (backCfg && backCfg.encl !== 'open');
+  if (!anyEnclosed) return [];
+
+  var pieces    = Math.ceil((Q.w / 2) / 3);
+  var base      = Q.h + 2;
+  var increment = Math.round(3 * Q.pitch / 12);
+  var groups    = {}; // lengthFt → qty
+
+  for (var i = 0; i < pieces; i++) {
+    var lenFt = base + i * increment;
+    groups[lenFt] = (groups[lenFt]||0) + 4;
+  }
+
+  return Object.keys(groups).map(Number).sort(function(a,b){return a-b;}).map(function(lenFt) {
+    return {
+      category:    'Metal',
+      description: 'Gable Metal',
+      sku:         skuPrefix,
+      quantity:    groups[lenFt],
+      metalLength: fmtFt(lenFt),
+      detail:      metalType + "  |  3' wide panels  |  enclosed gable"
+    };
+  });
+};
+
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -12601,6 +12643,7 @@ window.SauceMaterials.calculate = function() {
   SM.calcBarnDoors().forEach(function(item) { items.push(item); });
   SM.calcRoofMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSidewallMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcGableMetal(Q, WALLS).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
