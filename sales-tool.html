@@ -12444,13 +12444,25 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
   // Convert decimal feet to whole inches for SKU
   function toInches(ft) { return Math.ceil(ft * 12); }
 
-  var groups = {}; // sku → quantity
+  function fmtFtIn(ft) {
+    var totalIn = Math.ceil(ft * 12);
+    var f = Math.floor(totalIn / 12);
+    var i = totalIn % 12;
+    return i === 0 ? f + "'" : f + "'" + i + '"';
+  }
+
+  var groups = {}; // key → {qty, lenFt}
+
+  function addPanel(lenFt, qty) {
+    var key = lenFt.toFixed(4);
+    if (!groups[key]) groups[key] = { lenFt: lenFt, qty: 0 };
+    groups[key].qty += qty;
+  }
 
   // Main building
   var ohFt = Q.oh / 12;
   var metalLen = getMetalLen(Q.w, Q.truss, Q.oh, Q.pitch);
   if (metalLen) {
-    // Steel truss: if an eave-attached shed at eave height exists, add 1' to metal length
     var steelEaveAdder = 0;
     if (Q.truss === 'Steel') {
       var hasEaveAttached = (shedCfgs||[]).some(function(sc) {
@@ -12459,11 +12471,8 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
       if (hasEaveAttached) steelEaveAdder = 1;
     }
     var adjMetalLen = metalLen + steelEaveAdder;
-    var panelLen    = toInches(adjMetalLen);
     var runLength   = Q.l + ohFt * 2;
-    var panelCount  = Math.ceil(runLength / 3) * 2; // both slopes
-    var sku         = skuPrefix + panelLen;
-    groups[sku]     = (groups[sku]||0) + panelCount;
+    addPanel(adjMetalLen, Math.ceil(runLength / 3) * 2);
   }
 
   // Side sheds
@@ -12471,24 +12480,76 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
     if (!sc.w || !sc.l) return;
     var ssLen = getSSMetalLen(sc.w, Q.truss, Q.oh);
     if (!ssLen) return;
-    // Wood truss leanto on eave wall at eave height: add 10" to metal length
     var ssAdder = 0;
     if (Q.truss === 'Wood' && sc.type === 'leanto' &&
         (sc.wall==='left'||sc.wall==='right') && sc.dropFt===0) {
-      ssAdder = 10/12; // 10 inches in feet
+      ssAdder = 10/12;
     }
-    var ssPanelLen   = toInches(ssLen + ssAdder);
-    var ssPanelCount = Math.ceil(sc.l / 3); // single slope
-    var ssSku        = skuPrefix + ssPanelLen;
-    groups[ssSku]    = (groups[ssSku]||0) + ssPanelCount;
+    addPanel(ssLen + ssAdder, Math.ceil(sc.l / 3));
   });
 
-  return Object.keys(groups).sort().map(function(sku) {
+  return Object.keys(groups).sort().map(function(key) {
+    var g = groups[key];
     return {
       category:    'Metal',
       description: 'Roof Metal',
-      sku:         sku,
-      quantity:    groups[sku],
+      sku:         skuPrefix,
+      quantity:    g.qty,
+      metalLength: fmtFtIn(g.lenFt),
+      detail:      metalType + "  |  3' wide panels"
+    };
+  });
+};
+
+// ── ITEM 32: SIDEWALL METAL ──────────────────────────────────────────────────
+// Main building eave walls + enclosed side shed outer walls.
+// Wood no OH or Steel → height + 1'. Wood with OH → exact height.
+// Quantity = ceil(wallLength / 3). Both eave walls × 2.
+// Enclosed side shed: height = (Q.h + 1) - (sc.w * sc.ltPitch / 12)
+// Partial enclosed shed uses sc.enclFt for length.
+
+window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
+
+  var metalType = (document.getElementById('st_roofMetal')||{}).value || 'Painted';
+  var skuPrefix = metalType==='26-Gauge' ? 'T6PW' : metalType==='Galvalume' ? 'T9GA' : metalType==='PBR' ? 'P6PW' : 'T9PW';
+
+  function fmtFtIn2(ft) {
+    var totalIn = Math.ceil(ft * 12);
+    var f = Math.floor(totalIn / 12);
+    var i = totalIn % 12;
+    return i === 0 ? f + "'" : f + "'" + i + '"';
+  }
+
+  var groups = {};
+  function add(lenFt, qty) {
+    var key = lenFt.toFixed(4);
+    if (!groups[key]) groups[key] = { lenFt: lenFt, qty: 0 };
+    groups[key].qty += qty;
+  }
+
+  // Main building eave walls
+  var hasOH = Q.oh > 0 && Q.truss === 'Wood';
+  var mbHeight = hasOH ? Q.h : Q.h + 1;
+  add(mbHeight, Math.ceil(Q.l / 3) * 2);
+
+  // Enclosed side sheds — outer eave wall only
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.encl !== 'enclosed') return;
+    if (!(sc.enclWalls||[]).includes('outer')) return;
+    var shedH = (Q.h + 1) - (sc.w * (sc.ltPitch||1) / 12);
+    var wallLen = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
+    add(shedH, Math.ceil(wallLen / 3));
+  });
+
+  return Object.keys(groups).sort().map(function(key) {
+    var g = groups[key];
+    return {
+      category:    'Metal',
+      description: 'Sidewall Metal',
+      sku:         skuPrefix,
+      quantity:    g.qty,
+      metalLength: fmtFtIn2(g.lenFt),
       detail:      metalType + "  |  3' wide panels"
     };
   });
@@ -12539,6 +12600,7 @@ window.SauceMaterials.calculate = function() {
   SM.calcGarageDoorHeaders(allDoors).forEach(function(item) { items.push(item); });
   SM.calcBarnDoors().forEach(function(item) { items.push(item); });
   SM.calcRoofMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcSidewallMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
@@ -12635,7 +12697,16 @@ window.openMaterialsModal = function() {
         info.appendChild(desc); info.appendChild(detail);
         var skuEl = document.createElement('div');
         skuEl.style.cssText = 'font-size:11px;font-weight:800;color:#FF8200;white-space:nowrap;';
-        skuEl.textContent = item.sku;
+        // If item has a metalLength, show prefix + length separately
+        if (item.metalLength) {
+          skuEl.textContent = item.sku;
+          var lenEl = document.createElement('div');
+          lenEl.style.cssText = 'font-size:10px;color:#FF8200;white-space:nowrap;margin-top:2px;';
+          lenEl.textContent = item.metalLength;
+          skuEl.appendChild(lenEl);
+        } else {
+          skuEl.textContent = item.sku;
+        }
         var qtyEl = document.createElement('div');
         qtyEl.style.cssText = 'font-size:13px;font-weight:900;color:#f0f3f7;text-align:right;min-width:28px;';
         qtyEl.textContent = 'x' + item.quantity;
