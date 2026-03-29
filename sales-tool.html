@@ -11818,23 +11818,21 @@ window.SauceMaterials.calcEaveFascia = function(Q, WALLS, shedCfgs) {
 
   var ohFt = Q.oh / 12;
 
-  function fillFascia(runLen) {
-    var boards = {}, remaining = runLen;
-    if (remaining % 20 === 0) { boards[20] = remaining/20; }
-    else if (remaining % 12 === 0) { boards[12] = remaining/12; }
-    else {
-      if (remaining >= 20) { boards[20] = Math.floor(remaining/20); remaining = remaining%20; }
-      if (remaining > 0)   { boards[12] = (boards[12]||0) + Math.ceil(remaining/12); }
-    }
-    // +1 extra of longest board
-    var longest = Object.keys(boards).map(Number).sort(function(a,b){return b-a;})[0];
-    boards[longest]++;
-    return boards;
+  function wallPS(wallId) {
+    var w = (WALLS||[]).find(function(w){return w.id===wallId;});
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+
+  // Fill fascia: use only the spacing-matched board length, ceil to cover, +1 extra
+  function fillFascia(runLen, ps) {
+    var boardLen = (ps === 12) ? 12 : 20;
+    var count    = Math.ceil(runLen / boardLen) + 1; // +1 extra for safety
+    return { [boardLen]: count };
   }
 
   var groups = {};
-  function addRun(runLen) {
-    var b = fillFascia(runLen);
+  function addRun(runLen, ps) {
+    var b = fillFascia(runLen, ps);
     Object.keys(b).forEach(function(len) {
       var sku = 'SYP26' + len;
       groups[sku] = (groups[sku]||0) + b[len];
@@ -11845,7 +11843,7 @@ window.SauceMaterials.calcEaveFascia = function(Q, WALLS, shedCfgs) {
   var replacedEaves = { left: false, right: false };
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
-    if (sc.type === 'gable') return; // gable extensions don't replace eave walls
+    if (sc.type === 'gable') return;
     var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
     if (isEaveWall && sc.dropFt === 0) {
       replacedEaves[sc.wall] = true;
@@ -11855,7 +11853,7 @@ window.SauceMaterials.calcEaveFascia = function(Q, WALLS, shedCfgs) {
   // Main building eave fascia
   ['left','right'].forEach(function(wallId) {
     if (!replacedEaves[wallId]) {
-      addRun(Q.l + ohFt * 2);
+      addRun(Q.l + ohFt * 2, wallPS(wallId));
     }
   });
 
@@ -11864,35 +11862,30 @@ window.SauceMaterials.calcEaveFascia = function(Q, WALLS, shedCfgs) {
     if (!sc.wall || !sc.w || !sc.l) return;
     var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
 
+    var shedPS = wallPS(sc.wall);
+
     if (sc.type === 'gable') {
-      // Two eave edges along shed width
-      addRun(sc.w + ohFt * 2);
-      addRun(sc.w + ohFt * 2);
+      addRun(sc.w + ohFt * 2, shedPS);
+      addRun(sc.w + ohFt * 2, shedPS);
       return;
     }
 
     if (sc.type === 'leanto') {
-      // One outer eave run
-      addRun(sc.l + ohFt * 2);
-      // If dropped, main building eave was kept above — shed eave is extra
+      addRun(sc.l + ohFt * 2, shedPS);
       return;
     }
 
     if (sc.type === 'wrap') {
-      // Primary leg outer eave
-      addRun(sc.l + ohFt * 2);
-      // Secondary leg outer eave
-      if (sc.wrapLeg > 0) addRun(sc.wrapLeg + ohFt * 2);
+      addRun(sc.l + ohFt * 2, shedPS);
+      if (sc.wrapLeg > 0) addRun(sc.wrapLeg + ohFt * 2, shedPS);
       return;
     }
 
     if (sc.type === 'wrap3') {
-      // Primary leg outer eave
-      addRun(sc.l + ohFt * 2);
-      // Both secondary legs
+      addRun(sc.l + ohFt * 2, shedPS);
       var secLen = isEaveWall ? Q.w : Q.l;
-      addRun(secLen + ohFt * 2);
-      addRun(secLen + ohFt * 2);
+      addRun(secLen + ohFt * 2, shedPS);
+      addRun(secLen + ohFt * 2, shedPS);
       return;
     }
   });
@@ -11981,6 +11974,305 @@ window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
   });
 };
 
+// ── ITEM 23: GABLE END GIRTS ─────────────────────────────────────────────────
+// All buildings. Enclosed gable walls only (main + gable-attached sheds).
+// Same logic as sidewall girts. +10%.
+
+window.SauceMaterials.calcGableGirts = function(Q, WALLS, shedCfgs) {
+
+  function fillRuns(wallLen, ps) {
+    if (ps === 12) {
+      if (wallLen % 12 === 0) return { 12: wallLen/12 };
+    }
+    var boards = {}, remaining = wallLen;
+    if (remaining % 20 === 0) { boards[20] = remaining/20; return boards; }
+    if (remaining >= 20) { boards[20] = Math.floor(remaining/20); remaining = remaining%20; }
+    if (remaining > 0.01) { boards[10] = (boards[10]||0) + Math.ceil(remaining/10); }
+    return boards;
+  }
+
+  var groups = {};
+
+  function addGirts(wallLen, wallHeight, ps) {
+    var rows = Math.floor(wallHeight / 2);
+    if (rows <= 0) return;
+    var runs = fillRuns(wallLen, ps);
+    Object.keys(runs).forEach(function(len) {
+      var sku = 'SYP26' + len;
+      var qty = Math.ceil(rows * runs[len] * 1.1);
+      groups[sku] = (groups[sku]||0) + qty;
+    });
+  }
+
+  // Main building gable walls (front + back)
+  ['front','back'].forEach(function(wallId) {
+    var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
+    if (!wCfg) return;
+    if (wCfg.encl === 'open') return;
+    var ps    = wCfg.postSpacing || Q.postSpacing || 10;
+    var wallH = wCfg.encl === 'partial'
+      ? (wCfg.partialH || Math.min(4, Q.h))
+      : Q.h;
+    addGirts(Q.w, wallH, ps);
+  });
+
+  // Gable-attached enclosed lean-to sheds
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.wall !== 'front' && sc.wall !== 'back') return; // eave-attached sheds handled by sidewall girts
+    if (sc.type === 'gable') return; // gable extensions always open
+    if (sc.encl !== 'enclosed') return;
+    if (!(sc.enclWalls||[]).includes('outer')) return;
+    var attachWall = (WALLS||[]).find(function(w){return w.id===sc.wall;});
+    var ps = attachWall ? (attachWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
+    addGirts(sc.l, Q.h, ps);
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Girts & Trim',
+      description: 'Gable End Girts',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'Every 2ft up wall  |  +10%'
+    };
+  });
+};
+
+// ── ITEM 24: UPPER GABLE GIRTS ───────────────────────────────────────────────
+// Steel truss only. Always SYP2620. Both gable walls always.
+// Triangle height = (width/2 * pitch/12)
+// Rows = floor(triangleHeight / 2)
+// Runs = ceil(width / 20)
+// Total = rows × runs × 2 walls. +10%.
+
+window.SauceMaterials.calcUpperGableGirts = function(Q) {
+  if (Q.truss !== 'Steel') return [];
+
+  var triH  = (Q.w / 2) * (Q.pitch / 12);
+  var rows  = Math.ceil(triH / 2);
+  var runs  = Math.ceil(Q.w / 20);
+  if (rows <= 0 || runs <= 0) return [];
+
+  var quantity = Math.ceil(rows * runs * 2 * 1.1); // ×2 walls, +10%
+
+  return [{
+    category:    'Girts & Trim',
+    description: 'Upper Gable Girts',
+    sku:         'SYP2620',
+    quantity:    quantity,
+    detail:      rows + ' rows × ' + runs + ' runs × 2 walls  |  ' + Q.w + "' wide  |  " + Q.pitch + '/12  |  +10%'
+  }];
+};
+
+// ── ITEM 25: WINDOW FRAMING ──────────────────────────────────────────────────
+// 1x SYP2620 per window.
+
+window.SauceMaterials.calcWindowFraming = function() {
+  var qty = (window._windows || []).length;
+  if (qty === 0) return [];
+  return [{
+    category:    'Girts & Trim',
+    description: 'Window Framing',
+    sku:         'SYP2620',
+    quantity:    qty,
+    detail:      qty + ' window(s)  |  1 per window'
+  }];
+};
+
+// ── ITEM 26: CORNER BRACING ──────────────────────────────────────────────────
+// 2x SYP2620 per enclosed wall (main building + side sheds).
+
+window.SauceMaterials.calcCornerBracing = function(Q, WALLS, shedCfgs) {
+  var enclosedWalls = 0;
+
+  // Main building walls
+  (WALLS||[]).forEach(function(w) {
+    if (w.encl === 'enclosed' || w.encl === 'partial') enclosedWalls++;
+  });
+
+  // Enclosed side shed outer walls
+  (shedCfgs||[]).forEach(function(sc) {
+    if (sc.encl === 'enclosed' && (sc.enclWalls||[]).includes('outer')) enclosedWalls++;
+  });
+
+  if (enclosedWalls === 0) return [];
+
+  return [{
+    category:    'Girts & Trim',
+    description: 'Corner Bracing',
+    sku:         'SYP2620',
+    quantity:    enclosedWalls * 2,
+    detail:      enclosedWalls + ' enclosed wall(s)  |  2 per wall'
+  }];
+};
+
+// ── ITEM 27: BOTTOM BANDS ────────────────────────────────────────────────────
+// Pressure treated 2x6 bottom girt on enclosed walls.
+// SKU: PT2610.60CCA (10' boards) or PT2612.60CCA (12' boards).
+// Board length matches post spacing. Quantity = wallLength / postSpacing (bays).
+// Applies to enclosed eave walls and enclosed gable walls.
+
+window.SauceMaterials.calcBottomBands = function(Q, WALLS, shedCfgs) {
+  var groups = {};
+
+  function addBands(wallLen, ps) {
+    var boardLen = ps; // board length matches spacing (10 or 12)
+    var qty      = Math.floor(wallLen / ps); // number of bays
+    if (qty <= 0) return;
+    var sku = boardLen === 12 ? 'PT2612.60CCA' : 'PT2610.60CCA';
+    groups[sku] = (groups[sku]||0) + qty;
+  }
+
+  // Main building eave walls
+  ['left','right'].forEach(function(wallId) {
+    var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
+    if (!wCfg || wCfg.encl === 'open') return;
+    var ps = wCfg.postSpacing || Q.postSpacing || 10;
+    addBands(Q.l, ps);
+  });
+
+  // Main building gable walls
+  ['front','back'].forEach(function(wallId) {
+    var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
+    if (!wCfg || wCfg.encl === 'open') return;
+    var ps = wCfg.postSpacing || Q.postSpacing || 10;
+    addBands(Q.w, ps);
+  });
+
+  // Enclosed side shed outer walls
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.wall || !sc.l) return;
+    if (sc.encl !== 'enclosed') return;
+    if (!(sc.enclWalls||[]).includes('outer')) return;
+    var attachWall = (WALLS||[]).find(function(w){return w.id===sc.wall;});
+    var ps = attachWall ? (attachWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
+    addBands(sc.l, ps);
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Girts & Trim',
+      description: 'Bottom Bands (PT)',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'Pressure treated 2x6  |  1 per bay'
+    };
+  });
+};
+
+// ── ITEM 28: DOOR JACKS ──────────────────────────────────────────────────────
+// 2 per garage door. Height matches garage door height.
+// Post size determines lumber width: 6x6/12x12 → PT26xx, 8x8 → PT28xx, 10x10 → PT210xx
+
+window.SauceMaterials.calcDoorJacks = function(allDoors, sf) {
+  var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
+  if (garageDoors.length === 0) return [];
+
+  var postSize = sf.mbPostSize || '6x6';
+  var prefix = postSize === '8x8' ? 'PT28' : postSize === '10x10' ? 'PT210' : 'PT26';
+
+  var groups = {};
+  garageDoors.forEach(function(d) {
+    var sku = prefix + d.h;
+    groups[sku] = (groups[sku]||0) + 2;
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Girts & Trim',
+      description: 'Door Jacks',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      '2 per garage door  |  ' + postSize + ' posts'
+    };
+  });
+};
+
+// ── ITEM 29: GARAGE DOOR HEADERS ────────────────────────────────────────────
+// 2 per garage door. Header length = door width + 2'.
+// Width ≤ 14' → SYP212xx. Width > 14' → LVL1178xx.
+
+window.SauceMaterials.calcGarageDoorHeaders = function(allDoors) {
+  var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
+  if (garageDoors.length === 0) return [];
+
+  var groups = {};
+  garageDoors.forEach(function(d) {
+    var headerLen = d.w + 2;
+    var sku = d.w > 14 ? 'LVL1178' + headerLen : 'SYP212' + headerLen;
+    groups[sku] = (groups[sku]||0) + 2;
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Girts & Trim',
+      description: 'Garage Door Headers',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      "2 per door  |  door width + 2'"
+    };
+  });
+};
+
+// ── ITEM 30: BARN DOOR KITS ──────────────────────────────────────────────────
+// Lookup parts list per barn door kit ID (XSD{width}{height}).
+// Each part is listed as individual line items in the material list.
+
+window.SauceMaterials._barnDoorKits = {
+  'XSD88': [{sku:'QFM8W',qty:2},{sku:'BR10',qty:1},{sku:'DTR8',qty:2},{sku:'TBFG',qty:9},{sku:'SC',qty:1},{sku:'TRBALLB',qty:1},{sku:'DP',qty:1},{sku:'JL',qty:2},{sku:'GR',qty:1},{sku:'DSTP',qty:2},{sku:'TC10',qty:2},{sku:'DJT10',qty:3},{sku:'PC1',qty:1},{sku:'JC10',qty:3},{sku:'SPF2410',qty:2},{sku:'SYP21210',qty:1},{sku:'SPF2610',qty:1},{sku:"QFBG9'",qty:4},{sku:'SDPC1',qty:1}],
+  'XSD1010': [{sku:'QFM10W',qty:2},{sku:'BR12',qty:1},{sku:'DTR10',qty:2},{sku:'TBFG',qty:11},{sku:'SC',qty:1},{sku:'TRBALLB',qty:1},{sku:'DP',qty:1},{sku:'JL',qty:2},{sku:'GR',qty:1},{sku:'DSTP',qty:2},{sku:'TC12',qty:2},{sku:'DJT10',qty:3},{sku:'PC1',qty:2},{sku:'JC12',qty:2},{sku:'SPF2412',qty:2},{sku:'SPF2612',qty:1},{sku:'SYP21212',qty:1},{sku:"QFBG11'",qty:5},{sku:'SDPC1',qty:1}],
+  'XSD1012': [{sku:'BR12',qty:1},{sku:'DTR10',qty:2},{sku:'TBFG',qty:11},{sku:'SC',qty:1},{sku:'TRBALLB',qty:1},{sku:'DP',qty:1},{sku:'JL',qty:2},{sku:'GR',qty:1},{sku:'DSTP',qty:2},{sku:'TC12',qty:2},{sku:'DJT12',qty:3},{sku:'PC110',qty:2},{sku:'JC12',qty:2},{sku:'SPF2412',qty:2},{sku:'SYP21212',qty:1},{sku:'SPF2612',qty:1},{sku:"QFBG11'",qty:6},{sku:'SDPC1',qty:1}],
+  'XSD1014': [{sku:'QFM14W',qty:3},{sku:'BR12',qty:1},{sku:'DTR10',qty:2},{sku:'TBFG',qty:11},{sku:'SC',qty:1},{sku:'TRBALLB',qty:1},{sku:'DP',qty:1},{sku:'JL',qty:2},{sku:'GR',qty:1},{sku:'DSTP',qty:2},{sku:'TC12',qty:2},{sku:'DJT14',qty:3},{sku:'PC1',qty:2},{sku:'JC12',qty:3},{sku:'SPF2412',qty:2},{sku:'SPF2414',qty:2},{sku:'SPF2612',qty:1},{sku:'SYP21212',qty:1},{sku:"QFBG11'",qty:7},{sku:'SDPC1',qty:1}],
+  'XSD1016': [{sku:'QFM16W',qty:2},{sku:'BR12',qty:1},{sku:'DTR10',qty:2},{sku:'TBFG',qty:11},{sku:'SC',qty:1},{sku:'TRBALLB',qty:1},{sku:'DP',qty:1},{sku:'JL',qty:2},{sku:'GR',qty:1},{sku:'DSTP',qty:2},{sku:'TC12',qty:2},{sku:'DJT16',qty:3},{sku:'PC1',qty:2},{sku:'JC12',qty:4},{sku:'SPF2412',qty:2},{sku:'SPF2416',qty:11},{sku:'SYP21212',qty:1},{sku:'SPF2612',qty:1},{sku:"QFBG11'",qty:8},{sku:'SDPC1',qty:1}],
+  'XSD1210': [{sku:'QFM10W',qty:2},{sku:'BR14',qty:1},{sku:'DTR12',qty:2},{sku:'SC',qty:1},{sku:'TBFG',qty:13},{sku:'TRBALLB',qty:1},{sku:'DP',qty:1},{sku:'JL',qty:2},{sku:'GR',qty:1},{sku:'DSTP',qty:2},{sku:'TC14',qty:2},{sku:'DJT12',qty:3},{sku:'PC1',qty:2},{sku:'JC10',qty:4},{sku:'SPF2414',qty:2},{sku:'SYP21214',qty:1},{sku:'SPF2614',qty:1},{sku:"QFBG13'",qty:5},{sku:'SDPC1',qty:1}],
+  'XSD1212': [{sku:'QFM12W',qty:2},{sku:'BR14',qty:1},{sku:'DTR12',qty:2},{sku:'SC',qty:1},{sku:'TBFG',qty:13},{sku:'TRBALLB',qty:1},{sku:'DP',qty:1},{sku:'JL',qty:2},{sku:'GR',qty:1},{sku:'DSTP',qty:2},{sku:'DJT12',qty:3},{sku:'TC14',qty:2},{sku:'PC1',qty:2},{sku:'JC12',qty:4},{sku:'SPF2414',qty:2},{sku:'SPF2614',qty:1},{sku:'SYP21214',qty:1},{sku:"QFBG13'",qty:6},{sku:'SDPC1',qty:1}],
+  'XSD1214': [{sku:'QFM14W',qty:2},{sku:'BR14',qty:1},{sku:'DTR12',qty:2},{sku:'SC',qty:1},{sku:'TBFG',qty:13},{sku:'TRBALLB',qty:1},{sku:'DP',qty:1},{sku:'JL',qty:2},{sku:'GR',qty:1},{sku:'DSTP',qty:2},{sku:'DJT14',qty:3},{sku:'TC14',qty:2},{sku:'PC1',qty:2},{sku:'JC12',qty:4},{sku:'SPF2414',qty:2},{sku:'SPF2614',qty:1},{sku:'SYP21214',qty:1},{sku:"QFBG13'",qty:7},{sku:'SDPC1',qty:1}],
+  'XSD1216': [{sku:'QFM16W',qty:2},{sku:'BR14',qty:1},{sku:'DTR12',qty:2},{sku:'SC',qty:1},{sku:'TBFG',qty:13},{sku:'TRBALLB',qty:1},{sku:'DP',qty:1},{sku:'JL',qty:2},{sku:'GR',qty:1},{sku:'DSTP',qty:2},{sku:'DJT16',qty:2},{sku:'TC14',qty:2},{sku:'PC1',qty:2},{sku:'JC12',qty:5},{sku:'SPF2414',qty:2},{sku:'SPF2416',qty:2},{sku:'SPF2614',qty:1},{sku:'SYP21214',qty:1},{sku:"QFBG13'",qty:8},{sku:'SDPC1',qty:1}],
+  'XSD1410': [{sku:'QFM10W',qty:2},{sku:'BR16',qty:1},{sku:'DTR10',qty:3},{sku:'TBFG',qty:15},{sku:'SC',qty:2},{sku:'TRBALLB',qty:1},{sku:'DP',qty:1},{sku:'JL',qty:2},{sku:'GR',qty:1},{sku:'DSTP',qty:2},{sku:'TC16',qty:2},{sku:'DJT14',qty:3},{sku:'PC1',qty:2},{sku:'JC10',qty:4},{sku:'SPF2416',qty:2},{sku:'SPF2616',qty:1},{sku:'LVL117/816',qty:1},{sku:'QFBG15',qty:5},{sku:'SDPC1',qty:2}],
+  'XSD1412': [{sku:'QFM12W',qty:2},{sku:'BR16',qty:1},{sku:'DTR10',qty:3},{sku:'TBFG',qty:15},{sku:'SC',qty:2},{sku:'TRBALLB',qty:1},{sku:'DP',qty:1},{sku:'JL',qty:2},{sku:'GR',qty:1},{sku:'DSTP',qty:2},{sku:'TC16',qty:2},{sku:'DJT14',qty:3},{sku:'PC1',qty:2},{sku:'JC10',qty:5},{sku:'SPF2416',qty:2},{sku:'SPF2616',qty:1},{sku:'LVL117/816',qty:1},{sku:'QFBG15',qty:6},{sku:'SDPC1',qty:1}],
+  'XSD1414': [{sku:'QFM14W',qty:2},{sku:'BR16',qty:1},{sku:'DTR10',qty:3},{sku:'TBFG',qty:15},{sku:'SC',qty:2},{sku:'TRBALLB',qty:1},{sku:'DP',qty:1},{sku:'JL',qty:2},{sku:'GR',qty:1},{sku:'DSTP',qty:2},{sku:'TC16',qty:2},{sku:'DJT14',qty:3},{sku:'PC1',qty:2},{sku:'JC10',qty:6},{sku:'SPF2416',qty:2},{sku:'SPF2616',qty:1},{sku:'LVL117/816',qty:1},{sku:'QFBG15',qty:7},{sku:'SDPC1',qty:2}]
+};
+
+window.SauceMaterials.calcBarnDoors = function() {
+  var SM = window.SauceMaterials;
+  var barnDoors = (window._allDoors||[]).filter(function(d){ return d.type === 'barn'; });
+  if (barnDoors.length === 0) return [];
+
+  // Group by sizeKey, count quantity
+  var doorGroups = {};
+  barnDoors.forEach(function(d) {
+    var key = d.sizeKey || (d.w + 'x' + d.h);
+    doorGroups[key] = (doorGroups[key]||0) + 1;
+  });
+
+  // Aggregate all parts across all doors
+  var parts = {}; // sku → total qty
+  Object.keys(doorGroups).forEach(function(sizeKey) {
+    var doorQty  = doorGroups[sizeKey];
+    var kitId    = 'XSD' + sizeKey.replace('x','').toUpperCase()
+                         .replace(/(\d+)(\d{2})$/, '$1$2'); // e.g. '12x10' → 'XSD1210'
+    // Normalize: sizeKey '12x10' → 'XSD1210'
+    var parts_arr = sizeKey.split('x');
+    var kitKey = 'XSD' + parts_arr[0] + parts_arr[1];
+    var kit = SM._barnDoorKits[kitKey];
+    if (!kit) return;
+    kit.forEach(function(part) {
+      parts[part.sku] = (parts[part.sku]||0) + part.qty * doorQty;
+    });
+  });
+
+  return Object.keys(parts).sort().map(function(sku) {
+    return {
+      category:    'Barn Doors',
+      description: 'Barn Door Kit Parts',
+      sku:         sku,
+      quantity:    parts[sku],
+      detail:      barnDoors.length + ' door(s)'
+    };
+  });
+};
+
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -12017,6 +12309,14 @@ window.SauceMaterials.calculate = function() {
   SM.calcFlyRafters(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcEaveFascia(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSidewallGirts(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcGableGirts(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcUpperGableGirts(Q).forEach(function(item) { items.push(item); });
+  SM.calcWindowFraming().forEach(function(item) { items.push(item); });
+  SM.calcCornerBracing(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcBottomBands(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcDoorJacks(allDoors, sf).forEach(function(item) { items.push(item); });
+  SM.calcGarageDoorHeaders(allDoors).forEach(function(item) { items.push(item); });
+  SM.calcBarnDoors().forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
