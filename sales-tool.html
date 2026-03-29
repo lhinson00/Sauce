@@ -12714,6 +12714,10 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
   var panelsPerRun = Math.ceil(Q.l / 3);
 
   ['left', 'right'].forEach(function(side) {
+    // Skip open walls
+    var wallCfg = (WALLS||[]).find(function(w){ return w.id === side; });
+    if (wallCfg && wallCfg.encl === 'open') return;
+
     // Find a non-dropped eave lean-to on this side
     var flushShed = (shedCfgs||[]).find(function(sc) {
       return sc.wall === side && sc.w && sc.l &&
@@ -13086,8 +13090,12 @@ window.SauceMaterials.calcWainscotMetal = function(Q, WALLS, shedCfgs) {
 
   var perimeterFt = 0;
 
-  // Main building: both eave walls (always enclosed for metal purposes)
-  perimeterFt += Q.l * 2;
+  // Main building: enclosed eave walls only
+  (WALLS||[]).forEach(function(w) {
+    if ((w.id === 'left' || w.id === 'right') && w.encl !== 'open') {
+      perimeterFt += Q.l;
+    }
+  });
 
   // Main building: enclosed gable walls
   (WALLS||[]).forEach(function(w) {
@@ -13633,7 +13641,70 @@ window.SauceMaterials.calcRETTrim = function(Q, WALLS, shedCfgs) {
   });
 };
 
-// ── TRIM: END WALL FLASHING ───────────────────────────────────────────────────
+// ── TRIM: STEEL EAVE PC2 ─────────────────────────────────────────────────────
+// Steel truss + 18" overhang only. PC2 along every eave run.
+// Main building eave walls + all side shed eave runs.
+// SKU: PC29PW10 (10' spacing) or PC29PW12 (12' spacing).
+
+window.SauceMaterials.calcSteelEavePC2 = function(Q, WALLS, shedCfgs) {
+  if (Q.truss !== 'Steel') return [];
+  if (Q.oh !== 18) return [];
+
+  function wallPS(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+  function wallEncl(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? w.encl : 'enclosed';
+  }
+
+  var groups = {};
+  function addRun(runLen, ps) {
+    var boardLen = (ps === 12) ? 12 : 10;
+    var sku      = 'PC29PW' + boardLen;
+    groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen);
+  }
+
+  // Flush (non-dropped) lean-tos replace main eave on that side
+  var replacedEaves = { left: false, right: false };
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if ((sc.wall === 'left' || sc.wall === 'right') && parseFloat(sc.dropFt||0) === 0) {
+      replacedEaves[sc.wall] = true;
+    }
+  });
+
+  // Main building eave runs
+  ['left','right'].forEach(function(side) {
+    if (!replacedEaves[side] && wallEncl(side) !== 'open') {
+      addRun(Q.l, wallPS(side));
+    }
+  });
+
+  // Side shed eave runs — every shed gets its eave run
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if (sc.wall !== 'left' && sc.wall !== 'right') return;
+    var ps = wallPS(sc.wall);
+    var runLen = (sc.encl === 'enclosed' && sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
+    addRun(runLen, ps);
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Trim',
+      description: 'Eave Trim PC2 (Steel 18" O/H)',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'steel truss  |  18" O/H  |  eave runs'
+    };
+  });
+};
+
+
 // Used when a side shed is dropped or is a gable extension (both treated as dropped).
 // One run per qualifying shed at the shed's length.
 // SKU: EWF9PW10 (10' spacing) or EWF9PW12 (12' spacing).
@@ -14587,6 +14658,7 @@ window.SauceMaterials.calculate = function() {
   SM.calcSoffitFJTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcPC3Trim(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcRETTrim(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcSteelEavePC2(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcEndWallFlashing(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcPostWrap(Q, WALLS, window._shedConfigs||[], sf).forEach(function(item) { items.push(item); });
   SM.calcRatGuard(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
