@@ -13941,9 +13941,9 @@ window.SauceMaterials.calcOutsideCornerTrim = function(Q, WALLS, shedCfgs) {
 // Gable extension (eave wall): ×4 (2 slopes × 2 ends).
 
 window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
-  if (Q.truss !== 'Wood') return [];
-  if (Q.oh === 0) return [];
+  // All buildings regardless of truss type or overhang
 
+  // Wood chart: width → [noOH_412, noOH_612, OH12_412, OH12_612, OH18_412, OH18_612]
   var chart = {
     10:[5.583,5.917,6.583,7.000,7.167,7.583],   12:[6.583,7.000,7.667,8.083,8.167,8.667],
     14:[7.667,8.083,8.750,9.250,9.250,9.833],   16:[8.750,9.250,9.750,10.333,10.333,10.917],
@@ -13959,6 +13959,20 @@ window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
     52:[27.667,29.333,28.750,30.500,29.250,31.000],54:[28.750,30.500,29.833,31.583,30.333,32.167],
     56:[29.833,31.583,30.833,32.750,31.417,33.250],60:[31.917,33.833,33.000,34.917,33.500,35.500]
   };
+  // Steel chart: width → [noOH, OH18]
+  var steelChart = {
+    10:[5.583,7.083],  12:[6.667,8.083],  14:[7.750,9.167],
+    16:[8.750,10.167], 18:[9.833,11.250],  20:[10.917,12.333],
+    22:[11.917,13.417],24:[13.000,14.417],  25:[13.500,15.000],
+    26:[14.083,15.500],28:[15.083,16.500],  30:[16.167,17.583],
+    32:[17.250,18.750],34:[18.250,19.750],  36:[19.333,20.750],
+    38:[20.417,21.833],40:[21.417,22.833],  42:[22.500,23.917],
+    44:[23.583,25.000],46:[24.583,26.000],  48:[25.667,27.083],
+    50:[26.667,28.167],52:[27.750,29.167],  56:[29.917,31.417],
+    60:[32.000,33.417],70:[37.250,38.667],  75:[39.833,41.250],
+    80:[42.500,43.667],85:[45.167,46.583],  100:[53.083,54.500]
+  };
+  // SS chart for lean-to: width → [noOH_212, OH12_212]
   var ssChart = {
     6:[6.333,7.417],8:[8.417,9.417],10:[10.417,11.417],12:[12.417,13.500],
     14:[14.500,15.500],16:[16.500,17.500],18:[18.500,19.583],20:[20.583,21.583],
@@ -13966,11 +13980,25 @@ window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
     30:[30.667,31.750]
   };
 
-  function getColIdx(oh, pitch) {
-    var ohIdx = oh <= 12 ? 2 : 4;
-    var pOff  = pitch <= 4 ? 0 : 1;
-    return ohIdx + pOff;
+  function getTopChord(width) {
+    if (Q.truss === 'Steel') {
+      var row = steelChart[width];
+      return row ? (Q.oh > 0 ? row[1] : row[0]) : null;
+    } else {
+      var row = chart[width];
+      if (!row) return null;
+      var ohIdx  = Q.oh === 0 ? 0 : (Q.oh <= 12 ? 2 : 4);
+      var pOff   = Q.pitch <= 4 ? 0 : 1;
+      return row[ohIdx + pOff];
+    }
   }
+
+  function getShedTopChord(width) {
+    var row = ssChart[width];
+    if (!row) return null;
+    return Q.oh > 0 ? row[1] : row[0];
+  }
+
   function nextEven(n) { var c = Math.ceil(n); return c % 2 === 0 ? c : c + 1; }
 
   var LENGTHS = [10, 12, 14, 16, 18, 20];
@@ -13991,12 +14019,9 @@ window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
     }
   }
 
-  var ci    = getColIdx(Q.oh, Q.pitch);
-  var mbRow = chart[Q.w];
-  if (!mbRow) return [];
-
   // Main building: ×4
-  addBoards(nextEven(mbRow[ci]), 4);
+  var mbTopChord = getTopChord(Q.w);
+  if (mbTopChord) addBoards(nextEven(mbTopChord), 4);
 
   // Side sheds
   (shedCfgs||[]).forEach(function(sc) {
@@ -14005,15 +14030,14 @@ window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
     if (sc.type === 'gable') {
       var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
       if (isEaveWall) {
-        var gRow = chart[sc.w];
-        if (gRow) addBoards(nextEven(gRow[ci]), 4); // ×4: 2 slopes × 2 ends
+        var gTopChord = getTopChord(sc.w);
+        if (gTopChord) addBoards(nextEven(gTopChord), 4);
       }
       return;
     }
 
-    var ssRow = ssChart[sc.w];
-    if (!ssRow) return;
-    addBoards(nextEven(ssRow[1]), 2); // ×2: 1 slope × 2 gable ends
+    var ssTopChord = getShedTopChord(sc.w);
+    if (ssTopChord) addBoards(nextEven(ssTopChord), 2);
   });
 
   return Object.keys(groups).sort(function(a, b) {
@@ -14024,7 +14048,7 @@ window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
       description: 'Gable Rake Trim',
       sku:         sku,
       quantity:    groups[sku],
-      detail:      'gable rake  |  ' + Q.oh + '" O/H'
+      detail:      'gable rake'
     };
   });
 };
@@ -14422,7 +14446,7 @@ window.SauceMaterials.calcMetalScrews = function(Q, WALLS, shedCfgs) {
       return sum + parseLenFt(item.metalLength) * (item.quantity || 0);
     }, 0);
   }
-  function boxes(lf) { return Math.ceil(lf * 1.25 / 250); }
+  function boxes(lf) { return Math.ceil(lf * 1.25 / 100); }
 
   var SM = window.SauceMaterials;
   var results = [];
@@ -14434,7 +14458,7 @@ window.SauceMaterials.calcMetalScrews = function(Q, WALLS, shedCfgs) {
     description: 'Screws — Roof Metal',
     sku:         sku,
     quantity:    boxes(roofLF),
-    detail:      Math.round(roofLF) + ' ln ft × 1.25 ÷ 250'
+    detail:      Math.round(roofLF) + ' ln ft × 1.25 ÷ 100'
   });
 
   // Walls: sidewall + gable (enclosed + open) + wainscot + soffit + skirt
@@ -14453,7 +14477,7 @@ window.SauceMaterials.calcMetalScrews = function(Q, WALLS, shedCfgs) {
     description: 'Screws — Wall Metal',
     sku:         sku,
     quantity:    boxes(wallLF),
-    detail:      Math.round(wallLF) + ' ln ft × 1.25 ÷ 250'
+    detail:      Math.round(wallLF) + ' ln ft × 1.25 ÷ 100'
   });
 
   // Trim: always 2 boxes
