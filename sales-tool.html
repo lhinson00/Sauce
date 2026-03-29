@@ -10377,6 +10377,130 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
   var sizeMap = { '6x6':'PT66', '8x8':'PT88', '10x10':'PT1010', '12x12':'PT1212' };
   var postSize = sf.ssPostSize || '6x6';
   var skuBase  = sizeMap[postSize] || 'PT66';
+  var postsOnTop  = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
+  var groundExtra = postsOnTop ? 0 : 4;
+
+  // Helper: addPostLineAligned post count = Math.max(1, Math.floor(length/ps)) + 1
+  function lineCount(length, ps) {
+    return Math.max(1, Math.floor(length / ps)) + 1;
+  }
+
+  // Helper: outer shed post length
+  function shedPostLen(outerH) {
+    var total = outerH + groundExtra;
+    return Math.ceil(total / 2) * 2;
+  }
+
+  var allShedPosts = [];
+
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+
+    var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
+    var attachWall = (WALLS || []).find(function(w) { return w.id === sc.wall; });
+    var attachPS   = attachWall ? (attachWall.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+
+    // Gable wall spacing for wrap secondary legs
+    var frontWall = (WALLS || []).find(function(w) { return w.id === 'front'; });
+    var backWall  = (WALLS || []).find(function(w) { return w.id === 'back';  });
+    var leftWall  = (WALLS || []).find(function(w) { return w.id === 'left';  });
+    var rightWall = (WALLS || []).find(function(w) { return w.id === 'right'; });
+    var wrapPS    = Q.postSpacing || 10; // secondary leg spacing — use adjacent wall
+
+    // Outer post height from pitch and drop
+    var attachHeight = Q.h - (sc.dropFt || 0);
+    var outerHeight  = attachHeight - (sc.w * (sc.ltPitch || 1) / 12);
+
+    function addPosts(count) {
+      allShedPosts.push({ postLen: shedPostLen(outerHeight), quantity: count });
+    }
+
+    if (sc.type === 'gable') {
+      // Gable extension: clear span, only 2 corner posts at eave height
+      var postLen = shedPostLen(Q.h);
+      allShedPosts.push({ postLen: postLen, quantity: 2 });
+      return;
+    }
+
+    if (sc.type === 'leanto') {
+      // Leanto: posts along outer edge for shed length at attached wall spacing
+      addPosts(lineCount(sc.l, attachPS));
+      return;
+    }
+
+    if (sc.type === 'wrap') {
+      // Primary leg along attached wall
+      var primary = lineCount(sc.l, attachPS);
+      addPosts(primary);
+
+      if (sc.wrapLeg > 0) {
+        // Secondary leg along adjacent gable/eave wall
+        var secWallId, secPS;
+        if (isEaveWall) {
+          secWallId = sc.wrapDir === 'cw' ? 'front' : 'back';
+          var secWallCfg = (WALLS||[]).find(function(w){return w.id===secWallId;});
+          secPS = secWallCfg ? (secWallCfg.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+        } else {
+          secWallId = sc.wrapDir === 'cw' ? 'left' : 'right';
+          var secWallCfg2 = (WALLS||[]).find(function(w){return w.id===secWallId;});
+          secPS = secWallCfg2 ? (secWallCfg2.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+        }
+        addPosts(lineCount(sc.wrapLeg, secPS));
+
+        // 1 hip corner post
+        addPosts(1);
+
+        // Corner void posts — 2 sets of (cornerNumBays - 1)
+        var cornerNumBays = Math.max(1, Math.floor(sc.w / attachPS));
+        var voidCount = (cornerNumBays - 1) * 2;
+        if (voidCount > 0) addPosts(voidCount);
+      }
+      return;
+    }
+
+    if (sc.type === 'wrap3') {
+      // Primary leg along full attached wall
+      addPosts(lineCount(sc.l, attachPS));
+
+      if (isEaveWall) {
+        // Both gable ends as secondary legs
+        var psF = frontWall ? (frontWall.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+        var psB = backWall  ? (backWall.postSpacing  || Q.postSpacing || 10) : (Q.postSpacing || 10);
+        addPosts(lineCount(Q.w, psF));
+        addPosts(lineCount(Q.w, psB));
+      } else {
+        // Both eave walls as secondary legs
+        var psL = leftWall  ? (leftWall.postSpacing  || Q.postSpacing || 10) : (Q.postSpacing || 10);
+        var psR = rightWall ? (rightWall.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+        addPosts(lineCount(Q.l, psL));
+        addPosts(lineCount(Q.l, psR));
+      }
+      // 2 hip corner posts
+      addPosts(2);
+      return;
+    }
+  });
+
+  // Group by SKU
+  var skuGroups = {};
+  allShedPosts.forEach(function(p) {
+    var sku = skuBase + p.postLen;
+    if (!skuGroups[sku]) skuGroups[sku] = { sku: sku, postLen: p.postLen, quantity: 0 };
+    skuGroups[sku].quantity += p.quantity;
+  });
+
+  return Object.values(skuGroups).sort(function(a, b) { return a.postLen - b.postLen; }).map(function(g) {
+    return {
+      category:    'Posts',
+      description: 'Side Shed Posts',
+      sku:         g.sku,
+      quantity:    g.quantity,
+      detail:      postSize + ' x ' + g.postLen + "ft shed posts"
+    };
+  });
+};
+  var postSize = sf.ssPostSize || '6x6';
+  var skuBase  = sizeMap[postSize] || 'PT66';
   var postsOnTop = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
   var groundExtra = postsOnTop ? 0 : 4;
 
