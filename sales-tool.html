@@ -11249,6 +11249,7 @@ window.SauceMaterials.calcSteelPurlins = function(Q) {
   };
 
   function fillLength(totalLen) {
+    if (totalLen % 20 === 0) { return { 20: totalLen / 20 }; }
     if (totalLen % 12 === 0) { return { 12: totalLen / 12 }; }
     var boards = {}, remaining = totalLen;
     if (remaining >= 20) { boards[20] = Math.floor(remaining / 20); remaining = remaining % 20; }
@@ -11328,6 +11329,150 @@ window.SauceMaterials.calcSteelShedPurlins = function(Q, shedCfgs) {
   });
 };
 
+// ── ITEM 15: WOOD TRUSS ROOF PURLINS ────────────────────────────────────────
+// Wood truss buildings only. Always SYP24xx.
+// Purlin count per run determined by: width + overhang + pitch → chart lookup
+// Run length: divisible by 12 → 12' boards, otherwise 20' first then 10' fill
+// Total = runs × purlins per run. Add 10%.
+
+window.SauceMaterials.calcWoodPurlins = function(Q) {
+  if (Q.truss !== 'Wood') return [];
+  if (Q.oh !== 0) return []; // only for no overhang buildings
+
+  // Purlin counts per run by width and scenario
+  // Key format: noOH_412, noOH_612, OH12_412, OH12_612, OH18_412, OH18_612
+  var purlinsPerRun = {
+    10:  {noOH_412:8,  noOH_612:8,  OH12_412:10, OH12_612:10, OH18_412:10, OH18_612:10},
+    12:  {noOH_412:10, noOH_612:10, OH12_412:10, OH12_612:12, OH18_412:12, OH18_612:12},
+    14:  {noOH_412:10, noOH_612:12, OH12_412:12, OH12_612:12, OH18_412:12, OH18_612:12},
+    16:  {noOH_412:12, noOH_612:12, OH12_412:12, OH12_612:14, OH18_412:14, OH18_612:14},
+    18:  {noOH_412:12, noOH_612:14, OH12_412:14, OH12_612:14, OH18_412:14, OH18_612:14},
+    20:  {noOH_412:14, noOH_612:14, OH12_412:14, OH12_612:16, OH18_412:16, OH18_612:16},
+    22:  {noOH_412:14, noOH_612:16, OH12_412:16, OH12_612:16, OH18_412:16, OH18_612:18},
+    24:  {noOH_412:16, noOH_612:16, OH12_412:16, OH12_612:18, OH18_412:18, OH18_612:18},
+    25:  {noOH_412:16, noOH_612:18, OH12_412:18, OH12_612:18, OH18_412:18, OH18_612:18},
+    26:  {noOH_412:16, noOH_612:18, OH12_412:18, OH12_612:18, OH18_412:18, OH18_612:20},
+    28:  {noOH_412:18, noOH_612:18, OH12_412:20, OH12_612:20, OH18_412:20, OH18_612:20},
+    30:  {noOH_412:20, noOH_612:20, OH12_412:20, OH12_612:22, OH18_412:20, OH18_612:22},
+    32:  {noOH_412:20, noOH_612:22, OH12_412:22, OH12_612:22, OH18_412:22, OH18_612:22},
+    34:  {noOH_412:22, noOH_612:22, OH12_412:22, OH12_612:24, OH18_412:22, OH18_612:24},
+    36:  {noOH_412:22, noOH_612:24, OH12_412:24, OH12_612:24, OH18_412:24, OH18_612:26},
+    38:  {noOH_412:24, noOH_612:24, OH12_412:24, OH12_612:26, OH18_412:24, OH18_612:26},
+    40:  {noOH_412:24, noOH_612:26, OH12_412:26, OH12_612:26, OH18_412:26, OH18_612:28},
+    42:  {noOH_412:26, noOH_612:26, OH12_412:26, OH12_612:28, OH18_412:26, OH18_612:28},
+    44:  {noOH_412:26, noOH_612:28, OH12_412:28, OH12_612:28, OH18_412:28, OH18_612:30},
+    46:  {noOH_412:28, noOH_612:28, OH12_412:28, OH12_612:30, OH18_412:30, OH18_612:30},
+    48:  {noOH_412:28, noOH_612:30, OH12_412:30, OH12_612:32, OH18_412:30, OH18_612:32},
+    50:  {noOH_412:30, noOH_612:32, OH12_412:30, OH12_612:32, OH18_412:32, OH18_612:32},
+    52:  {noOH_412:30, noOH_612:32, OH12_412:32, OH12_612:34, OH18_412:32, OH18_612:34},
+    54:  {noOH_412:32, noOH_612:34, OH12_412:32, OH12_612:34, OH18_412:34, OH18_612:36},
+    56:  {noOH_412:32, noOH_612:34, OH12_412:34, OH12_612:36, OH18_412:34, OH18_612:36},
+    60:  {noOH_412:34, noOH_612:36, OH12_412:36, OH12_612:38, OH18_412:36, OH18_612:38}
+  };
+
+  // Determine scenario key from building config
+  function getKey(oh, pitch) {
+    var ohKey  = oh === 0 ? 'noOH' : (oh <= 12 ? 'OH12' : 'OH18');
+    var pitchKey = pitch <= 4 ? '412' : '612';
+    return ohKey + '_' + pitchKey;
+  }
+
+  // Board length driven by truss spacing
+  var trussSpacing = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
+  var spacingToBoard = { 2:20, 4:12, 5:20 };
+
+  function fillLength(totalLen) {
+    var preferred = spacingToBoard[trussSpacing];
+    if (preferred && totalLen % preferred === 0) { var r={}; r[preferred]=totalLen/preferred; return r; }
+    if (totalLen % 20 === 0) { return { 20: totalLen / 20 }; }
+    if (totalLen % 12 === 0) { return { 12: totalLen / 12 }; }
+    var boards = {}, remaining = totalLen;
+    if (remaining >= 20) { boards[20] = Math.floor(remaining / 20); remaining = remaining % 20; }
+    if (remaining > 0.01) { boards[10] = (boards[10]||0) + Math.ceil(remaining / 10); }
+    return boards;
+  }
+
+  var widthMap = purlinsPerRun[Q.w];
+  if (!widthMap) return [];
+
+  var key    = getKey(Q.oh, Q.pitch);
+  var count  = widthMap[key];
+  if (!count) return [];
+
+  var boards  = fillLength(Q.l);
+  var results = [];
+
+  Object.keys(boards).forEach(function(len) {
+    var runs     = boards[len];
+    var quantity = Math.ceil(runs * count * 1.1);
+    var sku      = 'SYP24' + len;
+    results.push({
+      category:    'Roofing',
+      description: 'Wood Truss Roof Purlins',
+      sku:         sku,
+      quantity:    quantity,
+      detail:      runs + ' runs × ' + count + ' purlins  |  ' + Q.w + "' wide  |  "
+                   + (Q.oh === 0 ? 'no O/H' : Q.oh + '" O/H') + '  |  ' + Q.pitch + '/12  |  +10%'
+    });
+  });
+
+  return results;
+};
+
+// ── ITEM 16: WOOD NO-OH SIDE SHED PURLINS ───────────────────────────────────
+// Wood truss, no overhang buildings only. Always SYP24xx.
+// Purlin count per run from SS metal length table (no O/H, 2/12 pitch).
+// Run length: truss-spacing-driven fill (same as main building).
+
+window.SauceMaterials.calcWoodShedPurlins = function(Q, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+  if (Q.oh !== 0) return []; // only for no overhang buildings
+
+  var ssPurlinsPerRun = {
+    6:10, 8:12, 10:14, 12:16, 14:18, 16:20,
+    18:22, 20:24, 22:26, 24:28, 26:30, 28:32, 30:34
+  };
+
+  var trussSpacing = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
+  var spacingToBoard = { 2:20, 4:12, 5:20 };
+
+  function fillLength(totalLen) {
+    var preferred = spacingToBoard[trussSpacing];
+    if (preferred && totalLen % preferred === 0) { var r={}; r[preferred]=totalLen/preferred; return r; }
+    if (totalLen % 20 === 0) { return { 20: totalLen / 20 }; }
+    if (totalLen % 12 === 0) { return { 12: totalLen / 12 }; }
+    var boards = {}, remaining = totalLen;
+    if (remaining >= 20) { boards[20] = Math.floor(remaining / 20); remaining = remaining % 20; }
+    if (remaining > 0.01) { boards[10] = (boards[10]||0) + Math.ceil(remaining / 10); }
+    return boards;
+  }
+
+  var groups = {};
+
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    var count = ssPurlinsPerRun[sc.w];
+    if (!count) return;
+    var boards = fillLength(sc.l);
+    Object.keys(boards).forEach(function(len) {
+      var runs     = boards[len];
+      var quantity = Math.ceil(runs * count * 1.1);
+      var sku      = 'SYP24' + len;
+      groups[sku]  = (groups[sku] || 0) + quantity;
+    });
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Roofing',
+      description: 'Wood Side Shed Purlins (No O/H)',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      '2x4  |  +10%  |  no overhang'
+    };
+  });
+};
+
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -11356,6 +11501,8 @@ window.SauceMaterials.calculate = function() {
   SM.calcSteelShedTrusses(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSteelPurlins(Q).forEach(function(item) { items.push(item); });
   SM.calcSteelShedPurlins(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcWoodPurlins(Q).forEach(function(item) { items.push(item); });
+  SM.calcWoodShedPurlins(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
