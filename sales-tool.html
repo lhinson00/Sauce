@@ -12348,6 +12348,152 @@ window.SauceMaterials.calcBarnDoors = function() {
   });
 };
 
+// ── ITEM 31: ROOF METAL ──────────────────────────────────────────────────────
+// Panels are 3' wide. Length from chart based on truss type, width, pitch, OH.
+// Main building: ceil((length + ohFt*2) / 3) × 2 slopes
+// Side sheds: ceil(sc.l / 3) per shed (single slope, no doubling)
+// SKU: T9PW (painted 29ga), T6PW (26ga), T9GA (galvalume), P6PW (PBR) + length in inches
+
+window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
+
+  var metalType = (document.getElementById('st_roofMetal')||{}).value || 'Painted';
+  var skuPrefix = metalType==='26-Gauge' ? 'T6PW' : metalType==='Galvalume' ? 'T9GA' : metalType==='PBR' ? 'P6PW' : 'T9PW';
+
+  // Wood truss metal lengths (decimal feet) — [noOH_412, noOH_612, OH12_412, OH12_612, OH18_412, OH18_612]
+  var woodChart = {
+    10:  [5.583,5.917,6.583,7.000,7.167,7.583],
+    12:  [6.583,7.000,7.667,8.083,8.167,8.667],
+    14:  [7.667,8.083,8.750,9.250,9.250,9.833],
+    16:  [8.750,9.250,9.750,10.333,10.333,10.917],
+    18:  [9.750,10.333,10.833,11.500,11.333,12.000],
+    20:  [10.833,11.500,11.917,12.583,12.417,13.167],
+    22:  [11.917,12.583,12.917,13.667,13.500,14.250],
+    24:  [12.917,13.667,14.000,14.833,14.500,15.417],
+    25:  [13.500,14.250,14.500,15.417,15.083,15.917],
+    26:  [14.000,14.833,15.083,15.917,15.583,16.500],
+    28:  [15.083,15.917,16.083,17.083,16.667,17.583],
+    30:  [16.083,17.083,17.167,18.167,17.667,18.750],
+    32:  [17.167,18.167,18.250,19.333,18.750,19.833],
+    34:  [18.250,19.333,19.250,20.417,19.750,21.000],
+    36:  [19.250,20.417,20.333,21.500,20.833,22.083],
+    38:  [20.333,21.500,21.333,22.667,21.917,23.250],
+    40:  [21.333,22.667,22.417,23.750,22.917,24.333],
+    42:  [22.417,23.750,23.500,24.917,24.000,25.417],
+    44:  [23.417,24.917,24.500,26.000,25.083,26.583],
+    46:  [24.500,26.000,25.583,27.083,26.083,27.667],
+    48:  [25.583,27.083,26.667,28.250,27.167,28.833],
+    50:  [26.667,28.250,27.667,29.333,28.250,29.917],
+    52:  [27.667,29.333,28.750,30.500,29.250,31.000],
+    54:  [28.750,30.500,29.833,31.583,30.333,32.167],
+    56:  [29.833,31.583,30.833,32.750,31.417,33.250],
+    60:  [31.917,33.833,33.000,34.917,33.500,35.500]
+  };
+
+  // Steel truss metal lengths [noOH, OH18]
+  var steelChart = {
+    10:  [5.583,7.083],  12:  [6.667,8.083],  14:  [7.750,9.167],
+    16:  [8.750,10.167], 18:  [9.833,11.250],  20:  [10.917,12.333],
+    22:  [11.917,13.417],24:  [13.000,14.417],  25:  [13.500,15.000],
+    26:  [14.083,15.500],28:  [15.083,16.500],  30:  [16.167,17.583],
+    32:  [17.250,18.750],34:  [18.250,19.750],  36:  [19.333,20.750],
+    38:  [20.417,21.833],40:  [21.417,22.833],  42:  [22.500,23.917],
+    44:  [23.583,25.000],46:  [24.583,26.000],  48:  [25.667,27.083],
+    50:  [26.667,28.167],52:  [27.750,29.167],  56:  [29.917,31.417],
+    60:  [32.000,33.417],70:  [37.250,38.667],  75:  [39.833,41.250],
+    80:  [42.500,43.667],85:  [45.167,46.583],  100: [53.083,54.500]
+  };
+
+  // SS metal lengths for wood (no OH, OH12) and steel (no OH, OH18)
+  var woodSSChart = {
+    6:[6.333,7.417], 8:[8.417,9.417], 10:[10.417,11.417], 12:[12.417,13.500],
+    14:[14.500,15.500], 16:[16.500,17.500], 18:[18.500,19.583], 20:[20.583,21.583],
+    22:[22.583,23.583], 24:[24.583,25.667], 26:[26.667,27.667], 28:[28.667,29.667],
+    30:[30.667,31.750]
+  };
+
+  var steelSSChart = {
+    10:10.500, 12:12.500, 14:14.583, 16:16.583, 18:18.583,
+    20:20.667, 22:22.667, 24:24.667, 26:26.750, 28:28.750, 30:30.750
+  };
+
+  // Get metal length in decimal feet
+  function getMetalLen(width, truss, oh, pitch) {
+    if (truss === 'Steel') {
+      var row = steelChart[width];
+      if (!row) return null;
+      return oh > 0 ? row[1] : row[0];
+    } else {
+      var row = woodChart[width];
+      if (!row) return null;
+      var ohKey = oh===0?0:(oh<=12?1:2);
+      var pitchKey = pitch<=4?0:1;
+      return row[ohKey*2+pitchKey];
+    }
+  }
+
+  function getSSMetalLen(width, truss, oh) {
+    if (truss === 'Steel') {
+      return steelSSChart[width] || null;
+    } else {
+      var row = woodSSChart[width];
+      if (!row) return null;
+      return oh > 0 ? row[1] : row[0];
+    }
+  }
+
+  // Convert decimal feet to whole inches for SKU
+  function toInches(ft) { return Math.ceil(ft * 12); }
+
+  var groups = {}; // sku → quantity
+
+  // Main building
+  var ohFt = Q.oh / 12;
+  var metalLen = getMetalLen(Q.w, Q.truss, Q.oh, Q.pitch);
+  if (metalLen) {
+    // Steel truss: if an eave-attached shed at eave height exists, add 1' to metal length
+    var steelEaveAdder = 0;
+    if (Q.truss === 'Steel') {
+      var hasEaveAttached = (shedCfgs||[]).some(function(sc) {
+        return (sc.wall==='left'||sc.wall==='right') && sc.dropFt===0 && sc.w && sc.l;
+      });
+      if (hasEaveAttached) steelEaveAdder = 1;
+    }
+    var adjMetalLen = metalLen + steelEaveAdder;
+    var panelLen    = toInches(adjMetalLen);
+    var runLength   = Q.l + ohFt * 2;
+    var panelCount  = Math.ceil(runLength / 3) * 2; // both slopes
+    var sku         = skuPrefix + panelLen;
+    groups[sku]     = (groups[sku]||0) + panelCount;
+  }
+
+  // Side sheds
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    var ssLen = getSSMetalLen(sc.w, Q.truss, Q.oh);
+    if (!ssLen) return;
+    // Wood truss leanto on eave wall at eave height: add 10" to metal length
+    var ssAdder = 0;
+    if (Q.truss === 'Wood' && sc.type === 'leanto' &&
+        (sc.wall==='left'||sc.wall==='right') && sc.dropFt===0) {
+      ssAdder = 10/12; // 10 inches in feet
+    }
+    var ssPanelLen   = toInches(ssLen + ssAdder);
+    var ssPanelCount = Math.ceil(sc.l / 3); // single slope
+    var ssSku        = skuPrefix + ssPanelLen;
+    groups[ssSku]    = (groups[ssSku]||0) + ssPanelCount;
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Metal',
+      description: 'Roof Metal',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      metalType + "  |  3' wide panels"
+    };
+  });
+};
+
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -12392,6 +12538,7 @@ window.SauceMaterials.calculate = function() {
   SM.calcDoorJacks(allDoors, sf).forEach(function(item) { items.push(item); });
   SM.calcGarageDoorHeaders(allDoors).forEach(function(item) { items.push(item); });
   SM.calcBarnDoors().forEach(function(item) { items.push(item); });
+  SM.calcRoofMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
