@@ -4296,37 +4296,39 @@ function vpToggleWalls() {
             }
 
             // Shared helper: build post list for a wall.
-            // Wood truss: anchor-and-fill (no gap may exceed spacing).
-            // Steel truss: full regular grid, skip only if inside door opening.
+            // Structural posts at exact spacing intervals, skip if inside door opening.
+            // Jambs always added at door edges.
+            // Wood truss: structural post can be removed if gap after removal <= spacing.
+            // Steel truss: structural posts never removed.
             function buildPostList(wallLen, wPS, wallDoors, trussType) {
-                const isSteel = (trussType === 'Steel');
                 const posts = [];
-                if (isSteel) {
-                    const nB = Math.floor(wallLen / wPS);
-                    for (let i = 0; i <= nB; i++) {
-                        const ft = i * (wallLen / nB), isCorner = (i===0||i===nB);
-                        const inside = wallDoors.some(d => { const dL=d.offset||0; return ft>dL+0.25&&ft<dL+d.w-0.25; });
-                        if (!inside) posts.push({ ft, jamb: false, corner: isCorner });
-                    }
-                    wallDoors.forEach(d => {
-                        [d.offset||0,(d.offset||0)+d.w].forEach(e => {
-                            if (!posts.some(p => Math.abs(p.ft-e)<0.01))
-                                posts.push({ ft:e, jamb:true, corner:false });
-                        });
+                const nB = Math.floor(wallLen / wPS);
+                for (let i = 0; i <= nB; i++) {
+                    let ft = i * wPS;
+                    if (ft > wallLen) ft = wallLen;
+                    const isCorner = (i===0 || i===nB || Math.abs(ft-wallLen)<0.01);
+                    const inside = wallDoors.some(d => { const dL=d.offset||0; return ft>dL+0.25&&ft<dL+d.w-0.25; });
+                    if (!inside) posts.push({ ft, jamb: false, corner: isCorner });
+                }
+                if (!posts.some(p => Math.abs(p.ft-wallLen)<0.01))
+                    posts.push({ ft: wallLen, jamb: false, corner: true });
+                wallDoors.forEach(d => {
+                    [d.offset||0,(d.offset||0)+d.w].forEach(e => {
+                        if (!posts.some(p => Math.abs(p.ft-e)<0.01))
+                            posts.push({ ft:e, jamb:true, corner:false });
                     });
-                } else {
-                    // Wood: anchor-and-fill
-                    const anchors = [...new Set([0, wallLen, ...wallDoors.flatMap(d => [d.offset||0,(d.offset||0)+d.w])])].sort((a,b)=>a-b);
-                    for (let si = 0; si < anchors.length-1; si++) {
-                        const segS=anchors[si], segE=anchors[si+1], segL=segE-segS;
-                        const nB = Math.ceil(segL/wPS);
-                        for (let b = 0; b <= nB; b++) {
-                            const ft = segS + b*(segL/nB);
-                            if (!posts.some(p => Math.abs(p.ft-ft)<0.01)) {
-                                const isJ = wallDoors.some(d => Math.abs(ft-(d.offset||0))<0.01||Math.abs(ft-((d.offset||0)+d.w))<0.01);
-                                const isC = (Math.abs(ft)<0.01||Math.abs(ft-wallLen)<0.01);
-                                posts.push({ ft, jamb:isJ, corner:isC });
-                            }
+                });
+                posts.sort((a,b) => a.ft-b.ft);
+
+                // Wood truss: remove a structural post if after removal no gap exceeds spacing.
+                if (trussType !== 'Steel') {
+                    let ch = true;
+                    while (ch) { ch = false;
+                        for (let wi = 1; wi < posts.length-1; wi++) {
+                            const wp = posts[wi];
+                            if (wp.corner || wp.jamb) continue;
+                            const gw = posts[wi+1].ft - posts[wi-1].ft;
+                            if (gw <= wPS + 0.01) { posts.splice(wi, 1); ch = true; break; }
                         }
                     }
                 }
@@ -7500,31 +7502,23 @@ function generatePostLayout() {
         var wLen=isE?bl:bw,ps=wCfg?wCfg.postSpacing:(Q.postSpacing||10);
         var wd=[];for(var i=0;i<allDoors.length;i++)if(allDoors[i].wall===wid)wd.push(allDoors[i]);
         if(!isE&&wCfg&&wCfg.encl==='open')return[];
-        var isSteel=(Q.truss==='Steel');
-        var posts=[];
-        if(isSteel){
-            // Steel truss: full regular grid, skip only if inside door opening, always add jambs
-            var nB=Math.floor(wLen/ps);
-            for(var i=0;i<=nB;i++){var p=i*(wLen/nB),isCorner=(i===0||i===nB),inside=false;
-                for(var j=0;j<wd.length;j++){var dL=wd[j].offset||0;if(p>dL+0.25&&p<dL+wd[j].w-0.25)inside=true;}
-                if(!inside)posts.push({ft:p,jamb:false,corner:isCorner});}
-            for(var i=0;i<wd.length;i++){var es=[wd[i].offset||0,(wd[i].offset||0)+wd[i].w];
-                for(var e=0;e<2;e++){var ex=false;for(var k=0;k<posts.length;k++)if(Math.abs(posts[k].ft-es[e])<0.01)ex=true;
-                    if(!ex)posts.push({ft:es[e],jamb:true,corner:false});}}
-        } else {
-            // Wood truss: anchor-and-fill
-            var anchors=[0,wLen];
-            for(var i=0;i<wd.length;i++){anchors.push(wd[i].offset||0);anchors.push((wd[i].offset||0)+wd[i].w);}
-            anchors=anchors.filter(function(v,i,a){return a.indexOf(v)===i;});
-            anchors.sort(function(a,b){return a-b;});
-            for(var si=0;si<anchors.length-1;si++){
-                var segS=anchors[si],segE=anchors[si+1],segL=segE-segS,nB=Math.ceil(segL/ps);
-                for(var b=0;b<=nB;b++){var ft=segS+b*(segL/nB);
-                    if(!posts.some(function(p){return Math.abs(p.ft-ft)<0.01;})){
-                        var isJ=wd.some(function(d){return Math.abs(ft-(d.offset||0))<0.01||Math.abs(ft-((d.offset||0)+d.w))<0.01;});
-                        var isC=(Math.abs(ft)<0.01||Math.abs(ft-wLen)<0.01);
-                        posts.push({ft:ft,jamb:isJ,corner:isC});}}}
-        }
+        var posts=[],nB=Math.floor(wLen/ps);
+        for(var i=0;i<=nB;i++){
+            var p=i*ps,isCorner=(i===0||i===nB||Math.abs(p-wLen)<0.01),inside=false;
+            if(p>wLen)p=wLen;
+            for(var j=0;j<wd.length;j++){var dL=wd[j].offset||0;if(p>dL+0.25&&p<dL+wd[j].w-0.25)inside=true;}
+            if(!inside)posts.push({ft:p,jamb:false,corner:isCorner});}
+        if(!posts.some(function(p){return Math.abs(p.ft-wLen)<0.01;}))
+            posts.push({ft:wLen,jamb:false,corner:true});
+        for(var i=0;i<wd.length;i++){var es=[wd[i].offset||0,(wd[i].offset||0)+wd[i].w];
+            for(var e=0;e<2;e++){var ex=false;for(var k=0;k<posts.length;k++)if(Math.abs(posts[k].ft-es[e])<0.01)ex=true;
+                if(!ex)posts.push({ft:es[e],jamb:true,corner:false});}}
+        posts.sort(function(a,b){return a.ft-b.ft;});
+        // Wood truss: remove a structural post if after removal no gap exceeds spacing.
+        if(Q.truss!=='Steel'){var ch=true;while(ch){ch=false;
+            for(var wi=1;wi<posts.length-1;wi++){var wp=posts[wi];if(wp.corner||wp.jamb)continue;
+                var gw=posts[wi+1].ft-posts[wi-1].ft;
+                if(gw<=ps+0.01){posts.splice(wi,1);ch=true;break;}}}}
         posts.sort(function(a,b){return a.ft-b.ft;});return posts;
     }
     var wp={};['left','right','front','back'].forEach(function(w){wp[w]=getWP(w);});
@@ -10257,47 +10251,43 @@ window.SauceMaterials.getPostsForWall = function(wallId, Q, WALLS, allDoors) {
   var wLen = isEave ? Q.l : Q.w;
   var ps   = wCfg ? (wCfg.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
   var wd   = (allDoors || []).filter(function(d) { return d.wall === wallId; });
-  var isSteel = (Q.truss === 'Steel');
-
-  if (isSteel) {
-    // Steel truss: full regular grid — trusses sit on posts so every bay needs a post.
-    // Skip only if physically inside a door opening. Always add jambs at door edges.
-    var posts = [], nB = Math.floor(wLen / ps);
-    for (var i = 0; i <= nB; i++) {
-      var p = i * (wLen / nB), isCorner = (i === 0 || i === nB), inside = false;
-      wd.forEach(function(d) { var dL = d.offset||0; if (p > dL+0.25 && p < dL+d.w-0.25) inside = true; });
-      if (!inside) posts.push({ ft: p, jamb: false, corner: isCorner });
-    }
-    wd.forEach(function(d) {
-      [d.offset||0, (d.offset||0)+d.w].forEach(function(e) {
-        if (!posts.some(function(p) { return Math.abs(p.ft-e) < 0.01; }))
-          posts.push({ ft: e, jamb: true, corner: false });
-      });
-    });
-    posts.sort(function(a, b) { return a.ft - b.ft; });
-    return posts;
+  var posts = [], nB = Math.floor(wLen / ps);
+  for (var i = 0; i <= nB; i++) {
+    var p = i * ps, isCorner = (i === 0 || i === nB || Math.abs(p - wLen) < 0.01);
+    if (p > wLen) p = wLen;
+    var inside = false;
+    wd.forEach(function(d) { var dL = d.offset||0; if (p > dL+0.25 && p < dL+d.w-0.25) inside = true; });
+    if (!inside) posts.push({ ft: p, jamb: false, corner: isCorner });
   }
+  if (!posts.some(function(p) { return Math.abs(p.ft - wLen) < 0.01; }))
+    posts.push({ ft: wLen, jamb: false, corner: true });
+  wd.forEach(function(d) {
+    [d.offset||0, (d.offset||0)+d.w].forEach(function(e) {
+      if (!posts.some(function(p) { return Math.abs(p.ft - e) < 0.01; }))
+        posts.push({ ft: e, jamb: true, corner: false });
+    });
+  });
+  posts.sort(function(a, b) { return a.ft - b.ft; });
 
-  // Wood truss: anchor-and-fill.
-  // Place jambs first at door edges, then fill each segment so no gap exceeds spacing.
-  var anchors = [0, wLen];
-  wd.forEach(function(d) { anchors.push(d.offset||0); anchors.push((d.offset||0)+d.w); });
-  anchors = anchors.filter(function(v, i, a) { return a.indexOf(v) === i; });
-  anchors.sort(function(a, b) { return a - b; });
-  var posts = [];
-  for (var si = 0; si < anchors.length - 1; si++) {
-    var segS = anchors[si], segE = anchors[si+1], segL = segE - segS;
-    var numBays = Math.ceil(segL / ps);
-    for (var b = 0; b <= numBays; b++) {
-      var ft = segS + b * (segL / numBays);
-      if (!posts.some(function(p) { return Math.abs(p.ft-ft) < 0.01; })) {
-        var isJamb   = wd.some(function(d) { return Math.abs(ft-(d.offset||0)) < 0.01 || Math.abs(ft-((d.offset||0)+d.w)) < 0.01; });
-        var isCorner = (Math.abs(ft) < 0.01 || Math.abs(ft-wLen) < 0.01);
-        posts.push({ ft: ft, jamb: isJamb, corner: isCorner });
+  // Wood truss only: remove a structural post if after removal
+  // no gap between adjacent posts exceeds the selected spacing.
+  // Corners and jambs are never removed.
+  if (Q.truss !== 'Steel') {
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (var wi = 1; wi < posts.length - 1; wi++) {
+        var wp = posts[wi];
+        if (wp.corner || wp.jamb) continue;
+        var gapWithout = posts[wi+1].ft - posts[wi-1].ft;
+        if (gapWithout <= ps + 0.01) {
+          posts.splice(wi, 1);
+          changed = true;
+          break;
+        }
       }
     }
   }
-  posts.sort(function(a, b) { return a.ft - b.ft; });
   return posts;
 };
 
