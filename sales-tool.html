@@ -11071,6 +11071,121 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
   return results;
 };
 
+// ── ITEM 11: SHED LEDGERS ────────────────────────────────────────────────────
+// Wood truss buildings only. One ledger per shed wall attachment.
+// Size = one step up from rafter depth (2x12 stays 2x12).
+// Length filled using structural post spacing only (no garage door jambs).
+// Uses same greedy board algorithm as headers (10', 12', 20').
+
+window.SauceMaterials.calcShedLedgers = function(Q, WALLS, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+
+  // Rafter depth by shed width
+  var rafterDepth = {
+    6: 6, 8: 8, 10: 10, 12: 10, 14: 10, 16: 10, 18: 12, 20: 12
+  };
+
+  // Ledger depth = one step up from rafter, max 12
+  function ledgerDepth(shedW) {
+    var rd = rafterDepth[shedW] || 10;
+    if (rd >= 12) return 12;
+    return rd + 2;
+  }
+
+  var HEADER_LENGTHS = [20, 12, 10];
+
+  // Fill wall length using structural post spacing only (no door jambs)
+  // Returns array of board lengths used
+  function fillStructural(wallLen, ps) {
+    var boards = {};
+    var nB = Math.floor(wallLen / ps);
+    // Structural post positions
+    var postFts = [];
+    for (var i = 0; i <= nB; i++) postFts.push(i * (wallLen / nB));
+    if (!postFts.some(function(p) { return Math.abs(p - wallLen) < 0.01; }))
+      postFts.push(wallLen);
+
+    var i = 0;
+    while (i < postFts.length - 1) {
+      var start = postFts[i];
+      // Find furthest post reachable
+      var furthestIdx = i;
+      for (var j = postFts.length - 1; j > i; j--) {
+        var dist = postFts[j] - start;
+        if (HEADER_LENGTHS.some(function(l) { return l >= dist - 0.01; })) {
+          furthestIdx = j; break;
+        }
+      }
+      if (furthestIdx === i) break;
+      var span = postFts[furthestIdx] - start;
+      var board = HEADER_LENGTHS.slice().reverse().find(function(l) { return l >= span - 0.01; });
+      boards[board] = (boards[board] || 0) + 1;
+      i = furthestIdx;
+    }
+    return boards;
+  }
+
+  var groups = {}; // sku → quantity
+
+  function addLedger(shedW, wallId) {
+    var ld = ledgerDepth(shedW);
+    var attachWall = (WALLS || []).find(function(w) { return w.id === wallId; });
+    var ps = attachWall ? (attachWall.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+    var isEave = (wallId === 'left' || wallId === 'right');
+    var wLen = isEave ? Q.l : Q.w;
+    var boards = fillStructural(wLen, ps);
+    Object.keys(boards).forEach(function(len) {
+      var sku = 'SYP2' + ld + len;
+      groups[sku] = (groups[sku] || 0) + boards[len];
+    });
+  }
+
+  var nailerGroups = {};
+
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    addLedger(sc.w, sc.wall);
+
+    // Ledger nailer — only when shed has a drop attachment
+    if (sc.dropFt > 0) {
+      var attachWall = (WALLS || []).find(function(w) { return w.id === sc.wall; });
+      var ps   = attachWall ? (attachWall.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+      var isEave = (sc.wall === 'left' || sc.wall === 'right');
+      var wLen = isEave ? Q.l : Q.w;
+      var nailerBoards = fillStructural(wLen, ps);
+      Object.keys(nailerBoards).forEach(function(len) {
+        var sku = 'SYP212' + len;
+        nailerGroups[sku] = (nailerGroups[sku] || 0) + nailerBoards[len];
+      });
+    }
+  });
+
+  var results = [];
+
+  Object.keys(groups).sort().forEach(function(sku) {
+    results.push({
+      category:    'Shed Framing',
+      description: 'Shed Ledger',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      'One per shed wall attachment  |  structural spacing only'
+    });
+  });
+
+  Object.keys(nailerGroups).sort().forEach(function(sku) {
+    results.push({
+      category:    'Shed Framing',
+      description: 'Ledger Nailer',
+      sku:         sku,
+      quantity:    nailerGroups[sku],
+      detail:      '2x12  |  stepped down shed attachment'
+    });
+  });
+
+  return results;
+};
+
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -11097,6 +11212,7 @@ window.SauceMaterials.calculate = function() {
   SM.calcWoodTrusses(Q).forEach(function(item) { items.push(item); });
   SM.calcSteelTrusses(Q).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
     items.push(sackcrete);
     // Pallet charge: 1 per 42 bags of sackcrete
