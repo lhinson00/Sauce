@@ -13031,6 +13031,98 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
   }];
 };
 
+// ── TRIM: PC3 EAVE TRIM ──────────────────────────────────────────────────────
+// Wood truss + overhang only. Covers eave fascia boards.
+// SKU: PC39PW10/PC39PW12 (Painted/Galvalume/PBR), PC36PW10/PC36PW12 (26-Gauge).
+// Board length matches post spacing: 10' spacing → 10' boards, 12' spacing → 12' boards.
+// Quantity per run = ceil(runLength / boardLen).  No safety extra.
+// Run length = wall/shed length + ohFt × 2 (overhang on both gable ends).
+// Dropped lean-to restores main building eave on that side.
+// Gable shed adds two runs of its own width + ohFt×2.
+
+window.SauceMaterials.calcPC3Trim = function(Q, WALLS, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+  if (Q.oh === 0) return [];
+
+  var metalType = (document.getElementById('st_roofMetal')||{}).value || 'Painted';
+  var is26g     = metalType === '26-Gauge';
+  var ohFt      = Q.oh / 12;
+
+  function wallPS(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+
+  var groups = {}; // sku → qty
+  function addRun(runLen, ps) {
+    var boardLen = (ps === 12) ? 12 : 10;
+    var skuLen   = (ps === 12) ? '12' : '10';
+    var sku      = (is26g ? 'PC36PW' : 'PC39PW') + skuLen;
+    var qty      = Math.ceil(runLen / boardLen);
+    groups[sku]  = (groups[sku] || 0) + qty;
+  }
+
+  // Determine which main building eave sides are replaced by flush (non-dropped) lean-tos
+  var replacedEaves = { left: false, right: false };
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if ((sc.wall === 'left' || sc.wall === 'right') && parseFloat(sc.dropFt||0) === 0) {
+      replacedEaves[sc.wall] = true;
+    }
+  });
+
+  // Main building eave runs
+  ['left','right'].forEach(function(side) {
+    if (!replacedEaves[side]) {
+      addRun(Q.l + ohFt * 2, wallPS(side));
+    }
+  });
+
+  // Side shed runs
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
+    var ps = wallPS(sc.wall);
+
+    if (sc.type === 'gable') {
+      // Gable extension: two eave runs along the extension depth
+      addRun(sc.w + ohFt * 2, ps);
+      addRun(sc.w + ohFt * 2, ps);
+      return;
+    }
+
+    if (sc.type === 'leanto') {
+      addRun(sc.l + ohFt * 2, ps);
+      return;
+    }
+
+    if (sc.type === 'wrap') {
+      addRun(sc.l + ohFt * 2, ps);
+      if (sc.wrapLeg > 0) addRun(sc.wrapLeg + ohFt * 2, ps);
+      return;
+    }
+
+    if (sc.type === 'wrap3') {
+      addRun(sc.l + ohFt * 2, ps);
+      var secLen = isEaveWall ? Q.w : Q.l;
+      addRun(secLen + ohFt * 2, ps);
+      addRun(secLen + ohFt * 2, ps);
+      return;
+    }
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Trim',
+      description: 'Eave Trim (PC3)',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      (is26g ? '26-Gauge' : 'Painted') + '  |  eave fascia cover  |  ' + Q.oh + '" O/H'
+    };
+  });
+};
+
 // ── CALCULATE ─────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -13083,6 +13175,7 @@ window.SauceMaterials.calculate = function() {
   SM.calcOpenGableMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcWainscotMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSkirtMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcPC3Trim(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   if (sackcrete) {
@@ -13168,7 +13261,7 @@ window.openMaterialsModal = function() {
       'Roof Metal','Side Shed Roof Metal',
       'Sidewall Metal','Gable Metal','Side Shed Gable Metal',
       'Wainscot Metal','Soffit Metal','Skirt Metal',
-      'Metal'
+      'Metal', 'Trim'
     ];
     var catKeys = Object.keys(cats).sort(function(a, b) {
       var ai = CATEGORY_ORDER.indexOf(a);
