@@ -10311,6 +10311,66 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
   };
 };
 
+// ── ITEM 2: GABLE POSTS ──────────────────────────────────────────────────────
+
+window.SauceMaterials.calcGablePosts = function(Q, WALLS, allDoors, sf) {
+  var SM = window.SauceMaterials;
+  var sizeMap = { '6x6':'PT66', '8x8':'PT88', '10x10':'PT1010', '12x12':'PT1212' };
+  var postSize = sf.mbPostSize || '6x6';
+  var skuBase  = sizeMap[postSize] || 'PT66';
+
+  // Gable posts on both front and back walls
+  // Corner posts belong to eave walls — gable posts start at first spacing interval in
+  // Post height = eave height + (distanceFromCorner * pitch / 12), rounded up to nearest 2'
+  var allGablePosts = [];
+
+  ['front', 'back'].forEach(function(wallId) {
+    var wCfg = (WALLS || []).find(function(w) { return w.id === wallId; }) || null;
+    if (wCfg && wCfg.encl === 'open') return;
+    var wLen = Q.w;
+    var ps   = wCfg ? (wCfg.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+    var wd   = (allDoors || []).filter(function(d) { return d.wall === wallId; });
+
+    // Get full post list using same algorithm as eave walls
+    var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
+
+    // Exclude corner posts — they belong to eave walls
+    var gablePosts = posts.filter(function(p) { return !p.corner; });
+
+    gablePosts.forEach(function(p) {
+      // Distance from the nearest corner
+      var distFromCorner = Math.min(p.ft, wLen - p.ft);
+      // Height above eave
+      var addedHeight = distFromCorner * (Q.pitch / 12);
+      // Add 4' for in-ground posts, same as eave posts
+      var postsOnTop  = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
+      var groundExtra = postsOnTop ? 0 : 4;
+      // Total post length, rounded up to nearest 2'
+      var totalHeight = Q.h + addedHeight + groundExtra;
+      var postLength  = Math.ceil(totalHeight / 2) * 2;
+      var sku = skuBase + postLength;
+      allGablePosts.push({ sku: sku, postLength: postLength, distFromCorner: distFromCorner, wall: wallId });
+    });
+  });
+
+  // Group by SKU for the material list
+  var skuGroups = {};
+  allGablePosts.forEach(function(p) {
+    if (!skuGroups[p.sku]) skuGroups[p.sku] = { sku: p.sku, postLength: p.postLength, quantity: 0 };
+    skuGroups[p.sku].quantity++;
+  });
+
+  return Object.values(skuGroups).sort(function(a, b) { return b.postLength - a.postLength; }).map(function(g) {
+    return {
+      category:    'Posts',
+      description: 'Gable Posts',
+      sku:         g.sku,
+      quantity:    g.quantity,
+      detail:      postSize + ' x ' + g.postLength + "ft gable posts"
+    };
+  });
+};
+
 // ── CALCULATE ────────────────────────────────────────────────────────────────
 
 window.SauceMaterials.calculate = function() {
@@ -10328,6 +10388,8 @@ window.SauceMaterials.calculate = function() {
   };
   var items = [];
   items.push(SM.calcEavePosts(Q, WALLS, allDoors, sf));
+  SM.calcGablePosts(Q, WALLS, allDoors, sf).forEach(function(item) { items.push(item); });
+  // Additional items will be added here as each is verified
   return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "'" };
 };
 
