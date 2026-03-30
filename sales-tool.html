@@ -13271,11 +13271,8 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
       openLen = sc.l;
     } else if (sc.encl === 'enclosed' && sc.enclFt != null && parseFloat(sc.enclFt) < sc.l) {
       openLen = sc.l - parseFloat(sc.enclFt);
-    } else if (Q.pitch >= 6 && parseFloat(sc.dropFt||0) === 0) {
-      // Non-dropped flush shed on 6/12+ pitch — full length gets transition flashing
-      openLen = sc.l;
     } else {
-      return; // fully enclosed non-flush or low pitch — no skirt
+      return; // fully enclosed — no skirt
     }
 
     if (openLen <= 0) return;
@@ -13294,7 +13291,43 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
   }];
 };
 
-// ── TRIM: VALLEY PANELS ───────────────────────────────────────────────────────
+// ── TRIM: TRANSITION FLASHING ─────────────────────────────────────────────────
+// 6/12 pitch only. Any eave side shed that is not dropped (flush to main building).
+// SKU: TF9PW10 or TF9PW12 based on post spacing.
+// Qty: ceil(shed length / board length) per qualifying shed.
+
+window.SauceMaterials.calcTransitionFlashing = function(Q, WALLS, shedCfgs) {
+  if (Q.pitch < 6) return [];
+
+  function wallPS(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+
+  var groups = {};
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.wall !== 'left' && sc.wall !== 'right') return;
+    if (sc.type === 'gable') return;
+    if (parseFloat(sc.dropFt||0) !== 0) return; // dropped — skip
+    var ps      = wallPS(sc.wall);
+    var boardLen = ps === 12 ? 12 : 10;
+    var sku     = 'TF9PW' + boardLen;
+    groups[sku] = (groups[sku]||0) + Math.ceil(sc.l / boardLen);
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Trim',
+      description: 'Transition Flashing',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      '6/12 pitch  |  non-dropped eave shed(s)'
+    };
+  });
+};
+
+
 // Used only when a gable extension is on an eave wall (left or right).
 // Send 6 × VP9PW10 per gable extension.
 
@@ -13821,6 +13854,45 @@ window.SauceMaterials.calcSteelEavePC2 = function(Q, WALLS, shedCfgs) {
   });
 };
 
+
+// ── TRIM: TRANSITION FLASHING ────────────────────────────────────────────────
+// Used when main building pitch is 6/12 and there is a non-dropped eave side shed.
+// One run per qualifying shed at the shed's length.
+// SKU: TF9PW10 (10' spacing) or TF9PW12 (12' spacing).
+
+window.SauceMaterials.calcTransitionFlashing = function(Q, WALLS, shedCfgs) {
+  if (Q.pitch < 6) return [];
+
+  function wallPS(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+
+  var groups = {};
+  function addRun(runLen, ps) {
+    var boardLen = (ps === 12) ? 12 : 10;
+    var sku      = 'TF9PW' + boardLen;
+    groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen);
+  }
+
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.wall !== 'left' && sc.wall !== 'right') return;
+    if (sc.type === 'gable') return;
+    if (parseFloat(sc.dropFt||0) !== 0) return; // dropped sheds don't get TF
+    addRun(sc.l, wallPS(sc.wall));
+  });
+
+  return Object.keys(groups).sort().map(function(sku) {
+    return {
+      category:    'Trim',
+      description: 'Transition Flashing',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      '6/12 pitch  |  non-dropped eave shed'
+    };
+  });
+};
 
 // Used when a side shed is dropped or is a gable extension (both treated as dropped).
 // One run per qualifying shed at the shed's length.
@@ -14859,6 +14931,7 @@ window.SauceMaterials.calculate = function() {
   SM.calcJChannel(Q, WALLS, window._shedConfigs||[], allDoors, window._windows||[], window._walkDoors||[]).forEach(function(item) { items.push(item); });
   SM.calcOverheadDoorTrim(Q, allDoors, sf).forEach(function(item) { items.push(item); });
   SM.calcValleyPanels(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcTransitionFlashing(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSkirtMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcEndWallFlashing(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcPostWrap(Q, WALLS, window._shedConfigs||[], sf).forEach(function(item) { items.push(item); });
