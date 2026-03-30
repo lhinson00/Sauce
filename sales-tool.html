@@ -1087,6 +1087,15 @@ body.customer-mode #custColorChartLink { display: block !important; }
         <div class="sec-title"><span class="icon">🧱</span>Wall Enclosure</div>
         <div class="wall-grid" id="wallGrid"></div>
         <div style="font-size:9px;color:var(--muted);margin-top:6px;text-align:center;">Tap a wall to toggle Enclosed ↔ Open</div>
+        <div id="ventGapRow" style="display:none;margin-top:8px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <span style="font-size:11px;font-weight:700;color:var(--navy);">Vent Gap</span>
+            <div style="display:flex;gap:4px;">
+              <button id="ventGapNo"  onclick="setVentGap(false)" style="padding:4px 12px;font-size:10px;font-weight:700;border-radius:5px;border:1px solid var(--border);cursor:pointer;">No</button>
+              <button id="ventGapYes" onclick="setVentGap(true)"  style="padding:4px 12px;font-size:10px;font-weight:700;border-radius:5px;border:1px solid var(--border);cursor:pointer;">Yes</button>
+            </div>
+          </div>
+        </div>
 
       </div>
 
@@ -2102,30 +2111,6 @@ function buildWallGrid(){
       wrap.appendChild(row);
     }
 
-    // Vent gap toggle for open eave walls
-    var isEaveWall = wall.id === 'left' || wall.id === 'right';
-    if (wall.encl === 'open' && isEaveWall) {
-      var vrow = document.createElement('div');
-      vrow.className = 'wall-partial-row';
-      var ventOn = !!wall.ventGap;
-      vrow.innerHTML = '<span>Vent Gap:</span>'
-        + '<div style="display:flex;gap:4px;flex:1;">'
-        + '<button data-vent="0" style="flex:1;padding:3px 0;font-size:10px;font-weight:700;border-radius:4px;border:1px solid var(--border);cursor:pointer;'
-          + (ventOn ? 'background:#f9fafc;color:var(--muted);' : 'background:#4B4B4B;color:#FF8200;border-color:#4B4B4B;') + '">No</button>'
-        + '<button data-vent="1" style="flex:1;padding:3px 0;font-size:10px;font-weight:700;border-radius:4px;border:1px solid var(--border);cursor:pointer;'
-          + (ventOn ? 'background:#4B4B4B;color:#FF8200;border-color:#4B4B4B;' : 'background:#f9fafc;color:var(--muted);') + '">Yes</button>'
-        + '</div>';
-      (function(w, vr) {
-        vr.querySelectorAll('button').forEach(function(b) {
-          b.onclick = function(e) {
-            e.stopPropagation();
-            w.ventGap = b.getAttribute('data-vent') === '1';
-            buildWallGrid(); scheduleBuild();
-          };
-        });
-      })(wall, vrow);
-      wrap.appendChild(vrow);
-    }
     var isGableWall = wall.id==='front'||wall.id==='back';
     if(wall.encl==='open' && isGableWall){
       var trow=document.createElement('div');
@@ -2148,11 +2133,27 @@ function buildWallGrid(){
 
     g.appendChild(wrap);
   });
+
+  // Show vent gap toggle if any wall is non-enclosed
+  var anyNonEnclosed = WALLS.some(function(w){ return w.encl !== 'enclosed'; });
+  var vgRow = document.getElementById('ventGapRow');
+  if (vgRow) {
+    vgRow.style.display = anyNonEnclosed ? '' : 'none';
+    var ventOn = !!Q.ventGap;
+    var noBtn  = document.getElementById('ventGapNo');
+    var yesBtn = document.getElementById('ventGapYes');
+    if (noBtn)  { noBtn.style.background  = ventOn ? '' : '#4B4B4B'; noBtn.style.color  = ventOn ? '' : '#FF8200'; noBtn.style.borderColor  = ventOn ? '' : '#4B4B4B'; }
+    if (yesBtn) { yesBtn.style.background = ventOn ? '#4B4B4B' : ''; yesBtn.style.color = ventOn ? '#FF8200' : ''; yesBtn.style.borderColor = ventOn ? '#4B4B4B' : ''; }
+  }
   syncOpeningVisibility();
 }
 
-// ═══════════════════════════════════════════════════════
-// COLORS
+function setVentGap(val) {
+  Q.ventGap = !!val;
+  buildWallGrid();
+  scheduleBuild();
+}
+
 // ═══════════════════════════════════════════════════════
 function buildSwatches(id, getCur, setCur, hiddenId){
   var c=document.getElementById(id); c.innerHTML='';
@@ -10729,7 +10730,7 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
 
   // SKU prefix based on width
   function skuPrefix(width) {
-    return (width >= 41 && width <= 60) ? 'LVL1178' : 'SYP212';
+    return (width >= 41 && width <= 60) ? 'CLVL1178' : 'SYP212';
   }
 
   var mbGroups   = {}; // main building headers
@@ -12415,10 +12416,12 @@ window.SauceMaterials.calcGarageDoorHeaders = function(allDoors) {
   }
 
   var groups = {};
+  var boardLens = {};
   garageDoors.forEach(function(d) {
     var headerLen = headerBoardLen(d.w);
-    var sku = d.w > 14 ? 'LVL1178' + headerLen : 'SYP212' + headerLen;
+    var sku = d.w > 14 ? 'CLVL1178' + headerLen : 'SYP212' + headerLen;
     groups[sku] = (groups[sku]||0) + 2;
+    boardLens[sku] = headerLen;
   });
 
   return Object.keys(groups).sort().map(function(sku) {
@@ -12427,6 +12430,7 @@ window.SauceMaterials.calcGarageDoorHeaders = function(allDoors) {
       description: 'Garage Door Headers',
       sku:         sku,
       quantity:    groups[sku],
+      boardLen:    boardLens[sku],
       detail:      "2 per door  |  door width + 2'"
     };
   });
@@ -12748,28 +12752,28 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
   var panelsPerRun = Math.ceil(Q.l / 3);
 
   ['left', 'right'].forEach(function(side) {
-    // Skip open walls (unless vent gap — vent gap walls still get metal, just shorter)
+    // Skip open walls (vent gap does not apply to open walls)
     var wallCfg = (WALLS||[]).find(function(w){ return w.id === side; });
-    if (wallCfg && wallCfg.encl === 'open' && !wallCfg.ventGap) return;
-
-    // Find a non-dropped eave lean-to on this side
-    var flushShed = (shedCfgs||[]).find(function(sc) {
-      return sc.wall === side && sc.w && sc.l &&
-             sc.type !== 'gable' &&
-             parseFloat(sc.dropFt||0) === 0;
-    });
+    if (wallCfg && wallCfg.encl === 'open') return;
 
     var wallHeight;
-    if (flushShed) {
-      // +1' for the lean-to bearing, minus the ledger board depth
-      var ldIn = ledgerDepthIn(flushShed.w);
-      wallHeight = mbBaseHeight + 1 - (ldIn / 12);
-    } else {
+    if (Q.ventGap) {
+      // Vent gap: use straight sidewall height, no lean-to adjustment
       wallHeight = mbBaseHeight;
+    } else {
+      // Normal: apply flush lean-to adjustment if present
+      var flushShed = (shedCfgs||[]).find(function(sc) {
+        return sc.wall === side && sc.w && sc.l &&
+               sc.type !== 'gable' &&
+               parseFloat(sc.dropFt||0) === 0;
+      });
+      if (flushShed) {
+        var ldIn = ledgerDepthIn(flushShed.w);
+        wallHeight = mbBaseHeight + 1 - (ldIn / 12);
+      } else {
+        wallHeight = mbBaseHeight;
+      }
     }
-
-    // Vent gap: reduce metal height by 8" (8/12 ft)
-    if (wallCfg && wallCfg.ventGap) wallHeight -= 8/12;
 
     add(wallHeight, panelsPerRun);
   });
@@ -15109,7 +15113,6 @@ window.openMaterialsModal = function() {
         var unitPrice = getPrice(item.sku);
         var lineTotal = null;
         if (item.fixedCost != null) {
-          // Pre-calculated cost (e.g. install fee) — use directly
           lineTotal = item.fixedCost;
         } else if (unitPrice != null) {
           if (item.metalLength) {
@@ -15119,6 +15122,9 @@ window.openMaterialsModal = function() {
               return (ftM ? parseFloat(ftM[1]) : 0) + (inM ? parseFloat(inM[1]) / 12 : 0);
             })(item.metalLength);
             lineTotal = unitPrice * item.quantity * lenFt;
+          } else if (item.boardLen) {
+            // Per-foot pricing (e.g. CLVL1178): unitPrice × qty × board length in feet
+            lineTotal = unitPrice * item.quantity * item.boardLen;
           } else {
             lineTotal = unitPrice * item.quantity;
           }
@@ -15163,7 +15169,10 @@ window.openMaterialsModal = function() {
         var priceEl = document.createElement('div');
         priceEl.style.cssText = 'font-size:10px;color:#888;text-align:right;white-space:nowrap;';
         if (lineTotal != null) {
-          var priceDetail = item.fixedCost != null ? 'calculated' : (item.metalLength ? '$' + unitPrice.toFixed(2) + '/ln ft' : '$' + unitPrice.toFixed(2));
+          var priceDetail = item.fixedCost != null ? 'calculated'
+            : item.boardLen ? '$' + unitPrice.toFixed(2) + '/ft'
+            : item.metalLength ? '$' + unitPrice.toFixed(2) + '/ln ft'
+            : '$' + unitPrice.toFixed(2);
           priceEl.innerHTML = priceDetail + '<br><span style="color:#4ade80;font-weight:700;font-size:11px;">$' + lineTotal.toFixed(2) + '</span>';
         }
 
