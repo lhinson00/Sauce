@@ -1520,6 +1520,17 @@ body.customer-mode #custColorChartLink { display: block !important; }
             <input id="st_manualNotes" type="text" placeholder="Reason for adder..." style="font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
           </div>
         </div>
+
+        <!-- Material List Custom Line Items -->
+        <div class="sec-title" style="font-size:9px;margin:10px 0 5px;letter-spacing:1.5px;">Material List Adders</div>
+        <div id="matAdderList" style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px;"></div>
+        <div style="display:flex;gap:4px;">
+          <input id="matAdderAmt" type="number" placeholder="$0.00" step="0.01"
+            style="width:80px;font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
+          <input id="matAdderDesc" type="text" placeholder="Description..."
+            style="flex:1;font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
+          <button onclick="addMaterialAdder()" style="padding:5px 10px;border-radius:7px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.1);color:#FF8200;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;">+ Add</button>
+        </div>
       </div>
 
       <!-- COLORS -->
@@ -2147,6 +2158,47 @@ function buildWallGrid(){
   }
   syncOpeningVisibility();
 }
+
+// ── MATERIAL LIST ADDERS ─────────────────────────────────────────────────────
+window._materialAdders = [];
+
+function renderMatAdderList() {
+  var list = document.getElementById('matAdderList');
+  if (!list) return;
+  list.innerHTML = '';
+  window._materialAdders.forEach(function(adder, idx) {
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;background:rgba(255,130,0,.06);border:1px solid rgba(255,130,0,.2);border-radius:6px;padding:5px 8px;';
+    var amtEl = document.createElement('span');
+    amtEl.style.cssText = 'font-size:11px;font-weight:700;color:#FF8200;white-space:nowrap;';
+    amtEl.textContent = '$' + adder.amount.toFixed(2);
+    var descEl = document.createElement('span');
+    descEl.style.cssText = 'font-size:11px;color:var(--navy);flex:1;';
+    descEl.textContent = adder.description;
+    var delBtn = document.createElement('button');
+    delBtn.textContent = '×';
+    delBtn.style.cssText = 'background:none;border:none;color:#888;font-size:14px;cursor:pointer;padding:0 2px;line-height:1;';
+    delBtn.onclick = (function(i){ return function(){ window._materialAdders.splice(i,1); renderMatAdderList(); }; })(idx);
+    row.appendChild(amtEl); row.appendChild(descEl); row.appendChild(delBtn);
+    list.appendChild(row);
+  });
+}
+
+function addMaterialAdder() {
+  var amt  = parseFloat((document.getElementById('matAdderAmt')||{}).value);
+  var desc = ((document.getElementById('matAdderDesc')||{}).value||'').trim();
+  if (isNaN(amt) || amt === 0 || !desc) return;
+  window._materialAdders.push({ amount: amt, description: desc });
+  document.getElementById('matAdderAmt').value  = '';
+  document.getElementById('matAdderDesc').value = '';
+  renderMatAdderList();
+}
+
+// Allow Enter key in description field to add
+document.addEventListener('DOMContentLoaded', function() {
+  var descInput = document.getElementById('matAdderDesc');
+  if (descInput) descInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') addMaterialAdder(); });
+});
 
 function setVentGap(val) {
   Q.ventGap = !!val;
@@ -14767,6 +14819,7 @@ window.SauceMaterials.calculate = function() {
 window.closeMaterialsModal = function() {
   var m = document.getElementById('sauceMaterialsModal');
   if (m) m.remove();
+  window._sessionOverrides = {};
 };
 
 // Load inventory pricing from the sheet — called on login
@@ -15104,7 +15157,8 @@ window.openMaterialsModal = function() {
       return a.localeCompare(b);
     });
     var grandTotal = 0;
-    var sessionOverrides = {}; // SKU → override unit price, session only
+    if (!window._sessionOverrides) window._sessionOverrides = {};
+    var sessionOverrides = window._sessionOverrides;
     var isLainModal = (window.currentUser||{}).username === 'lain.hinson';
 
     function getEffectivePrice(sku) {
@@ -15210,9 +15264,9 @@ window.openMaterialsModal = function() {
                   e.stopPropagation();
                   var newUnit = parseFloat(inp.value);
                   if (!isNaN(newUnit)) {
-                    sessionOverrides[iItem.sku] = newUnit;
-                    var newTotal = calcLineTotal(iItem, newUnit);
-                    renderPriceEl(iItem, newUnit, newTotal);
+                    window._sessionOverrides[iItem.sku] = newUnit;
+                    // Rebuild entire modal so all totals recalculate
+                    window.openMaterialsModal();
                   }
                 };
                 cancelBtn.onclick = function(e) {
@@ -15282,6 +15336,34 @@ window.openMaterialsModal = function() {
     });
   }
   panel.appendChild(body);
+
+  // Custom material adders — listed before grand total
+  var adders = window._materialAdders || [];
+  if (adders.length > 0) {
+    var adderLabel = document.createElement('div');
+    adderLabel.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:rgba(255,130,0,.8);margin:14px 0 6px;display:flex;justify-content:space-between;align-items:center;';
+    adderLabel.textContent = 'Custom Adders';
+    panel.appendChild(adderLabel);
+    var adderTotal = 0;
+    adders.forEach(function(adder) {
+      adderTotal += adder.amount;
+      grandTotal  += adder.amount;
+      var aRow = document.createElement('div');
+      aRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:7px 10px;background:#1e293b;border-radius:7px;margin-bottom:4px;';
+      var aDesc = document.createElement('div');
+      aDesc.style.cssText = 'font-size:12px;font-weight:700;color:#f0f3f7;';
+      aDesc.textContent = adder.description;
+      var aAmt = document.createElement('div');
+      aAmt.style.cssText = 'font-size:13px;font-weight:900;color:#4ade80;';
+      aAmt.textContent = '$' + adder.amount.toFixed(2);
+      aRow.appendChild(aDesc); aRow.appendChild(aAmt);
+      panel.appendChild(aRow);
+    });
+    var adderSub = document.createElement('div');
+    adderSub.style.cssText = 'text-align:right;font-size:10px;font-weight:700;color:rgba(255,130,0,.7);padding:2px 10px 6px;';
+    adderSub.textContent = 'Custom Adders subtotal: $' + adderTotal.toFixed(2);
+    panel.appendChild(adderSub);
+  }
 
   // Grand total bar — MFT already included via Hardware section
   if (grandTotal > 0) {
