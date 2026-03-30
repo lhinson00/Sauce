@@ -657,6 +657,7 @@ body.customer-mode #saveQuoteStatus { display: none !important; }
 body.customer-mode #vpLoadBtn,
 body.customer-mode #vpPdfBtn { display: none !important; }
 body.customer-mode #priceManagerBtn { display: none !important; }
+body.customer-mode #kitsBtn { display: none !important; }
 
 /* Rebrand the topbar for customer mode */
 body.customer-mode .brand-name-sales { content: ''; }
@@ -1617,6 +1618,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
     <div class="sales-actions">
       <button class="act-btn secondary" onclick="generatePostLayout()">📋 Post PDF</button>
       <button class="act-btn secondary" onclick="openMaterialsModal()">📦 Materials</button>
+      <button class="act-btn secondary" id="kitsBtn" onclick="openKitsModal()">📁 Kits</button>
       <button class="act-btn primary" id="saveQuoteBtn" onclick="saveSalesQuote()">💾 Save Quote</button>
       <button class="act-btn secondary" id="emailQuoteBtn" onclick="openEmailQuoteModal()" style="display:none;">✉️ Email Quote</button>
       <button class="act-btn secondary" id="quotePdfBtn" onclick="openQuotePDFModal()" style="display:none;">📄 Quote PDF</button>
@@ -15100,6 +15102,178 @@ window.openPriceManager = function() {
   document.body.appendChild(overlay);
 };
 
+
+// ====================================================================
+// BUILDING KITS
+// ====================================================================
+
+window.closeKitsModal = function() {
+  var el = document.getElementById('sauceKitsModal');
+  if (el) el.remove();
+};
+
+window.openKitsModal = function() {
+  window.closeKitsModal();
+  var isLain = (window.currentUser||{}).username === 'lain.hinson';
+
+  var overlay = document.createElement('div');
+  overlay.id = 'sauceKitsModal';
+  overlay.style.cssText = 'display:flex;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;align-items:center;justify-content:center;';
+  overlay.addEventListener('click', function(e){ if(e.target===overlay) overlay.remove(); });
+
+  var panel = document.createElement('div');
+  panel.style.cssText = 'background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:24px;width:92%;max-width:560px;max-height:85vh;display:flex;flex-direction:column;font-family:Outfit,sans-serif;gap:12px;';
+
+  // Header
+  var hdr = document.createElement('div');
+  hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
+  hdr.innerHTML = '<div style="font-size:15px;font-weight:800;color:#f0f3f7;">📁 Building Kits</div>';
+  var xBtn = document.createElement('button');
+  xBtn.textContent = '×'; xBtn.style.cssText = 'background:none;border:none;color:#888;font-size:20px;cursor:pointer;';
+  xBtn.onclick = window.closeKitsModal;
+  hdr.appendChild(xBtn);
+  panel.appendChild(hdr);
+
+  // Save as kit — lain only
+  if (isLain) {
+    var saveWrap = document.createElement('div');
+    saveWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;padding:12px;background:rgba(255,130,0,.06);border:1px solid rgba(255,130,0,.2);border-radius:10px;';
+    saveWrap.innerHTML = '<div style="font-size:10px;font-weight:700;color:rgba(255,130,0,.8);text-transform:uppercase;letter-spacing:1px;">Save Current Design as Kit</div>';
+    var nameInput = document.createElement('input');
+    nameInput.placeholder = 'Kit name (e.g. "40x60 Enclosed Standard")';
+    nameInput.style.cssText = 'padding:7px 10px;border-radius:7px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;';
+    var descInput = document.createElement('input');
+    descInput.placeholder = 'Description (optional)';
+    descInput.style.cssText = nameInput.style.cssText;
+    var saveBtn = document.createElement('button');
+    saveBtn.textContent = '💾 Save Kit';
+    saveBtn.style.cssText = 'padding:8px;border-radius:8px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.15);color:#FF8200;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+    var saveStatus = document.createElement('div');
+    saveStatus.style.cssText = 'font-size:10px;color:#888;min-height:14px;';
+    saveBtn.onclick = function() {
+      var name = nameInput.value.trim();
+      if (!name) { saveStatus.textContent = 'Please enter a kit name.'; saveStatus.style.color='#ef4444'; return; }
+      saveStatus.textContent = 'Saving...'; saveStatus.style.color='#888';
+      safeEncodeCompressed(window.serializeConfig ? serializeConfig() : {}).then(function(encoded) {
+        fetch(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({ action: 'saveKit', token: getToken(), username: 'lain.hinson', name: name, description: descInput.value.trim(), configEncoded: encoded })
+        })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if (d.success) {
+            saveStatus.textContent = '✓ Saved as "' + name + '"';
+            saveStatus.style.color = '#4ade80';
+            nameInput.value = ''; descInput.value = '';
+            loadKitsList(listWrap, isLain);
+          } else {
+            saveStatus.textContent = 'Error: ' + (d.error||'unknown');
+            saveStatus.style.color = '#ef4444';
+          }
+        })
+        .catch(function(e){ saveStatus.textContent = 'Network error'; saveStatus.style.color='#ef4444'; });
+      });
+    };
+    saveWrap.appendChild(nameInput); saveWrap.appendChild(descInput);
+    saveWrap.appendChild(saveBtn); saveWrap.appendChild(saveStatus);
+    panel.appendChild(saveWrap);
+  }
+
+  // Kits list
+  var listLabel = document.createElement('div');
+  listLabel.style.cssText = 'font-size:10px;font-weight:700;color:rgba(255,130,0,.8);text-transform:uppercase;letter-spacing:1px;';
+  listLabel.textContent = 'Saved Kits';
+  panel.appendChild(listLabel);
+
+  var listWrap = document.createElement('div');
+  listWrap.style.cssText = 'overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:6px;';
+  panel.appendChild(listWrap);
+
+  function loadKitsList(wrap, lain) {
+    wrap.innerHTML = '<div style="font-size:11px;color:#888;padding:8px 0;">Loading kits...</div>';
+    fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action: 'getKits', token: getToken(), username: (window.currentUser||{}).username||'' })
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      wrap.innerHTML = '';
+      if (!d.success || !d.kits || !d.kits.length) {
+        wrap.innerHTML = '<div style="font-size:11px;color:#888;padding:8px 0;">No kits saved yet.</div>';
+        return;
+      }
+      d.kits.forEach(function(kit) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;background:#1e293b;border-radius:8px;';
+        var info = document.createElement('div');
+        info.style.cssText = 'flex:1;';
+        var kitName = document.createElement('div');
+        kitName.style.cssText = 'font-size:12px;font-weight:700;color:#f0f3f7;';
+        kitName.textContent = kit.name;
+        var kitDesc = document.createElement('div');
+        kitDesc.style.cssText = 'font-size:10px;color:#888;margin-top:2px;';
+        kitDesc.textContent = kit.description || kit.date || '';
+        info.appendChild(kitName); info.appendChild(kitDesc);
+
+        var loadBtn = document.createElement('button');
+        loadBtn.textContent = 'Load';
+        loadBtn.style.cssText = 'padding:6px 12px;border-radius:6px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.15);color:#FF8200;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;';
+        loadBtn.onclick = function() {
+          try {
+            var decodeP = safeDecodeAsync ? safeDecodeAsync(kit.configEncoded).catch(function(){ return safeDecode(kit.configEncoded); }) : Promise.resolve(safeDecode(kit.configEncoded));
+            decodeP.then(function(cfg) {
+              if (cfg) {
+                restoreConfig(cfg);
+                window._savedQuoteId = null;
+                var statusEl = document.getElementById('saveQuoteStatus');
+                if (statusEl) { statusEl.textContent = 'Kit loaded: ' + kit.name; statusEl.style.display='block'; statusEl.style.color='#4ade80'; }
+              }
+              window.closeKitsModal();
+            });
+          } catch(e) {
+            alert('Could not load kit: ' + e.message);
+          }
+        };
+
+        row.appendChild(info); row.appendChild(loadBtn);
+
+        if (lain) {
+          var delBtn = document.createElement('button');
+          delBtn.textContent = '×';
+          delBtn.style.cssText = 'background:none;border:none;color:#555;font-size:16px;cursor:pointer;padding:0 4px;';
+          delBtn.onmouseover = function(){ delBtn.style.color='#ef4444'; };
+          delBtn.onmouseout  = function(){ delBtn.style.color='#555'; };
+          delBtn.onclick = function() {
+            if (!confirm('Delete kit "' + kit.name + '"?')) return;
+            fetch(API_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'text/plain' },
+              body: JSON.stringify({ action: 'deleteKit', token: getToken(), username: 'lain.hinson', kitId: kit.kitId })
+            })
+            .then(function(r){ return r.json(); })
+            .then(function(d){ if (d.success) loadKitsList(wrap, lain); });
+          };
+          row.appendChild(delBtn);
+        }
+        wrap.appendChild(row);
+      });
+    })
+    .catch(function(){ wrap.innerHTML = '<div style="font-size:11px;color:#ef4444;padding:8px 0;">Failed to load kits.</div>'; });
+  }
+
+  loadKitsList(listWrap, isLain);
+
+  var closeBtn = document.createElement('button');
+  closeBtn.textContent = 'Close';
+  closeBtn.style.cssText = 'padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+  closeBtn.onclick = window.closeKitsModal;
+  panel.appendChild(closeBtn);
+
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+};
 
 window.openMaterialsModal = function() {
   window.closeMaterialsModal();
