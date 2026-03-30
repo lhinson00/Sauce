@@ -15710,31 +15710,46 @@ window.openQuoteSummaryModal = function() {
 
   var allEnclosed = WALLS.length > 0 && WALLS.every(function(w){ return w.encl === 'enclosed' || w.encl === 'partial'; });
 
-  // Get materials total (pre-MFT) from calculate
-  var matResult = null;
-  try { matResult = window.SauceMaterials.calculate(); } catch(e) {}
-  var matSubtotal = 0;
-  if (matResult && matResult.items) {
-    matResult.items.forEach(function(item) {
-      if (item.fixedCost != null) { matSubtotal += item.fixedCost; return; }
-      var up = window.SauceMaterials._priceTable ? (window.SauceMaterials._priceTable[(item.sku||'').toUpperCase()] || 0) : 0;
-      if (!up) return;
-      if (item.metalLength) {
-        var ftM = (item.metalLength||'').match(/(\d+)'/), inM = (item.metalLength||'').match(/(\d+(?:\.\d+)?)"/) ;
-        var lf = (ftM?parseFloat(ftM[1]):0)+(inM?parseFloat(inM[1])/12:0);
-        matSubtotal += up * item.quantity * lf;
-      } else if (item.boardLen) {
-        matSubtotal += up * item.quantity * item.boardLen;
-      } else {
-        matSubtotal += up * item.quantity;
+  var mftVal  = parseFloat((document.getElementById('st_mftRate')||{}).value) || 0;
+  var shipAmt = window.SauceShipping ? window.SauceShipping.calculate(miles).amount : 0;
+
+  // Helper: run materials calculate with temporarily swapped Q properties
+  function calcMatSubtotal(truss, oh, soffit) {
+    var saved = { truss: Q.truss, oh: Q.oh, soffit: Q.soffit };
+    Q.truss = truss; Q.oh = oh; Q.soffit = soffit;
+    var total = 0;
+    try {
+      var res = window.SauceMaterials.calculate();
+      if (res && res.items) {
+        res.items.forEach(function(item) {
+          if (item.fixedCost != null) { total += item.fixedCost; return; }
+          var up = (window.SauceMaterials._priceTable || {})[(item.sku||'').toUpperCase()] || 0;
+          if (!up) return;
+          if (item.metalLength) {
+            var ftM = (item.metalLength||'').match(/(\d+)'/), inM = (item.metalLength||'').match(/(\d+(?:\.\d+)?)"/) ;
+            var lf = (ftM?parseFloat(ftM[1]):0)+(inM?parseFloat(inM[1])/12:0);
+            total += up * item.quantity * lf;
+          } else if (item.boardLen) {
+            total += up * item.quantity * item.boardLen;
+          } else {
+            total += up * item.quantity;
+          }
+        });
       }
-    });
+    } catch(e) {}
+    Q.truss = saved.truss; Q.oh = saved.oh; Q.soffit = saved.soffit;
+    return total;
   }
 
-  var mftVal  = parseFloat((document.getElementById('st_mftRate')||{}).value) || 0;
-  var mftAmt  = matSubtotal * (mftVal / 100);
-  var taxAmt  = window.SauceTax ? window.SauceTax.calculate(matSubtotal).amount : 0;
-  var shipAmt = window.SauceShipping ? window.SauceShipping.calculate(miles).amount : 0;
+  // Calculate materials for each variant
+  var mats = allEnclosed ? {
+    woodNoOH: calcMatSubtotal('Wood',  0,  false),
+    woodOH:   calcMatSubtotal('Wood',  12, true),
+    steel:    calcMatSubtotal('Steel', 0, false),
+    stud:     calcMatSubtotal('Wood',  12, true)  // stud uses same metal config as wood OH for now
+  } : {
+    single: calcMatSubtotal(Q.truss, Q.oh, Q.soffit)
+  };
 
   // Labor
   var laborAll = window.SauceLabor ? window.SauceLabor.calculateAll() : null;
@@ -15765,15 +15780,18 @@ window.openQuoteSummaryModal = function() {
   panel.appendChild(hdr);
 
   // Warning if no prices loaded
-  if (matSubtotal === 0) {
+  var anyMat = allEnclosed ? (mats.woodNoOH + mats.woodOH + mats.steel) : mats.single;
+  if (anyMat === 0) {
     var warn = document.createElement('div');
     warn.style.cssText = 'font-size:11px;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:6px;padding:8px 10px;';
     warn.textContent = '⚠ No inventory pricing loaded — material totals will show $0. Load pricing via 💲 Prices.';
     panel.appendChild(warn);
   }
 
-  function buildColumn(title, labor, color) {
-    var laborAmt = labor ? labor.finalLabor : 0;
+  function buildColumn(title, matSubtotal, labor, color) {
+    var mftAmt    = matSubtotal * (mftVal / 100);
+    var taxAmt    = window.SauceTax ? window.SauceTax.calculate(matSubtotal).amount : 0;
+    var laborAmt  = labor ? labor.finalLabor : 0;
     var grandTotal = matSubtotal + taxAmt + mftAmt + laborAmt + concreteAmt + shipAmt;
 
     var col = document.createElement('div');
@@ -15785,12 +15803,12 @@ window.openQuoteSummaryModal = function() {
     col.appendChild(colTitle);
 
     var rows = [
-      { label: 'Materials',  amount: matSubtotal, sub: true },
-      { label: 'Tax (9.75%)', amount: taxAmt },
+      { label: 'Materials',     amount: matSubtotal, sub: true },
+      { label: 'Tax (9.75%)',   amount: taxAmt },
       { label: 'MFT (' + mftVal + '%)', amount: mftAmt },
-      { label: 'Labor',      amount: laborAmt, clickable: labor },
-      { label: 'Concrete',   amount: concreteAmt, dim: concreteAmt === 0 },
-      { label: 'Shipping',   amount: shipAmt, dim: shipAmt === 0 }
+      { label: 'Labor',         amount: laborAmt },
+      { label: 'Concrete',      amount: concreteAmt, dim: concreteAmt === 0 },
+      { label: 'Shipping',      amount: shipAmt, dim: shipAmt === 0 }
     ];
 
     rows.forEach(function(r) {
@@ -15819,13 +15837,13 @@ window.openQuoteSummaryModal = function() {
   colWrap.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
 
   if (allEnclosed && laborAll && laborAll.mode === 'enclosed') {
-    colWrap.appendChild(buildColumn('Wood No OH',     laborAll.woodNoOH, '#60a5fa'));
-    colWrap.appendChild(buildColumn('Wood w/ Soffit', laborAll.woodOH,   '#4ade80'));
-    colWrap.appendChild(buildColumn('Steel',          laborAll.steel,    '#FF8200'));
-    colWrap.appendChild(buildColumn('Stud Frame',     laborAll.stud,     '#c084fc'));
+    colWrap.appendChild(buildColumn('Wood No OH',     mats.woodNoOH, laborAll.woodNoOH, '#60a5fa'));
+    colWrap.appendChild(buildColumn('Wood w/ Soffit', mats.woodOH,   laborAll.woodOH,   '#4ade80'));
+    colWrap.appendChild(buildColumn('Steel',          mats.steel,    laborAll.steel,    '#FF8200'));
+    colWrap.appendChild(buildColumn('Stud Frame',     mats.stud,     laborAll.stud,     '#c084fc'));
   } else {
     var single = laborAll ? laborAll.single : null;
-    colWrap.appendChild(buildColumn('Quote Estimate', single, '#FF8200'));
+    colWrap.appendChild(buildColumn('Quote Estimate', mats.single, single, '#FF8200'));
   }
 
   panel.appendChild(colWrap);
@@ -16648,7 +16666,7 @@ window.SauceLabor.calculateAll = function() {
       mode: 'enclosed',
       woodNoOH: SL.calculate({ truss: 'Wood', oh: 0, frameType: 'post' }),
       woodOH:   SL.calculate({ truss: 'Wood', oh: 12, frameType: 'post' }),
-      steel:    SL.calculate({ truss: 'Steel', oh: 18, frameType: 'post' }),
+      steel:    SL.calculate({ truss: 'Steel', oh: 0, frameType: 'post' }),
       stud:     SL.calculate({ truss: 'Wood', oh: 12, frameType: 'stud' })
     };
   } else {
