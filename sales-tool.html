@@ -853,10 +853,10 @@ body.customer-mode #custColorChartLink { display: block !important; }
 
   <div style="display:flex;align-items:center;gap:6px;">
     <div id="calcStatusBadge" class="state-confirmed"><div class="csb-dot"></div><span id="calcStatusText">Ready</span></div>
-    <button onclick="forceRefreshPrice()" id="priceRefreshBtn" title="Calculate price" style="background:rgba(34,197,94,.12);border:1.5px solid rgba(34,197,94,.5);border-radius:8px;color:rgba(34,197,94,.95);font-size:11px;font-weight:800;padding:4px 16px;cursor:pointer;line-height:1.5;font-family:Outfit,sans-serif;letter-spacing:.8px;text-transform:uppercase;transition:all .2s;box-shadow:0 0 10px rgba(34,197,94,.12);" onmouseover="this.style.background='rgba(34,197,94,.22)';this.style.boxShadow='0 0 18px rgba(34,197,94,.3)'" onmouseout="this.style.background='rgba(34,197,94,.12)';this.style.boxShadow='0 0 10px rgba(34,197,94,.12)'">⟳ Calculate</button>
+    <button onclick="forceRefreshPrice()" id="priceRefreshBtn" title="Calculate price" style="display:none;">⟳ Calculate</button>
   </div>
   <div class="price-strip-spacer"></div>
-  <div class="salesman-badge">
+  <div class="salesman-badge" id="salesmanBadge" title="">
     <div class="salesman-dot"></div>
     <div class="salesman-txt">Salesman</div>
   </div>
@@ -869,7 +869,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
   <div id="mobileCalcBadge" class="state-calculating" style="display:flex;align-items:center;gap:5px;font-size:10px;font-weight:700;color:rgba(255,255,255,.7);letter-spacing:.3px;">
     <div class="csb-dot"></div><span id="mobileCalcText">Ready</span>
   </div>
-  <button id="mobileCalcBtn" onclick="forceRefreshPrice()" title="Calculate price" style="background:rgba(34,197,94,.12);border:1.5px solid rgba(34,197,94,.5);border-radius:8px;color:rgba(34,197,94,.95);font-size:11px;font-weight:800;padding:4px 16px;cursor:pointer;line-height:1.5;font-family:Outfit,sans-serif;letter-spacing:.8px;text-transform:uppercase;transition:all .2s;box-shadow:0 0 10px rgba(34,197,94,.12);" onmouseover="this.style.background='rgba(34,197,94,.22)';this.style.boxShadow='0 0 18px rgba(34,197,94,.3)'" onmouseout="this.style.background='rgba(34,197,94,.12)';this.style.boxShadow='0 0 10px rgba(34,197,94,.12)'">⟳ Calculate</button>
+  <button id="mobileCalcBtn" onclick="forceRefreshPrice()" title="Calculate price" style="display:none;">⟳ Calculate</button>
 </div>
 
 <!-- Breakdown panels — static on desktop/iPad, dropdown on mobile -->
@@ -1598,6 +1598,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
           <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:80px;">
             <div style="font-size:9px;color:var(--muted);font-weight:600;">Rate (%)</div>
             <input id="st_mftRate" type="number" min="0" max="25" step="0.5" placeholder="Auto"
+              oninput="try{updateStripFromLocalCalc();}catch(e){}"
               style="font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
           </div>
           <div style="display:flex;flex-direction:column;gap:3px;flex:2;min-width:120px;">
@@ -1815,6 +1816,148 @@ function scheduleBuildAndPrice() {
   scheduleBuild();
   schedulePrice();
 }
+
+// ── LOCAL STRIP UPDATER ───────────────────────────────────────────────────────
+function updateStripFromLocalCalc() {
+  if (!window.SauceMaterials || !window.SauceLabor || !window._Q) return;
+
+  var Q        = window._Q;
+  var WALLS    = window._WALLS || [];
+  var shedCfgs = window._shedConfigs || [];
+  var county   = window._cachedCounty || '';
+  var miles    = window._cachedMileage || 0;
+  var mftVal   = parseFloat((document.getElementById('st_mftRate')||{}).value) || 0;
+  var sqft     = Q.w * Q.l;
+
+  var allEnclosed = WALLS.length > 0 && WALLS.every(function(w){ return w.encl === 'enclosed' || w.encl === 'partial'; });
+
+  // Helper: materials subtotal for a variant
+  function matForVariant(truss, oh, soffit) {
+    var saved = { truss: Q.truss, oh: Q.oh, soffit: Q.soffit };
+    Q.truss = truss; Q.oh = oh; Q.soffit = soffit;
+    var total = 0;
+    try {
+      var res = window.SauceMaterials.calculate();
+      if (res && res.items) {
+        res.items.forEach(function(item) {
+          if (item.fixedCost != null) { total += item.fixedCost; return; }
+          var up = (window.SauceMaterials._priceTable||{})[(item.sku||'').toUpperCase()] || 0;
+          if (!up) return;
+          if (item.metalLength) {
+            var ftM = (item.metalLength||'').match(/(\d+)'/), inM = (item.metalLength||'').match(/(\d+(?:\.\d+)?)"/) ;
+            var lf = (ftM?parseFloat(ftM[1]):0)+(inM?parseFloat(inM[1])/12:0);
+            total += up * item.quantity * lf;
+          } else if (item.boardLen) {
+            total += up * item.quantity * item.boardLen;
+          } else {
+            total += up * item.quantity;
+          }
+        });
+      }
+    } catch(e) {}
+    Q.truss = saved.truss; Q.oh = saved.oh; Q.soffit = saved.soffit;
+    return total;
+  }
+
+  // Concrete total
+  var concreteAmt = 0;
+  if (window._lastConcreteOpts && window.SauceConcrete) {
+    var co = window._lastConcreteOpts;
+    if (co.main) concreteAmt += window.SauceConcrete.calculate(county, sqft, co.main).finalCost;
+    if (co.sheds) co.sheds.forEach(function(sOpts, i) {
+      if (!sOpts) return;
+      var sc = shedCfgs[i];
+      if (sc && sc.w && sc.l) concreteAmt += window.SauceConcrete.calculate(county, sc.w * sc.l, sOpts).finalCost;
+    });
+  }
+
+  // Shipping
+  var shipAmt = miles > 0 ? miles * 6.00 : 0;
+
+  // Labor all variants
+  var laborAll = window.SauceLabor.calculateAll();
+
+  // Define variants
+  var variants;
+  if (allEnclosed) {
+    variants = [
+      { prefix: 'ps4_', truss: 'Wood',  oh: 12, soffit: true,  labor: laborAll.stud,     label: 'Stud' },
+      { prefix: 'ps_',  truss: 'Wood',  oh: 12, soffit: true,  labor: laborAll.woodOH,   label: 'W/Soffit' },
+      { prefix: 'ps2_', truss: 'Wood',  oh: 0,  soffit: false, labor: laborAll.woodNoOH, label: 'No Soffit' },
+      { prefix: 'ps3_', truss: 'Steel', oh: 0,  soffit: false, labor: laborAll.steel,    label: 'Steel' }
+    ];
+  } else {
+    var singleLabor = laborAll.single;
+    variants = [
+      { prefix: 'ps_',  truss: Q.truss, oh: Q.oh, soffit: Q.soffit, labor: singleLabor, label: 'Current' }
+    ];
+    // Zero out other columns
+    ['ps2_','ps3_','ps4_'].forEach(function(pfx) {
+      var p = function(id,v){ var el=document.getElementById(id); if(el){ el.textContent=v; el.classList.remove('pending'); } };
+      p(pfx+'material','—'); p(pfx+'labor','—'); p(pfx+'concrete','—');
+      p(pfx+'esd','—'); p(pfx+'tax','—'); p(pfx+'shipping','—'); p(pfx+'mft','—');
+      var tot = document.getElementById(pfx+'total');
+      if (tot) { tot.textContent='—'; tot.classList.add('pending'); tot.classList.remove('highlight'); }
+    });
+  }
+
+  var p = function(id,v){ var el=document.getElementById(id); if(el){ el.textContent=v; el.classList.remove('pending'); } };
+
+  variants.forEach(function(v) {
+    var mat    = matForVariant(v.truss, v.oh, v.soffit);
+    var tax    = mat * 0.0975;
+    var mft    = mat * (mftVal / 100);
+    var labor  = v.labor ? v.labor.finalLabor : 0;
+    var grand  = mat + tax + mft + labor + concreteAmt + shipAmt;
+
+    p(v.prefix+'material', mat > 0 ? fmtPrice(mat) : '—');
+    p(v.prefix+'labor',    labor > 0 ? fmtPrice(labor) : '—');
+    p(v.prefix+'concrete', concreteAmt > 0 ? fmtPrice(concreteAmt) : '—');
+    p(v.prefix+'esd',      '—');
+    p(v.prefix+'tax',      tax > 0 ? fmtPrice(tax) : '—');
+    p(v.prefix+'shipping', shipAmt > 0 ? fmtPrice(shipAmt) : '—');
+    p(v.prefix+'mft',      mft > 0 ? fmtPrice(mft) : '—');
+
+    var tot = document.getElementById(v.prefix+'total');
+    if (tot) {
+      tot.textContent = grand > 0 ? fmtPriceFull(grand) : '—';
+      tot.classList.remove('pending');
+      if (grand > 0) tot.classList.add('highlight'); else tot.classList.remove('highlight');
+    }
+
+    // Make Material cell clickable → open material list for this variant
+    var matEl = document.getElementById(v.prefix+'material');
+    if (matEl) {
+      matEl.style.cursor = 'pointer';
+      matEl.title = 'Click to view material list';
+      matEl.onclick = (function(truss, oh, soffit) {
+        return function(e) {
+          e.stopPropagation();
+          var saved = { truss: Q.truss, oh: Q.oh, soffit: Q.soffit };
+          Q.truss = truss; Q.oh = oh; Q.soffit = soffit;
+          window.openMaterialsModal();
+          Q.truss = saved.truss; Q.oh = saved.oh; Q.soffit = saved.soffit;
+        };
+      })(v.truss, v.oh, v.soffit);
+    }
+
+    // Make Labor cell clickable → open labor modal
+    var labEl = document.getElementById(v.prefix+'labor');
+    if (labEl) {
+      labEl.style.cursor = 'pointer';
+      labEl.title = 'Click to view labor breakdown';
+      labEl.onclick = function(e) { e.stopPropagation(); window.openLaborModal(); };
+    }
+
+    // Make Concrete cell clickable → open concrete modal
+    var conEl = document.getElementById(v.prefix+'concrete');
+    if (conEl) {
+      conEl.style.cursor = 'pointer';
+      conEl.title = 'Click to configure concrete';
+      conEl.onclick = function(e) { e.stopPropagation(); window.openConcreteModal(); };
+    }
+  });
+}
 function triggerBuild() {
   // Always sync hidden color selects from JS vars before building
   // This guards against mobile DOM resets between restoreConfig and build
@@ -1854,6 +1997,10 @@ function triggerBuild() {
   _wallsVisible = true;
   var wb = document.getElementById('vpWallToggle');
   if (wb) { wb.textContent = '🏗️ Hide Walls'; wb.style.color = '#FF8200'; wb.style.borderColor = 'rgba(255,130,0,.35)'; }
+  // Update pricing strip from local calculators
+  setTimeout(function() {
+    try { updateStripFromLocalCalc(); } catch(e) { console.warn('[LocalStrip]', e); }
+  }, 50);
 }
 function updateSpecs() {
   var peak = Math.round((Q.h + Q.w/2*Q.pitch/12)*10)/10;
@@ -2211,6 +2358,28 @@ document.addEventListener('DOMContentLoaded', function() {
   var descInput = document.getElementById('matAdderDesc');
   if (descInput) descInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') addMaterialAdder(); });
 });
+
+// Secret Calculate trigger — lain.hinson only, triple-click the salesman badge
+(function() {
+  var clicks = 0, timer = null;
+  document.addEventListener('DOMContentLoaded', function() {
+    var badge = document.getElementById('salesmanBadge');
+    if (!badge) return;
+    badge.addEventListener('click', function() {
+      if ((window.currentUser||{}).username !== 'lain.hinson') return;
+      clicks++;
+      clearTimeout(timer);
+      timer = setTimeout(function() { clicks = 0; }, 600);
+      if (clicks >= 3) {
+        clicks = 0;
+        // Show a brief flash then fire
+        badge.style.outline = '2px solid rgba(34,197,94,.8)';
+        setTimeout(function() { badge.style.outline = ''; }, 400);
+        forceRefreshPrice();
+      }
+    });
+  });
+})();
 
 function setVentGap(val) {
   Q.ventGap = !!val;
@@ -15017,6 +15186,8 @@ function loadInventoryPricing() {
         window.SauceMaterials._priceTable = d.prices;
         try { localStorage.setItem('saucePriceTable', JSON.stringify(d.prices)); } catch(e) {}
         console.log('[Prices] Loaded ' + Object.keys(d.prices).length + ' prices from sheet');
+        // Refresh local pricing strip with new prices
+        setTimeout(function(){ try{ updateStripFromLocalCalc(); }catch(e){} }, 100);
       }
     })
     .catch(function(e){ console.log('[Prices] Load error:', e); });
@@ -15762,6 +15933,8 @@ window.openConcreteModal = function() {
 
     // Save
     window._lastConcreteOpts = { main: mainOpts, sheds: shedOptsArr };
+    // Update pricing strip
+    try { updateStripFromLocalCalc(); } catch(e) {}
 
     // Calculate
     var grandTotal = 0;
