@@ -3963,7 +3963,7 @@ function vpToggleWalls() {
         const wallColorName = document.getElementById('qgWallColor').value;
         const trimColorName = document.getElementById('qgTrimColor').value;
         const hasWainscot = document.getElementById('qgWainscot').checked;
-        const wainscotColorName = hasWainscot ? document.getElementById('qgWainscotColor').value : wallColorName;
+        const wainscotColorName = hasWainscot ? selRoof : wallColorName;
 
         const mW = new THREE.MeshBasicMaterial({ color: pc(wallColorName), side: THREE.DoubleSide });
         const mR = new THREE.MeshBasicMaterial({ color: pc(roofColorName), side: THREE.DoubleSide });
@@ -14604,11 +14604,38 @@ window.SauceMaterials.calculate = function() {
       detail:      sackcrete.quantity + ' bags  |  1 pallet per 42 bags'
     });
   }
+  // LAG5 — moved to Yard under PAL
+  (function() {
+    var SM2 = window.SauceMaterials;
+    var lagItems = SM2.calcLagBolts(Q, WALLS, window._shedConfigs||[], allDoors, sf);
+    lagItems.forEach(function(item) {
+      item.category = 'Yard';
+      items.push(item);
+    });
+  })();
   SM.calcHeaders(Q, WALLS, allDoors, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcGarageDoorHeaders(allDoors).forEach(function(item) { items.push(item); });
   SM.calcWoodTrusses(Q).forEach(function(item) { items.push(item); });
   SM.calcSteelTrusses(Q).forEach(function(item) { items.push(item); });
   SM.calcSteelShedTrusses(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  // Y-Bracing: 1× PT268 per post on open eave walls
+  (function() {
+    var SM2 = window.SauceMaterials;
+    var yBraceQty = 0;
+    ['left','right'].forEach(function(side) {
+      var wCfg = (WALLS||[]).find(function(w){ return w.id === side; });
+      if (wCfg && wCfg.encl === 'open') {
+        yBraceQty += SM2.getPostsForWall(side, Q, WALLS, allDoors).length;
+      }
+    });
+    if (yBraceQty > 0) items.push({
+      category:    'Yard',
+      description: 'Y-Bracing',
+      sku:         'PT268',
+      quantity:    yBraceQty,
+      detail:      '1 per open eave wall post'
+    });
+  })();
   SM.calcSteelPurlins(Q).forEach(function(item) { items.push(item); });
   SM.calcSteelShedPurlins(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcWoodPurlins(Q).forEach(function(item) { items.push(item); });
@@ -14631,14 +14658,14 @@ window.SauceMaterials.calculate = function() {
   SM.calcBarnDoors().forEach(function(item) { items.push(item); });
   SM.calcWalkDoors().forEach(function(item) { items.push(item); });
   SM.calcWindows().forEach(function(item) { items.push(item); });
-  SM.calcLagBolts(Q, WALLS, window._shedConfigs||[], allDoors, sf).forEach(function(item) { items.push(item); });
   SM.calcOutsideSolidClosure(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   items.push({ category: 'Hardware', description: 'Joist Hanger Nails', sku: 'JHNS1.255LB', quantity: 1, detail: 'always 1 box' });
   SM.calcJoistHangers(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcHurricaneBrackets(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
-  items.push({ category: 'Hardware', description: 'Corner Brackets', sku: 'HBBA', quantity: 16, detail: 'always 16' });
+  var isRoofOnly = (typeof isOpenBuildingRoute === 'function') && isOpenBuildingRoute();
+  if (!isRoofOnly) items.push({ category: 'Hardware', description: 'Corner Brackets', sku: 'HBBA', quantity: 16, detail: 'always 16' });
   SM.calcHeadLockScrews(Q, WALLS, window._shedConfigs||[], allDoors, sf).forEach(function(item) { items.push(item); });
-  items.push({ category: 'Hardware', description: 'Nails', sku: 'HDGRS10D30', quantity: Q.truss === 'Wood' ? 3 : 2, detail: Q.truss === 'Wood' ? 'wood truss — 3' : 'steel truss — 2' });
+  items.push({ category: 'Hardware', description: 'Nails', sku: 'HDGRS10D30', quantity: isRoofOnly ? 1 : (Q.truss === 'Wood' ? 3 : 2), detail: isRoofOnly ? 'roof only — 1' : (Q.truss === 'Wood' ? 'wood truss — 3' : 'steel truss — 2') });
   SM.calcInsulation(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
 
   // Staples: STP38AR — 1 per 5 insulation rolls (non-vinyl), 1 per 10 rolls (vinyl back)
@@ -15121,34 +15148,57 @@ window.openMaterialsModal = function() {
         catLabel.appendChild(subEl);
         grandTotal += catTotal;
       }
+
+      // After Hardware items, inject MFT as a line item in that section
+      if (cat === 'Hardware') {
+        var mftValInner = parseFloat((document.getElementById('st_mftRate')||{}).value);
+        if (!isNaN(mftValInner) && mftValInner > 0 && grandTotal > 0) {
+          var mftAmtInner = grandTotal * (mftValInner / 100);
+          var mftRow = document.createElement('div');
+          mftRow.style.cssText = 'display:grid;grid-template-columns:1fr auto auto auto;align-items:start;gap:8px;padding:8px 10px;background:#1e293b;border-radius:7px;margin-bottom:4px;';
+          var mftInfo = document.createElement('div');
+          var mftDesc = document.createElement('div');
+          mftDesc.style.cssText = 'font-size:12px;font-weight:700;color:#f0f3f7;';
+          mftDesc.textContent = 'MFT (' + mftValInner + '%)';
+          var mftDet = document.createElement('div');
+          mftDet.style.cssText = 'font-size:10px;color:#888;margin-top:2px;';
+          mftDet.textContent = 'Manufacturing fee on material subtotal';
+          mftInfo.appendChild(mftDesc); mftInfo.appendChild(mftDet);
+          var mftSkuEl = document.createElement('div');
+          mftSkuEl.style.cssText = 'font-size:11px;font-weight:800;color:#FF8200;';
+          mftSkuEl.textContent = 'MFT';
+          var mftPriceEl = document.createElement('div');
+          mftPriceEl.style.cssText = 'font-size:10px;color:#888;text-align:right;';
+          mftPriceEl.innerHTML = mftValInner + '%<br><span style="color:#4ade80;font-weight:700;font-size:11px;">$' + mftAmtInner.toFixed(2) + '</span>';
+          var mftQtyEl = document.createElement('div');
+          mftQtyEl.style.cssText = 'font-size:13px;font-weight:900;color:#f0f3f7;text-align:right;min-width:28px;';
+          mftQtyEl.textContent = 'x1';
+          mftRow.appendChild(mftInfo); mftRow.appendChild(mftSkuEl); mftRow.appendChild(mftPriceEl); mftRow.appendChild(mftQtyEl);
+          body.appendChild(mftRow);
+          grandTotal += mftAmtInner;
+          // Update hardware subtotal label to include MFT
+          if (subEl) subEl.textContent = 'Hardware subtotal (incl. MFT): $' + (catTotal + mftAmtInner).toFixed(2);
+        }
+      }
     });
   }
   panel.appendChild(body);
 
-  // Grand total bar
+  // Grand total bar — MFT already included via Hardware section
   if (grandTotal > 0) {
     var totalBar = document.createElement('div');
-    totalBar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:rgba(255,130,0,.1);border:1px solid rgba(255,130,0,.3);border-radius:10px;margin-top:8px;';
-    totalBar.innerHTML = '<span style="font-size:13px;font-weight:800;color:#f0f3f7;">Material Total</span><span style="font-size:16px;font-weight:900;color:#FF8200;">$' + grandTotal.toFixed(2) + '</span>';
+    totalBar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:rgba(255,130,0,.18);border:1px solid rgba(255,130,0,.5);border-radius:10px;margin-top:8px;';
+    totalBar.innerHTML = '<span style="font-size:13px;font-weight:800;color:#f0f3f7;">Total (incl. MFT)</span><span style="font-size:16px;font-weight:900;color:#FF8200;">$' + grandTotal.toFixed(2) + '</span>';
     panel.appendChild(totalBar);
   }
 
-  // MFT — always show when rate is set
+  // MFT rate display — just show the rate for reference
   var mftVal = parseFloat((document.getElementById('st_mftRate')||{}).value);
   if (!isNaN(mftVal) && mftVal > 0) {
-    var mftRate = mftVal / 100;
-    var mftAmt  = grandTotal * mftRate;
-    var mftBar  = document.createElement('div');
-    mftBar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:10px;margin-top:6px;';
-    mftBar.innerHTML = '<span style="font-size:12px;font-weight:700;color:#888;">MFT (' + mftVal + '%)</span><span style="font-size:14px;font-weight:800;color:#f0f3f7;">' + (grandTotal > 0 ? '$' + mftAmt.toFixed(2) : '—') + '</span>';
+    var mftBar = document.createElement('div');
+    mftBar.style.cssText = 'text-align:right;font-size:10px;color:#666;padding:4px 2px 0;';
+    mftBar.textContent = 'MFT rate: ' + mftVal + '% — included in Hardware section';
     panel.appendChild(mftBar);
-
-    if (grandTotal > 0) {
-      var combinedBar = document.createElement('div');
-      combinedBar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:rgba(255,130,0,.18);border:1px solid rgba(255,130,0,.5);border-radius:10px;margin-top:6px;';
-      combinedBar.innerHTML = '<span style="font-size:13px;font-weight:800;color:#f0f3f7;">Total w/ MFT</span><span style="font-size:16px;font-weight:900;color:#FF8200;">$' + (grandTotal + mftAmt).toFixed(2) + '</span>';
-      panel.appendChild(combinedBar);
-    }
   }
 
   var closeBtn = document.createElement('button');
