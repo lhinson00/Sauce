@@ -8797,6 +8797,7 @@ function initSalesAuth() {
       if (sessionValid && hasToken) {
         window.currentUser = u;
         setTimeout(warmPing, 500);
+        loadInventoryPricing();
         console.log('[Sales] Auto-logged in as:', u.username);
         return;
       } else if (!hasToken) {
@@ -8900,6 +8901,7 @@ async function doSalesLogin() {
       sessionStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       setTimeout(warmPing, 500);
+      loadInventoryPricing();
       hideSalesLoginModal();
       initLainFeatures(); // unlock save/email/pdf for this user
       // Demo badge
@@ -14688,9 +14690,41 @@ window.closeMaterialsModal = function() {
   if (m) m.remove();
 };
 
-// ====================================================================
-// PRICE MANAGER
-// ====================================================================
+// Load inventory pricing from the sheet — called on login
+function loadInventoryPricing() {
+  fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'getInventoryPricing', token: getToken(), username: (window.currentUser||{}).username||'' })
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    if (d.success && d.prices) {
+      window.SauceMaterials._priceTable = d.prices;
+      _savePriceTable(); // mirror to localStorage as cache
+      console.log('[Prices] Loaded ' + Object.keys(d.prices).length + ' prices from sheet');
+    }
+  })
+  .catch(function(e){ console.log('[Prices] Load error:', e); });
+}
+
+// Save inventory pricing to the sheet — lain.hinson only
+function saveInventoryPricingToSheet() {
+  if ((window.currentUser||{}).username !== 'lain.hinson') return;
+  fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'saveInventoryPricing',
+      token: getToken(),
+      username: 'lain.hinson',
+      prices: window.SauceMaterials._priceTable
+    })
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){ console.log('[Prices] Sheet save:', d.success ? 'ok (' + d.count + ' SKUs)' : d.error); })
+  .catch(function(e){ console.log('[Prices] Sheet save error:', e); });
+}
 
 // Load price table from localStorage
 window.SauceMaterials._priceTable = (function() {
@@ -14701,6 +14735,7 @@ window.SauceMaterials._priceTable = (function() {
 function _savePriceTable() {
   try { localStorage.setItem('saucePriceTable', JSON.stringify(window.SauceMaterials._priceTable)); }
   catch(e) {}
+  saveInventoryPricingToSheet();
 }
 
 function getPrice(sku) {
@@ -14734,11 +14769,14 @@ window.openPriceManager = function() {
   hdr.appendChild(xBtn);
   panel.appendChild(hdr);
 
+  var isLain = (window.currentUser||{}).username === 'lain.hinson';
+
   // Toolbar
   var toolbar = document.createElement('div');
   toolbar.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
 
-  // Import CSV
+  // Import CSV — lain.hinson only
+  if (isLain) {
   var importBtn = document.createElement('button');
   importBtn.textContent = '⬆ Import CSV';
   importBtn.style.cssText = 'padding:7px 14px;border-radius:8px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.1);color:#FF8200;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
@@ -14769,8 +14807,9 @@ window.openPriceManager = function() {
   importBtn.onclick = function(){ fileInput.click(); };
   toolbar.appendChild(fileInput);
   toolbar.appendChild(importBtn);
+  } // end isLain import block
 
-  // Export CSV
+  // Export CSV — all users can export
   var exportBtn = document.createElement('button');
   exportBtn.textContent = '⬇ Export CSV';
   exportBtn.style.cssText = importBtn.style.cssText;
@@ -14786,30 +14825,32 @@ window.openPriceManager = function() {
   };
   toolbar.appendChild(exportBtn);
 
-  // Add new SKU
-  var addRow = document.createElement('div');
-  addRow.style.cssText = 'display:flex;gap:6px;margin-left:auto;';
-  var newSku = document.createElement('input');
-  newSku.placeholder = 'SKU';
-  newSku.style.cssText = 'width:100px;padding:6px 8px;border-radius:6px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:11px;font-family:Outfit,sans-serif;';
-  var newPrice = document.createElement('input');
-  newPrice.placeholder = 'Price';
-  newPrice.type = 'number'; newPrice.step = '0.01';
-  newPrice.style.cssText = 'width:80px;padding:6px 8px;border-radius:6px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:11px;font-family:Outfit,sans-serif;';
-  var addBtn = document.createElement('button');
-  addBtn.textContent = '+ Add';
-  addBtn.style.cssText = 'padding:6px 12px;border-radius:6px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.15);color:#FF8200;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
-  addBtn.onclick = function() {
-    var s = newSku.value.trim().toUpperCase();
-    var p = parseFloat(newPrice.value);
-    if (!s || isNaN(p)) return;
-    window.SauceMaterials._priceTable[s] = p;
-    _savePriceTable();
-    newSku.value = ''; newPrice.value = '';
-    renderTable();
-  };
-  addRow.appendChild(newSku); addRow.appendChild(newPrice); addRow.appendChild(addBtn);
-  toolbar.appendChild(addRow);
+  // Add new SKU — lain.hinson only
+  if (isLain) {
+    var addRow = document.createElement('div');
+    addRow.style.cssText = 'display:flex;gap:6px;margin-left:auto;';
+    var newSku = document.createElement('input');
+    newSku.placeholder = 'SKU';
+    newSku.style.cssText = 'width:100px;padding:6px 8px;border-radius:6px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:11px;font-family:Outfit,sans-serif;';
+    var newPrice = document.createElement('input');
+    newPrice.placeholder = 'Price';
+    newPrice.type = 'number'; newPrice.step = '0.01';
+    newPrice.style.cssText = 'width:80px;padding:6px 8px;border-radius:6px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:11px;font-family:Outfit,sans-serif;';
+    var addBtn = document.createElement('button');
+    addBtn.textContent = '+ Add';
+    addBtn.style.cssText = 'padding:6px 12px;border-radius:6px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.15);color:#FF8200;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+    addBtn.onclick = function() {
+      var s = newSku.value.trim().toUpperCase();
+      var p = parseFloat(newPrice.value);
+      if (!s || isNaN(p)) return;
+      window.SauceMaterials._priceTable[s] = p;
+      _savePriceTable();
+      newSku.value = ''; newPrice.value = '';
+      renderTable();
+    };
+    addRow.appendChild(newSku); addRow.appendChild(newPrice); addRow.appendChild(addBtn);
+    toolbar.appendChild(addRow);
+  } // end isLain import/add block
   panel.appendChild(toolbar);
 
   // Status line
@@ -14858,25 +14899,30 @@ window.openPriceManager = function() {
       tdPrice.style.cssText = 'padding:7px 8px;text-align:right;';
       var priceInput = document.createElement('input');
       priceInput.type = 'number'; priceInput.step = '0.01'; priceInput.value = pt[sku].toFixed(2);
-      priceInput.style.cssText = 'width:80px;padding:4px 6px;border-radius:5px;border:1px solid #444;background:#1e293b;color:#4ade80;font-size:11px;font-weight:700;text-align:right;font-family:Outfit,sans-serif;';
-      priceInput.onchange = function() {
-        var v = parseFloat(priceInput.value);
-        if (!isNaN(v)) { window.SauceMaterials._priceTable[sku] = v; _savePriceTable(); }
-      };
+      priceInput.readOnly = !isLain;
+      priceInput.style.cssText = 'width:80px;padding:4px 6px;border-radius:5px;border:1px solid ' + (isLain ? '#444' : 'transparent') + ';background:' + (isLain ? '#1e293b' : 'transparent') + ';color:#4ade80;font-size:11px;font-weight:700;text-align:right;font-family:Outfit,sans-serif;';
+      if (isLain) {
+        priceInput.onchange = function() {
+          var v = parseFloat(priceInput.value);
+          if (!isNaN(v)) { window.SauceMaterials._priceTable[sku] = v; _savePriceTable(); }
+        };
+      }
       tdPrice.appendChild(priceInput);
 
       var tdDel = document.createElement('td');
       tdDel.style.cssText = 'padding:7px 8px;text-align:center;';
-      var delBtn = document.createElement('button');
-      delBtn.textContent = '×';
-      delBtn.style.cssText = 'background:none;border:none;color:#555;font-size:14px;cursor:pointer;padding:0 4px;';
-      delBtn.onmouseover = function(){ delBtn.style.color='#ef4444'; };
-      delBtn.onmouseout  = function(){ delBtn.style.color='#555'; };
-      delBtn.onclick = function() {
-        delete window.SauceMaterials._priceTable[sku];
-        _savePriceTable(); renderTable();
-      };
-      tdDel.appendChild(delBtn);
+      if (isLain) {
+        var delBtn = document.createElement('button');
+        delBtn.textContent = '×';
+        delBtn.style.cssText = 'background:none;border:none;color:#555;font-size:14px;cursor:pointer;padding:0 4px;';
+        delBtn.onmouseover = function(){ delBtn.style.color='#ef4444'; };
+        delBtn.onmouseout  = function(){ delBtn.style.color='#555'; };
+        delBtn.onclick = function() {
+          delete window.SauceMaterials._priceTable[sku];
+          _savePriceTable(); renderTable();
+        };
+        tdDel.appendChild(delBtn);
+      }
 
       tr.appendChild(tdSku); tr.appendChild(tdPrice); tr.appendChild(tdDel);
       tbody.appendChild(tr);
