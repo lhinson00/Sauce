@@ -15104,6 +15104,27 @@ window.openMaterialsModal = function() {
       return a.localeCompare(b);
     });
     var grandTotal = 0;
+    var sessionOverrides = {}; // SKU → override unit price, session only
+    var isLainModal = (window.currentUser||{}).username === 'lain.hinson';
+
+    function getEffectivePrice(sku) {
+      if (sessionOverrides[sku] != null) return sessionOverrides[sku];
+      return getPrice(sku);
+    }
+
+    function calcLineTotal(item, uPrice) {
+      if (item.fixedCost != null) return item.fixedCost;
+      if (uPrice == null) return null;
+      if (item.metalLength) {
+        var ftM = item.metalLength.match(/(\d+)'/);
+        var inM = item.metalLength.match(/(\d+(?:\.\d+)?)"/) ;
+        var lf = (ftM ? parseFloat(ftM[1]) : 0) + (inM ? parseFloat(inM[1]) / 12 : 0);
+        return uPrice * item.quantity * lf;
+      }
+      if (item.boardLen) return uPrice * item.quantity * item.boardLen;
+      return uPrice * item.quantity;
+    }
+
     catKeys.forEach(function(cat) {
       var catLabel = document.createElement('div');
       catLabel.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:rgba(255,130,0,.8);margin:14px 0 6px;display:flex;justify-content:space-between;align-items:center;';
@@ -15114,25 +15135,8 @@ window.openMaterialsModal = function() {
       body.appendChild(catLabel);
 
       cats[cat].forEach(function(item) {
-        var unitPrice = getPrice(item.sku);
-        var lineTotal = null;
-        if (item.fixedCost != null) {
-          lineTotal = item.fixedCost;
-        } else if (unitPrice != null) {
-          if (item.metalLength) {
-            var lenFt = (function(s) {
-              var ftM = s.match(/(\d+)'/);
-              var inM = s.match(/(\d+(?:\.\d+)?)"/) ;
-              return (ftM ? parseFloat(ftM[1]) : 0) + (inM ? parseFloat(inM[1]) / 12 : 0);
-            })(item.metalLength);
-            lineTotal = unitPrice * item.quantity * lenFt;
-          } else if (item.boardLen) {
-            // Per-foot pricing (e.g. CLVL1178): unitPrice × qty × board length in feet
-            lineTotal = unitPrice * item.quantity * item.boardLen;
-          } else {
-            lineTotal = unitPrice * item.quantity;
-          }
-        }
+        var unitPrice = getEffectivePrice(item.sku);
+        var lineTotal = calcLineTotal(item, unitPrice);
         if (lineTotal != null) catTotal += lineTotal;
 
         var row = document.createElement('div');
@@ -15172,13 +15176,61 @@ window.openMaterialsModal = function() {
 
         var priceEl = document.createElement('div');
         priceEl.style.cssText = 'font-size:10px;color:#888;text-align:right;white-space:nowrap;';
-        if (lineTotal != null) {
-          var priceDetail = item.fixedCost != null ? 'calculated'
-            : item.boardLen ? '$' + unitPrice.toFixed(2) + '/ft'
-            : item.metalLength ? '$' + unitPrice.toFixed(2) + '/ln ft'
-            : '$' + unitPrice.toFixed(2);
-          priceEl.innerHTML = priceDetail + '<br><span style="color:#4ade80;font-weight:700;font-size:11px;">$' + lineTotal.toFixed(2) + '</span>';
+
+        function renderPriceEl(iItem, iUnitPrice, iLineTotal) {
+          priceEl.innerHTML = '';
+          if (iLineTotal != null) {
+            var isOverridden = sessionOverrides[iItem.sku] != null;
+            var priceDetail = iItem.fixedCost != null ? 'calculated'
+              : iItem.boardLen ? '$' + iUnitPrice.toFixed(2) + '/ft'
+              : iItem.metalLength ? '$' + iUnitPrice.toFixed(2) + '/ln ft'
+              : '$' + iUnitPrice.toFixed(2);
+            var lineTotalSpan = document.createElement('span');
+            lineTotalSpan.style.cssText = 'color:' + (isOverridden ? '#f59e0b' : '#4ade80') + ';font-weight:700;font-size:11px;display:block;' + (isLainModal && iItem.fixedCost == null ? 'cursor:pointer;text-decoration:underline dotted;' : '');
+            lineTotalSpan.title = isLainModal && iItem.fixedCost == null ? 'Click to override price' : '';
+            lineTotalSpan.textContent = '$' + iLineTotal.toFixed(2) + (isOverridden ? ' ✎' : '');
+            if (isLainModal && iItem.fixedCost == null) {
+              lineTotalSpan.onclick = function(e) {
+                e.stopPropagation();
+                // Replace with inline input
+                priceEl.innerHTML = '';
+                var inp = document.createElement('input');
+                inp.type = 'number'; inp.step = '0.01';
+                inp.value = iUnitPrice != null ? iUnitPrice.toFixed(2) : '';
+                inp.placeholder = 'unit price';
+                inp.style.cssText = 'width:70px;padding:3px 5px;border-radius:4px;border:1px solid #f59e0b;background:#1e293b;color:#f59e0b;font-size:10px;text-align:right;font-family:Outfit,sans-serif;';
+                inp.onclick = function(e){ e.stopPropagation(); };
+                var saveBtn = document.createElement('button');
+                saveBtn.textContent = '✓';
+                saveBtn.style.cssText = 'margin-left:3px;background:#f59e0b;border:none;border-radius:3px;color:#000;font-size:10px;font-weight:700;cursor:pointer;padding:2px 5px;';
+                var cancelBtn = document.createElement('button');
+                cancelBtn.textContent = '×';
+                cancelBtn.style.cssText = 'margin-left:2px;background:none;border:none;color:#888;font-size:12px;cursor:pointer;padding:2px 4px;';
+                saveBtn.onclick = function(e) {
+                  e.stopPropagation();
+                  var newUnit = parseFloat(inp.value);
+                  if (!isNaN(newUnit)) {
+                    sessionOverrides[iItem.sku] = newUnit;
+                    var newTotal = calcLineTotal(iItem, newUnit);
+                    renderPriceEl(iItem, newUnit, newTotal);
+                  }
+                };
+                cancelBtn.onclick = function(e) {
+                  e.stopPropagation();
+                  renderPriceEl(iItem, iUnitPrice, iLineTotal);
+                };
+                inp.onkeydown = function(e) { if (e.key === 'Enter') saveBtn.click(); if (e.key === 'Escape') cancelBtn.click(); };
+                priceEl.appendChild(inp); priceEl.appendChild(saveBtn); priceEl.appendChild(cancelBtn);
+                inp.focus(); inp.select();
+              };
+            }
+            var rateDiv = document.createElement('div');
+            rateDiv.textContent = priceDetail;
+            priceEl.appendChild(rateDiv);
+            priceEl.appendChild(lineTotalSpan);
+          }
         }
+        renderPriceEl(item, unitPrice, lineTotal);
 
         var qtyEl = document.createElement('div');
         qtyEl.style.cssText = 'font-size:13px;font-weight:900;color:#f0f3f7;text-align:right;min-width:28px;';
