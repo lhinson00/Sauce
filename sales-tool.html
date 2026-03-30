@@ -659,6 +659,7 @@ body.customer-mode #vpPdfBtn { display: none !important; }
 body.customer-mode #priceManagerBtn { display: none !important; }
 body.customer-mode #kitsBtn { display: none !important; }
 body.customer-mode #laborBtn { display: none !important; }
+body.customer-mode #concreteBtn { display: none !important; }
 
 /* Rebrand the topbar for customer mode */
 body.customer-mode .brand-name-sales { content: ''; }
@@ -1620,6 +1621,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
       <button class="act-btn secondary" onclick="generatePostLayout()">📋 Post PDF</button>
       <button class="act-btn secondary" onclick="openMaterialsModal()">📦 Materials</button>
       <button class="act-btn secondary" id="laborBtn" onclick="openLaborModal()">💼 Labor</button>
+      <button class="act-btn secondary" id="concreteBtn" onclick="openConcreteModal()">🪨 Concrete</button>
       <button class="act-btn secondary" id="kitsBtn" onclick="openKitsModal()">📁 Kits</button>
       <button class="act-btn primary" id="saveQuoteBtn" onclick="saveSalesQuote()">💾 Save Quote</button>
       <button class="act-btn secondary" id="emailQuoteBtn" onclick="openEmailQuoteModal()" style="display:none;">✉️ Email Quote</button>
@@ -15524,6 +15526,141 @@ window.openLaborModal = function() {
   document.body.appendChild(overlay);
 };
 
+// ====================================================================
+// CONCRETE MODAL
+// ====================================================================
+
+window.closeConcreteModal = function() {
+  var el = document.getElementById('sauceConcreteModal');
+  if (el) el.remove();
+};
+
+window.openConcreteModal = function() {
+  window.closeConcreteModal();
+  var SC = window.SauceConcrete;
+
+  // Get county from the tool's county field
+  var county = (document.getElementById('ps_county') || document.getElementById('ps2_county') || {}).textContent || '';
+  if (!county || county === '—') county = '';
+  var zone = county ? SC.getZone(county) : null;
+
+  var Q    = window._Q || {};
+  var sqft = (Q.w||0) * (Q.l||0);
+
+  var overlay = document.createElement('div');
+  overlay.id = 'sauceConcreteModal';
+  overlay.style.cssText = 'display:flex;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;align-items:center;justify-content:center;';
+  overlay.addEventListener('click', function(e){ if(e.target===overlay) overlay.remove(); });
+
+  var panel = document.createElement('div');
+  panel.style.cssText = 'background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:24px;width:92%;max-width:520px;max-height:88vh;display:flex;flex-direction:column;font-family:Outfit,sans-serif;gap:12px;overflow-y:auto;';
+
+  // Header
+  var hdr = document.createElement('div');
+  hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
+  var zoneName = zone ? SC.RATES[zone].label : (county ? 'County Not Found' : 'No County Set');
+  hdr.innerHTML = '<div><div style="font-size:15px;font-weight:800;color:#f0f3f7;">🪨 Concrete</div><div style="font-size:10px;color:' + (zone ? '#4ade80' : '#f59e0b') + ';margin-top:2px;">' + (county ? county + ' → ' : '') + zoneName + '</div></div>';
+  var xBtn = document.createElement('button');
+  xBtn.textContent = '×'; xBtn.style.cssText = 'background:none;border:none;color:#888;font-size:20px;cursor:pointer;align-self:flex-start;';
+  xBtn.onclick = window.closeConcreteModal;
+  hdr.appendChild(xBtn);
+  panel.appendChild(hdr);
+
+  // Sqft display
+  var sqftRow = document.createElement('div');
+  sqftRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
+  sqftRow.innerHTML = '<span style="font-size:11px;color:#888;">Building Sqft:</span><span style="font-size:13px;font-weight:700;color:#f0f3f7;">' + sqft + ' sqft</span>';
+  panel.appendChild(sqftRow);
+
+  // Options
+  function makeRow(label, control) {
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;';
+    var lbl = document.createElement('span');
+    lbl.style.cssText = 'font-size:12px;color:#aaa;';
+    lbl.textContent = label;
+    row.appendChild(lbl);
+    row.appendChild(control);
+    return row;
+  }
+
+  function makeSelect(id, options, defaultVal) {
+    var sel = document.createElement('select');
+    sel.id = id;
+    sel.style.cssText = 'padding:6px 10px;border-radius:7px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;';
+    options.forEach(function(o) {
+      var opt = document.createElement('option');
+      opt.value = o.val; opt.textContent = o.label;
+      if (o.val === defaultVal) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.onchange = recalc;
+    return sel;
+  }
+
+  var selThickness    = makeSelect('cc_thickness',    [{val:'4',label:'4"'},{val:'6',label:'6"'}], '4');
+  var selFooters      = makeSelect('cc_footers',      [{val:'0',label:'No'},{val:'1',label:'Yes — w/ Footers'}], '0');
+  var selPSI          = makeSelect('cc_psi',          [{val:'3500',label:'3,500 PSI (Standard)'},{val:'4000',label:'4,000 PSI (+$0.25/sqft)'},{val:'5000',label:'5,000 PSI (+$0.75/sqft)'}], '3500');
+  var selReinforce    = makeSelect('cc_reinforce',    [{val:'none',label:'None'},{val:'wire',label:'Wire Mesh (+$0.85/sqft)'},{val:'rebar',label:'Rebar (+$1.25/sqft)'}], 'none');
+  var selMetalLedge   = makeSelect('cc_metalledge',   [{val:'0',label:'No'},{val:'1',label:'Yes (+$0.25/sqft)'}], '0');
+  var selStamped      = makeSelect('cc_stamped',      [{val:'0',label:'No'},{val:'1',label:'Yes (+$10.00/sqft)'}], '0');
+
+  panel.appendChild(makeRow('Thickness', selThickness));
+  panel.appendChild(makeRow('Footers', selFooters));
+  panel.appendChild(makeRow('PSI', selPSI));
+  panel.appendChild(makeRow('Reinforcement', selReinforce));
+  panel.appendChild(makeRow('Metal Ledge (Mono Only)', selMetalLedge));
+  panel.appendChild(makeRow('Stamped', selStamped));
+
+  // Results area
+  var resultsDiv = document.createElement('div');
+  resultsDiv.style.cssText = 'background:#1e293b;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:4px;';
+  panel.appendChild(resultsDiv);
+
+  function recalc() {
+    var opts = {
+      thickness:    selThickness.value,
+      footers:      selFooters.value === '1',
+      psi:          parseInt(selPSI.value),
+      reinforcement: selReinforce.value,
+      metalLedge:   selMetalLedge.value === '1',
+      stamped:      selStamped.value === '1'
+    };
+    var result = SC.calculate(county, sqft, opts);
+    resultsDiv.innerHTML = '';
+
+    result.lines.forEach(function(line) {
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;justify-content:space-between;font-size:11px;padding:3px 0;';
+      row.innerHTML = '<span style="color:#aaa;flex:1;padding-right:8px;">' + line.label + '</span><span style="color:#f0f3f7;font-weight:700;">$' + line.amount.toFixed(2) + '</span>';
+      resultsDiv.appendChild(row);
+    });
+
+    if (result.minApplied) {
+      var minRow = document.createElement('div');
+      minRow.style.cssText = 'display:flex;justify-content:space-between;font-size:10px;color:#f59e0b;border-top:1px solid rgba(255,255,255,.08);padding-top:4px;margin-top:4px;';
+      minRow.innerHTML = '<span>Calculated: $' + result.subtotal.toFixed(2) + '</span><span>Minimum applied: $' + result.minimum.toFixed(2) + '</span>';
+      resultsDiv.appendChild(minRow);
+    }
+
+    var totalRow = document.createElement('div');
+    totalRow.style.cssText = 'display:flex;justify-content:space-between;font-size:14px;font-weight:900;color:#FF8200;border-top:1px solid rgba(255,130,0,.3);padding-top:6px;margin-top:4px;';
+    totalRow.innerHTML = '<span>Concrete Total</span><span>$' + result.finalCost.toFixed(2) + '</span>';
+    resultsDiv.appendChild(totalRow);
+  }
+
+  recalc();
+
+  var closeBtn = document.createElement('button');
+  closeBtn.textContent = 'Close';
+  closeBtn.style.cssText = 'padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+  closeBtn.onclick = window.closeConcreteModal;
+  panel.appendChild(closeBtn);
+
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+};
+
 window.openMaterialsModal = function() {
   window.closeMaterialsModal();
   var result;
@@ -15834,7 +15971,117 @@ window.openMaterialsModal = function() {
 
 <script>
 // ====================================================================
-// SAUCE LABOR CALCULATOR
+// SAUCE CONCRETE CALCULATOR
+// window.SauceConcrete.calculate(county, sqft, options)
+// options: { thickness, footers, metalLedge, psi, reinforcement, stamped }
+// ====================================================================
+
+window.SauceConcrete = window.SauceConcrete || {};
+
+// Tennessee county → concrete pricing zone (1=West, 2=Middle, 3=East)
+window.SauceConcrete.COUNTY_ZONES = {
+  // WEST TENNESSEE — Zone 1
+  'SHELBY':1,'FAYETTE':1,'HARDEMAN':1,'MCNAIRY':1,'HARDIN':1,
+  'WAYNE':1,'LAWRENCE':1,'GILES':1,'LINCOLN':1,'FRANKLIN':2,
+  'TIPTON':1,'HAYWOOD':1,'MADISON':1,'CHESTER':1,'HENDERSON':1,
+  'DECATUR':1,'BENTON':1,'HENRY':1,'WEAKLEY':1,'OBION':1,
+  'LAKE':1,'DYER':1,'GIBSON':1,'CARROLL':1,'CROCKETT':1,
+  'LAUDERDALE':1,'PERRY':1,
+
+  // MIDDLE TENNESSEE — Zone 2
+  'HOUSTON':2,'HUMPHREYS':2,'DICKSON':2,'CHEATHAM':2,'DAVIDSON':2,
+  'WILLIAMSON':2,'MAURY':2,'MARSHALL':2,'BEDFORD':2,'COFFEE':2,
+  'MARION':2,'GRUNDY':2,'SEQUATCHIE':2,'BLEDSOE':2,'MONTGOMERY':2,
+  'ROBERTSON':2,'SUMNER':2,'TROUSDALE':2,'MACON':2,'CLAY':2,
+  'PICKETT':2,'OVERTON':2,'JACKSON':2,'PUTNAM':2,'DEKALB':2,
+  'CANNON':2,'RUTHERFORD':2,'WILSON':2,'SMITH':2,'STEWART':2,
+  'HICKMAN':2,'LEWIS':2,'WHITE':2,'WARREN':2,'VAN BUREN':2,
+  'MOORE':2,'LINCOLN':1,
+
+  // EAST TENNESSEE — Zone 3
+  'SCOTT':3,'CAMPBELL':3,'CLAIBORNE':3,'HANCOCK':3,'HAWKINS':3,
+  'SULLIVAN':3,'WASHINGTON':3,'CARTER':3,'UNICOI':3,'JOHNSON':3,
+  'UNION':3,'GRAINGER':3,'HAMBLEN':3,'GREENE':3,'COCKE':3,
+  'SEVIER':3,'BLOUNT':3,'LOUDON':3,'MONROE':3,'MCMINN':3,
+  'POLK':3,'BRADLEY':3,'HAMILTON':3,'RHEA':3,'MEIGS':3,
+  'ROANE':3,'ANDERSON':3,'KNOX':3,'JEFFERSON':3,'MORGAN':3,
+  'FENTRESS':3,'CUMBERLAND':3,'MORGAN':3,'LENOIR':3,'ANDERSON':3,
+  'CLAIBORNE':3,'UNION':3
+};
+
+window.SauceConcrete.getZone = function(county) {
+  if (!county) return null;
+  var key = county.toUpperCase().trim().replace(/\s+COUNTY$/i,'').trim();
+  return window.SauceConcrete.COUNTY_ZONES[key] || null;
+};
+
+// Base rates per zone
+// [4" slab, 6" slab, 4" w/footers, 6" w/footers]
+window.SauceConcrete.RATES = {
+  1: { slab4: 5.25, slab6: 6.50, footer4: 7.50, footer6: 8.75, label: 'West TN' },
+  2: { slab4: 4.95, slab6: 6.25, footer4: 7.50, footer6: 8.25, label: 'Middle TN' },
+  3: { slab4: 5.25, slab6: 6.50, footer4: 8.00, footer6: 8.75, label: 'East TN' }
+};
+
+window.SauceConcrete.calculate = function(county, sqft, opts) {
+  opts = opts || {};
+  var zone    = window.SauceConcrete.getZone(county);
+  var rates   = zone ? window.SauceConcrete.RATES[zone] : window.SauceConcrete.RATES[2]; // default Middle TN
+  var lines   = [];
+
+  // Base rate
+  var thickness = opts.thickness || '4';
+  var footers   = !!opts.footers;
+  var mono      = footers; // monolithic = with footers
+  var baseKey   = (footers ? 'footer' : 'slab') + thickness;
+  var baseRate  = rates[baseKey] || rates.slab4;
+  var baseAmt   = baseRate * sqft;
+  lines.push({
+    label:  (thickness + '" ' + (footers ? 'w/ Footers' : 'Slab') + '  |  ' + (zone ? rates.label : 'Zone Unknown') + '  |  ' + sqft + ' sqft @ $' + baseRate + '/sqft'),
+    amount: baseAmt
+  });
+
+  // PSI adder
+  var psi = parseInt(opts.psi) || 3500;
+  if (psi === 5000) {
+    lines.push({ label: '5,000 PSI Upgrade  |  ' + sqft + ' sqft @ $0.75', amount: sqft * 0.75 });
+  } else if (psi === 4000) {
+    lines.push({ label: '4,000 PSI Upgrade  |  ' + sqft + ' sqft @ $0.25', amount: sqft * 0.25 });
+  }
+
+  // Metal ledge (post frame mono pour only)
+  if (opts.metalLedge && footers) {
+    lines.push({ label: 'Metal Ledge (Post Frame)  |  ' + sqft + ' sqft @ $0.25', amount: sqft * 0.25 });
+  }
+
+  // Reinforcement
+  if (opts.reinforcement === 'wire') {
+    lines.push({ label: 'Wire Mesh  |  ' + sqft + ' sqft @ $0.85', amount: sqft * 0.85 });
+  } else if (opts.reinforcement === 'rebar') {
+    lines.push({ label: 'Rebar  |  ' + sqft + ' sqft @ $1.25', amount: sqft * 1.25 });
+  }
+
+  // Stamped
+  if (opts.stamped) {
+    lines.push({ label: 'Stamped Concrete  |  ' + sqft + ' sqft @ $10.00', amount: sqft * 10 });
+  }
+
+  var subtotal = lines.reduce(function(s, l) { return s + l.amount; }, 0);
+  var minimum  = mono ? 5500 : 3500;
+  var minApplied = subtotal < minimum;
+  var finalCost  = Math.max(subtotal, minimum);
+
+  return {
+    lines:      lines,
+    subtotal:   subtotal,
+    minimum:    minimum,
+    minApplied: minApplied,
+    finalCost:  finalCost,
+    zone:       zone,
+    zoneName:   zone ? rates.label : 'Unknown Zone'
+  };
+};
+
 // window.SauceLabor.calculate(config) → { lines[], total, minimum, finalLabor }
 // config: { Q, WALLS, shedCfgs, frameType, mileage, insulType, insulRoof, insulWalls }
 // ====================================================================
