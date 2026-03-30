@@ -656,6 +656,7 @@ body.customer-mode #saveQuoteStatus { display: none !important; }
 /* Hide viewport buttons that are salesman-only */
 body.customer-mode #vpLoadBtn,
 body.customer-mode #vpPdfBtn { display: none !important; }
+body.customer-mode #priceManagerBtn { display: none !important; }
 
 /* Rebrand the topbar for customer mode */
 body.customer-mode .brand-name-sales { content: ''; }
@@ -1597,6 +1598,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
       <button class="act-btn secondary" onclick="shareConfig(this)">🔗 Share Link</button>
       <button class="act-btn secondary" onclick="generatePostLayout()">📋 Post PDF</button>
       <button class="act-btn secondary" onclick="openMaterialsModal()">📦 Materials</button>
+      <button class="act-btn secondary" id="priceManagerBtn" onclick="openPriceManager()">💲 Prices</button>
       <button class="act-btn primary" id="saveQuoteBtn" onclick="saveSalesQuote()">💾 Save Quote</button>
       <button class="act-btn secondary" id="emailQuoteBtn" onclick="openEmailQuoteModal()" style="display:none;">✉️ Email Quote</button>
       <button class="act-btn secondary" id="quotePdfBtn" onclick="openQuotePDFModal()" style="display:none;">📄 Quote PDF</button>
@@ -14686,7 +14688,220 @@ window.closeMaterialsModal = function() {
   if (m) m.remove();
 };
 
-window.openMaterialsModal = function() {
+// ═══════════════════════════════════════════════════════════════
+// PRICE MANAGER
+// ═══════════════════════════════════════════════════════════════
+
+// Load price table from localStorage
+window.SauceMaterials._priceTable = (function() {
+  try { return JSON.parse(localStorage.getItem('saucePriceTable') || '{}'); }
+  catch(e) { return {}; }
+})();
+
+function _savePriceTable() {
+  try { localStorage.setItem('saucePriceTable', JSON.stringify(window.SauceMaterials._priceTable)); }
+  catch(e) {}
+}
+
+function getPrice(sku) {
+  return window.SauceMaterials._priceTable[sku] || null;
+}
+
+window.closePriceManager = function() {
+  var el = document.getElementById('saucePriceManager');
+  if (el) el.remove();
+};
+
+window.openPriceManager = function() {
+  window.closePriceManager();
+
+  var overlay = document.createElement('div');
+  overlay.id = 'saucePriceManager';
+  overlay.style.cssText = 'display:flex;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;align-items:center;justify-content:center;';
+  overlay.addEventListener('click', function(e){ if(e.target===overlay) overlay.remove(); });
+
+  var panel = document.createElement('div');
+  panel.style.cssText = 'background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:24px;width:92%;max-width:640px;max-height:85vh;display:flex;flex-direction:column;font-family:Outfit,sans-serif;gap:12px;';
+
+  // Header
+  var hdr = document.createElement('div');
+  hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
+  hdr.innerHTML = '<div style="font-size:15px;font-weight:800;color:#f0f3f7;">💲 Price Manager</div>';
+  var xBtn = document.createElement('button');
+  xBtn.textContent = '×';
+  xBtn.style.cssText = 'background:none;border:none;color:#888;font-size:20px;cursor:pointer;';
+  xBtn.onclick = window.closePriceManager;
+  hdr.appendChild(xBtn);
+  panel.appendChild(hdr);
+
+  // Toolbar
+  var toolbar = document.createElement('div');
+  toolbar.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+
+  // Import CSV
+  var importBtn = document.createElement('button');
+  importBtn.textContent = '⬆ Import CSV';
+  importBtn.style.cssText = 'padding:7px 14px;border-radius:8px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.1);color:#FF8200;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+  var fileInput = document.createElement('input');
+  fileInput.type = 'file'; fileInput.accept = '.csv'; fileInput.style.display = 'none';
+  fileInput.onchange = function() {
+    var file = fileInput.files[0]; if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var lines = e.target.result.split(/\r?\n/).filter(Boolean);
+      var imported = 0;
+      lines.forEach(function(line, idx) {
+        if (idx === 0) return; // skip header
+        var cols = line.split(',').map(function(c){ return c.trim().replace(/^"|"$/g,''); });
+        var sku = cols[0], price = parseFloat(cols[2] || cols[1]);
+        if (sku && !isNaN(price)) {
+          window.SauceMaterials._priceTable[sku] = price;
+          imported++;
+        }
+      });
+      _savePriceTable();
+      renderTable();
+      importStatus.textContent = '✓ Imported ' + imported + ' prices';
+      importStatus.style.color = '#4ade80';
+    };
+    reader.readAsText(file);
+  };
+  importBtn.onclick = function(){ fileInput.click(); };
+  toolbar.appendChild(fileInput);
+  toolbar.appendChild(importBtn);
+
+  // Export CSV
+  var exportBtn = document.createElement('button');
+  exportBtn.textContent = '⬇ Export CSV';
+  exportBtn.style.cssText = importBtn.style.cssText;
+  exportBtn.onclick = function() {
+    var pt = window.SauceMaterials._priceTable;
+    var rows = ['SKU,Description,Price'];
+    Object.keys(pt).sort().forEach(function(sku) {
+      rows.push(sku + ',,' + pt[sku].toFixed(2));
+    });
+    var blob = new Blob([rows.join('\n')], {type:'text/csv'});
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = 'sauce-prices.csv'; a.click();
+  };
+  toolbar.appendChild(exportBtn);
+
+  // Add new SKU
+  var addRow = document.createElement('div');
+  addRow.style.cssText = 'display:flex;gap:6px;margin-left:auto;';
+  var newSku = document.createElement('input');
+  newSku.placeholder = 'SKU';
+  newSku.style.cssText = 'width:100px;padding:6px 8px;border-radius:6px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:11px;font-family:Outfit,sans-serif;';
+  var newPrice = document.createElement('input');
+  newPrice.placeholder = 'Price';
+  newPrice.type = 'number'; newPrice.step = '0.01';
+  newPrice.style.cssText = 'width:80px;padding:6px 8px;border-radius:6px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:11px;font-family:Outfit,sans-serif;';
+  var addBtn = document.createElement('button');
+  addBtn.textContent = '+ Add';
+  addBtn.style.cssText = 'padding:6px 12px;border-radius:6px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.15);color:#FF8200;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+  addBtn.onclick = function() {
+    var s = newSku.value.trim().toUpperCase();
+    var p = parseFloat(newPrice.value);
+    if (!s || isNaN(p)) return;
+    window.SauceMaterials._priceTable[s] = p;
+    _savePriceTable();
+    newSku.value = ''; newPrice.value = '';
+    renderTable();
+  };
+  addRow.appendChild(newSku); addRow.appendChild(newPrice); addRow.appendChild(addBtn);
+  toolbar.appendChild(addRow);
+  panel.appendChild(toolbar);
+
+  // Status line
+  var importStatus = document.createElement('div');
+  importStatus.style.cssText = 'font-size:10px;color:#888;min-height:14px;';
+  panel.appendChild(importStatus);
+
+  // Search
+  var searchBox = document.createElement('input');
+  searchBox.placeholder = '🔍 Search SKU or description...';
+  searchBox.style.cssText = 'padding:8px 12px;border-radius:8px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;width:100%;box-sizing:border-box;';
+  panel.appendChild(searchBox);
+
+  // Table
+  var tableWrap = document.createElement('div');
+  tableWrap.style.cssText = 'overflow-y:auto;flex:1;';
+  panel.appendChild(tableWrap);
+
+  function renderTable() {
+    var filter = searchBox.value.trim().toLowerCase();
+    var pt = window.SauceMaterials._priceTable;
+    var keys = Object.keys(pt).sort().filter(function(k){
+      return !filter || k.toLowerCase().includes(filter);
+    });
+
+    tableWrap.innerHTML = '';
+    if (!keys.length) {
+      tableWrap.innerHTML = '<div style="font-size:12px;color:#888;padding:16px 0;text-align:center;">No prices yet — import a CSV or add items above.</div>';
+      return;
+    }
+
+    var tbl = document.createElement('table');
+    tbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px;';
+    tbl.innerHTML = '<thead><tr style="color:rgba(255,130,0,.8);font-size:9px;text-transform:uppercase;letter-spacing:1px;"><th style="text-align:left;padding:6px 8px;">SKU</th><th style="text-align:right;padding:6px 8px;">Unit Price</th><th style="padding:6px 8px;width:60px;"></th></tr></thead>';
+    var tbody = document.createElement('tbody');
+
+    keys.forEach(function(sku) {
+      var tr = document.createElement('tr');
+      tr.style.cssText = 'border-top:1px solid rgba(255,255,255,.06);';
+
+      var tdSku = document.createElement('td');
+      tdSku.style.cssText = 'padding:7px 8px;color:#f0f3f7;font-weight:700;';
+      tdSku.textContent = sku;
+
+      var tdPrice = document.createElement('td');
+      tdPrice.style.cssText = 'padding:7px 8px;text-align:right;';
+      var priceInput = document.createElement('input');
+      priceInput.type = 'number'; priceInput.step = '0.01'; priceInput.value = pt[sku].toFixed(2);
+      priceInput.style.cssText = 'width:80px;padding:4px 6px;border-radius:5px;border:1px solid #444;background:#1e293b;color:#4ade80;font-size:11px;font-weight:700;text-align:right;font-family:Outfit,sans-serif;';
+      priceInput.onchange = function() {
+        var v = parseFloat(priceInput.value);
+        if (!isNaN(v)) { window.SauceMaterials._priceTable[sku] = v; _savePriceTable(); }
+      };
+      tdPrice.appendChild(priceInput);
+
+      var tdDel = document.createElement('td');
+      tdDel.style.cssText = 'padding:7px 8px;text-align:center;';
+      var delBtn = document.createElement('button');
+      delBtn.textContent = '×';
+      delBtn.style.cssText = 'background:none;border:none;color:#555;font-size:14px;cursor:pointer;padding:0 4px;';
+      delBtn.onmouseover = function(){ delBtn.style.color='#ef4444'; };
+      delBtn.onmouseout  = function(){ delBtn.style.color='#555'; };
+      delBtn.onclick = function() {
+        delete window.SauceMaterials._priceTable[sku];
+        _savePriceTable(); renderTable();
+      };
+      tdDel.appendChild(delBtn);
+
+      tr.appendChild(tdSku); tr.appendChild(tdPrice); tr.appendChild(tdDel);
+      tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody);
+    tableWrap.appendChild(tbl);
+    importStatus.textContent = keys.length + ' price(s) in table';
+    importStatus.style.color = '#888';
+  }
+
+  searchBox.oninput = renderTable;
+  renderTable();
+
+  // Footer
+  var closeBtn = document.createElement('button');
+  closeBtn.textContent = 'Done';
+  closeBtn.style.cssText = 'width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+  closeBtn.onclick = window.closePriceManager;
+  panel.appendChild(closeBtn);
+
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+};
+
+
   window.closeMaterialsModal();
   var result;
   try {
@@ -14757,24 +14972,31 @@ window.openMaterialsModal = function() {
       if (ai !== bi) return ai - bi;
       return a.localeCompare(b);
     });
+    var grandTotal = 0;
     catKeys.forEach(function(cat) {
       var catLabel = document.createElement('div');
-      catLabel.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:rgba(255,130,0,.8);margin:14px 0 6px;';
-      catLabel.textContent = cat;
+      catLabel.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:rgba(255,130,0,.8);margin:14px 0 6px;display:flex;justify-content:space-between;align-items:center;';
+      var catName = document.createElement('span');
+      catName.textContent = cat;
+      catLabel.appendChild(catName);
+      var catTotal = 0;
       body.appendChild(catLabel);
+
       cats[cat].forEach(function(item) {
+        var unitPrice = getPrice(item.sku);
+        var lineTotal = unitPrice != null ? unitPrice * item.quantity : null;
+        if (lineTotal != null) catTotal += lineTotal;
+
         var row = document.createElement('div');
-        row.style.cssText = 'display:grid;grid-template-columns:1fr auto auto;align-items:start;gap:8px;padding:8px 10px;background:#1e293b;border-radius:7px;margin-bottom:4px;';
+        row.style.cssText = 'display:grid;grid-template-columns:1fr auto auto auto;align-items:start;gap:8px;padding:8px 10px;background:#1e293b;border-radius:7px;margin-bottom:4px;';
         var info = document.createElement('div');
         var desc = document.createElement('div');
         desc.style.cssText = 'font-size:12px;font-weight:700;color:#f0f3f7;';
         desc.textContent = item.description;
         var detail = document.createElement('div');
         detail.style.cssText = 'font-size:10px;color:#888;margin-top:2px;';
-        // For metal items with a length, append linear ft total
         if (item.metalLength) {
           var linFt = (function(s) {
-            // Parse "21'6\"" or "22'" or "9\"" → decimal feet
             var ftMatch  = s.match(/(\d+)'/);
             var inMatch  = s.match(/(\d+(?:\.\d+)?)"/) ;
             var ft = ftMatch  ? parseFloat(ftMatch[1])  : 0;
@@ -14787,9 +15009,9 @@ window.openMaterialsModal = function() {
           detail.textContent = item.detail;
         }
         info.appendChild(desc); info.appendChild(detail);
+
         var skuEl = document.createElement('div');
         skuEl.style.cssText = 'font-size:11px;font-weight:800;color:#FF8200;white-space:nowrap;';
-        // If item has a metalLength, show prefix + length separately
         if (item.metalLength) {
           skuEl.textContent = item.sku;
           var lenEl = document.createElement('div');
@@ -14799,15 +15021,39 @@ window.openMaterialsModal = function() {
         } else {
           skuEl.textContent = item.sku;
         }
+
+        var priceEl = document.createElement('div');
+        priceEl.style.cssText = 'font-size:10px;color:#888;text-align:right;white-space:nowrap;';
+        if (unitPrice != null) {
+          priceEl.innerHTML = '$' + unitPrice.toFixed(2) + '<br><span style="color:#4ade80;font-weight:700;font-size:11px;">$' + lineTotal.toFixed(2) + '</span>';
+        }
+
         var qtyEl = document.createElement('div');
         qtyEl.style.cssText = 'font-size:13px;font-weight:900;color:#f0f3f7;text-align:right;min-width:28px;';
         qtyEl.textContent = 'x' + item.quantity;
-        row.appendChild(info); row.appendChild(skuEl); row.appendChild(qtyEl);
+        row.appendChild(info); row.appendChild(skuEl); row.appendChild(priceEl); row.appendChild(qtyEl);
         body.appendChild(row);
       });
+
+      // Category subtotal
+      if (catTotal > 0) {
+        var subEl = document.createElement('div');
+        subEl.style.cssText = 'text-align:right;font-size:10px;font-weight:700;color:rgba(255,130,0,.7);padding:2px 10px 6px;';
+        subEl.textContent = cat + ' subtotal: $' + catTotal.toFixed(2);
+        catLabel.appendChild(subEl);
+        grandTotal += catTotal;
+      }
     });
   }
   panel.appendChild(body);
+
+  // Grand total bar
+  if (grandTotal > 0) {
+    var totalBar = document.createElement('div');
+    totalBar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:rgba(255,130,0,.1);border:1px solid rgba(255,130,0,.3);border-radius:10px;margin-top:8px;';
+    totalBar.innerHTML = '<span style="font-size:13px;font-weight:800;color:#f0f3f7;">Material Total</span><span style="font-size:16px;font-weight:900;color:#FF8200;">$' + grandTotal.toFixed(2) + '</span>';
+    panel.appendChild(totalBar);
+  }
 
   var closeBtn = document.createElement('button');
   closeBtn.textContent = 'Close';
