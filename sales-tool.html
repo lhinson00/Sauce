@@ -15547,7 +15547,7 @@ window.openLaborModal = function() {
 };
 
 // ====================================================================
-// CONCRETE MODAL
+// CONCRETE MODAL — main building + per-shed options
 // ====================================================================
 
 window.closeConcreteModal = function() {
@@ -15558,19 +15558,14 @@ window.closeConcreteModal = function() {
 window.openConcreteModal = function() {
   window.closeConcreteModal();
   var SC = window.SauceConcrete;
+  var Q        = window._Q || {};
+  var shedCfgs = window._shedConfigs || [];
+  var county   = window._cachedCounty || '';
+  var mainSqft = (Q.w||0) * (Q.l||0);
 
-  // Get county from cached zip lookup result
-  var county = window._cachedCounty || '';
-  if (!county) {
-    // fallback — try to read from pricing strip display
-    var countyEl = document.getElementById('ps_county') || document.getElementById('ps2_county');
-    var txt = countyEl ? (countyEl.textContent||'').trim() : '';
-    if (txt && txt !== '—') county = txt;
-  }
-  var zone = county ? SC.getZone(county) : null;
-
-  var Q    = window._Q || {};
-  var sqft = (Q.w||0) * (Q.l||0);
+  // Init saved opts
+  if (!window._lastConcreteOpts) window._lastConcreteOpts = { main: null, sheds: [] };
+  var saved = window._lastConcreteOpts;
 
   var overlay = document.createElement('div');
   overlay.id = 'sauceConcreteModal';
@@ -15578,101 +15573,243 @@ window.openConcreteModal = function() {
   overlay.addEventListener('click', function(e){ if(e.target===overlay) overlay.remove(); });
 
   var panel = document.createElement('div');
-  panel.style.cssText = 'background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:24px;width:92%;max-width:520px;max-height:88vh;display:flex;flex-direction:column;font-family:Outfit,sans-serif;gap:12px;overflow-y:auto;';
+  panel.style.cssText = 'background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:24px;width:92%;max-width:560px;max-height:90vh;display:flex;flex-direction:column;font-family:Outfit,sans-serif;gap:10px;overflow-y:auto;';
 
   // Header
+  var zone = SC.getZone(county);
+  var zoneName = zone ? SC.RATES[zone].label : (county ? 'County not mapped' : 'Enter address to auto-detect zone');
   var hdr = document.createElement('div');
   hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
-  var zoneName = zone ? SC.RATES[zone].label : (county ? 'County "' + county + '" not in zone map' : 'Enter customer address to auto-detect zone');
-  hdr.innerHTML = '<div><div style="font-size:15px;font-weight:800;color:#f0f3f7;">🪨 Concrete</div><div style="font-size:10px;color:' + (zone ? '#4ade80' : '#f59e0b') + ';margin-top:2px;">' + (county ? county + ' → ' : '') + zoneName + '</div></div>';
+  hdr.innerHTML = '<div><div style="font-size:15px;font-weight:800;color:#f0f3f7;">🪨 Concrete</div></div>';
   var xBtn = document.createElement('button');
-  xBtn.textContent = '×'; xBtn.style.cssText = 'background:none;border:none;color:#888;font-size:20px;cursor:pointer;align-self:flex-start;';
+  xBtn.textContent='×'; xBtn.style.cssText='background:none;border:none;color:#888;font-size:20px;cursor:pointer;align-self:flex-start;';
   xBtn.onclick = window.closeConcreteModal;
   hdr.appendChild(xBtn);
   panel.appendChild(hdr);
 
-  // Sqft display
-  var sqftRow = document.createElement('div');
-  sqftRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
-  sqftRow.innerHTML = '<span style="font-size:11px;color:#888;">Building Sqft:</span><span style="font-size:13px;font-weight:700;color:#f0f3f7;">' + sqft + ' sqft</span>';
-  panel.appendChild(sqftRow);
-
-  // Options
-  function makeRow(label, control) {
-    var row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;';
-    var lbl = document.createElement('span');
-    lbl.style.cssText = 'font-size:12px;color:#aaa;';
-    lbl.textContent = label;
-    row.appendChild(lbl);
-    row.appendChild(control);
-    return row;
+  // Zone display + zip override
+  var zoneBar = document.createElement('div');
+  zoneBar.style.cssText = 'display:flex;align-items:center;gap:8px;';
+  var zoneLabel = document.createElement('div');
+  zoneLabel.style.cssText = 'font-size:11px;flex:1;';
+  function updateZoneLabel() {
+    var z = SC.getZone(county);
+    zoneLabel.innerHTML = z
+      ? '<span style="color:#4ade80;font-weight:700;">' + county + ' → ' + SC.RATES[z].label + '</span>'
+      : county
+        ? '<span style="color:#f59e0b;">County "' + county + '" not mapped</span>'
+        : '<span style="color:#888;">No address — enter zip below</span>';
   }
+  updateZoneLabel();
+  zoneBar.appendChild(zoneLabel);
 
-  function makeSelect(id, options, defaultVal) {
-    var sel = document.createElement('select');
-    sel.id = id;
-    sel.style.cssText = 'padding:6px 10px;border-radius:7px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;';
-    options.forEach(function(o) {
-      var opt = document.createElement('option');
-      opt.value = o.val; opt.textContent = o.label;
-      if (o.val === defaultVal) opt.selected = true;
-      sel.appendChild(opt);
-    });
-    sel.onchange = recalc;
-    return sel;
-  }
+  var zipWrap = document.createElement('div');
+  zipWrap.style.cssText = 'display:flex;gap:4px;align-items:center;';
+  var zipInput = document.createElement('input');
+  zipInput.type = 'text'; zipInput.maxLength = 5; zipInput.placeholder = 'ZIP';
+  zipInput.value = window._cachedZip || '';
+  zipInput.style.cssText = 'width:64px;padding:5px 7px;border-radius:6px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:11px;font-family:Outfit,sans-serif;text-align:center;';
+  var zipBtn = document.createElement('button');
+  zipBtn.textContent = '→';
+  zipBtn.style.cssText = 'padding:5px 8px;border-radius:6px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.15);color:#FF8200;font-size:11px;font-weight:700;cursor:pointer;';
+  var zipStatus = document.createElement('span');
+  zipStatus.style.cssText = 'font-size:10px;color:#888;';
 
-  var selThickness    = makeSelect('cc_thickness',    [{val:'4',label:'4"'},{val:'6',label:'6"'}], '4');
-  var selFooters      = makeSelect('cc_footers',      [{val:'0',label:'No'},{val:'1',label:'Yes — w/ Footers'}], '0');
-  var selPSI          = makeSelect('cc_psi',          [{val:'3500',label:'3,500 PSI (Standard)'},{val:'4000',label:'4,000 PSI (+$0.25/sqft)'},{val:'5000',label:'5,000 PSI (+$0.75/sqft)'}], '3500');
-  var selReinforce    = makeSelect('cc_reinforce',    [{val:'none',label:'None'},{val:'wire',label:'Wire Mesh (+$0.85/sqft)'},{val:'rebar',label:'Rebar (+$1.25/sqft)'}], 'none');
-  var selMetalLedge   = makeSelect('cc_metalledge',   [{val:'0',label:'No'},{val:'1',label:'Yes (+$0.25/sqft)'}], '0');
-  var selStamped      = makeSelect('cc_stamped',      [{val:'0',label:'No'},{val:'1',label:'Yes (+$10.00/sqft)'}], '0');
+  zipBtn.onclick = function() {
+    var zip = zipInput.value.trim();
+    if (zip.length !== 5) { zipStatus.textContent = 'Enter 5-digit zip'; return; }
+    zipStatus.textContent = '…';
+    fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action: 'lookupAddress', address: zip, token: getToken(), username: (window.currentUser||{}).username||'' })
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d && d.county) {
+        county = d.county.toUpperCase().replace(/\s+COUNTY$/i,'').trim();
+        zone = SC.getZone(county);
+        updateZoneLabel();
+        zipStatus.textContent = zone ? '' : 'Zone not found';
+        recalc();
+      } else {
+        zipStatus.textContent = 'Zip not found';
+      }
+    })
+    .catch(function(){ zipStatus.textContent = 'Lookup failed'; });
+  };
+  zipInput.onkeydown = function(e){ if(e.key==='Enter') zipBtn.click(); };
 
-  panel.appendChild(makeRow('Thickness', selThickness));
-  panel.appendChild(makeRow('Footers', selFooters));
-  panel.appendChild(makeRow('PSI', selPSI));
-  panel.appendChild(makeRow('Reinforcement', selReinforce));
-  panel.appendChild(makeRow('Metal Ledge (Mono Only)', selMetalLedge));
-  panel.appendChild(makeRow('Stamped', selStamped));
+  zipWrap.appendChild(zipInput); zipWrap.appendChild(zipBtn); zipWrap.appendChild(zipStatus);
+  zoneBar.appendChild(zipWrap);
+  panel.appendChild(zoneBar);
 
   // Results area
   var resultsDiv = document.createElement('div');
-  resultsDiv.style.cssText = 'background:#1e293b;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:4px;';
+  resultsDiv.style.cssText = 'background:#1e293b;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:3px;';
+
+  // Build options UI for a section
+  function buildOptsUI(labelText, sqft, savedOpts, onChange) {
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:12px;';
+
+    var secHdr = document.createElement('div');
+    secHdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;';
+
+    var secTitle = document.createElement('div');
+    secTitle.style.cssText = 'font-size:11px;font-weight:800;color:#f0f3f7;';
+    secTitle.textContent = labelText + '  (' + sqft + ' sqft)';
+    secHdr.appendChild(secTitle);
+
+    // Include toggle
+    var inclToggle = document.createElement('label');
+    inclToggle.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:10px;color:#888;cursor:pointer;';
+    var inclChk = document.createElement('input');
+    inclChk.type = 'checkbox';
+    inclChk.checked = !!(savedOpts && savedOpts.included);
+    inclToggle.appendChild(inclChk);
+    inclToggle.appendChild(document.createTextNode('Include'));
+    secHdr.appendChild(inclToggle);
+    wrap.appendChild(secHdr);
+
+    // Options (shown when included)
+    var optsWrap = document.createElement('div');
+    optsWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;' + (inclChk.checked ? '' : 'display:none;');
+    optsWrap.style.display = inclChk.checked ? 'flex' : 'none';
+
+    function makeSelect(options, defaultVal) {
+      var sel = document.createElement('select');
+      sel.style.cssText = 'flex:1;padding:5px 8px;border-radius:6px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:11px;font-family:Outfit,sans-serif;';
+      options.forEach(function(o) {
+        var opt = document.createElement('option');
+        opt.value = o.val; opt.textContent = o.label;
+        if ((savedOpts && savedOpts[o.key] !== undefined ? savedOpts[o.key] : defaultVal) == o.val) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      sel.onchange = onChange;
+      return sel;
+    }
+
+    function makeRow(label, sel) {
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;';
+      var lbl = document.createElement('span');
+      lbl.style.cssText = 'font-size:11px;color:#888;width:110px;flex-shrink:0;';
+      lbl.textContent = label;
+      row.appendChild(lbl); row.appendChild(sel);
+      return row;
+    }
+
+    var selThickness  = makeSelect([{val:'4',label:'4"'},{val:'6',label:'6"'}], '4');
+    var selFooters    = makeSelect([{val:'0',label:'No'},{val:'1',label:'Yes — w/ Footers'}], '0');
+    var selPSI        = makeSelect([{val:'3500',label:'3,500 PSI (Standard)'},{val:'4000',label:'4,000 PSI (+$0.25)'},{val:'5000',label:'5,000 PSI (+$0.75)'}], '3500');
+    var selReinforce  = makeSelect([{val:'none',label:'None'},{val:'wire',label:'Wire Mesh (+$0.85)'},{val:'rebar',label:'Rebar (+$1.25)'}], 'none');
+    var selMetalLedge = makeSelect([{val:'0',label:'No'},{val:'1',label:'Yes (+$0.25)'}], '0');
+    var selStamped    = makeSelect([{val:'0',label:'No'},{val:'1',label:'Yes (+$10.00)'}], '0');
+
+    optsWrap.appendChild(makeRow('Thickness', selThickness));
+    optsWrap.appendChild(makeRow('Footers', selFooters));
+    optsWrap.appendChild(makeRow('PSI', selPSI));
+    optsWrap.appendChild(makeRow('Reinforcement', selReinforce));
+    optsWrap.appendChild(makeRow('Metal Ledge', selMetalLedge));
+    optsWrap.appendChild(makeRow('Stamped', selStamped));
+    wrap.appendChild(optsWrap);
+
+    inclChk.onchange = function() {
+      optsWrap.style.display = inclChk.checked ? 'flex' : 'none';
+      onChange();
+    };
+
+    wrap.getOpts = function() {
+      if (!inclChk.checked) return null;
+      return {
+        included:      true,
+        thickness:     selThickness.value,
+        footers:       selFooters.value === '1',
+        psi:           parseInt(selPSI.value),
+        reinforcement: selReinforce.value,
+        metalLedge:    selMetalLedge.value === '1',
+        stamped:       selStamped.value === '1'
+      };
+    };
+
+    return wrap;
+  }
+
+  // Main building section
+  var mainUI = buildOptsUI('Main Building', mainSqft, saved.main, recalc);
+  panel.appendChild(mainUI);
+
+  // Shed sections
+  var shedUIs = [];
+  shedCfgs.forEach(function(sc, idx) {
+    if (!sc.w || !sc.l) return;
+    var shedSqft = sc.w * sc.l;
+    var label = 'Side Shed ' + (idx+1) + ' (' + sc.w + "' × " + sc.l + "')";
+    var shedSaved = saved.sheds && saved.sheds[idx] ? saved.sheds[idx] : null;
+    var shedUI = buildOptsUI(label, shedSqft, shedSaved, recalc);
+    shedUI._idx = idx;
+    panel.appendChild(shedUI);
+    shedUIs.push(shedUI);
+  });
+
   panel.appendChild(resultsDiv);
 
   function recalc() {
-    var opts = {
-      thickness:    selThickness.value,
-      footers:      selFooters.value === '1',
-      psi:          parseInt(selPSI.value),
-      reinforcement: selReinforce.value,
-      metalLedge:   selMetalLedge.value === '1',
-      stamped:      selStamped.value === '1'
-    };
-    window._lastConcreteOpts = opts; // save for Quote Summary
-    var result = SC.calculate(county, sqft, opts);
+    // Collect all opts
+    var mainOpts = mainUI.getOpts();
+    var shedOptsArr = shedUIs.map(function(ui){ return ui.getOpts(); });
+
+    // Save
+    window._lastConcreteOpts = { main: mainOpts, sheds: shedOptsArr };
+
+    // Calculate
+    var grandTotal = 0;
     resultsDiv.innerHTML = '';
 
-    result.lines.forEach(function(line) {
-      var row = document.createElement('div');
-      row.style.cssText = 'display:flex;justify-content:space-between;font-size:11px;padding:3px 0;';
-      row.innerHTML = '<span style="color:#aaa;flex:1;padding-right:8px;">' + line.label + '</span><span style="color:#f0f3f7;font-weight:700;">$' + line.amount.toFixed(2) + '</span>';
-      resultsDiv.appendChild(row);
-    });
+    function addSection(label, sqft, opts) {
+      if (!opts) return;
+      var result = SC.calculate(county, sqft, opts);
+      var secHdr = document.createElement('div');
+      secHdr.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:rgba(255,130,0,.7);margin:6px 0 3px;';
+      secHdr.textContent = label;
+      resultsDiv.appendChild(secHdr);
 
-    if (result.minApplied) {
-      var minRow = document.createElement('div');
-      minRow.style.cssText = 'display:flex;justify-content:space-between;font-size:10px;color:#f59e0b;border-top:1px solid rgba(255,255,255,.08);padding-top:4px;margin-top:4px;';
-      minRow.innerHTML = '<span>Calculated: $' + result.subtotal.toFixed(2) + '</span><span>Minimum applied: $' + result.minimum.toFixed(2) + '</span>';
-      resultsDiv.appendChild(minRow);
+      result.lines.forEach(function(line) {
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;justify-content:space-between;font-size:11px;padding:2px 0;';
+        row.innerHTML = '<span style="color:#aaa;flex:1;padding-right:8px;">' + line.label + '</span><span style="color:#f0f3f7;font-weight:700;">$' + line.amount.toFixed(2) + '</span>';
+        resultsDiv.appendChild(row);
+      });
+
+      if (result.minApplied) {
+        var minRow = document.createElement('div');
+        minRow.style.cssText = 'font-size:10px;color:#f59e0b;padding:2px 0;';
+        minRow.textContent = 'Minimum applied: $' + result.minimum.toFixed(2) + ' (calculated: $' + result.subtotal.toFixed(2) + ')';
+        resultsDiv.appendChild(minRow);
+      }
+
+      var secTotal = document.createElement('div');
+      secTotal.style.cssText = 'display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:#FF8200;border-top:1px solid rgba(255,130,0,.2);padding-top:4px;margin-top:2px;';
+      secTotal.innerHTML = '<span>' + label + ' Subtotal</span><span>$' + result.finalCost.toFixed(2) + '</span>';
+      resultsDiv.appendChild(secTotal);
+      grandTotal += result.finalCost;
     }
 
-    var totalRow = document.createElement('div');
-    totalRow.style.cssText = 'display:flex;justify-content:space-between;font-size:14px;font-weight:900;color:#FF8200;border-top:1px solid rgba(255,130,0,.3);padding-top:6px;margin-top:4px;';
-    totalRow.innerHTML = '<span>Concrete Total</span><span>$' + result.finalCost.toFixed(2) + '</span>';
-    resultsDiv.appendChild(totalRow);
+    addSection('Main Building', mainSqft, mainOpts);
+    shedUIs.forEach(function(ui, i) {
+      var sc = shedCfgs[ui._idx];
+      if (sc) addSection('Side Shed ' + (ui._idx+1), sc.w * sc.l, ui.getOpts());
+    });
+
+    if (grandTotal > 0) {
+      var totalRow = document.createElement('div');
+      totalRow.style.cssText = 'display:flex;justify-content:space-between;font-size:14px;font-weight:900;color:#FF8200;border-top:2px solid rgba(255,130,0,.4);padding-top:8px;margin-top:6px;';
+      totalRow.innerHTML = '<span>Concrete Total</span><span>$' + grandTotal.toFixed(2) + '</span>';
+      resultsDiv.appendChild(totalRow);
+    } else {
+      resultsDiv.innerHTML = '<div style="font-size:11px;color:#888;text-align:center;padding:8px;">Toggle sections above to include concrete</div>';
+    }
   }
 
   recalc();
@@ -15706,7 +15843,6 @@ window.openQuoteSummaryModal = function() {
   var sqft     = (Q.w||0) * (Q.l||0);
   var county   = window._cachedCounty || '';
   var miles    = window.SauceShipping ? window.SauceShipping.getMiles() : 0;
-  var concreteOpts = window._lastConcreteOpts || null; // saved from last concrete modal use
 
   var allEnclosed = WALLS.length > 0 && WALLS.every(function(w){ return w.encl === 'enclosed' || w.encl === 'partial'; });
 
@@ -15754,11 +15890,20 @@ window.openQuoteSummaryModal = function() {
   // Labor
   var laborAll = window.SauceLabor ? window.SauceLabor.calculateAll() : null;
 
-  // Concrete
+  // Concrete — sum main + included sheds
   var concreteAmt = 0;
-  if (concreteOpts && window.SauceConcrete) {
-    var cResult = window.SauceConcrete.calculate(county, sqft, concreteOpts);
-    concreteAmt = cResult.finalCost;
+  if (window._lastConcreteOpts && window.SauceConcrete) {
+    var co = window._lastConcreteOpts;
+    if (co.main) {
+      concreteAmt += window.SauceConcrete.calculate(county, sqft, co.main).finalCost;
+    }
+    if (co.sheds) {
+      co.sheds.forEach(function(sOpts, i) {
+        if (!sOpts) return;
+        var sc = shedCfgs[i];
+        if (sc && sc.w && sc.l) concreteAmt += window.SauceConcrete.calculate(county, sc.w * sc.l, sOpts).finalCost;
+      });
+    }
   }
 
   // Build modal
