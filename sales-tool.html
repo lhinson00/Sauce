@@ -12327,7 +12327,8 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
     description: 'Garage Door Install Fee',
     sku:         'GDINSTALL',
     quantity:    1,
-    detail:      totalSqFt + ' sqft  |  ' + detail + '  |  $' + total.toFixed(2)
+    fixedCost:   total,
+    detail:      totalSqFt + ' sqft  |  ' + detail
   }];
 };
 
@@ -13246,7 +13247,7 @@ window.SauceMaterials.calcOverheadDoorTrim = function(Q, allDoors, sf) {
 //   Open lean-to width ÷ ps  (under upper gable metal)
 //   Open main gable end width ÷ ps + 1 extra per open end
 
-window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, windows) {
+window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, windows, walkDoors) {
   var groups = {}; // boardLen → qty
 
   function wallPS(wallId) {
@@ -13260,8 +13261,8 @@ window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, wind
   }
 
   // Walk doors: 3 each — always 10'
-  var walkDoors = (allDoors||[]).filter(function(d){ return d.type === 'walk'; });
-  if (walkDoors.length) add(10, walkDoors.length * 3);
+  var wdList = (walkDoors||[]);
+  if (wdList.length) add(10, wdList.length * 3);
 
   // Windows: 2 each — always 10'
   if ((windows||[]).length) add(10, windows.length * 2);
@@ -14188,7 +14189,7 @@ window.SauceMaterials.calcWalkDoors = function() {
   results.push({
     category:    'Walk Doors',
     description: 'Keyed Knob',
-    sku:         'KLSD',
+    sku:         'KLSDB',
     quantity:    walkDoors.length,
     detail:      '1 per walk door'
   });
@@ -14399,6 +14400,11 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
   var isVinyl  = insulType.indexOf('Vinyl Back') !== -1;
   var rollSize = isVinyl ? 300 : 750;
 
+  function insulSku() {
+    if (insulType === 'Therma Guard') return 'INAA6125';
+    return insulType.toUpperCase().replace(/\s+/g, '');
+  }
+
   function parseLenFt(s) {
     if (!s) return 0;
     var ftM = s.match(/(\d+)'/);
@@ -14422,7 +14428,7 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
     if (qty > 0) results.push({
       category:    'Hardware',
       description: 'Insulation — Roof',
-      sku:         insulType.toUpperCase().replace(/\s+/g, ''),
+      sku:         insulSku(),
       quantity:    qty,
       detail:      insulType + '  |  ' + Math.round(linFt) + ' ln ft × 3 = ' + Math.round(sqFt) + ' sqft  |  ' + rollSize + ' sqft rolls'
     });
@@ -14437,7 +14443,7 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
     if (qty > 0) results.push({
       category:    'Hardware',
       description: 'Insulation — Walls',
-      sku:         insulType.toUpperCase().replace(/\s+/g, ''),
+      sku:         insulSku(),
       quantity:    qty,
       detail:      insulType + '  |  ' + Math.round(linFt) + ' ln ft × 3 = ' + Math.round(sqFt) + ' sqft  |  ' + rollSize + ' sqft rolls'
     });
@@ -14631,7 +14637,7 @@ window.SauceMaterials.calculate = function() {
     var isVinyl = insulType.indexOf('Vinyl Back') !== -1;
     var divisor = isVinyl ? 10 : 5;
     var qty     = Math.ceil(totalRolls / divisor);
-    items.push({ category: 'Hardware', description: 'Staples', sku: 'STP38AR', quantity: qty, detail: totalRolls + ' rolls  |  1 per ' + divisor + ' rolls' });
+    items.push({ category: 'Hardware', description: 'Staples', sku: 'STP38A11', quantity: qty, detail: totalRolls + ' rolls  |  1 per ' + divisor + ' rolls' });
   })();
   SM.calcScrewsMRSWB(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcMetalScrews(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
@@ -14651,7 +14657,7 @@ window.SauceMaterials.calculate = function() {
   SM.calcSkirtMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcValleyPanels(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcOverheadDoorTrim(Q, allDoors, sf).forEach(function(item) { items.push(item); });
-  SM.calcJChannel(Q, WALLS, window._shedConfigs||[], allDoors, window._windows||[]).forEach(function(item) { items.push(item); });
+  SM.calcJChannel(Q, WALLS, window._shedConfigs||[], allDoors, window._windows||[], window._walkDoors||[]).forEach(function(item) { items.push(item); });
   SM.calcPC2Trim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcBirdBoxTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSoffitFJTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
@@ -15037,9 +15043,11 @@ window.openMaterialsModal = function() {
       cats[cat].forEach(function(item) {
         var unitPrice = getPrice(item.sku);
         var lineTotal = null;
-        if (unitPrice != null) {
+        if (item.fixedCost != null) {
+          // Pre-calculated cost (e.g. install fee) — use directly
+          lineTotal = item.fixedCost;
+        } else if (unitPrice != null) {
           if (item.metalLength) {
-            // Metal: price per linear foot × qty × length in feet
             var lenFt = (function(s) {
               var ftM = s.match(/(\d+)'/);
               var inM = s.match(/(\d+(?:\.\d+)?)"/) ;
@@ -15089,8 +15097,8 @@ window.openMaterialsModal = function() {
 
         var priceEl = document.createElement('div');
         priceEl.style.cssText = 'font-size:10px;color:#888;text-align:right;white-space:nowrap;';
-        if (unitPrice != null) {
-          var priceDetail = item.metalLength ? '$' + unitPrice.toFixed(2) + '/ln ft' : '$' + unitPrice.toFixed(2);
+        if (lineTotal != null) {
+          var priceDetail = item.fixedCost != null ? 'calculated' : (item.metalLength ? '$' + unitPrice.toFixed(2) + '/ln ft' : '$' + unitPrice.toFixed(2));
           priceEl.innerHTML = priceDetail + '<br><span style="color:#4ade80;font-weight:700;font-size:11px;">$' + lineTotal.toFixed(2) + '</span>';
         }
 
