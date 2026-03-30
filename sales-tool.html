@@ -14749,33 +14749,19 @@ window.openPriceManager = function() {
     var reader = new FileReader();
     reader.onload = function(e) {
       var lines = e.target.result.split(/\r?\n/).filter(Boolean);
-
-      // Build set of SKUs currently in the material list
-      var activeSKUs = {};
-      try {
-        var result = window.SauceMaterials.calculate();
-        (result.items || []).forEach(function(item) {
-          if (item.sku) activeSKUs[item.sku.trim().toUpperCase()] = true;
-        });
-      } catch(err) {}
-
-      var imported = 0, skipped = 0;
+      var imported = 0;
       lines.forEach(function(line, idx) {
         if (idx === 0) return; // skip header
         var cols = line.split(',').map(function(c){ return c.trim().replace(/^"|"$/g,''); });
         var sku = (cols[0] || '').trim().toUpperCase();
         var price = parseFloat(cols[2] || cols[1]);
         if (!sku || isNaN(price)) return;
-        if (activeSKUs[sku]) {
-          window.SauceMaterials._priceTable[sku] = price;
-          imported++;
-        } else {
-          skipped++;
-        }
+        window.SauceMaterials._priceTable[sku] = price;
+        imported++;
       });
       _savePriceTable();
       renderTable();
-      importStatus.textContent = '✓ Imported ' + imported + ' matching prices  |  ' + skipped + ' skipped (not in material list)';
+      importStatus.textContent = '✓ Imported ' + imported + ' prices';
       importStatus.style.color = '#4ade80';
     };
     reader.readAsText(file);
@@ -14999,7 +14985,20 @@ window.openMaterialsModal = function() {
 
       cats[cat].forEach(function(item) {
         var unitPrice = getPrice(item.sku);
-        var lineTotal = unitPrice != null ? unitPrice * item.quantity : null;
+        var lineTotal = null;
+        if (unitPrice != null) {
+          if (item.metalLength) {
+            // Metal: price per linear foot × qty × length in feet
+            var lenFt = (function(s) {
+              var ftM = s.match(/(\d+)'/);
+              var inM = s.match(/(\d+(?:\.\d+)?)"/) ;
+              return (ftM ? parseFloat(ftM[1]) : 0) + (inM ? parseFloat(inM[1]) / 12 : 0);
+            })(item.metalLength);
+            lineTotal = unitPrice * item.quantity * lenFt;
+          } else {
+            lineTotal = unitPrice * item.quantity;
+          }
+        }
         if (lineTotal != null) catTotal += lineTotal;
 
         var row = document.createElement('div');
@@ -15040,7 +15039,8 @@ window.openMaterialsModal = function() {
         var priceEl = document.createElement('div');
         priceEl.style.cssText = 'font-size:10px;color:#888;text-align:right;white-space:nowrap;';
         if (unitPrice != null) {
-          priceEl.innerHTML = '$' + unitPrice.toFixed(2) + '<br><span style="color:#4ade80;font-weight:700;font-size:11px;">$' + lineTotal.toFixed(2) + '</span>';
+          var priceDetail = item.metalLength ? '$' + unitPrice.toFixed(2) + '/ln ft' : '$' + unitPrice.toFixed(2);
+          priceEl.innerHTML = priceDetail + '<br><span style="color:#4ade80;font-weight:700;font-size:11px;">$' + lineTotal.toFixed(2) + '</span>';
         }
 
         var qtyEl = document.createElement('div');
