@@ -11205,8 +11205,9 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
   var map      = { '6x6':'PT66', '8x8':'PT88', '10x10':'PT1010', '12x12':'PT1212' };
   var postSize = sf.ssPostSize || '6x6';
   var skuBase  = map[postSize] || 'PT66';
-  var onTop    = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
-  var ground   = onTop ? 0 : 4;
+  var globalOnTop = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
+  var concreteOpts = window._lastConcreteOpts || {};
+  var shedConcretes = concreteOpts.sheds || [];
 
   // addPostLineAligned post count = Math.max(1, Math.floor(length/ps)) + 1
   function lineCount(length, ps) {
@@ -11220,8 +11221,15 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
 
   var allPosts = [];
 
-  (shedCfgs || []).forEach(function(sc) {
+  (shedCfgs || []).forEach(function(sc, idx) {
     if (!sc.wall || !sc.w || !sc.l) return;
+    // Ground depth: 4' if in-ground, 0 if posts-on-top (mono concrete) or global postsOnTop
+    var isMono = (function() {
+      var co = shedConcretes[idx];
+      return co && co.included && co.footers === false;
+    })();
+    var ground = (globalOnTop || isMono) ? 0 : 4;
+
     var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
     var attachPS   = wallPS(sc.wall);
     var attachH    = Q.h - (sc.dropFt || 0);
@@ -11338,7 +11346,8 @@ window.SauceMaterials.calcWalkDoorPosts = function(allDoors) {
 
 window.SauceMaterials.calcSackcrete = function(Q, WALLS, allDoors, shedCfgs, sf) {
   var onTop = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
-  if (onTop) return null; // no sackcrete needed for posts on top
+  var concreteOpts = window._lastConcreteOpts || {};
+  var shedConcretes = concreteOpts.sheds || [];
 
   var SM = window.SauceMaterials;
 
@@ -11359,33 +11368,40 @@ window.SauceMaterials.calcSackcrete = function(Q, WALLS, allDoors, shedCfgs, sf)
     return (postSize === '8x8') ? 3 : 2;
   }
 
-  // Count all in-ground posts
   var totalBags = 0;
 
-  // Eave posts (MB post size)
-  var eavePosts = SM.getPostsForWall('left', Q, WALLS, allDoors).length
-                + SM.getPostsForWall('right', Q, WALLS, allDoors).length;
-  totalBags += eavePosts * bagsForSize(sf.mbPostSize || '6x6');
+  // Main building posts — skip entirely when posts on top
+  if (!onTop) {
+    // Eave posts (MB post size)
+    var eavePosts = SM.getPostsForWall('left', Q, WALLS, allDoors).length
+                  + SM.getPostsForWall('right', Q, WALLS, allDoors).length;
+    totalBags += eavePosts * bagsForSize(sf.mbPostSize || '6x6');
 
-  // Gable posts (MB post size)
-  ['front', 'back'].forEach(function(wallId) {
-    var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
-    if (wCfg && wCfg.encl === 'open') return;
-    var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
-    var gablePosts = posts.filter(function(p){return !p.corner;}).length;
-    totalBags += gablePosts * bagsForSize(sf.mbPostSize || '6x6');
-  });
+    // Gable posts (MB post size)
+    ['front', 'back'].forEach(function(wallId) {
+      var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
+      if (wCfg && wCfg.encl === 'open') return;
+      var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
+      var gablePosts = posts.filter(function(p){return !p.corner;}).length;
+      totalBags += gablePosts * bagsForSize(sf.mbPostSize || '6x6');
+    });
 
-  // Walk door posts (always 6x6 equivalent — PT4610)
-  var shedWDs = SM.getShedWalkDoors ? SM.getShedWalkDoors() : [];
-  var walkDoorPostCount = ((window._walkDoors || []).length + shedWDs.length) * 2;
-  totalBags += walkDoorPostCount * bagsForSize('6x6');
+    // Walk door posts (always 6x6 equivalent — PT4610)
+    var shedWDs = SM.getShedWalkDoors ? SM.getShedWalkDoors() : [];
+    var walkDoorPostCount = ((window._walkDoors || []).length + shedWDs.length) * 2;
+    totalBags += walkDoorPostCount * bagsForSize('6x6');
+  }
 
-  // Shed posts (SS post size)
+  // Shed posts — skip per-shed when mono concrete
   var ssSize = sf.ssPostSize || '6x6';
-  var ssGround = 4; // always in ground for shed posts
-  (shedCfgs || []).forEach(function(sc) {
+  (shedCfgs || []).forEach(function(sc, idx) {
     if (!sc.wall || !sc.w || !sc.l) return;
+    var isMono = (function() {
+      var co = shedConcretes[idx];
+      return co && co.included && co.footers === false;
+    })();
+    if (isMono) return; // mono shed posts get decorative brackets, no sackcrete
+
     var attachWall = (WALLS||[]).find(function(w){return w.id===sc.wall;});
     var ps = attachWall ? (attachWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
     var count = 0;
@@ -11444,7 +11460,8 @@ window.SauceMaterials.calcSackcrete = function(Q, WALLS, allDoors, shedCfgs, sf)
 
 window.SauceMaterials.calcFootingPads = function(Q, WALLS, allDoors, shedCfgs, sf) {
   var onTop = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
-  if (onTop) return [];
+  var concreteOpts = window._lastConcreteOpts || {};
+  var shedConcretes = concreteOpts.sheds || [];
 
   var SM = window.SauceMaterials;
 
@@ -11458,28 +11475,36 @@ window.SauceMaterials.calcFootingPads = function(Q, WALLS, allDoors, shedCfgs, s
     groups[sku] += count;
   }
 
-  // Eave posts (MB post size)
-  var eavePosts = SM.getPostsForWall('left', Q, WALLS, allDoors).length
-                + SM.getPostsForWall('right', Q, WALLS, allDoors).length;
-  add(skuForSize(sf.mbPostSize || '6x6'), eavePosts);
+  if (!onTop) {
+    // Eave posts (MB post size)
+    var eavePosts = SM.getPostsForWall('left', Q, WALLS, allDoors).length
+                  + SM.getPostsForWall('right', Q, WALLS, allDoors).length;
+    add(skuForSize(sf.mbPostSize || '6x6'), eavePosts);
 
-  // Gable posts (MB post size)
-  ['front', 'back'].forEach(function(wallId) {
-    var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
-    if (wCfg && wCfg.encl === 'open') return;
-    var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
-    add(skuForSize(sf.mbPostSize || '6x6'), posts.filter(function(p){return !p.corner;}).length);
-  });
+    // Gable posts (MB post size)
+    ['front', 'back'].forEach(function(wallId) {
+      var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
+      if (wCfg && wCfg.encl === 'open') return;
+      var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
+      add(skuForSize(sf.mbPostSize || '6x6'), posts.filter(function(p){return !p.corner;}).length);
+    });
 
-  // Walk door posts — always PBFP16
-  var shedWDs2 = window.SauceMaterials.getShedWalkDoors ? window.SauceMaterials.getShedWalkDoors() : [];
-  add('PBFP16', ((window._walkDoors || []).length + shedWDs2.length) * 2);
+    // Walk door posts — always PBFP16
+    var shedWDs2 = SM.getShedWalkDoors ? SM.getShedWalkDoors() : [];
+    add('PBFP16', ((window._walkDoors || []).length + shedWDs2.length) * 2);
+  }
 
-  // Shed posts (SS post size)
+  // Shed posts — skip per-shed if that shed has mono concrete
   var ssSize = sf.ssPostSize || '6x6';
   var ssSku  = skuForSize(ssSize);
-  (shedCfgs || []).forEach(function(sc) {
+  (shedCfgs || []).forEach(function(sc, idx) {
     if (!sc.wall || !sc.w || !sc.l) return;
+    var isMono = (function() {
+      var co = shedConcretes[idx];
+      return co && co.included && co.footers === false;
+    })();
+    if (isMono) return; // mono shed posts get decorative brackets, no footing pads
+
     var attachWall = (WALLS||[]).find(function(w){return w.id===sc.wall;});
     var ps = attachWall ? (attachWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
     var count = 0;
@@ -11526,7 +11551,107 @@ window.SauceMaterials.calcFootingPads = function(Q, WALLS, allDoors, shedCfgs, s
   });
 };
 
-// ── ITEM 7: BUILDING HEADERS ────────────────────────────────────────────────
+// ── POST BRACKETS (posts-on-top) ─────────────────────────────────────────────
+// Main building: fires when postsOnTop === 'Yes'
+//   Corner posts (4 corners)     → 2× single-sided bracket each = 8 total
+//   Garage door jamb posts       → 2× single-sided bracket each (2 per door)
+//   All other eave + gable posts → 1× regular bracket each
+// Side sheds: fires independently when that shed has mono concrete (footers=false)
+//   Open/roofonly shed posts → decorative bracket (DPBKTAPB)
+//   Enclosed/partial shed posts → regular bracket (PBKT)
+
+window.SauceMaterials.calcPostBrackets = function(Q, WALLS, allDoors, shedCfgs, sf) {
+  var onTop = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
+  var mbSize = sf.mbPostSize || '6x6';
+  var ssSize = sf.ssPostSize || '6x6';
+  var concreteOpts = window._lastConcreteOpts || {};
+  var shedConcretes = concreteOpts.sheds || [];
+
+  var SM = window.SauceMaterials;
+
+  // SKU helpers
+  function singleSku(size) { return size === '8x8' ? 'PBKT88ONESIDED' : 'PBKT6.6ONESIDED'; }
+  function regularSku(size) { return size === '8x8' ? 'PBKT88HD' : 'PBKT6.6'; }
+  function decorativeSku(size) { return size === '8x8' ? 'DPBKTAPB88' : 'DPBKTAPB66'; }
+
+  var groups = {};
+  function add(sku, count) { if (count > 0) groups[sku] = (groups[sku] || 0) + count; }
+
+  // ── Main building — only when postsOnTop ──
+  if (onTop) {
+    ['left', 'right'].forEach(function(wallId) {
+      var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
+      posts.forEach(function(p) {
+        if (p.corner) {
+          add(singleSku(mbSize), 2); // 2 single-sided per corner
+        } else if (p.jamb) {
+          add(singleSku(mbSize), 2); // 2 single-sided per garage door jamb
+        } else {
+          add(regularSku(mbSize), 1);
+        }
+      });
+    });
+
+    ['front', 'back'].forEach(function(wallId) {
+      var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
+      if (wCfg && wCfg.encl === 'open') return;
+      var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
+      posts.forEach(function(p) {
+        if (p.corner) return; // corners already counted on eave walls
+        add(regularSku(mbSize), 1);
+      });
+    });
+  }
+
+  // ── Side sheds — per-shed when mono concrete, independent of postsOnTop ──
+  (shedCfgs || []).forEach(function(sc, idx) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if (sc.wall !== 'left' && sc.wall !== 'right') return; // eave sheds only
+
+    var co = shedConcretes[idx];
+    var isMono = co && co.included && co.footers === false;
+    if (!isMono) return;
+
+    var attachWall = (WALLS||[]).find(function(w){return w.id===sc.wall;});
+    var ps = attachWall ? (attachWall.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+    var count = Math.max(1, Math.floor(sc.l / ps)) + 1;
+
+    // Determine bracket type based on enclosure:
+    // Open/roofonly → decorative; enclosed/partial → regular
+    var isOpen = (sc.encl === 'open' || sc.encl === 'roofonly');
+    if (isOpen) {
+      add(decorativeSku(ssSize), count);
+    } else {
+      // Enclosed/partial: corner posts get single-sided, others get regular
+      // First and last post are "corners" relative to the main building
+      for (var i = 0; i < count; i++) {
+        var isCorner = (i === 0 || i === count - 1);
+        if (isCorner) {
+          add(singleSku(ssSize), 2);
+        } else {
+          add(regularSku(ssSize), 1);
+        }
+      }
+    }
+  });
+
+  if (!Object.keys(groups).length) return [];
+
+  return Object.keys(groups).sort().map(function(sku) {
+    var desc = sku.indexOf('ONESIDED') >= 0 ? 'Post Bracket (Single-Sided)'
+             : sku.indexOf('DPBKT') >= 0    ? 'Decorative Post Bracket'
+             : 'Post Bracket';
+    return {
+      category:    'Hardware',
+      description: desc,
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      mbSize + ' main / ' + ssSize + ' shed'
+    };
+  });
+};
+
 // Wood truss only. Both eave walls × inside + outside = ×4 per run.
 // Main building: width < 41' uses 2x12, width 41-60' uses LVL 11 7/8
 // Side sheds: always 2x12
@@ -15401,25 +15526,42 @@ window.SauceMaterials.calcShedOpenings = function() {
 // 5" Lag Bolts: 2 per post (all post types). SKU: LAG5
 
 window.SauceMaterials.calcLagBolts = function(Q, WALLS, shedCfgs, allDoors, sf) {
+  var onTop = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
+  var concreteOpts = window._lastConcreteOpts || {};
+  var shedConcretes = concreteOpts.sheds || [];
+
   var total = 0;
 
-  // Eave posts
-  var eaveItem = window.SauceMaterials.calcEavePosts(Q, WALLS, allDoors, sf);
-  if (eaveItem) total += eaveItem.quantity || 0;
+  // Eave + gable posts — skip entirely when posts on top
+  if (!onTop) {
+    var eaveItem = window.SauceMaterials.calcEavePosts(Q, WALLS, allDoors, sf);
+    if (eaveItem) total += eaveItem.quantity || 0;
 
-  // Gable posts
-  window.SauceMaterials.calcGablePosts(Q, WALLS, allDoors, sf).forEach(function(item) {
-    total += item.quantity || 0;
+    window.SauceMaterials.calcGablePosts(Q, WALLS, allDoors, sf).forEach(function(item) {
+      total += item.quantity || 0;
+    });
+
+    // Walk door posts — always in-ground (no bracket equiv)
+    var wdItem = window.SauceMaterials.calcWalkDoorPosts(allDoors);
+    if (wdItem) total += wdItem.quantity || 0;
+  }
+
+  // Shed posts — skip per-shed if that shed has mono concrete
+  (shedCfgs || []).forEach(function(sc, idx) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    var isMono = (function() {
+      var co = shedConcretes[idx];
+      return co && co.included && co.footers === false;
+    })();
+    if (isMono) return; // mono shed posts get brackets, no lag bolts
+
+    var attachWall = (WALLS||[]).find(function(w){return w.id===sc.wall;});
+    var ps = attachWall ? (attachWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
+    var count = 0;
+    if (sc.type === 'gable') count = 2;
+    else count = Math.max(1, Math.floor(sc.l / ps)) + 1;
+    total += count;
   });
-
-  // Shed posts
-  window.SauceMaterials.calcShedPosts(Q, WALLS, shedCfgs, sf).forEach(function(item) {
-    total += item.quantity || 0;
-  });
-
-  // Walk door posts
-  var wdItem = window.SauceMaterials.calcWalkDoorPosts(allDoors);
-  if (wdItem) total += wdItem.quantity || 0;
 
   if (!total) return [];
 
@@ -15772,6 +15914,7 @@ window.SauceMaterials.calculate = function() {
     // Shed posts + footings
     SM.calcShedPosts(Q, WALLS, shedCfgs, sf).forEach(function(item) { items.push(item); });
     SM.calcFootingPads(Q, WALLS, [], shedCfgs, sf).forEach(function(item) { items.push(item); });
+    SM.calcPostBrackets(Q, WALLS, [], shedCfgs, sf).forEach(function(item) { items.push(item); });
     // Shed framing (rafters) + ledgers
     SM.calcShedFraming(Q, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedLedgers(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
@@ -15820,6 +15963,7 @@ window.SauceMaterials.calculate = function() {
   if (wdPosts) items.push(wdPosts);
   var footingPads = SM.calcFootingPads(Q, WALLS, allDoors, window._shedConfigs||[], sf);
   footingPads.forEach(function(item) { items.push(item); });
+  SM.calcPostBrackets(Q, WALLS, allDoors, window._shedConfigs||[], sf).forEach(function(item) { items.push(item); });
   var sackcrete = SM.calcSackcrete(Q, WALLS, allDoors, window._shedConfigs||[], sf);
   if (sackcrete) items.push(sackcrete);
   // LAG5
