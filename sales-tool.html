@@ -662,7 +662,6 @@ body.customer-mode #stripMftWrap { display: none !important; }
 body.customer-mode #secMftPanel { display: none !important; }
 body.customer-mode #laborBtn { display: none !important; }
 body.customer-mode #concreteBtn { display: none !important; }
-body.customer-mode #quoteBtn { display: none !important; }
 
 /* Rebrand the topbar for customer mode */
 body.customer-mode .brand-name-sales { content: ''; }
@@ -1628,16 +1627,15 @@ body.customer-mode #custColorChartLink { display: block !important; }
         </div><!-- /secSpecsConcrete -->
       </div><!-- /stab_specs inner sec -->
 
-        <div style="display:none;"><!-- MFT moved to pricing strip -->
+        <div style="display:none;"><!-- MFT rate input moved to panel top --></div>
         <div class="toggle-row">
           <div class="toggle-info"><div class="toggle-lbl">Material Kit Only</div></div>
-          <label class="tog"><input type="checkbox" id="st_materialKit"><span class="tog-track"></span></label>
+          <label class="tog"><input type="checkbox" id="st_materialKit" onchange="try{updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
         </div>
         <div class="toggle-row">
           <div class="toggle-info"><div class="toggle-lbl">Farm Tax Exempt</div></div>
-          <label class="tog"><input type="checkbox" id="st_farmTax"><span class="tog-track"></span></label>
+          <label class="tog"><input type="checkbox" id="st_farmTax" onchange="try{updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
         </div>
-        </div><!-- /hidden MFT -->
       </div><!-- /stab_specs sec -->
 
     </div><!-- end panel-scroll -->
@@ -1657,7 +1655,6 @@ body.customer-mode #custColorChartLink { display: block !important; }
         <button class="act-btn secondary" onclick="openMaterialsModal()">📦 Materials</button>
         <button class="act-btn secondary" id="laborBtn" onclick="openLaborModal()">💼 Labor</button>
         <button class="act-btn secondary" id="concreteBtn" onclick="openConcreteModal()">🪨 Concrete</button>
-        <button class="act-btn secondary" id="quoteBtn" onclick="openQuoteSummaryModal()" style="background:rgba(255,130,0,.12);color:#FF8200;border-color:rgba(255,130,0,.4);">📊 Quote</button>
       </div>
     </div>
     <div id="saveQuoteStatus" style="display:none;text-align:center;font-size:11px;color:#4ade80;font-weight:700;padding:4px 0;letter-spacing:.3px;"></div>
@@ -1850,7 +1847,9 @@ function updateStripFromLocalCalc() {
   var shedCfgs = window._shedConfigs || [];
   var county   = window._cachedCounty || '';
   var miles    = window._cachedMileage || 0;
-  var mftVal   = parseFloat((document.getElementById('st_mftRate')||{}).value) || 0;
+  var mftVal      = parseFloat((document.getElementById('st_mftRate')||{}).value) || 0;
+  var materialKit = !!(document.getElementById('st_materialKit')||{}).checked;
+  var farmTax     = !!(document.getElementById('st_farmTax')||{}).checked;
   var sqft     = Q.w * Q.l;
   if (window._shedOnlyMode) {
     // Use combined shed sqft for concrete
@@ -1940,9 +1939,9 @@ function updateStripFromLocalCalc() {
 
   variants.forEach(function(v) {
     var mat    = matForVariant(v.truss, v.oh, v.soffit);
-    var tax    = mat * 0.0975;
+    var tax    = farmTax ? 0 : mat * 0.0975;
     var mft    = mat * (mftVal / 100);
-    var labor  = v.labor ? v.labor.finalLabor : 0;
+    var labor  = materialKit ? 0 : (v.labor ? v.labor.finalLabor : 0);
     var grand  = mat + tax + mft + labor + concreteAmt + shipAmt;
 
     p(v.prefix+'material', mat > 0 ? fmtPrice(mat) : '—');
@@ -16100,212 +16099,6 @@ window.openConcreteModal = function() {
   closeBtn.textContent = 'Close';
   closeBtn.style.cssText = 'padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
   closeBtn.onclick = window.closeConcreteModal;
-  panel.appendChild(closeBtn);
-
-  overlay.appendChild(panel);
-  document.body.appendChild(overlay);
-};
-
-// ====================================================================
-// QUOTE SUMMARY MODAL — self-contained grand total
-// Shows Materials + Tax + MFT + Labor + Concrete + Shipping per column
-// ====================================================================
-
-window.closeQuoteSummaryModal = function() {
-  var el = document.getElementById('sauceQuoteSummaryModal');
-  if (el) el.remove();
-};
-
-window.openQuoteSummaryModal = function() {
-  window.closeQuoteSummaryModal();
-
-  var Q        = window._Q || {};
-  var WALLS    = window._WALLS || [];
-  var shedCfgs = window._shedConfigs || [];
-  var sqft     = (Q.w||0) * (Q.l||0);
-  var county   = window._cachedCounty || '';
-  var miles    = window.SauceShipping ? window.SauceShipping.getMiles() : 0;
-
-  var allEnclosed = WALLS.length > 0 && WALLS.every(function(w){ return w.encl === 'enclosed' || w.encl === 'partial'; });
-
-  var mftVal  = parseFloat((document.getElementById('st_mftRate')||{}).value) || 0;
-  var shipAmt = window.SauceShipping ? window.SauceShipping.calculate(miles).amount : 0;
-
-  // Helper: run materials calculate with temporarily swapped Q properties
-  function calcMatSubtotal(truss, oh, soffit) {
-    var saved = { truss: Q.truss, oh: Q.oh, soffit: Q.soffit };
-    Q.truss = truss; Q.oh = oh; Q.soffit = soffit;
-    var total = 0;
-    try {
-      var res = window.SauceMaterials.calculate();
-      if (res && res.items) {
-        res.items.forEach(function(item) {
-          if (item.fixedCost != null) { total += item.fixedCost; return; }
-          var up = (window.SauceMaterials._priceTable || {})[(item.sku||'').toUpperCase()] || 0;
-          if (!up) return;
-          if (item.metalLength) {
-            var ftM = (item.metalLength||'').match(/(\d+)'/), inM = (item.metalLength||'').match(/(\d+(?:\.\d+)?)"/) ;
-            var lf = (ftM?parseFloat(ftM[1]):0)+(inM?parseFloat(inM[1])/12:0);
-            total += up * item.quantity * lf;
-          } else if (item.boardLen) {
-            total += up * item.quantity * item.boardLen;
-          } else {
-            total += up * item.quantity;
-          }
-        });
-      }
-    } catch(e) {}
-    Q.truss = saved.truss; Q.oh = saved.oh; Q.soffit = saved.soffit;
-    return total;
-  }
-
-  // Calculate materials for each variant
-  var mats = allEnclosed ? {
-    woodNoOH: calcMatSubtotal('Wood',  0,  false),
-    woodOH:   calcMatSubtotal('Wood',  12, true),
-    steel:    calcMatSubtotal('Steel', 0, false),
-    stud:     calcMatSubtotal('Wood',  12, true)  // stud uses same metal config as wood OH for now
-  } : {
-    single: calcMatSubtotal(Q.truss, Q.oh, Q.soffit)
-  };
-
-  // Labor
-  var laborAll = window.SauceLabor ? window.SauceLabor.calculateAll() : null;
-
-  // Concrete — sum main + included sheds
-  var concreteAmt = 0;
-  if (window._lastConcreteOpts && window.SauceConcrete) {
-    var co = window._lastConcreteOpts;
-    if (co.main) {
-      concreteAmt += window.SauceConcrete.calculate(county, sqft, co.main).finalCost;
-    }
-    if (co.sheds) {
-      co.sheds.forEach(function(sOpts, i) {
-        if (!sOpts) return;
-        var sc = shedCfgs[i];
-        if (sc && sc.w && sc.l) concreteAmt += window.SauceConcrete.calculate(county, sc.w * sc.l, sOpts).finalCost;
-      });
-    }
-  }
-
-  // Build modal
-  var overlay = document.createElement('div');
-  overlay.id = 'sauceQuoteSummaryModal';
-  overlay.style.cssText = 'display:flex;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;align-items:center;justify-content:center;';
-  overlay.addEventListener('click', function(e){ if(e.target===overlay) overlay.remove(); });
-
-  var panel = document.createElement('div');
-  panel.style.cssText = 'background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:24px;width:96%;max-width:740px;max-height:88vh;display:flex;flex-direction:column;font-family:Outfit,sans-serif;gap:10px;overflow-y:auto;';
-
-  var hdr = document.createElement('div');
-  hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
-  hdr.innerHTML = '<div style="font-size:15px;font-weight:800;color:#f0f3f7;">📊 Quote Summary <span style="font-size:10px;color:#888;font-weight:400;">self-contained</span></div>';
-  var xBtn = document.createElement('button');
-  xBtn.textContent='×'; xBtn.style.cssText='background:none;border:none;color:#888;font-size:20px;cursor:pointer;';
-  xBtn.onclick = window.closeQuoteSummaryModal;
-  hdr.appendChild(xBtn);
-  panel.appendChild(hdr);
-
-  // Warning if no prices loaded
-  var anyMat = allEnclosed ? (mats.woodNoOH + mats.woodOH + mats.steel) : mats.single;
-  if (anyMat === 0) {
-    var warn = document.createElement('div');
-    warn.style.cssText = 'font-size:11px;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:6px;padding:8px 10px;';
-    warn.textContent = '⚠ No inventory pricing loaded — material totals will show $0. Load pricing via 💲 Prices.';
-    panel.appendChild(warn);
-  }
-
-  function buildColumn(title, matSubtotal, labor, color, variantConfig) {
-    var mftAmt    = matSubtotal * (mftVal / 100);
-    var taxAmt    = window.SauceTax ? window.SauceTax.calculate(matSubtotal).amount : 0;
-    var laborAmt  = labor ? labor.finalLabor : 0;
-    var grandTotal = matSubtotal + taxAmt + mftAmt + laborAmt + concreteAmt + shipAmt;
-
-    var col = document.createElement('div');
-    col.style.cssText = 'background:#1e293b;border-radius:10px;padding:14px;flex:1;min-width:140px;';
-
-    var colTitle = document.createElement('div');
-    colTitle.style.cssText = 'font-size:10px;font-weight:800;color:' + color + ';text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;text-align:center;';
-    colTitle.textContent = title;
-    col.appendChild(colTitle);
-
-    var rows = [
-      { label: 'Materials',     amount: matSubtotal, sub: true, clickable: true },
-      { label: 'Tax (9.75%)',   amount: taxAmt },
-      { label: 'MFT (' + mftVal + '%)', amount: mftAmt },
-      { label: 'Labor',         amount: laborAmt },
-      { label: 'Concrete',      amount: concreteAmt, dim: concreteAmt === 0 },
-      { label: 'Shipping',      amount: shipAmt, dim: shipAmt === 0 }
-    ];
-
-    rows.forEach(function(r) {
-      var row = document.createElement('div');
-      row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:11px;' + (r.dim ? 'opacity:.4;' : '') + (r.clickable ? 'cursor:pointer;' : '');
-      var lbl = document.createElement('span');
-      lbl.style.cssText = 'color:' + (r.clickable ? color : '#aaa') + ';' + (r.clickable ? 'text-decoration:underline dotted;font-weight:700;' : '');
-      lbl.textContent = r.label + (r.clickable ? ' ↗' : '');
-      var amt = document.createElement('span');
-      amt.style.cssText = 'font-weight:700;color:' + (r.sub ? '#f0f3f7' : '#4ade80') + ';';
-      amt.textContent = '$' + r.amount.toFixed(2);
-      row.appendChild(lbl); row.appendChild(amt);
-
-      if (r.clickable && variantConfig) {
-        row.onclick = function() {
-          // Swap Q, open materials modal, restore
-          var saved = { truss: Q.truss, oh: Q.oh, soffit: Q.soffit };
-          Q.truss = variantConfig.truss; Q.oh = variantConfig.oh; Q.soffit = variantConfig.soffit;
-          window.openMaterialsModal();
-          Q.truss = saved.truss; Q.oh = saved.oh; Q.soffit = saved.soffit;
-        };
-      }
-
-      col.appendChild(row);
-    });
-
-    // Grand total
-    var totalRow = document.createElement('div');
-    totalRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 0 0;font-size:14px;font-weight:900;color:' + color + ';margin-top:4px;';
-    totalRow.innerHTML = '<span>Total</span><span>$' + grandTotal.toFixed(2) + '</span>';
-    col.appendChild(totalRow);
-
-    return col;
-  }
-
-  var colWrap = document.createElement('div');
-  colWrap.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
-
-  if (allEnclosed && laborAll && laborAll.mode === 'enclosed') {
-    colWrap.appendChild(buildColumn('Wood No OH',     mats.woodNoOH, laborAll.woodNoOH, '#60a5fa', {truss:'Wood',  oh:0,  soffit:false}));
-    colWrap.appendChild(buildColumn('Wood w/ Soffit', mats.woodOH,   laborAll.woodOH,   '#4ade80', {truss:'Wood',  oh:12, soffit:true}));
-    colWrap.appendChild(buildColumn('Steel',          mats.steel,    laborAll.steel,    '#FF8200', {truss:'Steel', oh:0,  soffit:false}));
-    colWrap.appendChild(buildColumn('Stud Frame',     mats.stud,     laborAll.stud,     '#c084fc', {truss:'Wood',  oh:12, soffit:true}));
-  } else {
-    var single = laborAll ? laborAll.single : null;
-    colWrap.appendChild(buildColumn('Quote Estimate', mats.single, single, '#FF8200', {truss:Q.truss, oh:Q.oh, soffit:Q.soffit}));
-  }
-
-  panel.appendChild(colWrap);
-
-  // Concrete note
-  if (concreteAmt === 0) {
-    var cNote = document.createElement('div');
-    cNote.style.cssText = 'font-size:10px;color:#666;text-align:center;';
-    cNote.textContent = 'Concrete $0 — open 🪨 Concrete to configure options';
-    panel.appendChild(cNote);
-  }
-
-  // Shipping note
-  if (miles > 0) {
-    var sNote = document.createElement('div');
-    sNote.style.cssText = 'font-size:10px;color:#666;text-align:center;';
-    sNote.textContent = 'Shipping: ' + miles + ' mi × $6.00 = $' + shipAmt.toFixed(2);
-    panel.appendChild(sNote);
-  }
-
-  var closeBtn = document.createElement('button');
-  closeBtn.textContent = 'Close';
-  closeBtn.style.cssText = 'padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
-  closeBtn.onclick = window.closeQuoteSummaryModal;
   panel.appendChild(closeBtn);
 
   overlay.appendChild(panel);
