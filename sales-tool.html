@@ -1545,10 +1545,11 @@ body.customer-mode #custColorChartLink { display: block !important; }
         </div>
 
         <div class="sec-title" style="font-size:9px;margin:10px 0 5px;letter-spacing:1.5px;">Manual Adder</div>
+        <div style="font-size:9px;color:var(--muted);margin-bottom:5px;">Added directly to the quoted total — not part of materials</div>
         <div class="chip-row" style="flex-wrap:wrap;gap:6px;margin-bottom:6px;">
           <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:80px;">
             <div style="font-size:9px;color:var(--muted);font-weight:600;">Amount ($)</div>
-            <input id="st_manualAdder" type="number" placeholder="0.00" style="font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
+            <input id="st_manualAdder" type="number" placeholder="0.00" oninput="try{updateStripFromLocalCalc();}catch(e){}" style="font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
           </div>
           <div style="display:flex;flex-direction:column;gap:3px;flex:2;min-width:120px;">
             <div style="font-size:9px;color:var(--muted);font-weight:600;">Notes</div>
@@ -1897,10 +1898,18 @@ function updateStripFromLocalCalc() {
       var sc = shedCfgs[i];
       if (sc && sc.w && sc.l) concreteAmt += window.SauceConcrete.calculate(county, sc.w * sc.l, sOpts).finalCost;
     });
+    if (co.apron && co.apron.sqft) concreteAmt += window.SauceConcrete.calculate(county, co.apron.sqft, co.apron).finalCost;
   }
 
   // Shipping
   var shipAmt = miles > 0 ? miles * 6.00 : 0;
+
+  // Manual adder — added directly to total, not part of materials
+  var manualAdder = parseFloat((document.getElementById('st_manualAdder')||{}).value) || 0;
+
+  // ESD — county-based engineered drawings fee
+  var esdResult = window.SauceESD ? window.SauceESD.calculate(county, (Q.w||0)*(Q.l||0), shedCfgs) : { amount: 0 };
+  var esdAmt = esdResult.amount || 0;
 
   // Labor all variants
   var laborAll = window.SauceLabor.calculateAll();
@@ -1942,12 +1951,12 @@ function updateStripFromLocalCalc() {
     var tax    = farmTax ? 0 : mat * 0.0975;
     var mft    = mat * (mftVal / 100);
     var labor  = materialKit ? 0 : (v.labor ? v.labor.finalLabor : 0);
-    var grand  = mat + tax + mft + labor + concreteAmt + shipAmt;
+    var grand  = mat + tax + mft + labor + concreteAmt + shipAmt + esdAmt + manualAdder;
 
     p(v.prefix+'material', mat > 0 ? fmtPrice(mat) : '—');
     p(v.prefix+'labor',    labor > 0 ? fmtPrice(labor) : '—');
     p(v.prefix+'concrete', concreteAmt > 0 ? fmtPrice(concreteAmt) : '—');
-    p(v.prefix+'esd',      '—');
+    p(v.prefix+'esd',      esdAmt > 0 ? fmtPrice(esdAmt) : '—');
     p(v.prefix+'tax',      tax > 0 ? fmtPrice(tax) : '—');
     p(v.prefix+'shipping', shipAmt > 0 ? fmtPrice(shipAmt) : '—');
     p(v.prefix+'mft',      mft > 0 ? fmtPrice(mft) : '—');
@@ -10796,12 +10805,16 @@ window.SauceMaterials.calcSackcrete = function(Q, WALLS, allDoors, shedCfgs, sf)
 
   var SM = window.SauceMaterials;
 
-  // Check if ESD applies — any pricing result with esd > 0
+  // Check if ESD applies — use local calculator first, fall back to sheet results
   var esdApplies = false;
-  var priceResults = [window._lastPriceOH, window._lastPriceNoOH, window._lastPriceSteel, window._lastPriceStud];
-  priceResults.forEach(function(r) {
-    if (r && r.esd && r.esd > 0) esdApplies = true;
-  });
+  if (window.SauceESD && window._cachedCounty) {
+    esdApplies = window.SauceESD.calculate(window._cachedCounty, (Q.w||0)*(Q.l||0), window._shedConfigs||[]).applies;
+  } else {
+    var priceResults = [window._lastPriceOH, window._lastPriceNoOH, window._lastPriceSteel, window._lastPriceStud];
+    priceResults.forEach(function(r) {
+      if (r && r.esd && r.esd > 0) esdApplies = true;
+    });
+  }
 
   // Bags per post based on size
   function bagsForSize(postSize) {
@@ -11682,6 +11695,14 @@ window.SauceMaterials.calcSteelShedPurlins = function(Q, shedCfgs) {
 // Run length: divisible by 12 → 12' boards, otherwise 20' first then 10' fill
 // Total = runs × purlins per run. Add 10%.
 
+// Helper: no SYP2410 SKU exists — use SYP2420 and halve the quantity (ceil)
+window.SauceMaterials.syp24 = function(len, qty) {
+  if (parseInt(len) === 10) {
+    return { sku: 'SYP2420', quantity: Math.ceil(qty / 2) };
+  }
+  return { sku: 'SYP24' + len, quantity: qty };
+};
+
 window.SauceMaterials.calcWoodPurlins = function(Q) {
   if (Q.truss !== 'Wood') return [];
   if (Q.oh !== 0) return []; // only for no overhang buildings
@@ -11752,12 +11773,12 @@ window.SauceMaterials.calcWoodPurlins = function(Q) {
   Object.keys(boards).forEach(function(len) {
     var runs     = boards[len];
     var quantity = Math.ceil(runs * count);
-    var sku      = 'SYP24' + len;
+    var _syp = window.SauceMaterials.syp24(len, quantity);
     results.push({
       category:    'Yard',
       description: 'Wood Truss Roof Purlins',
-      sku:         sku,
-      quantity:    quantity,
+      sku:         _syp.sku,
+      quantity:    _syp.quantity,
       detail:      runs + ' runs × ' + count + ' purlins  |  ' + Q.w + "' wide  |  "
                    + (Q.oh === 0 ? 'no O/H' : Q.oh + '" O/H') + '  |  ' + Q.pitch + '/12'
     });
@@ -11805,8 +11826,8 @@ window.SauceMaterials.calcWoodShedPurlins = function(Q, shedCfgs) {
     Object.keys(boards).forEach(function(len) {
       var runs     = boards[len];
       var quantity = Math.ceil(runs * count);
-      var sku      = 'SYP24' + len;
-      groups[sku]  = (groups[sku] || 0) + quantity;
+      var _syp = window.SauceMaterials.syp24(len, quantity);
+      groups[_syp.sku] = (groups[_syp.sku] || 0) + _syp.quantity;
     });
   });
 
@@ -11909,12 +11930,12 @@ window.SauceMaterials.calcWoodOHPurlins = function(Q) {
   Object.keys(runBoards).forEach(function(len) {
     var runs     = runBoards[len];
     var quantity = Math.ceil(runs * count);
-    var sku      = 'SYP24' + len;
+    var _syp = window.SauceMaterials.syp24(len, quantity);
     results.push({
       category:    'Yard',
       description: 'Wood Truss Roof Purlins (O/H)',
-      sku:         sku,
-      quantity:    quantity,
+      sku:         _syp.sku,
+      quantity:    _syp.quantity,
       detail:      runs + ' runs × ' + count + '  |  ' + Q.w + "' wide  |  "
                    + Q.oh + '" O/H  |  ' + Q.pitch + '/12'
     });
@@ -11982,8 +12003,8 @@ window.SauceMaterials.calcWoodOHShedPurlins = function(Q, shedCfgs) {
     Object.keys(runBoards).forEach(function(len) {
       var runs     = runBoards[len];
       var quantity = Math.ceil(runs * count);
-      var sku      = 'SYP24' + len;
-      groups[sku]  = (groups[sku]||0) + quantity;
+      var _syp = window.SauceMaterials.syp24(len, quantity);
+      groups[_syp.sku] = (groups[_syp.sku]||0) + _syp.quantity;
     });
   });
 
@@ -12101,7 +12122,7 @@ window.SauceMaterials.calcFlyRafters = function(Q, shedCfgs) {
 
   // Main building: ×4
   Object.keys(boards).forEach(function(len) {
-    var sku = 'SYP24' + len;
+    var _syp = window.SauceMaterials.syp24(len, quantity);
     groups[sku] = (groups[sku]||0) + boards[len] * 4;
   });
 
@@ -12121,7 +12142,7 @@ window.SauceMaterials.calcFlyRafters = function(Q, shedCfgs) {
           var gBoards   = coverLength(gRounded);
           // ×4: 2 slopes × 2 ends of extension
           Object.keys(gBoards).forEach(function(len) {
-            var sku = 'SYP24' + len;
+            var _syp = window.SauceMaterials.syp24(len, quantity);
             groups[sku] = (groups[sku]||0) + gBoards[len] * 4;
           });
         }
@@ -12136,7 +12157,7 @@ window.SauceMaterials.calcFlyRafters = function(Q, shedCfgs) {
     var ssRounded  = nextEven(ssMetalLen);
     var ssBoards   = coverLength(ssRounded);
     Object.keys(ssBoards).forEach(function(len) {
-      var sku = 'SYP24' + len;
+      var _syp = window.SauceMaterials.syp24(len, quantity);
       groups[sku] = (groups[sku]||0) + ssBoards[len] * 2;
     });
   });
@@ -14374,8 +14395,8 @@ window.SauceMaterials.calcOutsideCornerTrim = function(Q, WALLS, shedCfgs) {
     ocGroups[sku] = (ocGroups[sku] || 0) + qty;
   }
   function addFur(neededFt, qty) {
-    var sku = 'SYP24' + pickLen(neededFt);
-    furGroups[sku] = (furGroups[sku] || 0) + qty;
+    var _syp = window.SauceMaterials.syp24(pickLen(neededFt), qty);
+    furGroups[_syp.sku] = (furGroups[_syp.sku] || 0) + _syp.quantity;
   }
 
   // Main building: 4 corners, each shared by one eave wall and one gable wall
@@ -15986,6 +16007,14 @@ window.openConcreteModal = function() {
     var selMetalLedge = makeSelect([{val:'0',label:'No'},{val:'1',label:'Yes (+$0.25)'}], '0');
     var selStamped    = makeSelect([{val:'0',label:'No'},{val:'1',label:'Yes (+$10.00)'}], '0');
 
+    // Auto-set metal ledge when footers selected (post frame mono pour)
+    selFooters.addEventListener('change', function() {
+      if (selFooters.value === '1') {
+        selMetalLedge.value = '1';
+      }
+      onChange();
+    });
+
     optsWrap.appendChild(makeRow('Thickness', selThickness));
     optsWrap.appendChild(makeRow('Footers', selFooters));
     optsWrap.appendChild(makeRow('PSI', selPSI));
@@ -16032,24 +16061,43 @@ window.openConcreteModal = function() {
     shedUIs.push(shedUI);
   });
 
+  // Apron / additional concrete section
+  var apronSaved = saved.apron || null;
+  var apronUI = buildOptsUI('Apron / Additional Concrete', 0, apronSaved, recalc);
+  // Add sqft input for apron since it's custom
+  var apronSqftWrap = document.createElement('div');
+  apronSqftWrap.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px;';
+  var apronSqftLbl = document.createElement('span');
+  apronSqftLbl.style.cssText = 'font-size:11px;color:#888;width:110px;flex-shrink:0;';
+  apronSqftLbl.textContent = 'Sq Ft';
+  var apronSqftInp = document.createElement('input');
+  apronSqftInp.type = 'number'; apronSqftInp.min = '0'; apronSqftInp.placeholder = '0';
+  apronSqftInp.value = (apronSaved && apronSaved.sqft) ? apronSaved.sqft : '';
+  apronSqftInp.style.cssText = 'flex:1;padding:5px 8px;border-radius:6px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:11px;font-family:Outfit,sans-serif;';
+  apronSqftInp.oninput = recalc;
+  apronSqftWrap.appendChild(apronSqftLbl); apronSqftWrap.appendChild(apronSqftInp);
+  // Insert sqft row at top of apron optsWrap
+  var apronOptsWrap = apronUI.querySelector('div[style*="flex-direction:column"]');
+  if (apronOptsWrap) apronOptsWrap.insertBefore(apronSqftWrap, apronOptsWrap.firstChild);
+  panel.appendChild(apronUI);
+
   panel.appendChild(resultsDiv);
 
   function recalc() {
-    // Collect all opts
     var mainOpts = mainUI.getOpts();
     var shedOptsArr = shedUIs.map(function(ui){ return ui.getOpts(); });
+    var apronOpts = apronUI.getOpts();
+    var apronSqft = parseInt(apronSqftInp.value) || 0;
+    if (apronOpts) apronOpts.sqft = apronSqft;
 
-    // Save
-    window._lastConcreteOpts = { main: mainOpts, sheds: shedOptsArr };
-    // Update pricing strip
+    window._lastConcreteOpts = { main: mainOpts, sheds: shedOptsArr, apron: apronOpts };
     try { updateStripFromLocalCalc(); } catch(e) {}
 
-    // Calculate
     var grandTotal = 0;
     resultsDiv.innerHTML = '';
 
     function addSection(label, sqft, opts) {
-      if (!opts) return;
+      if (!opts || !sqft) return;
       var result = SC.calculate(county, sqft, opts);
       var secHdr = document.createElement('div');
       secHdr.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:rgba(255,130,0,.7);margin:6px 0 3px;';
@@ -16082,6 +16130,7 @@ window.openConcreteModal = function() {
       var sc = shedCfgs[ui._idx];
       if (sc) addSection('Side Shed ' + (ui._idx+1), sc.w * sc.l, ui.getOpts());
     });
+    if (apronOpts && apronSqft > 0) addSection('Apron / Additional', apronSqft, apronOpts);
 
     if (grandTotal > 0) {
       var totalRow = document.createElement('div');
@@ -16925,7 +16974,27 @@ window.SauceLabor.calculateAll = function() {
 };
 
 // ====================================================================
-// SAUCE TAX — 9.75% on materials only, before MFT
+// SAUCE ESD — Engineered Stamped Drawings
+// County-based fee: (total footprint sqft × 0.45) + $750
+// Only applies in specific counties
+// ====================================================================
+window.SauceESD = {
+  COUNTIES: ['MAURY','WILLIAMSON','DAVIDSON','MADISON','SHELBY','DESOTO','RUTHERFORD','SEVIER','KNOX'],
+  calculate: function(county, mainSqft, shedCfgs) {
+    if (!county) return { amount: 0, applies: false };
+    var key = county.toUpperCase().replace(/\s+COUNTY$/i,'').trim();
+    var applies = window.SauceESD.COUNTIES.indexOf(key) !== -1;
+    if (!applies) return { amount: 0, applies: false };
+    var shedSqft = (shedCfgs||[]).reduce(function(s, sc){ return s + (sc.w||0)*(sc.l||0); }, 0);
+    var totalSqft = mainSqft + shedSqft;
+    var amount = (totalSqft * 0.45) + 750;
+    return {
+      amount: amount,
+      applies: true,
+      label: 'ESD  |  ' + totalSqft + ' sqft × $0.45 + $750  |  ' + county
+    };
+  }
+};
 // ====================================================================
 window.SauceTax = {
   RATE: 0.0975,
