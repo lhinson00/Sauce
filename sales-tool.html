@@ -1150,6 +1150,13 @@ body.customer-mode #custColorChartLink { display: block !important; }
         <div class="sec-title"><span class="icon">🏗️</span>Side Sheds & Extensions</div>
         <div id="shedList"></div>
         <button class="opening-add-btn" id="addShedBtn" onclick="addShed()">+ Add Side Shed / Extension</button>
+        <div style="margin-top:8px;display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:rgba(255,130,0,.06);border:1px solid rgba(255,130,0,.2);border-radius:8px;">
+          <div>
+            <div style="font-size:11px;font-weight:700;color:var(--navy);">Side Shed Only Quote</div>
+            <div style="font-size:9px;color:var(--muted);">Price shed only — main building shows but won't calculate</div>
+          </div>
+          <label class="tog"><input type="checkbox" id="st_shedOnlyMode" onchange="setShedOnlyMode(this.checked)"><span class="tog-track"></span></label>
+        </div>
       </div>
 
 
@@ -1828,8 +1835,13 @@ function updateStripFromLocalCalc() {
   var miles    = window._cachedMileage || 0;
   var mftVal   = parseFloat((document.getElementById('st_mftRate')||{}).value) || 0;
   var sqft     = Q.w * Q.l;
+  if (window._shedOnlyMode) {
+    // Use combined shed sqft for concrete
+    sqft = (window._shedConfigs||[]).reduce(function(s, sc){ return s + (sc.w||0)*(sc.l||0); }, 0);
+  }
 
   var allEnclosed = WALLS.length > 0 && WALLS.every(function(w){ return w.encl === 'enclosed' || w.encl === 'partial'; });
+  if (window._shedOnlyMode) allEnclosed = false; // shed only = single column
 
   // Helper: materials subtotal for a variant
   function matForVariant(truss, oh, soffit) {
@@ -1901,9 +1913,13 @@ function updateStripFromLocalCalc() {
     });
   }
 
-  var p = function(id,v){ var el=document.getElementById(id); if(el){ el.textContent=v; el.classList.remove('pending'); } };
+  // Strip mode indicator
+  var stripLogo = document.querySelector('.price-strip-logo');
+  if (stripLogo) {
+    stripLogo.innerHTML = window._shedOnlyMode ? 'SE <span style="color:#f59e0b;">SHED ONLY</span>' : 'SE <span>Sales</span>';
+  }
 
-  variants.forEach(function(v) {
+  var p = function(id,v){ var el=document.getElementById(id); if(el){ el.textContent=v; el.classList.remove('pending'); } };
     var mat    = matForVariant(v.truss, v.oh, v.soffit);
     var tax    = mat * 0.0975;
     var mft    = mat * (mftVal / 100);
@@ -2380,6 +2396,13 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   });
 })();
+
+window._shedOnlyMode = false;
+
+function setShedOnlyMode(val) {
+  window._shedOnlyMode = !!val;
+  scheduleBuild();
+}
 
 function setVentGap(val) {
   Q.ventGap = !!val;
@@ -14975,7 +14998,50 @@ window.SauceMaterials.calculate = function() {
     postsOnTop: (document.getElementById('st_postsOnTop')||{}).value || 'No'
   };
   var items = [];
-  // ── YARD — in requested order ────────────────────────────────────────────────
+  var shedCfgs = window._shedConfigs || [];
+
+  // ── SHED ONLY MODE ────────────────────────────────────────────────────────────
+  if (window._shedOnlyMode && shedCfgs.length > 0) {
+    // Shed posts + footings
+    SM.calcShedPosts(Q, WALLS, shedCfgs, sf).forEach(function(item) { items.push(item); });
+    SM.calcFootingPads(Q, WALLS, [], shedCfgs, sf).forEach(function(item) { items.push(item); });
+    // Shed framing (rafters) + ledgers
+    SM.calcShedFraming(Q, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcShedLedgers(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    // Steel shed trusses + purlins
+    SM.calcSteelShedTrusses(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcSteelShedPurlins(Q, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcWoodShedPurlins(Q, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcWoodOHShedPurlins(Q, shedCfgs).forEach(function(item) { items.push(item); });
+    // Roof metal (side shed only — main building calcRoofMetal returns shed extension items too)
+    SM.calcRoofMetal(Q, shedCfgs).forEach(function(item) {
+      if (item.category === 'Side Shed Roof Metal') items.push(item);
+    });
+    // Sidewall metal for enclosed shed outer walls
+    SM.calcSidewallMetal(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcLeantoUpperGable(Q, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcWainscotMetal(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcSkirtMetal(Q, shedCfgs).forEach(function(item) { items.push(item); });
+    // Trim
+    SM.calcPC3Trim(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcRETTrim(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcEndWallFlashing(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcRatGuard(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcDoubleAngle(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcInsideCornerTrim(Q, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcOutsideCornerTrim(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcGableRakeTrim(Q, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcRidgeCap(Q).forEach(function(item) { items.push(item); });
+    // Doors/windows on shed
+    SM.calcWalkDoors().forEach(function(item) { items.push(item); });
+    SM.calcWindows().forEach(function(item) { items.push(item); });
+    // Hardware — minimal set
+    SM.calcOutsideSolidClosure(Q, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcInsulation(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcMetalScrews(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    items.push({ category: 'Hardware', description: 'Roofing Sealant', sku: 'RS00', quantity: 1, detail: 'shed only' });
+    return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "' (SHED ONLY)", shedOnly: true };
+  }
   SM.calcShedPosts(Q, WALLS, window._shedConfigs || [], sf).forEach(function(item) { items.push(item); });
   items.push(SM.calcEavePosts(Q, WALLS, allDoors, sf));
   SM.calcGablePosts(Q, WALLS, allDoors, sf).forEach(function(item) { items.push(item); });
@@ -16989,6 +17055,19 @@ window.SauceLabor.calculate = function(overrideConfig) {
 window.SauceLabor.calculateAll = function() {
   var SL = window.SauceLabor;
   var WALLS = window._WALLS || [];
+
+  // Shed-only mode — flat $2,200 per shed
+  if (window._shedOnlyMode) {
+    var shedCount = (window._shedConfigs||[]).filter(function(sc){ return sc.w && sc.l; }).length;
+    var shedLabor = shedCount * 2200;
+    var shedResult = {
+      lines: [{ label: 'Side Shed Labor  |  ' + shedCount + ' shed(s) × $2,200 flat', amount: shedLabor }],
+      subtotal: shedLabor, minimum: 2200, minApplied: false,
+      mileageAmt: 0, finalLabor: shedLabor, buildingType: 'shedOnly'
+    };
+    return { mode: 'shedOnly', single: shedResult };
+  }
+
   var enclosed = (WALLS).filter(function(w){ return w.encl === 'enclosed' || w.encl === 'partial'; }).length;
   var allEnclosed = enclosed === 4;
 
