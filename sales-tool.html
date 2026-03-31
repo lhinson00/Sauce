@@ -1968,6 +1968,23 @@ function updateStripFromLocalCalc() {
       if (grand > 0) tot.classList.add('highlight'); else tot.classList.remove('highlight');
     }
 
+    // Store into _lastPrice* so PDF/email can read them
+    var priceObj = {
+      total:    grand,
+      material: mat,
+      labor:    labor,
+      tax:      tax,
+      concrete: concreteAmt,
+      shipping: shipAmt,
+      esd:      esdAmt,
+      mft:      mft,
+      _source:  'local'
+    };
+    if (v.prefix === 'ps_')  window._lastPriceOH    = priceObj;
+    if (v.prefix === 'ps2_') window._lastPriceNoOH  = priceObj;
+    if (v.prefix === 'ps3_') window._lastPriceSteel = priceObj;
+    if (v.prefix === 'ps4_') window._lastPriceStud  = priceObj;
+
     // Make Material cell clickable → open material list for this variant
     var matEl = document.getElementById(v.prefix+'material');
     if (matEl) {
@@ -8044,13 +8061,13 @@ async function generateQuotePDF() {
     doc.setFont('helvetica','normal'); doc.setFontSize(8); setTxt('#c8d0dc');
     doc.text('Rotate, zoom and explore your building — click the link below:', PW/2, y+26, {align:'center'});
     // Clean centered hyperlink
-    doc.setFont('helvetica','bold'); doc.setFontSize(12); setTxt(col.gold);
-    var linkLabel = 'View Your 3-D Building Model  →';
+    doc.setFont('helvetica','bold'); doc.setFontSize(11); setTxt(col.gold);
+    var linkLabel = 'View Your 3-D Building Model  \u2192';
     var linkW = doc.getTextWidth(linkLabel);
-    var linkX = PW/2 - linkW/2;
+    var linkX = (PW - linkW) / 2;
     doc.textWithLink(linkLabel, linkX, y+42, {url: configLink3d});
-    doc.setDrawColor(212, 168, 67); doc.setLineWidth(0.75);
-    doc.line(linkX, y+45, linkX + linkW, y+45);
+    doc.setDrawColor(212, 168, 67); doc.setLineWidth(0.5);
+    doc.line(linkX, y+43.5, linkX + linkW, y+43.5);
     y += 58;
   }
 
@@ -11103,16 +11120,28 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
 
 // ── ITEM 4: WALK DOOR POSTS ──────────────────────────────────────────────────
 
+window.SauceMaterials.getShedWalkDoors = function() {
+  var result = [];
+  (window._shedConfigs||[]).forEach(function(sc) {
+    if (sc.encl !== 'enclosed' && sc.encl !== 'partial') return;
+    (sc.walkDoors||[]).forEach(function(wd) {
+      if (!wd.framedOpening) result.push(wd);
+    });
+  });
+  return result;
+};
+
 window.SauceMaterials.calcWalkDoorPosts = function(allDoors) {
   var walkDoors = (window._walkDoors || []);
-  var qty = walkDoors.length * 2;
+  var shedWDs = window.SauceMaterials.getShedWalkDoors ? window.SauceMaterials.getShedWalkDoors() : [];
+  var qty = (walkDoors.length + shedWDs.length) * 2;
   if (qty === 0) return null;
   return {
     category:    'Yard',
     description: 'Walk Door Posts (Field Located)',
     sku:         'PT4610',
     quantity:    qty,
-    detail:      walkDoors.length + ' walk door(s)  |  2 posts each'
+    detail:      walkDoors.length + ' main + ' + shedWDs.length + ' shed walk door(s)  |  2 posts each'
   };
 };
 
@@ -11164,7 +11193,8 @@ window.SauceMaterials.calcSackcrete = function(Q, WALLS, allDoors, shedCfgs, sf)
   });
 
   // Walk door posts (always 6x6 equivalent — PT4610)
-  var walkDoorPostCount = (window._walkDoors || []).length * 2;
+  var shedWDs = SM.getShedWalkDoors ? SM.getShedWalkDoors() : [];
+  var walkDoorPostCount = ((window._walkDoors || []).length + shedWDs.length) * 2;
   totalBags += walkDoorPostCount * bagsForSize('6x6');
 
   // Shed posts (SS post size)
@@ -11258,7 +11288,8 @@ window.SauceMaterials.calcFootingPads = function(Q, WALLS, allDoors, shedCfgs, s
   });
 
   // Walk door posts — always PBFP16
-  add('PBFP16', (window._walkDoors || []).length * 2);
+  var shedWDs2 = window.SauceMaterials.getShedWalkDoors ? window.SauceMaterials.getShedWalkDoors() : [];
+  add('PBFP16', ((window._walkDoors || []).length + shedWDs2.length) * 2);
 
   // Shed posts (SS post size)
   var ssSize = sf.ssPostSize || '6x6';
@@ -13948,6 +13979,16 @@ window.SauceMaterials.calcValleyPanels = function(Q, shedCfgs) {
 
 window.SauceMaterials.calcOverheadDoorTrim = function(Q, allDoors, sf) {
   var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
+
+  // Also include garage doors placed in enclosed side sheds
+  (window._shedConfigs||[]).forEach(function(sc) {
+    if (sc.encl !== 'enclosed' && sc.encl !== 'partial') return;
+    (sc.doors||[]).forEach(function(gd) {
+      var p = (gd.size||'10x10').split('x');
+      garageDoors = garageDoors.concat([{ w: parseInt(p[0])||10, h: parseInt(p[1])||10 }]);
+    });
+  });
+
   if (!garageDoors.length) return [];
 
   var postSize  = (sf && sf.mbPostSize) || (document.getElementById('st_mbPostSize')||{}).value || '6x6';
@@ -14000,12 +14041,20 @@ window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, wind
     groups[len] = (groups[len] || 0) + qty;
   }
 
-  // Walk doors: 3 each — always 10'
+  // Walk doors: 3 each — always 10' (main building + shed)
+  var shedWDs3 = window.SauceMaterials.getShedWalkDoors ? window.SauceMaterials.getShedWalkDoors() : [];
   var wdList = (walkDoors||[]);
-  if (wdList.length) add(10, wdList.length * 3);
+  var totalWDs = wdList.length + shedWDs3.length;
+  if (totalWDs) add(10, totalWDs * 3);
 
-  // Windows: 2 each — always 10'
-  if ((windows||[]).length) add(10, windows.length * 2);
+  // Windows: 2 each — always 10' (main building + shed)
+  var shedWins = [];
+  (window._shedConfigs||[]).forEach(function(sc) {
+    if (sc.encl !== 'enclosed' && sc.encl !== 'partial') return;
+    (sc.windows||[]).forEach(function(w) { if (!w.framedOpening) shedWins.push(w); });
+  });
+  var totalWins = (windows||[]).length + shedWins.length;
+  if (totalWins) add(10, totalWins * 2);
 
   // Side sheds
   (shedCfgs||[]).forEach(function(sc) {
