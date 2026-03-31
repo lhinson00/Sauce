@@ -16614,7 +16614,7 @@ window.SauceConcrete.COUNTY_ZONES = {
   'PICKETT':2,'OVERTON':2,'JACKSON':2,'PUTNAM':2,'DEKALB':2,
   'CANNON':2,'RUTHERFORD':2,'WILSON':2,'SMITH':2,'STEWART':2,
   'HICKMAN':2,'LEWIS':2,'WHITE':2,'WARREN':2,'VAN BUREN':2,
-  'MOORE':2,'LINCOLN':1,
+  'MOORE':2,
 
   // EAST TENNESSEE — Zone 3
   'SCOTT':3,'CAMPBELL':3,'CLAIBORNE':3,'HANCOCK':3,'HAWKINS':3,
@@ -16623,8 +16623,7 @@ window.SauceConcrete.COUNTY_ZONES = {
   'SEVIER':3,'BLOUNT':3,'LOUDON':3,'MONROE':3,'MCMINN':3,
   'POLK':3,'BRADLEY':3,'HAMILTON':3,'RHEA':3,'MEIGS':3,
   'ROANE':3,'ANDERSON':3,'KNOX':3,'JEFFERSON':3,'MORGAN':3,
-  'FENTRESS':3,'CUMBERLAND':3,'MORGAN':3,'LENOIR':3,'ANDERSON':3,
-  'CLAIBORNE':3,'UNION':3
+  'FENTRESS':3,'CUMBERLAND':3
 };
 
 window.SauceConcrete.getZone = function(county) {
@@ -16739,7 +16738,7 @@ window.SauceLabor.calcBase = function(buildingType, sqft) {
 
 // ── HEIGHT ADDER ─────────────────────────────────────────────────────────────
 window.SauceLabor.calcHeight = function(buildingType, h, sqft) {
-  var isRG = buildingType === 'rg';
+  var isLowEncl = (buildingType === 'rg' || buildingType === 'rg2');
   var adder = 0;
   var label = '';
   if (h >= 20) {
@@ -16747,8 +16746,8 @@ window.SauceLabor.calcHeight = function(buildingType, h, sqft) {
   } else if (h >= 18) {
     adder = 0.65; label = h + "' height → +$0.65/sqft";
   } else if (h >= 16) {
-    adder = isRG ? 0.25 : 0.40;
-    label = h + "' height → +$" + adder + '/sqft ' + (isRG ? '(R&G)' : '(enclosed)');
+    adder = isLowEncl ? 0.25 : 0.40;
+    label = h + "' height → +$" + adder + '/sqft ' + (isLowEncl ? '(R&G/1-2 wall)' : '(3+ walls)');
   }
   if (!adder) return null;
   return { label: 'Height Adder  |  ' + label, amount: adder * sqft };
@@ -16779,7 +16778,11 @@ window.SauceLabor.calcSoffit = function(truss, oh, frameType, shedCfgs) {
   var SM = window.SauceMaterials;
   if (!SM || !SM.calcSoffitMetal) return null;
   var Q = window._Q;
+  // Temporarily swap Q to the variant's truss/oh so calcSoffitMetal reads correctly
+  var saved = { truss: Q.truss, oh: Q.oh };
+  Q.truss = truss; Q.oh = oh;
   var soffitItems = SM.calcSoffitMetal(Q, shedCfgs||[]);
+  Q.truss = saved.truss; Q.oh = saved.oh;
   var totalPanels = soffitItems.reduce(function(s, item) { return s + (item.quantity||0); }, 0);
   if (!totalPanels) return null;
   var linFt = totalPanels * 3;
@@ -16911,39 +16914,39 @@ window.SauceLabor.calcInsulationAdder = function() {
 // ── SIDE SHEDS ───────────────────────────────────────────────────────────────
 window.SauceLabor.calcSideSheds = function(shedCfgs) {
   var lines = [];
-  var totalShedSqFt = 0;
 
-  (shedCfgs||[]).forEach(function(sc) {
+  (shedCfgs||[]).forEach(function(sc, idx) {
     if (!sc.w || !sc.l) return;
-    totalShedSqFt += sc.w * sc.l;
+    var shedSqFt = sc.w * sc.l;
+    var label = 'Side Shed ' + (idx + 1) + ' (' + sc.w + "' × " + sc.l + "')";
 
-    // Enclosed walls on shed — $8/LF, only when shed is actually enclosed
+    // Flat rate — boundary always goes to higher tier
+    var shedRate, shedTierLabel;
+    if (shedSqFt < 300) {
+      shedRate = 1200; shedTierLabel = shedSqFt + ' sqft → flat $1,200';
+    } else if (shedSqFt < 600) {
+      shedRate = 1500; shedTierLabel = shedSqFt + ' sqft → flat $1,500';
+    } else if (shedSqFt < 1200) {
+      shedRate = 1800; shedTierLabel = shedSqFt + ' sqft → flat $1,800';
+    } else {
+      shedRate = shedSqFt * 1.50; shedTierLabel = shedSqFt + ' sqft @ $1.50/sqft';
+    }
+    lines.push({ label: label + '  |  ' + shedTierLabel, amount: shedRate });
+
+    // Enclosed walls — $8/LF
     if (sc.encl === 'enclosed') {
       var enclWalls = sc.enclWalls || ['outer','gable1','gable2'];
       enclWalls.forEach(function(wallId) {
-        var len = (wallId === 'outer') ? sc.l : sc.w;
-        lines.push({ label: 'Shed Enclosed Wall (' + wallId + ')  |  ' + len + ' LF @ $8.00', amount: len * 8 });
+        var len;
+        if (wallId === 'outer') {
+          len = (sc.enclFt != null && parseFloat(sc.enclFt) < sc.l) ? parseFloat(sc.enclFt) : sc.l;
+        } else {
+          len = sc.w;
+        }
+        lines.push({ label: label + ' enclosed wall (' + wallId + ')  |  ' + len + ' LF @ $8.00', amount: len * 8 });
       });
-      // Partial enclosure length
-      if (sc.enclFt && parseFloat(sc.enclFt) < sc.l) {
-        // Already handled per-wall above with enclFt
-      }
     }
   });
-
-  if (totalShedSqFt > 0) {
-    var shedRate, shedLabel;
-    if (totalShedSqFt < 300) {
-      shedRate = 1200; shedLabel = totalShedSqFt + ' sqft → flat $1,200';
-    } else if (totalShedSqFt < 600) {
-      shedRate = 1500; shedLabel = totalShedSqFt + ' sqft → flat $1,500';
-    } else if (totalShedSqFt < 1200) {
-      shedRate = 1800; shedLabel = totalShedSqFt + ' sqft → flat $1,800';
-    } else {
-      shedRate = totalShedSqFt * 1.50; shedLabel = totalShedSqFt + ' sqft @ $1.50';
-    }
-    lines.unshift({ label: 'Side Sheds/Porches  |  ' + shedLabel, amount: shedRate });
-  }
 
   return lines;
 };
