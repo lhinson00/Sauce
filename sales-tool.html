@@ -7164,14 +7164,15 @@ function vpToggleWalls() {
                     const showGable2 = !enclFt || enclFrom === 'end';    // gable2 = end
                     // Outer wall (away from main building)
                     if (hasWall('outer')) {
-                    // Helper: walk door on shed gable end wall (fixed Z, X axis is door width)
-                    function _drawShedGableWalkDoor(wd, faceZ, zo, wallOX, wallH) {
+                    // Helper: walk door on shed gable end wall (fixed Z plane, no Y rotation needed)
+                    function _drawShedGableWalkDoor(wd, faceZ, zo, _xMin, _xMax) {
                         const dwW = wdWidth(wd.type||'WHITE 3/0 PLYCO ALUMINUM FRAME') * Sc;
+                        const wallH = outerWH;
                         const dwH = Math.min(WD_HEIGHT * Sc, wallH);
-                        const shedWidthSc = sc.w * Sc;
-                        // offset=0 means centered on shed width; offset in ft shifts from center
+                        const shedWidthSc = (_xMax - _xMin);
+                        // offset=0 means centered on shed width
                         const off = (wd.offset||0) * Sc;
-                        const cx = xMin + shedWidthSc/2 + off;
+                        const cx = _xMin + shedWidthSc/2 + off;
                         const fz = faceZ + zo;
                         const fz2 = faceZ + zo * 1.2;
                         const isHalfG = wd.type && wd.type.indexOf('1/2 GLASS') >= 0;
@@ -7183,9 +7184,26 @@ function vpToggleWalls() {
                         const mWDLg = new THREE.LineBasicMaterial({ color: pc(trimColorName), transparent: true, opacity: 0.8 });
                         const mGlsG = new THREE.MeshBasicMaterial({ color: 0xb8d4e8, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
                         const mFrmG = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
-                        const flip = zo > 0; // back-facing wall
+                        // Gable walls lie in the X-Y plane at fixed Z.
+                        // PlaneGeometry default faces +Z, so back wall (zo>0) needs flip.
+                        const flip = zo > 0;
 
                         if (!isFramedG) {
+                            // Cut opening in wall by drawing wall panels around the door
+                            // Left of door
+                            if (cx - dwW/2 > _xMin + 0.001) {
+                                grps.wallPanels.add(mkQ([_xMin, 0, faceZ, cx-dwW/2, 0, faceZ, cx-dwW/2, wallH, faceZ, _xMin, wallH, faceZ], mW));
+                            }
+                            // Right of door
+                            if (cx + dwW/2 < _xMax - 0.001) {
+                                grps.wallPanels.add(mkQ([cx+dwW/2, 0, faceZ, _xMax, 0, faceZ, _xMax, wallH, faceZ, cx+dwW/2, wallH, faceZ], mW));
+                            }
+                            // Above door
+                            if (dwH < wallH - 0.001) {
+                                grps.wallPanels.add(mkQ([cx-dwW/2, dwH, faceZ, cx+dwW/2, dwH, faceZ, cx+dwW/2, wallH, faceZ, cx-dwW/2, wallH, faceZ], mW));
+                            }
+
+                            // Door panel
                             const pan = new THREE.Mesh(new THREE.PlaneGeometry(dwW, dwH), mWDg);
                             pan.position.set(cx, dwH/2, fz);
                             if (flip) pan.rotation.y = Math.PI;
@@ -7199,7 +7217,6 @@ function vpToggleWalls() {
                                 panGls.position.set(cx, gY, fz3);
                                 if (flip) panGls.rotation.y = Math.PI;
                                 grps.doors.add(panGls);
-                                // Glass frame strips
                                 const fz35 = faceZ + zo * 1.4;
                                 grps.doors.add(mkQ([cx-gW/2,gY-gH/2,fz35, cx+gW/2,gY-gH/2,fz35, cx+gW/2,gY-gH/2+fb,fz35, cx-gW/2,gY-gH/2+fb,fz35], mFrmG));
                                 grps.doors.add(mkQ([cx-gW/2,gY+gH/2-fb,fz35, cx+gW/2,gY+gH/2-fb,fz35, cx+gW/2,gY+gH/2,fz35, cx-gW/2,gY+gH/2,fz35], mFrmG));
@@ -7214,13 +7231,18 @@ function vpToggleWalls() {
                             }
                         }
                         // Frame outline
-                        grps.doors.add(mkL([new THREE.Vector3(cx-dwW/2,0,fz2), new THREE.Vector3(cx-dwW/2,dwH,fz2), new THREE.Vector3(cx+dwW/2,dwH,fz2), new THREE.Vector3(cx+dwW/2,0,fz2)], mWDLg));
+                        grps.doors.add(mkL([
+                            new THREE.Vector3(cx-dwW/2, 0,   fz2),
+                            new THREE.Vector3(cx-dwW/2, dwH, fz2),
+                            new THREE.Vector3(cx+dwW/2, dwH, fz2),
+                            new THREE.Vector3(cx+dwW/2, 0,   fz2)
+                        ], mWDLg));
                         // Knob
                         const knobSzG = Math.max(dwW * 0.055, 0.016);
                         const knobXG  = cx + (dwW/2) * (flip ? -0.847 : 0.847);
                         const mHWG = new THREE.MeshBasicMaterial({ color: 0x8899aa, side: THREE.DoubleSide });
                         const knobMG = new THREE.Mesh(new THREE.PlaneGeometry(knobSzG, knobSzG), mHWG);
-                        knobMG.position.set(knobXG, dwH*0.45, fz2+zo*0.01);
+                        knobMG.position.set(knobXG, dwH*0.45, fz2 + zo*0.01);
                         if (flip) knobMG.rotation.y = Math.PI;
                         grps.doors.add(knobMG);
                     }
@@ -7592,7 +7614,7 @@ function vpToggleWalls() {
                         }
                         // Walk doors on gable1 end wall
                         (sc.walkDoors||[]).filter(wd => (wd.wall||'outer') === 'gable1').forEach(wd => {
-                            _drawShedGableWalkDoor(wd, z1, -0.015, oX, outerWH);
+                            _drawShedGableWalkDoor(wd, z1, -0.015, xMin, xMax);
                         });
                         }
                         // Back end wall
@@ -7607,7 +7629,7 @@ function vpToggleWalls() {
                         }
                         // Walk doors on gable2 end wall
                         (sc.walkDoors||[]).filter(wd => (wd.wall||'outer') === 'gable2').forEach(wd => {
-                            _drawShedGableWalkDoor(wd, z2, +0.015, oX, outerWH);
+                            _drawShedGableWalkDoor(wd, z2, +0.015, xMin, xMax);
                         });
                         }
 
