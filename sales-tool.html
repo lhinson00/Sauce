@@ -3421,7 +3421,8 @@ function serializeConfig() {
       cupolaSize:(document.getElementById('qgCupolaSize')||{}).value||'24',
       cupolaQty:(document.getElementById('qgCupolaQty')||{}).value||'1',
       concreteOn:!!(document.getElementById('exConcrete')||{}).checked,
-      concreteAreas:JSON.parse(JSON.stringify(concreteAreas))
+      concreteAreas:JSON.parse(JSON.stringify(concreteAreas)),
+      concreteOpts: window._lastConcreteOpts ? JSON.parse(JSON.stringify(window._lastConcreteOpts)) : null
     },
     contact: {
       name:(document.getElementById('qfName')||document.getElementById('st_name')||{}).value||'',
@@ -3549,6 +3550,7 @@ function restoreConfig(cfg) {
       var exCon=document.getElementById('exConcrete'); if(exCon) exCon.checked=conOn;
       var conOpts=document.getElementById('concreteOpts'); if(conOpts) conOpts.style.display=conOn?'':'none';
       if(cfg.extras.concreteAreas) { concreteAreas=cfg.extras.concreteAreas; }
+      if(cfg.extras.concreteOpts) { window._lastConcreteOpts = cfg.extras.concreteOpts; }
       if(conOn) renderConcreteOpts();
     }
     if(cfg.contact) {
@@ -4364,6 +4366,28 @@ function vpToggleWalls() {
     .catch(function(e){ console.warn('Could not load quote',e); triggerBuild(); });
     return;
   }
+
+  // ── DELEGATED PRICING TRIGGER ───────────────────────────────────────────────
+  // Any change or input inside the left panel fires scheduleBuild immediately.
+  // This ensures every select, checkbox, and number input auto-updates the price
+  // without needing individual onchange handlers on each element.
+  // Elements with custom handlers that already call scheduleBuild will simply
+  // fire it twice (harmless — debounced).
+  // Excluded: text inputs that don't affect pricing (name, phone, address, notes).
+  (function() {
+    var panel = document.getElementById('panelScroll');
+    if (!panel) return;
+    var skipIds = { 'st_name':1, 'st_phone':1, 'st_email':1, 'st_address':1,
+                    'st_manualNotes':1, 'st_barjoistType':1 };
+    function handler(e) {
+      var el = e.target;
+      if (!el || !el.id) return;
+      if (skipIds[el.id]) return;
+      scheduleBuild();
+    }
+    panel.addEventListener('change', handler);
+    panel.addEventListener('input', handler);
+  })();
 
   setTimeout(triggerBuild, 400);
 })();
@@ -16832,13 +16856,19 @@ window.openConcreteModal = function() {
     optsWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;' + (inclChk.checked ? '' : 'display:none;');
     optsWrap.style.display = inclChk.checked ? 'flex' : 'none';
 
-    function makeSelect(options, defaultVal) {
+    function makeSelect(options, defaultVal, savedKey) {
       var sel = document.createElement('select');
       sel.style.cssText = 'flex:1;padding:5px 8px;border-radius:6px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:11px;font-family:Outfit,sans-serif;';
+      var savedVal = (savedOpts && savedKey !== undefined && savedOpts[savedKey] !== undefined)
+        ? savedOpts[savedKey]
+        : undefined;
       options.forEach(function(o) {
         var opt = document.createElement('option');
         opt.value = o.val; opt.textContent = o.label;
-        if ((savedOpts && savedOpts[o.key] !== undefined ? savedOpts[o.key] : defaultVal) == o.val) opt.selected = true;
+        // Compare saved value — handle boolean footers/metalLedge/stamped
+        var cmp = savedVal;
+        if (typeof cmp === 'boolean') cmp = cmp ? '1' : '0';
+        if (cmp !== undefined ? (String(cmp) === String(o.val)) : (defaultVal == o.val)) opt.selected = true;
         sel.appendChild(opt);
       });
       sel.onchange = onChange;
@@ -16855,12 +16885,12 @@ window.openConcreteModal = function() {
       return row;
     }
 
-    var selThickness  = makeSelect([{val:'4',label:'4"'},{val:'6',label:'6"'}], '4');
-    var selFooters    = makeSelect([{val:'0',label:'No'},{val:'1',label:'Yes — w/ Footers'}], '0');
-    var selPSI        = makeSelect([{val:'3500',label:'3,500 PSI (Standard)'},{val:'4000',label:'4,000 PSI (+$0.25)'},{val:'5000',label:'5,000 PSI (+$0.75)'}], '3500');
-    var selReinforce  = makeSelect([{val:'none',label:'None'},{val:'wire',label:'Wire Mesh (+$0.85)'},{val:'rebar',label:'Rebar (+$1.25)'}], 'none');
-    var selMetalLedge = makeSelect([{val:'0',label:'No'},{val:'1',label:'Yes (+$0.25)'}], '0');
-    var selStamped    = makeSelect([{val:'0',label:'No'},{val:'1',label:'Yes (+$10.00)'}], '0');
+    var selThickness  = makeSelect([{val:'4',label:'4"'},{val:'6',label:'6"'}], '4', 'thickness');
+    var selFooters    = makeSelect([{val:'0',label:'No'},{val:'1',label:'Yes — w/ Footers'}], '0', 'footers');
+    var selPSI        = makeSelect([{val:'3500',label:'3,500 PSI (Standard)'},{val:'4000',label:'4,000 PSI (+$0.25)'},{val:'5000',label:'5,000 PSI (+$0.75)'}], '3500', 'psi');
+    var selReinforce  = makeSelect([{val:'none',label:'None'},{val:'wire',label:'Wire Mesh (+$0.85)'},{val:'rebar',label:'Rebar (+$1.25)'}], 'none', 'reinforcement');
+    var selMetalLedge = makeSelect([{val:'0',label:'No'},{val:'1',label:'Yes (+$0.25)'}], '0', 'metalLedge');
+    var selStamped    = makeSelect([{val:'0',label:'No'},{val:'1',label:'Yes (+$10.00)'}], '0', 'stamped');
 
     // Auto-set metal ledge when footers selected (post frame mono pour)
     selFooters.addEventListener('change', function() {
