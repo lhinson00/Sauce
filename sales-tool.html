@@ -14689,6 +14689,8 @@ window.SauceMaterials.calcLagBolts = function(Q, WALLS, shedCfgs, allDoors, sf) 
 // Outside Solid Closure: 1 per main building roof panel. SKU: CLOOSC
 
 window.SauceMaterials.calcOutsideSolidClosure = function(Q, shedCfgs) {
+  // Shed-only: no main building panels → no closure strips
+  if (window._shedOnlyMode) return [];
   var roofItems = window.SauceMaterials.calcRoofMetal(Q, shedCfgs);
   var mainQty = roofItems
     .filter(function(item) { return item.category === 'Roof Metal'; })
@@ -14745,7 +14747,7 @@ window.SauceMaterials.calcHurricaneBrackets = function(Q, shedCfgs) {
   if (Q.truss !== 'Wood') return [];
 
   var spacing      = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
-  var totalTrusses = Math.floor(Q.l / spacing) + 1;
+  var totalTrusses = window._shedOnlyMode ? 0 : (Math.floor(Q.l / spacing) + 1);
   var qty          = totalTrusses * 2;
 
   (shedCfgs||[]).forEach(function(sc) {
@@ -14755,12 +14757,14 @@ window.SauceMaterials.calcHurricaneBrackets = function(Q, shedCfgs) {
     qty += Math.floor(sc.l / 2) + 2;
   });
 
+  if (!qty) return [];
+
   return [{
     category:    'Hardware',
     description: 'Hurricane Brackets',
     sku:         'HB2S',
     quantity:    qty,
-    detail:      totalTrusses + ' trusses × 2  +  shed rafters'
+    detail:      (window._shedOnlyMode ? 'shed rafters only' : totalTrusses + ' trusses × 2  +  shed rafters')
   }];
 };
 
@@ -14842,6 +14846,10 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
 
   if (insulRoof) {
     var roofItems = window.SauceMaterials.calcRoofMetal(Q, shedCfgs);
+    // Shed-only: use only shed extension panels, not main building
+    if (window._shedOnlyMode) {
+      roofItems = roofItems.filter(function(item){ return item.category === 'Side Shed Roof Metal'; });
+    }
     var linFt     = linearFtFromItems(roofItems);
     var sqFt      = linFt * 3;
     var qty       = Math.ceil(sqFt / rollSize);
@@ -14857,7 +14865,8 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
   if (insulWalls) {
     var wallItems  = window.SauceMaterials.calcSidewallMetal(Q, WALLS, shedCfgs);
     var wainItems  = window.SauceMaterials.calcWainscotMetal(Q, WALLS, shedCfgs);
-    var gableItems = window.SauceMaterials.calcGableMetal(Q, WALLS);
+    // Shed-only: skip main building gable metal for wall insulation
+    var gableItems = window._shedOnlyMode ? [] : window.SauceMaterials.calcGableMetal(Q, WALLS);
     var linFt      = linearFtFromItems(wallItems)
                    + linearFtFromItems(wainItems)
                    + linearFtFromItems(gableItems);
@@ -14897,11 +14906,13 @@ window.SauceMaterials.calcScrewsMRSWB = function(Q, shedCfgs) {
 
   var totalScrews = 0;
 
-  // Main building
-  var cups = cupsMap[Q.w];
-  if (cups) {
-    var trussCount = Math.floor(Q.l / spacing) + 1;
-    totalScrews += cups * 4 * trussCount;
+  // Main building — skip in shed-only mode
+  if (!window._shedOnlyMode) {
+    var cups = cupsMap[Q.w];
+    if (cups) {
+      var trussCount = Math.floor(Q.l / spacing) + 1;
+      totalScrews += cups * 4 * trussCount;
+    }
   }
 
   // Side sheds
@@ -14951,7 +14962,12 @@ window.SauceMaterials.calcMetalScrews = function(Q, WALLS, shedCfgs) {
   var results = [];
 
   // Roof: main building + side shed roof metal
-  var roofLF = linFt(SM.calcRoofMetal(Q, shedCfgs));
+  var allRoofItems = SM.calcRoofMetal(Q, shedCfgs);
+  // Shed-only: count only shed extension panels
+  var roofItems = window._shedOnlyMode
+    ? allRoofItems.filter(function(item){ return item.category === 'Side Shed Roof Metal'; })
+    : allRoofItems;
+  var roofLF = linFt(roofItems);
   if (roofLF > 0) results.push({
     category:    'Hardware',
     description: 'Screws — Roof Metal',
@@ -14963,9 +14979,9 @@ window.SauceMaterials.calcMetalScrews = function(Q, WALLS, shedCfgs) {
   // Walls: sidewall + gable (enclosed + open) + wainscot + soffit + skirt
   var wallLF = [
     SM.calcSidewallMetal(Q, WALLS, shedCfgs),
-    SM.calcGableMetal(Q, WALLS),
+    window._shedOnlyMode ? [] : SM.calcGableMetal(Q, WALLS),
     SM.calcLeantoUpperGable(Q, shedCfgs),
-    SM.calcOpenGableMetal(Q, WALLS, shedCfgs),
+    window._shedOnlyMode ? [] : SM.calcOpenGableMetal(Q, WALLS, shedCfgs),
     SM.calcWainscotMetal(Q, WALLS, shedCfgs),
     SM.calcSoffitMetal(Q, shedCfgs),
     SM.calcSkirtMetal(Q, shedCfgs)
