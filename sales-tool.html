@@ -1645,7 +1645,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
       </div>
       <!-- Row 2: Calculators -->
       <div style="display:flex;gap:6px;">
-        <button class="act-btn secondary" onclick="openMaterialsModal()">📦 Materials</button>
+        <button class="act-btn secondary" onclick="(function(){ var psdMap={'psd_stud':'stud','psd_oh':'woodOH','psd_nooh':'woodNoOH','psd_steel':'steel'}; var active=Object.keys(psdMap).find(function(id){ var el=document.getElementById(id); return el&&el.classList.contains('active'); }); openMaterialsModal(active?psdMap[active]:'stud'); })()">📦 Materials</button>
         <button class="act-btn secondary" id="laborBtn" onclick="openLaborModal()">💼 Labor</button>
         <button class="act-btn secondary" id="concreteBtn" onclick="openConcreteModal()">🪨 Concrete</button>
       </div>
@@ -1853,12 +1853,10 @@ function updateStripFromLocalCalc() {
   if (window._shedOnlyMode) allEnclosed = false; // shed only = single column
 
   // Helper: materials subtotal for a variant
-  function matForVariant(truss, oh, soffit) {
-    var saved = { truss: Q.truss, oh: Q.oh, soffit: Q.soffit };
-    Q.truss = truss; Q.oh = oh; Q.soffit = soffit;
+  function matForVariant(forcedType) {
     var total = 0;
     try {
-      var res = window.SauceMaterials.calculate();
+      var res = window.SauceMaterials.calculate(forcedType);
       if (res && res.items) {
         res.items.forEach(function(item) {
           if (item.fixedCost != null) { total += item.fixedCost; return; }
@@ -1876,7 +1874,6 @@ function updateStripFromLocalCalc() {
         });
       }
     } catch(e) {}
-    Q.truss = saved.truss; Q.oh = saved.oh; Q.soffit = saved.soffit;
     return total;
   }
 
@@ -1910,15 +1907,16 @@ function updateStripFromLocalCalc() {
   var variants;
   if (allEnclosed) {
     variants = [
-      { prefix: 'ps4_', truss: 'Wood',  oh: 12, soffit: true,  labor: laborAll.stud,     label: 'Stud' },
-      { prefix: 'ps_',  truss: 'Wood',  oh: 12, soffit: true,  labor: laborAll.woodOH,   label: 'W/Soffit' },
-      { prefix: 'ps2_', truss: 'Wood',  oh: 0,  soffit: false, labor: laborAll.woodNoOH, label: 'No Soffit' },
-      { prefix: 'ps3_', truss: 'Steel', oh: 0,  soffit: false, labor: laborAll.steel,    label: 'Steel' }
+      { prefix: 'ps4_', forcedType: 'stud',     labor: laborAll.stud,     label: 'Stud' },
+      { prefix: 'ps_',  forcedType: 'woodOH',   labor: laborAll.woodOH,   label: 'W/Soffit' },
+      { prefix: 'ps2_', forcedType: 'woodNoOH', labor: laborAll.woodNoOH, label: 'No Soffit' },
+      { prefix: 'ps3_', forcedType: 'steel',    labor: laborAll.steel,    label: 'Steel' }
     ];
   } else {
+    // Open/partial building — steel only, single column
     var singleLabor = laborAll.single;
     variants = [
-      { prefix: 'ps_',  truss: Q.truss, oh: Q.oh, soffit: Q.soffit, labor: singleLabor, label: 'Current' }
+      { prefix: 'ps_', forcedType: 'steel', labor: singleLabor, label: 'Current' }
     ];
     // Zero out other columns
     ['ps2_','ps3_','ps4_'].forEach(function(pfx) {
@@ -1939,7 +1937,7 @@ function updateStripFromLocalCalc() {
   var p = function(id,val){ var el=document.getElementById(id); if(el){ el.textContent=val; el.classList.remove('pending'); } };
 
   variants.forEach(function(v) {
-    var mat    = matForVariant(v.truss, v.oh, v.soffit);
+    var mat    = matForVariant(v.forcedType);
     var tax    = farmTax ? 0 : mat * 0.0975;
     var mft    = mat * (mftVal / 100);
     var labor  = materialKit ? 0 : (v.labor ? v.labor.finalLabor : 0);
@@ -1982,15 +1980,12 @@ function updateStripFromLocalCalc() {
     if (matEl) {
       matEl.style.cursor = 'pointer';
       matEl.title = 'Click to view material list';
-      matEl.onclick = (function(truss, oh, soffit) {
+      matEl.onclick = (function(ft) {
         return function(e) {
           e.stopPropagation();
-          var saved = { truss: Q.truss, oh: Q.oh, soffit: Q.soffit };
-          Q.truss = truss; Q.oh = oh; Q.soffit = soffit;
-          window.openMaterialsModal();
-          Q.truss = saved.truss; Q.oh = saved.oh; Q.soffit = saved.soffit;
+          window.openMaterialsModal(ft);
         };
-      })(v.truss, v.oh, v.soffit);
+      })(v.forcedType);
     }
 
     // Make Labor cell clickable → open labor modal
@@ -17816,16 +17811,16 @@ window.openConcreteModal = function() {
   document.body.appendChild(overlay);
 };
 
-window.openMaterialsModal = function() {
+window.openMaterialsModal = function(initialTab) {
   window.closeMaterialsModal();
 
   // Calculate all 4 building types independently
   var results = {};
   var types = [
-    { key: 'woodNoOH', label: 'Wood No OH', color: '#60a5fa' },
+    { key: 'stud',     label: 'Stud Frame', color: '#c084fc' },
     { key: 'woodOH',   label: 'Wood OH',    color: '#4ade80' },
-    { key: 'steel',    label: 'Steel',      color: '#FF8200' },
-    { key: 'stud',     label: 'Stud Frame', color: '#c084fc' }
+    { key: 'woodNoOH', label: 'Wood No OH', color: '#60a5fa' },
+    { key: 'steel',    label: 'Steel',      color: '#FF8200' }
   ];
   types.forEach(function(t) {
     try { results[t.key] = window.SauceMaterials.calculate(t.key); }
@@ -17853,10 +17848,10 @@ window.openMaterialsModal = function() {
   hdr.appendChild(title); hdr.appendChild(xBtn);
   panel.appendChild(hdr);
 
-  // Tab bar
+  // Tab bar — open to the clicked type, default to stud
   var tabBar = document.createElement('div');
   tabBar.style.cssText = 'display:flex;gap:6px;';
-  var activeKey = types[0].key;
+  var activeKey = (initialTab && results[initialTab]) ? initialTab : types[0].key;
   var tabBtns = {};
 
   function styleTab(t, active) {
