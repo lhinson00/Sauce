@@ -11631,7 +11631,7 @@ window.SauceMaterials.calcFootingPads = function(Q, WALLS, allDoors, shedCfgs, s
     groups[sku] += count;
   }
 
-  if (!onTop) {
+  if (!onTop && !sf.isStudFrame) {
     // Eave posts — per wall
     ['left', 'right'].forEach(function(wallId) {
       var wallSize = SM.wallPostSizeFor(wallId, sf);
@@ -15701,11 +15701,11 @@ window.SauceMaterials.calcStudGarageDoorTrim = function(allDoors) {
 // Total exterior wall sqft (same as OSB wall calc) / 1000, ceil, x 1.1, ceil.
 
 window.SauceMaterials.calcStudInsulation = function(Q, WALLS, shedCfgs) {
-  var insulType = (document.getElementById('st_insulation')||{}).value || 'None';
-  if (insulType === 'None') return [];
+  // House wrap always included on stud frame — insulation type selection is irrelevant
   var insulRoof  = !!(document.getElementById('st_insulRoof')||{}).checked;
   var insulWalls = !!(document.getElementById('st_insulWalls')||{}).checked;
-  if (!insulRoof && !insulWalls) return [];
+  // Default: include both walls and roof if neither is explicitly checked
+  if (!insulRoof && !insulWalls) { insulWalls = true; insulRoof = true; }
 
   // Wall sqft
   var sqft = 0;
@@ -16457,12 +16457,26 @@ window.SauceMaterials.calcMetalScrews = function(Q, WALLS, shedCfgs) {
   return results;
 };
 
-window.SauceMaterials.calculate = function() {
+window.SauceMaterials.calculate = function(forcedType) {
   var SM = window.SauceMaterials;
   var Q = window._Q;
   var WALLS = window._WALLS;
   var allDoors = window._allDoors || [];
   if (!Q) return { error: 'No building configured. Please set dimensions first.' };
+
+  // Build a Q variant based on forcedType
+  var baseQ = Object.assign({}, Q);
+  if (forcedType === 'woodNoOH') {
+    baseQ = Object.assign({}, Q, { truss: 'Wood', oh: 0, frameType: 'post' });
+  } else if (forcedType === 'woodOH') {
+    baseQ = Object.assign({}, Q, { truss: 'Wood', oh: Q.oh > 0 ? Q.oh : 18, frameType: 'post' });
+  } else if (forcedType === 'steel') {
+    baseQ = Object.assign({}, Q, { truss: 'Steel', frameType: 'post' });
+  } else if (forcedType === 'stud') {
+    baseQ = Object.assign({}, Q, { truss: 'Wood', oh: Q.oh > 0 ? Q.oh : 18, frameType: 'stud' });
+  }
+  // If no forcedType, use actual current state (legacy single call)
+  var Q = baseQ;
   var sf = {
     mbPostSize: (document.getElementById('st_mbPostSize')||{}).value || '6x6',
     ssPostSize: (document.getElementById('st_ssPostSize')||{}).value || '6x6',
@@ -17804,13 +17818,19 @@ window.openConcreteModal = function() {
 
 window.openMaterialsModal = function() {
   window.closeMaterialsModal();
-  var result;
-  try {
-    result = window.SauceMaterials.calculate();
-  } catch(e) {
-    result = { error: 'Calculator error: ' + e.message };
-    console.error('[SauceMaterials] Error:', e);
-  }
+
+  // Calculate all 4 building types independently
+  var results = {};
+  var types = [
+    { key: 'woodNoOH', label: 'Wood No OH', color: '#60a5fa' },
+    { key: 'woodOH',   label: 'Wood OH',    color: '#4ade80' },
+    { key: 'steel',    label: 'Steel',      color: '#FF8200' },
+    { key: 'stud',     label: 'Stud Frame', color: '#c084fc' }
+  ];
+  types.forEach(function(t) {
+    try { results[t.key] = window.SauceMaterials.calculate(t.key); }
+    catch(e) { results[t.key] = { error: e.message }; console.error('[Materials]', t.key, e); }
+  });
 
   var overlay = document.createElement('div');
   overlay.id = 'sauceMaterialsModal';
@@ -17818,10 +17838,11 @@ window.openMaterialsModal = function() {
   overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
 
   var panel = document.createElement('div');
-  panel.style.cssText = 'background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:28px 28px 24px;width:90%;max-width:560px;max-height:80vh;display:flex;flex-direction:column;font-family:Outfit,sans-serif;';
+  panel.style.cssText = 'background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:20px 20px 16px;width:90%;max-width:600px;max-height:88vh;display:flex;flex-direction:column;font-family:Outfit,sans-serif;gap:10px;';
 
+  // Header
   var hdr = document.createElement('div');
-  hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;';
+  hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
   var title = document.createElement('div');
   title.style.cssText = 'font-size:15px;font-weight:800;color:#f0f3f7;';
   title.textContent = 'Material List';
@@ -17832,86 +17853,111 @@ window.openMaterialsModal = function() {
   hdr.appendChild(title); hdr.appendChild(xBtn);
   panel.appendChild(hdr);
 
-  var sub = document.createElement('div');
-  sub.style.cssText = 'font-size:11px;color:#888;margin-bottom:12px;';
-  sub.textContent = result.error ? '' : result.building;
-  panel.appendChild(sub);
+  // Tab bar
+  var tabBar = document.createElement('div');
+  tabBar.style.cssText = 'display:flex;gap:6px;';
+  var activeKey = types[0].key;
+  var tabBtns = {};
 
-  var warn = document.createElement('div');
-  warn.style.cssText = 'font-size:10px;font-weight:600;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:6px;padding:6px 10px;margin-bottom:12px;';
-  warn.textContent = 'Material list is under construction — posts only';
-  panel.appendChild(warn);
+  function styleTab(t, active) {
+    tabBtns[t.key].style.cssText = 'flex:1;padding:7px 4px;border-radius:8px;font-size:10px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;border:1px solid ' + (active ? t.color : 'rgba(255,255,255,.1)') + ';background:' + (active ? 'rgba(255,255,255,.06)' : 'transparent') + ';color:' + (active ? t.color : '#666') + ';';
+  }
+
+  types.forEach(function(t) {
+    var btn = document.createElement('button');
+    btn.textContent = t.label;
+    tabBtns[t.key] = btn;
+    styleTab(t, t.key === activeKey);
+    btn.onclick = function() {
+      activeKey = t.key;
+      types.forEach(function(tt) { styleTab(tt, tt.key === activeKey); });
+      renderBody();
+    };
+    tabBar.appendChild(btn);
+  });
+  panel.appendChild(tabBar);
 
   var body = document.createElement('div');
   body.style.cssText = 'overflow-y:auto;flex:1;';
+  panel.appendChild(body);
 
-  if (result.error) {
-    var errEl = document.createElement('div');
-    errEl.style.cssText = 'font-size:12px;color:#ef4444;padding:12px 0;';
-    errEl.textContent = result.error;
-    body.appendChild(errEl);
-  } else {
+  var CATEGORY_ORDER = [
+    'Yard',
+    'Roof Metal','Side Shed Roof Metal',
+    'Sidewall Metal','Gable Metal','Side Shed Gable Metal',
+    'Wainscot Metal','Soffit Metal','Skirt Metal',
+    'Metal','Trim','Insulation','Doors','Barn Doors','Walk Doors','Windows','Hardware'
+  ];
+
+  if (!window._sessionOverrides) window._sessionOverrides = {};
+
+  function getEffectivePrice(sku) {
+    if (window._sessionOverrides[sku] != null) return window._sessionOverrides[sku];
+    return getPrice(sku);
+  }
+
+  function calcLineTotal(item, uPrice) {
+    if (item.fixedCost != null) return item.fixedCost;
+    if (uPrice == null) return null;
+    if (item.metalLength) {
+      var ftM = item.metalLength.match(/(\d+)'/);
+      var inM = item.metalLength.match(/(\d+(?:\.\d+)?)"/) ;
+      var lf = (ftM ? parseFloat(ftM[1]) : 0) + (inM ? parseFloat(inM[1]) / 12 : 0);
+      return uPrice * item.quantity * lf;
+    }
+    if (item.boardLen) return uPrice * item.quantity * item.boardLen;
+    return uPrice * item.quantity;
+  }
+
+  var isLainModal = (window.currentUser||{}).username === 'lain.hinson';
+
+  function renderBody() {
+    body.innerHTML = '';
+    var result = results[activeKey];
+    var t = types.filter(function(x){return x.key===activeKey;})[0];
+
+    if (!result || result.error) {
+      var errEl = document.createElement('div');
+      errEl.style.cssText = 'font-size:12px;color:#ef4444;padding:12px 0;';
+      errEl.textContent = result ? result.error : 'No result';
+      body.appendChild(errEl);
+      return;
+    }
+
+    var sub = document.createElement('div');
+    sub.style.cssText = 'font-size:10px;color:#666;margin-bottom:8px;';
+    sub.textContent = result.building || '';
+    body.appendChild(sub);
+
     var cats = {};
     result.items.forEach(function(item) {
       if (!cats[item.category]) cats[item.category] = [];
       cats[item.category].push(item);
     });
 
-    // Fixed display order for categories
-    var CATEGORY_ORDER = [
-      'Yard',
-      'Roof Metal','Side Shed Roof Metal',
-      'Sidewall Metal','Gable Metal','Side Shed Gable Metal',
-      'Wainscot Metal','Soffit Metal','Skirt Metal',
-      'Metal', 'Trim', 'Doors', 'Barn Doors', 'Walk Doors', 'Windows', 'Hardware'
-    ];
     var catKeys = Object.keys(cats).sort(function(a, b) {
-      var ai = CATEGORY_ORDER.indexOf(a);
-      var bi = CATEGORY_ORDER.indexOf(b);
-      if (ai === -1) ai = 999;
-      if (bi === -1) bi = 999;
+      var ai = CATEGORY_ORDER.indexOf(a); var bi = CATEGORY_ORDER.indexOf(b);
+      if (ai === -1) ai = 999; if (bi === -1) bi = 999;
       if (ai !== bi) return ai - bi;
       return a.localeCompare(b);
     });
+
     var grandTotal = 0;
-    if (!window._sessionOverrides) window._sessionOverrides = {};
-    var sessionOverrides = window._sessionOverrides;
-    var isLainModal = (window.currentUser||{}).username === 'lain.hinson';
-
-    function getEffectivePrice(sku) {
-      if (sessionOverrides[sku] != null) return sessionOverrides[sku];
-      return getPrice(sku);
-    }
-
-    function calcLineTotal(item, uPrice) {
-      if (item.fixedCost != null) return item.fixedCost;
-      if (uPrice == null) return null;
-      if (item.metalLength) {
-        var ftM = item.metalLength.match(/(\d+)'/);
-        var inM = item.metalLength.match(/(\d+(?:\.\d+)?)"/) ;
-        var lf = (ftM ? parseFloat(ftM[1]) : 0) + (inM ? parseFloat(inM[1]) / 12 : 0);
-        return uPrice * item.quantity * lf;
-      }
-      if (item.boardLen) return uPrice * item.quantity * item.boardLen;
-      return uPrice * item.quantity;
-    }
 
     catKeys.forEach(function(cat) {
       var catLabel = document.createElement('div');
-      catLabel.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:rgba(255,130,0,.8);margin:14px 0 6px;display:flex;justify-content:space-between;align-items:center;';
-      var catName = document.createElement('span');
-      catName.textContent = cat;
-      catLabel.appendChild(catName);
-      var catTotal = 0;
+      catLabel.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:' + t.color + ';opacity:.8;margin:14px 0 6px;';
+      catLabel.textContent = cat;
       body.appendChild(catLabel);
 
       cats[cat].forEach(function(item) {
         var unitPrice = getEffectivePrice(item.sku);
         var lineTotal = calcLineTotal(item, unitPrice);
-        if (lineTotal != null) catTotal += lineTotal;
+        if (lineTotal != null) grandTotal += lineTotal;
 
         var row = document.createElement('div');
         row.style.cssText = 'display:grid;grid-template-columns:1fr auto auto auto;align-items:start;gap:8px;padding:8px 10px;background:#1e293b;border-radius:7px;margin-bottom:4px;';
+
         var info = document.createElement('div');
         var desc = document.createElement('div');
         desc.style.cssText = 'font-size:12px;font-weight:700;color:#f0f3f7;';
@@ -17919,15 +17965,10 @@ window.openMaterialsModal = function() {
         var detail = document.createElement('div');
         detail.style.cssText = 'font-size:10px;color:#888;margin-top:2px;';
         if (item.metalLength) {
-          var linFt = (function(s) {
-            var ftMatch  = s.match(/(\d+)'/);
-            var inMatch  = s.match(/(\d+(?:\.\d+)?)"/) ;
-            var ft = ftMatch  ? parseFloat(ftMatch[1])  : 0;
-            var inches = inMatch ? parseFloat(inMatch[1]) : 0;
-            return ft + inches / 12;
-          })(item.metalLength);
-          var totalLin = Math.round(linFt * item.quantity * 10) / 10;
-          detail.textContent = item.detail + '  |  ' + totalLin + ' ln ft';
+          var ftMatch = item.metalLength.match(/(\d+)'/);
+          var inMatch = item.metalLength.match(/(\d+(?:\.\d+)?)"/) ;
+          var linFt = (ftMatch ? parseFloat(ftMatch[1]) : 0) + (inMatch ? parseFloat(inMatch[1]) / 12 : 0);
+          detail.textContent = item.detail + '  |  ' + Math.round(linFt * item.quantity * 10) / 10 + ' ln ft';
         } else {
           detail.textContent = item.detail;
         }
@@ -17935,179 +17976,92 @@ window.openMaterialsModal = function() {
 
         var skuEl = document.createElement('div');
         skuEl.style.cssText = 'font-size:11px;font-weight:800;color:#FF8200;white-space:nowrap;';
+        skuEl.textContent = item.sku;
         if (item.metalLength) {
-          skuEl.textContent = item.sku;
           var lenEl = document.createElement('div');
           lenEl.style.cssText = 'font-size:10px;color:#FF8200;white-space:nowrap;margin-top:2px;';
           lenEl.textContent = item.metalLength;
           skuEl.appendChild(lenEl);
-        } else {
-          skuEl.textContent = item.sku;
         }
+
+        var qtyEl = document.createElement('div');
+        qtyEl.style.cssText = 'font-size:12px;font-weight:700;color:#f0f3f7;text-align:right;white-space:nowrap;';
+        qtyEl.textContent = 'x' + item.quantity;
 
         var priceEl = document.createElement('div');
         priceEl.style.cssText = 'font-size:10px;color:#888;text-align:right;white-space:nowrap;';
-
-        function renderPriceEl(iItem, iUnitPrice, iLineTotal) {
-          priceEl.innerHTML = '';
-          if (iLineTotal != null) {
-            var isOverridden = sessionOverrides[iItem.sku] != null;
-            var priceDetail = iItem.fixedCost != null ? 'calculated'
-              : iItem.boardLen ? '$' + iUnitPrice.toFixed(2) + '/ft'
-              : iItem.metalLength ? '$' + iUnitPrice.toFixed(2) + '/ln ft'
-              : '$' + iUnitPrice.toFixed(2);
-            var lineTotalSpan = document.createElement('span');
-            lineTotalSpan.style.cssText = 'color:' + (isOverridden ? '#f59e0b' : '#4ade80') + ';font-weight:700;font-size:11px;display:block;' + (isLainModal && iItem.fixedCost == null ? 'cursor:pointer;text-decoration:underline dotted;' : '');
-            lineTotalSpan.title = isLainModal && iItem.fixedCost == null ? 'Click to override price' : '';
-            lineTotalSpan.textContent = '$' + iLineTotal.toFixed(2) + (isOverridden ? ' ✎' : '');
-            if (isLainModal && iItem.fixedCost == null) {
-              lineTotalSpan.onclick = function(e) {
+        if (lineTotal != null) {
+          var isOverridden = window._sessionOverrides[item.sku] != null;
+          var totSpan = document.createElement('span');
+          totSpan.style.cssText = 'color:' + (isOverridden ? '#f59e0b' : '#4ade80') + ';font-weight:700;font-size:11px;display:block;' + (isLainModal && item.fixedCost == null ? 'cursor:pointer;text-decoration:underline dotted;' : '');
+          totSpan.textContent = '$' + lineTotal.toFixed(2) + (isOverridden ? ' ✎' : '');
+          if (isLainModal && item.fixedCost == null) {
+            (function(captItem, captUnit) {
+              totSpan.onclick = function(e) {
                 e.stopPropagation();
-                // Replace with inline input
                 priceEl.innerHTML = '';
                 var inp = document.createElement('input');
                 inp.type = 'number'; inp.step = '0.01';
-                inp.value = iUnitPrice != null ? iUnitPrice.toFixed(2) : '';
-                inp.placeholder = 'unit price';
+                inp.value = captUnit != null ? captUnit.toFixed(2) : '';
                 inp.style.cssText = 'width:70px;padding:3px 5px;border-radius:4px;border:1px solid #f59e0b;background:#1e293b;color:#f59e0b;font-size:10px;text-align:right;font-family:Outfit,sans-serif;';
                 inp.onclick = function(e){ e.stopPropagation(); };
                 var saveBtn = document.createElement('button');
                 saveBtn.textContent = '✓';
                 saveBtn.style.cssText = 'margin-left:3px;background:#f59e0b;border:none;border-radius:3px;color:#000;font-size:10px;font-weight:700;cursor:pointer;padding:2px 5px;';
                 var cancelBtn = document.createElement('button');
-                cancelBtn.textContent = '×';
+                cancelBtn.textContent = 'x';
                 cancelBtn.style.cssText = 'margin-left:2px;background:none;border:none;color:#888;font-size:12px;cursor:pointer;padding:2px 4px;';
                 saveBtn.onclick = function(e) {
                   e.stopPropagation();
                   var newUnit = parseFloat(inp.value);
-                  if (!isNaN(newUnit)) {
-                    window._sessionOverrides[iItem.sku] = newUnit;
-                    // Rebuild entire modal so all totals recalculate
-                    window.openMaterialsModal();
-                  }
+                  if (!isNaN(newUnit)) { window._sessionOverrides[captItem.sku] = newUnit; window.openMaterialsModal(); }
                 };
-                cancelBtn.onclick = function(e) {
-                  e.stopPropagation();
-                  renderPriceEl(iItem, iUnitPrice, iLineTotal);
-                };
-                inp.onkeydown = function(e) { if (e.key === 'Enter') saveBtn.click(); if (e.key === 'Escape') cancelBtn.click(); };
+                cancelBtn.onclick = function(e) { e.stopPropagation(); window.openMaterialsModal(); };
                 priceEl.appendChild(inp); priceEl.appendChild(saveBtn); priceEl.appendChild(cancelBtn);
-                inp.focus(); inp.select();
               };
-            }
-            var rateDiv = document.createElement('div');
-            rateDiv.textContent = priceDetail;
-            priceEl.appendChild(rateDiv);
-            priceEl.appendChild(lineTotalSpan);
+            })(item, unitPrice);
           }
+          priceEl.appendChild(totSpan);
+          var unitSpan = document.createElement('span');
+          unitSpan.style.cssText = 'color:#555;font-size:9px;';
+          unitSpan.textContent = item.fixedCost != null ? 'calculated' : item.boardLen ? '$' + (unitPrice||0).toFixed(2) + '/ft' : item.metalLength ? '$' + (unitPrice||0).toFixed(2) + '/ln ft' : '$' + (unitPrice||0).toFixed(2);
+          priceEl.appendChild(unitSpan);
         }
-        renderPriceEl(item, unitPrice, lineTotal);
 
-        var qtyEl = document.createElement('div');
-        qtyEl.style.cssText = 'font-size:13px;font-weight:900;color:#f0f3f7;text-align:right;min-width:28px;';
-        qtyEl.textContent = 'x' + item.quantity;
-        row.appendChild(info); row.appendChild(skuEl); row.appendChild(priceEl); row.appendChild(qtyEl);
+        row.appendChild(info); row.appendChild(skuEl); row.appendChild(qtyEl); row.appendChild(priceEl);
         body.appendChild(row);
       });
-
-      // Category subtotal
-      if (catTotal > 0) {
-        var subEl = document.createElement('div');
-        subEl.style.cssText = 'text-align:right;font-size:10px;font-weight:700;color:rgba(255,130,0,.7);padding:2px 10px 6px;';
-        subEl.textContent = cat + ' subtotal: $' + catTotal.toFixed(2);
-        catLabel.appendChild(subEl);
-        grandTotal += catTotal;
-      }
-
-      // After Hardware items, inject MFT as a line item in that section
-      if (cat === 'Hardware') {
-        var mftValInner = parseFloat((document.getElementById('st_mftRate')||{}).value);
-        if (!isNaN(mftValInner) && mftValInner > 0 && grandTotal > 0) {
-          var mftAmtInner = grandTotal * (mftValInner / 100);
-          var mftRow = document.createElement('div');
-          mftRow.style.cssText = 'display:grid;grid-template-columns:1fr auto auto auto;align-items:start;gap:8px;padding:8px 10px;background:#1e293b;border-radius:7px;margin-bottom:4px;';
-          var mftInfo = document.createElement('div');
-          var mftDesc = document.createElement('div');
-          mftDesc.style.cssText = 'font-size:12px;font-weight:700;color:#f0f3f7;';
-          mftDesc.textContent = 'MFT (' + mftValInner + '%)';
-          var mftDet = document.createElement('div');
-          mftDet.style.cssText = 'font-size:10px;color:#888;margin-top:2px;';
-          mftDet.textContent = 'Manufacturing fee on material subtotal';
-          mftInfo.appendChild(mftDesc); mftInfo.appendChild(mftDet);
-          var mftSkuEl = document.createElement('div');
-          mftSkuEl.style.cssText = 'font-size:11px;font-weight:800;color:#FF8200;';
-          mftSkuEl.textContent = 'MFT';
-          var mftPriceEl = document.createElement('div');
-          mftPriceEl.style.cssText = 'font-size:10px;color:#888;text-align:right;';
-          mftPriceEl.innerHTML = mftValInner + '%<br><span style="color:#4ade80;font-weight:700;font-size:11px;">$' + mftAmtInner.toFixed(2) + '</span>';
-          var mftQtyEl = document.createElement('div');
-          mftQtyEl.style.cssText = 'font-size:13px;font-weight:900;color:#f0f3f7;text-align:right;min-width:28px;';
-          mftQtyEl.textContent = 'x1';
-          mftRow.appendChild(mftInfo); mftRow.appendChild(mftSkuEl); mftRow.appendChild(mftPriceEl); mftRow.appendChild(mftQtyEl);
-          body.appendChild(mftRow);
-          grandTotal += mftAmtInner;
-          // Update hardware subtotal label to include MFT
-          if (subEl) subEl.textContent = 'Hardware subtotal (incl. MFT): $' + (catTotal + mftAmtInner).toFixed(2);
-        }
-      }
     });
-  }
-  panel.appendChild(body);
 
-  // Custom material adders — listed before grand total
-  var adders = window._materialAdders || [];
-  if (adders.length > 0) {
-    var adderLabel = document.createElement('div');
-    adderLabel.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:rgba(255,130,0,.8);margin:14px 0 6px;display:flex;justify-content:space-between;align-items:center;';
-    adderLabel.textContent = 'Custom Adders';
-    panel.appendChild(adderLabel);
-    var adderTotal = 0;
-    adders.forEach(function(adder) {
-      adderTotal += adder.amount;
-      grandTotal  += adder.amount;
-      var aRow = document.createElement('div');
-      aRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:7px 10px;background:#1e293b;border-radius:7px;margin-bottom:4px;';
-      var aDesc = document.createElement('div');
-      aDesc.style.cssText = 'font-size:12px;font-weight:700;color:#f0f3f7;';
-      aDesc.textContent = adder.description;
-      var aAmt = document.createElement('div');
-      aAmt.style.cssText = 'font-size:13px;font-weight:900;color:#4ade80;';
-      aAmt.textContent = '$' + adder.amount.toFixed(2);
-      aRow.appendChild(aDesc); aRow.appendChild(aAmt);
-      panel.appendChild(aRow);
-    });
-    var adderSub = document.createElement('div');
-    adderSub.style.cssText = 'text-align:right;font-size:10px;font-weight:700;color:rgba(255,130,0,.7);padding:2px 10px 6px;';
-    adderSub.textContent = 'Custom Adders subtotal: $' + adderTotal.toFixed(2);
-    panel.appendChild(adderSub);
+    // Grand total
+    if (grandTotal > 0) {
+      var totalBar = document.createElement('div');
+      totalBar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:rgba(255,130,0,.18);border:1px solid rgba(255,130,0,.5);border-radius:10px;margin-top:8px;';
+      totalBar.innerHTML = '<span style="font-size:13px;font-weight:800;color:#f0f3f7;">Total (incl. MFT)</span><span style="font-size:16px;font-weight:900;color:#FF8200;">$' + grandTotal.toFixed(2) + '</span>';
+      body.appendChild(totalBar);
+    }
+
+    var mftVal = parseFloat((document.getElementById('st_mftRate')||{}).value);
+    if (!isNaN(mftVal) && mftVal > 0) {
+      var mftBar = document.createElement('div');
+      mftBar.style.cssText = 'text-align:right;font-size:10px;color:#666;padding:4px 2px 0;';
+      mftBar.textContent = 'MFT rate: ' + mftVal + '% — included in Hardware section';
+      body.appendChild(mftBar);
+    }
   }
 
-  // Grand total bar — MFT already included via Hardware section
-  if (grandTotal > 0) {
-    var totalBar = document.createElement('div');
-    totalBar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:rgba(255,130,0,.18);border:1px solid rgba(255,130,0,.5);border-radius:10px;margin-top:8px;';
-    totalBar.innerHTML = '<span style="font-size:13px;font-weight:800;color:#f0f3f7;">Total (incl. MFT)</span><span style="font-size:16px;font-weight:900;color:#FF8200;">$' + grandTotal.toFixed(2) + '</span>';
-    panel.appendChild(totalBar);
-  }
-
-  // MFT rate display — just show the rate for reference
-  var mftVal = parseFloat((document.getElementById('st_mftRate')||{}).value);
-  if (!isNaN(mftVal) && mftVal > 0) {
-    var mftBar = document.createElement('div');
-    mftBar.style.cssText = 'text-align:right;font-size:10px;color:#666;padding:4px 2px 0;';
-    mftBar.textContent = 'MFT rate: ' + mftVal + '% — included in Hardware section';
-    panel.appendChild(mftBar);
-  }
+  renderBody();
 
   var closeBtn = document.createElement('button');
   closeBtn.textContent = 'Close';
-  closeBtn.style.cssText = 'margin-top:16px;width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+  closeBtn.style.cssText = 'width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
   closeBtn.onclick = window.closeMaterialsModal;
   panel.appendChild(closeBtn);
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
 };
+
 </script>
 
 <script>
