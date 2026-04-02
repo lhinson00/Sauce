@@ -1486,6 +1486,10 @@ body.customer-mode #custColorChartLink { display: block !important; }
           </div>
         </div>
         <div class="toggle-row">
+          <div class="toggle-info"><div class="toggle-lbl">OSB Roof Sheathing</div></div>
+          <label class="tog"><input type="checkbox" id="sf_osbRoof"><span class="tog-track"></span></label>
+        </div>
+        <div class="toggle-row">
           <div class="toggle-info"><div class="toggle-lbl">6/12 Roof Pitch</div></div>
           <label class="tog"><input type="checkbox" id="sf_pitch612"><span class="tog-track"></span></label>
         </div>
@@ -11759,8 +11763,8 @@ window.SauceMaterials.calcPostBrackets = function(Q, WALLS, allDoors, shedCfgs, 
   var groups = {};
   function add(sku, count) { if (count > 0) groups[sku] = (groups[sku] || 0) + count; }
 
-  // ── Main building — only when postsOnTop ──
-  if (onTop) {
+  // ── Main building — only when postsOnTop and NOT stud frame ──
+  if (onTop && !sf.isStudFrame) {
     ['left', 'right'].forEach(function(wallId) {
       var wallSize = SM.wallPostSizeFor(wallId, sf);
       var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
@@ -15491,9 +15495,364 @@ window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
   });
 };
 
-// ── TRIM: RIDGE CAP ───────────────────────────────────────────────────────────
+// -- TRIM: RIDGE CAP -----------------------------------------------------------
 // RC9PW10 (10' post spacing) or RC9PW12 (12' post spacing).
 // Quantity = ceil(Q.l / boardLen) + 1.
+
+// ===============================================================================
+// STUD FRAME MATERIALS
+// All functions below apply only when currentFrameType === 'stud'
+// ===============================================================================
+
+// -- STUD FRAME: EXTERIOR WALL STUDS ------------------------------------------
+// 1 stud per linear foot of perimeter x 1.1 buffer, rounded up.
+// SKU based on wall height (Q.h).
+
+window.SauceMaterials.calcStudExteriorWallStuds = function(Q) {
+  var skuMap = {
+    8:  'SPF2692',
+    9:  'SPF26104',
+    10: 'SPF26116',
+    12: 'SPF2612',
+    14: 'SPF2614',
+    16: 'SPF2616',
+    18: 'SYP2818',
+    20: 'SYP2820'
+  };
+  var h = Q.h || 8;
+  // Find nearest supported height (round to closest key)
+  var heights = Object.keys(skuMap).map(Number).sort(function(a,b){return a-b;});
+  var nearest = heights.reduce(function(prev, cur) {
+    return Math.abs(cur - h) < Math.abs(prev - h) ? cur : prev;
+  });
+  var sku = skuMap[nearest];
+  var perimeter = (Q.w + Q.l) * 2;
+  var qty = Math.ceil(perimeter * 1.1);
+  return [{
+    category:    'Yard',
+    description: 'Exterior Wall Studs',
+    sku:         sku,
+    quantity:    qty,
+    detail:      perimeter + "' perimeter  |  1/LF x 1.1 = " + qty + '  |  ' + nearest + "' stud"
+  }];
+};
+
+// SKU: PT2616 (always 16' boards)
+// Qty: Math.ceil(perimeter / 16)
+
+// -- STUD FRAME: WALK DOOR + WINDOW HEADERS -----------------------------------
+// SKU: SYP21016. 1 header per 2 openings (walk doors + windows combined), rounded up.
+
+window.SauceMaterials.calcStudOpeningHeaders = function() {
+  var wdCount  = (window._walkDoors || []).length;
+  var winCount = (window._windows   || []).length;
+  var total    = wdCount + winCount;
+  if (!total) return [];
+  var qty = Math.ceil(total / 2);
+  return [{
+    category:    'Yard',
+    description: 'Opening Headers (Walk Door + Window)',
+    sku:         'SYP21016',
+    quantity:    qty,
+    detail:      wdCount + ' walk doors + ' + winCount + ' windows = ' + total + ' openings  |  /2 = ' + qty
+  }];
+};
+
+// -- STUD FRAME: OSB WALL SHEATHING -------------------------------------------
+// SKU: OSB7.16 (4x8 sheet = 32 sqft). Toggled via sf_osbWalls.
+// All 4 fully enclosed main building walls (eave + gable full height).
+// Also adds enclosed side shed outer walls when applicable.
+
+window.SauceMaterials.calcStudOSBWalls = function(Q, WALLS, shedCfgs) {
+  var osbWalls = (document.getElementById('sf_osbWalls')||{}).value || 'None';
+  if (osbWalls === 'None') return [];
+
+  var sqft = 0;
+  var eaveArea  = Q.l * Q.h * 2;
+  var peakH     = Q.h + (Q.w / 2) * (Q.pitch / 12);
+  var gableArea = (Q.h * Q.w + 0.5 * Q.w * (peakH - Q.h)) * 2;
+  sqft += eaveArea + gableArea;
+
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.encl !== 'enclosed' && sc.encl !== 'partial') return;
+    if (!(sc.enclWalls||[]).includes('outer')) return;
+    var shedH = Q.h - (sc.w * ((sc.ltPitch||1) / 12));
+    sqft += sc.l * shedH;
+  });
+
+  var qty = Math.ceil(Math.ceil(sqft / 32) * 1.1);
+  return [{
+    category:    'Yard',
+    description: 'OSB Wall Sheathing',
+    sku:         'OSB7.16',
+    quantity:    qty,
+    detail:      Math.round(sqft) + ' sqft walls  |  /32 x 1.1 = ' + qty + ' sheets'
+  }];
+};
+
+// -- STUD FRAME: OSB ROOF SHEATHING -------------------------------------------
+// SKU: OSB5.8 (4x8 sheet = 32 sqft). Toggled via sf_osbRoof checkbox.
+// Sqft = (top chord + soffit) x 2 x building length + side shed roof areas.
+
+window.SauceMaterials.calcStudOSBRoof = function(Q, shedCfgs) {
+  var osbRoof = !!(document.getElementById('sf_osbRoof')||{}).checked;
+  if (!osbRoof) return [];
+
+  var pitchRad   = Math.atan(Q.pitch / 12);
+  var topChord   = (Q.w / 2) / Math.cos(pitchRad);
+  var soffit     = (Q.oh || 0) / 12;
+  var mainSqft   = (topChord + soffit) * 2 * Q.l;
+
+  var shedSqft = 0;
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    var ltPitchRad = Math.atan(((sc.ltPitch||1) / 12));
+    shedSqft += (sc.w / Math.cos(ltPitchRad)) * sc.l;
+  });
+
+  var totalSqft = mainSqft + shedSqft;
+  var qty = Math.ceil(Math.ceil(totalSqft / 32) * 1.1);
+  return [{
+    category:    'Yard',
+    description: 'OSB Roof Sheathing',
+    sku:         'OSB5.8',
+    quantity:    qty,
+    detail:      Math.round(totalSqft) + ' sqft roof  |  /32 x 1.1 = ' + qty + ' sheets'
+  }];
+};
+
+// -- STUD FRAME: WALL GIRTS (2x4x20) -----------------------------------------
+// SKU: SYP2420. Optional — toggled via sf_wallGirts.
+// Every 2ft up wall on all walls + upper gables + enclosed shed outer walls.
+
+window.SauceMaterials.calcStudWallGirts = function(Q, WALLS, shedCfgs) {
+  var wallGirts = (document.getElementById('sf_wallGirts')||{}).value || 'None';
+  if (wallGirts === 'None') return [];
+
+  var totalQty = 0;
+  var boardLen = 20;
+
+  // Eave walls
+  var eaveRows = Math.floor(Q.h / 2);
+  totalQty += eaveRows * Math.ceil(Q.l / boardLen) * 2;
+
+  // Gable walls full rect portion
+  var peakH = Q.h + (Q.w / 2) * (Q.pitch / 12);
+  var gableRows = Math.floor(Q.h / 2);
+  var gableRuns = Math.ceil(Q.w / boardLen);
+  totalQty += gableRows * gableRuns * 2;
+
+  // Upper gable triangle
+  var upperRows = Math.floor((peakH - Q.h) / 2);
+  totalQty += upperRows * gableRuns * 2;
+
+  // Enclosed shed outer walls
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.encl !== 'enclosed' && sc.encl !== 'partial') return;
+    if (!(sc.enclWalls||[]).includes('outer')) return;
+    var shedH = Q.h - (sc.w * ((sc.ltPitch||1) / 12));
+    totalQty += Math.floor(shedH / 2) * Math.ceil(sc.l / boardLen);
+  });
+
+  totalQty = Math.ceil(totalQty * 1.1);
+  return [{
+    category:    'Yard',
+    description: 'Wall Girts (2x4x20)',
+    sku:         'SYP2420',
+    quantity:    totalQty,
+    detail:      'every 2ft up wall  |  20\' boards  |  +10% buffer'
+  }];
+};
+
+// -- STUD FRAME: ENCLOSED SIDE SHED WALLS -------------------------------------
+// Enclosed side sheds get their own studs/plates listed separately.
+
+window.SauceMaterials.calcStudShedWalls = function(Q, shedCfgs) {
+  var items = [];
+  var studSkuMap = {8:'SPF2692',9:'SPF26104',10:'SPF26116',12:'SPF2612',14:'SPF2614',16:'SPF2616',18:'SYP2818',20:'SYP2820'};
+  var heights = [8,9,10,12,14,16,18,20];
+
+  (shedCfgs || []).forEach(function(sc, idx) {
+    if (!sc.w || !sc.l) return;
+    if (sc.encl !== 'enclosed' && sc.encl !== 'partial') return;
+    var label = 'Shed ' + (idx + 1);
+    var shedH = Q.h - (sc.w * ((sc.ltPitch||1) / 12));
+    var shedPerim = (sc.l + sc.w) * 2;
+    var nearest = heights.reduce(function(p,c){ return Math.abs(c-shedH)<Math.abs(p-shedH)?c:p; });
+
+    items.push({ category:'Yard', description: label + ' Bottom Plate', sku:'PT2616', quantity: Math.ceil(shedPerim/16), detail: label + ' ' + shedPerim + "' perimeter" });
+    items.push({ category:'Yard', description: label + ' Top Plates (Double)', sku:'SPF2616', quantity: Math.ceil(shedPerim/16)*2, detail: label + ' x2 plates' });
+    items.push({ category:'Yard', description: label + ' Wall Studs', sku: studSkuMap[nearest]||'SPF2692', quantity: Math.ceil(shedPerim*1.1), detail: label + ' ' + shedPerim + "' x 1.1" });
+  });
+
+  return items;
+};
+
+// -- STUD FRAME: GARAGE DOOR TRIM ---------------------------------------------
+// 29ga wall metal -> ODT79PWxx, 26ga -> ODT76PWxx.
+// Same logic as post frame: 1 piece at door width + 2 pieces at door height.
+
+window.SauceMaterials.calcStudGarageDoorTrim = function(allDoors) {
+  var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage' && !d.framedOpening; });
+  if (!garageDoors.length) return [];
+
+  var wallMetal = (document.getElementById('st_wallMetal')||{}).value || 'Painted';
+  var prefix    = (wallMetal === '26-Gauge') ? 'ODT76PW' : 'ODT79PW';
+
+  var groups = {};
+  function add(sku, qty) { groups[sku] = (groups[sku]||0) + qty; }
+
+  garageDoors.forEach(function(d) {
+    var wLen = d.w < 10 ? 10 : d.w;
+    var hLen = d.h < 10 ? 10 : d.h;
+    add(prefix + wLen, 1);
+    add(prefix + hLen, 2);
+  });
+
+  return Object.keys(groups).sort(function(a,b){
+    return parseInt(a.replace(/^[^\d]+/,'')) - parseInt(b.replace(/^[^\d]+/,''));
+  }).map(function(sku) {
+    return {
+      category:    'Trim',
+      description: 'Garage Door Trim (Stud Frame)',
+      sku:         sku,
+      quantity:    groups[sku],
+      detail:      (wallMetal === '26-Gauge' ? '26ga' : '29ga') + '  |  1 width + 2 heights per door'
+    };
+  });
+};
+
+// -- STUD FRAME: INSULATION ----------------------------------------------------
+// SKU: INHWTY10100 (10' x 100' roll = 1,000 sqft/roll).
+// Total exterior wall sqft (same as OSB wall calc) / 1000, ceil, x 1.1, ceil.
+
+window.SauceMaterials.calcStudInsulation = function(Q, WALLS, shedCfgs) {
+  var insulType = (document.getElementById('st_insulation')||{}).value || 'None';
+  if (insulType === 'None') return [];
+  var insulRoof  = !!(document.getElementById('st_insulRoof')||{}).checked;
+  var insulWalls = !!(document.getElementById('st_insulWalls')||{}).checked;
+  if (!insulRoof && !insulWalls) return [];
+
+  // Wall sqft
+  var sqft = 0;
+  if (insulWalls) {
+    var eaveArea  = Q.l * Q.h * 2;
+    var peakH     = Q.h + (Q.w / 2) * (Q.pitch / 12);
+    var gableArea = (Q.h * Q.w + 0.5 * Q.w * (peakH - Q.h)) * 2;
+    sqft += eaveArea + gableArea;
+    (shedCfgs || []).forEach(function(sc) {
+      if (!sc.w || !sc.l) return;
+      if (sc.encl !== 'enclosed' && sc.encl !== 'partial') return;
+      if (!(sc.enclWalls||[]).includes('outer')) return;
+      sqft += sc.l * (Q.h - (sc.w * ((sc.ltPitch||1) / 12)));
+    });
+  }
+
+  // Roof sqft
+  if (insulRoof) {
+    var pitchRad = Math.atan(Q.pitch / 12);
+    var topChord = (Q.w / 2) / Math.cos(pitchRad);
+    var soffit   = (Q.oh || 0) / 12;
+    sqft += (topChord + soffit) * 2 * Q.l;
+    (shedCfgs || []).forEach(function(sc) {
+      if (!sc.w || !sc.l) return;
+      var ltRad = Math.atan(((sc.ltPitch||1) / 12));
+      sqft += (sc.w / Math.cos(ltRad)) * sc.l;
+    });
+  }
+
+  var qty = Math.ceil(Math.ceil(sqft / 1000) * 1.1);
+  return [{
+    category:    'Insulation',
+    description: 'House Wrap Insulation',
+    sku:         'INHWTY10100',
+    quantity:    qty,
+    detail:      Math.round(sqft) + ' sqft  |  1,000 sqft/roll  |  x1.1 = ' + qty + ' rolls'
+  }];
+};
+
+// -- STUD FRAME: SILL SEALER --------------------------------------------------
+// SKU: SILL5.5. Perimeter / 50, rounded up.
+
+window.SauceMaterials.calcStudSillSealer = function(Q) {
+  var perimeter = (Q.w + Q.l) * 2;
+  var qty = Math.ceil(perimeter / 50);
+  return [{
+    category:    'Hardware',
+    description: 'Sill Sealer',
+    sku:         'SILL5.5',
+    quantity:    qty,
+    detail:      perimeter + "' perimeter  |  50'/roll  |  " + qty + ' rolls'
+  }];
+};
+
+// -- STUD FRAME: CONCRETE ANCHOR BOLTS ----------------------------------------
+// SKU: CCA4. Perimeter / 4, rounded up, x 1.1.
+
+window.SauceMaterials.calcStudAnchorBolts = function(Q) {
+  var perimeter = (Q.w + Q.l) * 2;
+  var qty = Math.ceil(Math.ceil(perimeter / 4) * 1.1);
+  return [{
+    category:    'Hardware',
+    description: 'Concrete Anchor Bolts',
+    sku:         'CCA4',
+    quantity:    qty,
+    detail:      perimeter + "' perimeter  |  1 per 4'  |  x1.1 = " + qty
+  }];
+};
+
+// -- STUD FRAME: JOIST HANGER NAILS -------------------------------------------
+// SKU: JHNS1.225LB. Always 1 per quote.
+
+window.SauceMaterials.calcStudJoistHangerNails = function() {
+  return [{
+    category:    'Hardware',
+    description: 'Joist Hanger Nails',
+    sku:         'JHNS1.225LB',
+    quantity:    1,
+    detail:      '1 per quote'
+  }];
+};
+
+// -- STUD FRAME: NAILS --------------------------------------------------------
+// Always: 3x HDGRS12D30 and 2x HDGRS8D30.
+
+window.SauceMaterials.calcStudNails = function() {
+  return [
+    { category:'Hardware', description:'Nails 12D Galv Ring Shank', sku:'HDGRS12D30', quantity:3, detail:'always 3 per quote' },
+    { category:'Hardware', description:'Nails 8D Galv Ring Shank',  sku:'HDGRS8D30',  quantity:2, detail:'always 2 per quote' }
+  ];
+};
+
+window.SauceMaterials.calcStudBottomPlate = function(Q) {
+  var perimeter = (Q.w + Q.l) * 2;
+  var qty = Math.ceil(perimeter / 16);
+  return [{
+    category:    'Yard',
+    description: 'Bottom Plate',
+    sku:         'PT2616',
+    quantity:    qty,
+    detail:      perimeter + "' perimeter  |  16' boards  |  /16 = " + qty
+  }];
+};
+
+// -- STUD FRAME: TOP PLATES ---------------------------------------------------
+// SKU: SPF2616 (always 16' boards). Double top plate — same math as bottom x 2.
+// Qty: Math.ceil(perimeter / 16) x 2
+
+window.SauceMaterials.calcStudTopPlates = function(Q) {
+  var perimeter = (Q.w + Q.l) * 2;
+  var qty = Math.ceil(perimeter / 16) * 2;
+  return [{
+    category:    'Yard',
+    description: 'Top Plates (Double)',
+    sku:         'SPF2616',
+    quantity:    qty,
+    detail:      perimeter + "' perimeter  |  16' boards  |  /16 x 2 = " + qty
+  }];
+};
 
 window.SauceMaterials.calcRidgeCap = function(Q) {
   var ps      = Q.postSpacing || 10;
@@ -15510,7 +15869,7 @@ window.SauceMaterials.calcRidgeCap = function(Q) {
   }];
 };
 
-// ── WALK DOORS ────────────────────────────────────────────────────────────────
+// -- WALK DOORS ----------------------------------------------------------------
 // One line per door type (grouped). Plus one KLSD keyed knob per door.
 
 window.SauceMaterials.calcWalkDoors = function() {
@@ -16196,6 +16555,111 @@ window.SauceMaterials.calculate = function() {
     items.push({ category: 'Hardware', description: 'Roofing Sealant', sku: 'RS00', quantity: 1, detail: 'shed only' });
     return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "' (SHED ONLY)", shedOnly: true };
   }
+
+  // ── STUD FRAME PATH ───────────────────────────────────────────────────────────
+  var isStudFrame = (Q.frameType === 'stud' || (typeof currentFrameType !== 'undefined' && currentFrameType === 'stud'));
+  if (isStudFrame) {
+    // Force Wood truss with soffit for all stud frame calculations
+    var sfQ = Object.assign({}, Q, { truss: 'Wood', oh: Q.oh > 0 ? Q.oh : 18 });
+    var sfShedCfgs = window._shedConfigs || [];
+    // sf with stud flag — suppresses main building post brackets
+    var sfSf = Object.assign({}, sf, { isStudFrame: true });
+
+    // ── YARD ──
+    SM.calcStudBottomPlate(sfQ).forEach(function(item) { items.push(item); });
+    SM.calcStudTopPlates(sfQ).forEach(function(item) { items.push(item); });
+    SM.calcStudExteriorWallStuds(sfQ).forEach(function(item) { items.push(item); });
+    SM.calcStudOpeningHeaders().forEach(function(item) { items.push(item); });
+    SM.calcStudShedWalls(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcStudOSBWalls(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcStudOSBRoof(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    // Trusses same as Wood OH
+    SM.calcWoodTrusses(sfQ).forEach(function(item) { items.push(item); });
+    // Garage door headers same rule
+    SM.calcGarageDoorHeaders(allDoors).forEach(function(item) { items.push(item); });
+    // Fly rafters, fascia, truss bracing — same as Wood OH
+    SM.calcFlyRafters(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcEaveFascia(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcTrussBracing(sfQ).forEach(function(item) { items.push(item); });
+    // Purlins — same as Wood OH (with buffer)
+    pushBuffered(SM.calcWoodOHPurlins(sfQ));
+    pushBuffered(SM.calcWoodOHShedPurlins(sfQ, sfShedCfgs));
+    // Wall girts (optional)
+    SM.calcStudWallGirts(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    // Open side sheds follow standard post frame rules (rafters, ledgers, etc.)
+    SM.calcShedFraming(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcShedLedgers(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcShedPosts(sfQ, WALLS, sfShedCfgs, sfSf).forEach(function(item) { items.push(item); });
+    SM.calcFootingPads(sfQ, WALLS, allDoors, sfShedCfgs, sfSf).forEach(function(item) { items.push(item); });
+
+    // ── METAL ──
+    SM.calcRoofMetal(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcSidewallMetal(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcGableMetal(sfQ, WALLS).forEach(function(item) { items.push(item); });
+    SM.calcLeantoUpperGable(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcOpenGableMetal(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcWainscotMetal(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcSkirtMetal(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+
+    // ── TRIM ──
+    SM.calcPC2Trim(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcSoffitFJTrim(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcBirdBoxTrim(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcPC3Trim(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcRETTrim(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcEndWallFlashing(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcDoubleAngle(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcInsideCornerTrim(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcOutsideCornerTrim(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcGableRakeTrim(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcRidgeCap(sfQ).forEach(function(item) { items.push(item); });
+    SM.calcTransitionFlashing(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcRatGuard(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcOutsideSolidClosure(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    // Stud frame garage door trim (different SKU prefix from post frame)
+    SM.calcStudGarageDoorTrim(allDoors).forEach(function(item) { items.push(item); });
+
+    // ── DOORS + WINDOWS ──
+    SM.calcGarageDoors(allDoors).forEach(function(item) { items.push(item); });
+    SM.calcGarageDoorInstall(allDoors).forEach(function(item) { items.push(item); });
+    SM.calcGarageDoorHeaders(allDoors).forEach(function(item) { items.push(item); });
+    SM.calcWalkDoors().forEach(function(item) { items.push(item); });
+    SM.calcWindows().forEach(function(item) { items.push(item); });
+    SM.calcShedOpenings().forEach(function(item) { items.push(item); });
+    SM.calcDoorJacks(allDoors, sf).forEach(function(item) { items.push(item); });
+
+    // ── INSULATION ──
+    SM.calcStudInsulation(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+
+    // ── HARDWARE ──
+    SM.calcStudSillSealer(sfQ).forEach(function(item) { items.push(item); });
+    SM.calcStudAnchorBolts(sfQ).forEach(function(item) { items.push(item); });
+    SM.calcStudJoistHangerNails().forEach(function(item) { items.push(item); });
+    SM.calcStudNails().forEach(function(item) { items.push(item); });
+    SM.calcOutsideSolidClosure(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcHurricaneBrackets(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcJoistHangers(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcMetalScrews(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    // Roofing sealant same as Wood OH
+    items.push({ category:'Hardware', description:'Roofing Sealant', sku:'RS00', quantity:1, detail:'1 per quote' });
+
+    // Post brackets — side sheds only (main building never gets brackets on stud frame)
+    SM.calcPostBrackets(sfQ, WALLS, allDoors, sfShedCfgs, sfSf).forEach(function(item) { items.push(item); });
+
+    // ── CUPOLA (optional) ──
+    (function() {
+      var cupolaSize = ((document.getElementById('qgCupolaSize')||{}).value||'').trim();
+      var cupolaQty  = parseInt((document.getElementById('qgCupolaQty')||{}).value||'0') || 0;
+      var cupolaOn   = !!(document.getElementById('exCupola')||{}).checked;
+      if (cupolaOn && cupolaSize && cupolaQty > 0) {
+        items.push({ category:'Hardware', description:'Cupola ' + cupolaSize + '"', sku:'CUPOLA' + cupolaSize, quantity:cupolaQty, detail:'cupola' });
+      }
+    })();
+
+    return { items: items, building: sfQ.w + "' x " + sfQ.l + "' x " + sfQ.h + "' (STUD FRAME)" };
+  }
+
+  // ── POST FRAME PATH ────────────────────────────────────────────────────────────
   SM.calcShedPosts(Q, WALLS, window._shedConfigs || [], sf).forEach(function(item) { items.push(item); });
   SM.calcEavePosts(Q, WALLS, allDoors, sf).forEach(function(item){ items.push(item); });
   SM.calcGablePosts(Q, WALLS, allDoors, sf).forEach(function(item) { items.push(item); });
