@@ -1569,21 +1569,8 @@ body.customer-mode #custColorChartLink { display: block !important; }
           </div>
         </div>
 
-        <div class="sec-title" style="font-size:9px;margin:10px 0 5px;letter-spacing:1.5px;">Manual Adder</div>
-        <div style="font-size:9px;color:var(--muted);margin-bottom:5px;">Added directly to the quoted total — not part of materials</div>
-        <div class="chip-row" style="flex-wrap:wrap;gap:6px;margin-bottom:6px;">
-          <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:80px;">
-            <div style="font-size:9px;color:var(--muted);font-weight:600;">Amount ($)</div>
-            <input id="st_manualAdder" type="number" placeholder="0.00" oninput="try{updateStripFromLocalCalc();}catch(e){}" style="font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
-          </div>
-          <div style="display:flex;flex-direction:column;gap:3px;flex:2;min-width:120px;">
-            <div style="font-size:9px;color:var(--muted);font-weight:600;">Notes</div>
-            <input id="st_manualNotes" type="text" placeholder="Reason for adder..." style="font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
-          </div>
-        </div>
-
         <!-- Material List Custom Line Items -->
-        <div class="sec-title" style="font-size:9px;margin:10px 0 5px;letter-spacing:1.5px;">Material List Adders</div>
+        <div class="sec-title" style="font-size:9px;margin:10px 0 5px;letter-spacing:1.5px;">Custom Adders</div>
         <div id="matAdderList" style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px;"></div>
         <div style="display:flex;gap:4px;">
           <input id="matAdderAmt" type="number" placeholder="$0.00" step="0.01"
@@ -1592,6 +1579,9 @@ body.customer-mode #custColorChartLink { display: block !important; }
             style="flex:1;font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
           <button onclick="addMaterialAdder()" style="padding:5px 10px;border-radius:7px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.1);color:#FF8200;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;">+ Add</button>
         </div>
+        <!-- Hidden for legacy sheet API compatibility -->
+        <input type="hidden" id="st_manualAdder" value="0">
+        <input type="hidden" id="st_manualNotes" value="">
       </div>
 
       <!-- COLORS -->
@@ -1896,6 +1886,9 @@ function updateStripFromLocalCalc() {
   // Manual adder — added directly to total, not part of materials
   var manualAdder = parseFloat((document.getElementById('st_manualAdder')||{}).value) || 0;
 
+  // Material list adders
+  var matAdderAmt = (window._materialAdders || []).reduce(function(s, a) { return s + (a.amount || 0); }, 0);
+
   // ESD — county-based engineered drawings fee
   var esdResult = window.SauceESD ? window.SauceESD.calculate(county, (Q.w||0)*(Q.l||0), shedCfgs) : { amount: 0 };
   var esdAmt = esdResult.amount || 0;
@@ -1941,7 +1934,7 @@ function updateStripFromLocalCalc() {
     var tax    = farmTax ? 0 : mat * 0.0975;
     var mft    = mat * (mftVal / 100);
     var labor  = materialKit ? 0 : (v.labor ? v.labor.finalLabor : 0);
-    var grand  = mat + tax + mft + labor + concreteAmt + shipAmt + esdAmt + manualAdder;
+    var grand  = mat + tax + mft + labor + concreteAmt + shipAmt + esdAmt + manualAdder + matAdderAmt;
 
     p(v.prefix+'material', mat > 0 ? fmtPrice(mat) : '—');
     p(v.prefix+'labor',    labor > 0 ? fmtPrice(labor) : '—');
@@ -2410,7 +2403,7 @@ function renderMatAdderList() {
     var delBtn = document.createElement('button');
     delBtn.textContent = '×';
     delBtn.style.cssText = 'background:none;border:none;color:#888;font-size:14px;cursor:pointer;padding:0 2px;line-height:1;';
-    delBtn.onclick = (function(i){ return function(){ window._materialAdders.splice(i,1); renderMatAdderList(); }; })(idx);
+    delBtn.onclick = (function(i){ return function(){ window._materialAdders.splice(i,1); renderMatAdderList(); scheduleBuild(); }; })(idx);
     row.appendChild(amtEl); row.appendChild(descEl); row.appendChild(delBtn);
     list.appendChild(row);
   });
@@ -2424,6 +2417,7 @@ function addMaterialAdder() {
   document.getElementById('matAdderAmt').value  = '';
   document.getElementById('matAdderDesc').value = '';
   renderMatAdderList();
+  scheduleBuild();
 }
 
 // Allow Enter key in description field to add
@@ -3434,7 +3428,10 @@ function serializeConfig() {
       cupolaQty:(document.getElementById('qgCupolaQty')||{}).value||'1',
       concreteOn:!!(document.getElementById('exConcrete')||{}).checked,
       concreteAreas:JSON.parse(JSON.stringify(concreteAreas)),
-      concreteOpts: window._lastConcreteOpts ? JSON.parse(JSON.stringify(window._lastConcreteOpts)) : null
+      concreteOpts: window._lastConcreteOpts ? JSON.parse(JSON.stringify(window._lastConcreteOpts)) : null,
+      concreteZip: _cachedZip || '',
+      concreteCounty: _cachedCounty || '',
+      materialAdders: window._materialAdders ? JSON.parse(JSON.stringify(window._materialAdders)) : []
     },
     contact: {
       name:(document.getElementById('qfName')||document.getElementById('st_name')||{}).value||'',
@@ -3476,7 +3473,7 @@ function serializeConfig() {
       rockWainscot:!!(document.getElementById('st_rockWainscot')||{}).checked,
       postProtectors:!!(document.getElementById('st_postProtectors')||{}).checked,
       gutters:   !!(document.getElementById('st_gutters')||{}).checked,
-      manualAdder:(document.getElementById('st_manualAdder')||{}).value||'',
+      manualAdder:getCombinedManualAdder(),
       manualNotes:(document.getElementById('st_manualNotes')||{}).value||'',
       materialKit:!!(document.getElementById('st_materialKit')||{}).checked,
       farmTax:   !!(document.getElementById('st_farmTax')||{}).checked,
@@ -3565,6 +3562,9 @@ function restoreConfig(cfg) {
       var conOpts=document.getElementById('concreteOpts'); if(conOpts) conOpts.style.display=conOn?'':'none';
       if(cfg.extras.concreteAreas) { concreteAreas=cfg.extras.concreteAreas; }
       if(cfg.extras.concreteOpts) { window._lastConcreteOpts = cfg.extras.concreteOpts; }
+      if(cfg.extras.concreteZip) { _cachedZip = cfg.extras.concreteZip; }
+      if(cfg.extras.concreteCounty) { _cachedCounty = cfg.extras.concreteCounty; }
+      if(cfg.extras.materialAdders) { window._materialAdders = cfg.extras.materialAdders; renderMatAdderList(); }
       if(conOn) renderConcreteOpts();
     }
     if(cfg.contact) {
@@ -9210,7 +9210,7 @@ async function saveSalesQuote() {
       cupola:    (document.getElementById('exCupola') && document.getElementById('exCupola').checked) ? ((document.getElementById('qgCupolaSize')||{}).value || '24') : 'None',
       cupolaQty: (document.getElementById('exCupola') && document.getElementById('exCupola').checked) ? ((document.getElementById('qgCupolaQty')||{}).value || '1') : '0',
       // Manual adder
-      manualAdder: (document.getElementById('st_manualAdder')||{}).value || '0',
+      manualAdder: getCombinedManualAdder(),
       manualNotes: (document.getElementById('st_manualNotes')||{}).value || '',
       // Customer
       materialKit: (document.getElementById('st_materialKit') && document.getElementById('st_materialKit').checked) ? 'Yes' : '',
@@ -10199,6 +10199,13 @@ function schedulePrice() {
   _priceCalcTimer = setTimeout(updatePriceStrip, 400);
 }
 
+// Returns st_manualAdder + all _materialAdders combined as a string for sheet API calls
+function getCombinedManualAdder() {
+  var base = parseFloat((document.getElementById('st_manualAdder')||{}).value) || 0;
+  var matAmt = (window._materialAdders || []).reduce(function(s, a) { return s + (a.amount || 0); }, 0);
+  return String(Math.round((base + matAmt) * 100) / 100);
+}
+
 function fmtPrice(v) {
   var n = parseFloat(v) || 0;
   if (n === 0) return '—';
@@ -10396,7 +10403,7 @@ function buildPricePayload(calcType) {
       address: (document.getElementById('st_address')||{}).value || '',
       materialOnlyKit: (document.getElementById('st_materialKit') && document.getElementById('st_materialKit').checked) ? 'Yes' : 'No',
       farmTaxId: (document.getElementById('st_farmTax') && document.getElementById('st_farmTax').checked) ? 'Yes' : 'No',
-      manualAdder: (document.getElementById('st_manualAdder')||{}).value || '0',
+      manualAdder: getCombinedManualAdder(),
       mftRate: (function(){ var v=parseFloat((document.getElementById('st_mftRate')||{}).value); return isNaN(v)?0.09:v/100; })(),
       width: Q.w, length: Q.l, height: Q.h,
       roofColor: (document.getElementById('st_roofMetal')||{}).value || 'Painted',
@@ -10459,7 +10466,7 @@ function buildPricePayload(calcType) {
       phone: (document.getElementById('st_phone')||{}).value || '',
       email: (document.getElementById('st_email')||{}).value || '',
       address: (document.getElementById('st_address')||{}).value || '',
-      manualAdder: (document.getElementById('st_manualAdder')||{}).value || '0',
+      manualAdder: getCombinedManualAdder(),
       mftRate: (function(){ var v=parseFloat((document.getElementById('st_mftRate')||{}).value); return isNaN(v)?0.12:v/100; })(),
       width: Q.w, length: Q.l, height: Q.h,
       roofColor: (document.getElementById('st_roofMetal')||{}).value || 'Painted',
@@ -10535,7 +10542,7 @@ function buildPricePayload(calcType) {
 
     farmTaxId: (document.getElementById('st_farmTax') && document.getElementById('st_farmTax').checked) ? 'Yes' : 'No',
     materialOnlyKit: (document.getElementById('st_materialKit') && document.getElementById('st_materialKit').checked) ? 'Yes' : 'No',
-    manualAdder: (document.getElementById('st_manualAdder')||{}).value || '0',
+    manualAdder: getCombinedManualAdder(),
     mftRate: (function(){ var v=parseFloat((document.getElementById('st_mftRate')||{}).value); return isNaN(v)?0.09:v/100; })(),
     width: Q.w,
     length: Q.l,
@@ -10785,7 +10792,7 @@ function buildRGPayload(calcType, route) {
     address:      (document.getElementById('st_address')||{}).value || '',
     farmTaxId:    (document.getElementById('st_farmTax') && document.getElementById('st_farmTax').checked) ? 'Yes' : 'No',
     materialOnlyKit: (document.getElementById('st_materialKit') && document.getElementById('st_materialKit').checked) ? 'Yes' : 'No',
-    manualAdder:  (document.getElementById('st_manualAdder')||{}).value || '0',
+    manualAdder:  getCombinedManualAdder(),
     mftRate: (function(){ var v=parseFloat((document.getElementById('st_mftRate')||{}).value); return isNaN(v)?0.07:v/100; })(),
     width:  Q.w, length: Q.l, height: Q.h,
     roofColor:   (document.getElementById('st_roofMetal')||{}).value || 'Painted',
@@ -10923,7 +10930,7 @@ function showInputsBar(payloads) {
     pill('Rock Wainscot', p.rockWainscot === 'Yes' ? 'Yes' : null),
     pill('Awning WD', p.walkDoorAwning && p.walkDoorAwning !== 'None' ? p.walkDoorAwning : null),
     pill('Awning Win', p.windowAwning && p.windowAwning !== 'None' ? p.windowAwning : null),
-    pill('Manual Adder', p.manualAdder && p.manualAdder !== '0' ? '$'+p.manualAdder : null),
+    pill('Custom Adders', (window._materialAdders||[]).length > 0 ? '+$' + (window._materialAdders||[]).reduce(function(s,a){return s+a.amount;},0).toFixed(2) : null),
     pill('Farm Tax', p.farmTaxId === 'Yes' ? 'Yes' : null),
     pill('Material Kit', p.materialOnlyKit === 'Yes' ? 'Yes' : null)
   ];
@@ -17410,6 +17417,9 @@ window.openConcreteModal = function() {
 
   // Init saved opts
   if (!window._lastConcreteOpts) window._lastConcreteOpts = { main: null, sheds: [] };
+  // Restore zip/county from saved concrete opts if not already in cache
+  if (window._lastConcreteOpts.zip && !_cachedZip) _cachedZip = window._lastConcreteOpts.zip;
+  if (window._lastConcreteOpts.county && !_cachedCounty) _cachedCounty = window._lastConcreteOpts.county;
   var saved = window._lastConcreteOpts;
 
   var overlay = document.createElement('div');
@@ -17738,7 +17748,7 @@ window.openConcreteModal = function() {
     var shedOptsArr = shedUIs.map(function(ui){ return ui.getOpts(); });
     var apronOpts = apronWrap.getOpts(); // sqft already embedded by overridden getOpts
 
-    window._lastConcreteOpts = { main: mainOpts, sheds: shedOptsArr, apron: apronOpts };
+    window._lastConcreteOpts = { main: mainOpts, sheds: shedOptsArr, apron: apronOpts, zip: county || _cachedZip || '', county: county || '' };
 
     // Auto-set posts on top when main building concrete with footers is selected
     if (mainOpts && mainOpts.included && mainOpts.footers === true) {
