@@ -2475,6 +2475,51 @@ document.addEventListener('DOMContentLoaded', function() {
   if (descInput) descInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') addMaterialAdder(); });
 });
 
+// ── GLOBAL PRICING WATCHER ────────────────────────────────────────────────────
+// Ensures ALL input changes immediately fire updateStripFromLocalCalc.
+// This is the safety net — no input should ever require a save to update pricing.
+document.addEventListener('DOMContentLoaded', function() {
+  function fireStrip() {
+    try { updateStripFromLocalCalc(); } catch(e) { console.warn('[PriceWatch]', e); }
+  }
+
+  // All st_ and sf_ prefixed inputs — these are the pricing-relevant fields
+  var watchSelectors = [
+    'input[id^="st_"]', 'select[id^="st_"]',
+    'input[id^="sf_"]', 'select[id^="sf_"]',
+    'input[id^="qg"]',  'select[id^="qg"]'
+  ];
+
+  watchSelectors.forEach(function(sel) {
+    document.querySelectorAll(sel).forEach(function(el) {
+      // Skip purely cosmetic/identity fields that don't affect price
+      var skip = ['st_name','st_phone','st_email','st_address','st_manualNotes'];
+      if (skip.indexOf(el.id) !== -1) return;
+      // Skip hidden inputs that are set programmatically (they fire their own events)
+      if (el.type === 'hidden') return;
+      var evt = (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'radio') ? 'change' : 'input';
+      el.addEventListener(evt, fireStrip);
+    });
+  });
+
+  // Also watch for dynamically-added shed inputs via MutationObserver
+  var observer = new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      m.addedNodes.forEach(function(node) {
+        if (node.nodeType !== 1) return;
+        var els = node.querySelectorAll ? node.querySelectorAll('input[id^="sf_"], select[id^="sf_"], input[id^="st_"], select[id^="st_"]') : [];
+        els.forEach(function(el) {
+          if (el.type === 'hidden') return;
+          var evt = (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'radio') ? 'change' : 'input';
+          el.addEventListener(evt, fireStrip);
+        });
+      });
+    });
+  });
+  var sidebar = document.querySelector('.sidebar') || document.body;
+  observer.observe(sidebar, { childList: true, subtree: true });
+});
+
 // Secret Calculate trigger — lain.hinson only, triple-click the salesman badge
 (function() {
   var clicks = 0, timer = null;
@@ -3709,6 +3754,15 @@ function restoreConfig(cfg) {
     var _forceColors=[['qgRoofColor',selRoof],['qgWallColor',selWall],['qgTrimColor',selTrim],['qgWainscotColor',selWainscot]];
     _forceColors.forEach(function(p){ var e=document.getElementById(p[0]); if(e) e.value=p[1]; });
     scheduleBuild();
+    // Fire strip immediately after restore — don't wait for scheduleBuild's 320ms + 50ms delay
+    // This ensures pricing is correct the moment a quote loads, before any user interaction
+    setTimeout(function() {
+      try { updateStripFromLocalCalc(); } catch(e) { console.warn('[RestoreStrip]', e); }
+    }, 50);
+    // Second fire after triggerBuild has completed (320ms schedule + 50ms strip = ~400ms)
+    setTimeout(function() {
+      try { updateStripFromLocalCalc(); } catch(e) { console.warn('[RestoreStrip2]', e); }
+    }, 500);
   } catch(e){ console.error('restoreConfig error',e); }
 }
 
