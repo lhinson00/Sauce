@@ -1888,35 +1888,44 @@ function updateStripFromLocalCalc() {
     return total;
   }
 
-  // Concrete total
+  // Concrete total — $3,500 minimum applied to combined total, not per section
   var concreteAmt = 0;
-  if (window._lastConcreteOpts && window.SauceConcrete) {
-    var co = window._lastConcreteOpts;
-    if (co.main) concreteAmt += window.SauceConcrete.calculate(county, sqft, co.main).finalCost;
-    if (co.sheds) co.sheds.forEach(function(sOpts, i) {
-      if (!sOpts) return;
-      var sc = shedCfgs[i];
-      if (sc && sc.w && sc.l) concreteAmt += window.SauceConcrete.calculate(county, sc.w * sc.l, sOpts).finalCost;
-    });
-    if (co.apron && co.apron.sqft) concreteAmt += window.SauceConcrete.calculate(county, co.apron.sqft, co.apron).finalCost;
-  }
+  try {
+    if (window._lastConcreteOpts && window.SauceConcrete) {
+      var co = window._lastConcreteOpts;
+      var concreteIncluded = false;
+      if (co.main && co.main.included) { concreteAmt += window.SauceConcrete.calculate(county, sqft, co.main).finalCost; concreteIncluded = true; }
+      if (co.sheds) co.sheds.forEach(function(sOpts, i) {
+        if (!sOpts || !sOpts.included) return;
+        var sc = shedCfgs[i];
+        if (sc && sc.w && sc.l) { concreteAmt += window.SauceConcrete.calculate(county, sc.w * sc.l, sOpts).finalCost; concreteIncluded = true; }
+      });
+      if (co.apron && co.apron.included && co.apron.sqft) { concreteAmt += window.SauceConcrete.calculate(county, co.apron.sqft, co.apron).finalCost; concreteIncluded = true; }
+      if (concreteIncluded && concreteAmt > 0) concreteAmt = Math.max(concreteAmt, 3500);
+    }
+  } catch(e) { console.warn('[Strip] concrete calc error:', e); }
 
   // Stud frame always uses 4" with footers + metal ledge for main building
   // Override co.main with fixed stud opts when concrete is selected
   var concreteAmtStud = 0;
-  if (window._lastConcreteOpts && window.SauceConcrete) {
-    var coStud = window._lastConcreteOpts;
-    if (coStud.main && coStud.main.included) {
-      var studMainOpts = Object.assign({}, coStud.main, { thickness: '4', footers: true, metalLedge: true });
-      concreteAmtStud += window.SauceConcrete.calculate(county, sqft, studMainOpts).finalCost;
+  try {
+    if (window._lastConcreteOpts && window.SauceConcrete) {
+      var coStud = window._lastConcreteOpts;
+      var studIncluded = false;
+      if (coStud.main && coStud.main.included) {
+        var studMainOpts = Object.assign({}, coStud.main, { thickness: '4', footers: true, metalLedge: true });
+        concreteAmtStud += window.SauceConcrete.calculate(county, sqft, studMainOpts).finalCost;
+        studIncluded = true;
+      }
+      if (coStud.sheds) coStud.sheds.forEach(function(sOpts, i) {
+        if (!sOpts || !sOpts.included) return;
+        var sc = shedCfgs[i];
+        if (sc && sc.w && sc.l) { concreteAmtStud += window.SauceConcrete.calculate(county, sc.w * sc.l, sOpts).finalCost; studIncluded = true; }
+      });
+      if (coStud.apron && coStud.apron.included && coStud.apron.sqft) { concreteAmtStud += window.SauceConcrete.calculate(county, coStud.apron.sqft, coStud.apron).finalCost; studIncluded = true; }
+      if (studIncluded && concreteAmtStud > 0) concreteAmtStud = Math.max(concreteAmtStud, 3500);
     }
-    if (coStud.sheds) coStud.sheds.forEach(function(sOpts, i) {
-      if (!sOpts) return;
-      var sc = shedCfgs[i];
-      if (sc && sc.w && sc.l) concreteAmtStud += window.SauceConcrete.calculate(county, sc.w * sc.l, sOpts).finalCost;
-    });
-    if (coStud.apron && coStud.apron.sqft) concreteAmtStud += window.SauceConcrete.calculate(county, coStud.apron.sqft, coStud.apron).finalCost;
-  }
+  } catch(e) { console.warn('[Strip] stud concrete error:', e); }
 
   // Shipping
   var shipAmt = miles > 0 ? miles * 6.00 : 0;
@@ -18349,10 +18358,19 @@ window.openConcreteModal = function(forcedType) {
     if (apronOpts && apronOpts.sqft > 0) addSection('Apron / Additional', apronOpts.sqft, apronOpts);
 
     if (grandTotal > 0) {
+      var CONCRETE_MIN = 3500;
+      var minApplied = grandTotal < CONCRETE_MIN;
+      var displayTotal = Math.max(grandTotal, CONCRETE_MIN);
       var totalRow = document.createElement('div');
       totalRow.style.cssText = 'display:flex;justify-content:space-between;font-size:14px;font-weight:900;color:#FF8200;border-top:2px solid rgba(255,130,0,.4);padding-top:8px;margin-top:6px;';
-      totalRow.innerHTML = '<span>Concrete Total</span><span>$' + grandTotal.toFixed(2) + '</span>';
+      totalRow.innerHTML = '<span>Concrete Total</span><span>$' + displayTotal.toFixed(2) + '</span>';
       resultsDiv.appendChild(totalRow);
+      if (minApplied) {
+        var minNote = document.createElement('div');
+        minNote.style.cssText = 'font-size:10px;color:#f59e0b;padding:4px 2px;text-align:right;';
+        minNote.textContent = 'Minimum applied — calculated: $' + grandTotal.toFixed(2);
+        resultsDiv.appendChild(minNote);
+      }
     } else {
       resultsDiv.innerHTML = '<div style="font-size:11px;color:#888;text-align:center;padding:8px;">Toggle sections above to include concrete</div>';
     }
@@ -18761,16 +18779,13 @@ window.SauceConcrete.calculate = function(county, sqft, opts) {
   }
 
   var subtotal = lines.reduce(function(s, l) { return s + l.amount; }, 0);
-  var minimum  = mono ? 5500 : 3500;
-  var minApplied = subtotal < minimum;
-  var finalCost  = Math.max(subtotal, minimum);
 
   return {
     lines:      lines,
     subtotal:   subtotal,
-    minimum:    minimum,
-    minApplied: minApplied,
-    finalCost:  finalCost,
+    minimum:    3500,
+    minApplied: false,
+    finalCost:  subtotal,  // minimum applied at combined total level, not per section
     zone:       zone,
     zoneName:   zone ? rates.label : 'Unknown Zone'
   };
