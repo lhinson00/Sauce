@@ -1344,6 +1344,15 @@ body.customer-mode #custColorChartLink { display: block !important; }
         </div>
         </div><!-- /secSpecsMetal -->
 
+        <!-- Standing Seam toggle — wood truss only -->
+        <div id="rowStandingSeam" class="toggle-row" style="margin-bottom:6px;">
+          <div class="toggle-info">
+            <div class="toggle-lbl" style="color:#60a5fa;">Standing Seam Roof</div>
+            <div class="toggle-sub" style="color:#60a5fa;opacity:.7;">Wood truss only — forces 2' spacing</div>
+          </div>
+          <label class="tog"><input type="checkbox" id="st_standingSeam" onchange="onStandingSeamChange()"><span class="tog-track"></span></label>
+        </div>
+
         <div id="secSpecsPosts">
         <div class="sec-title" style="font-size:9px;margin-bottom:5px;letter-spacing:1.5px;">Posts &amp; Spacing</div>
         <div class="chip-row" style="flex-wrap:wrap;gap:6px;margin-bottom:6px;">
@@ -1517,7 +1526,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
         <input type="hidden" id="sf_mbConcreteAdder" value="None">
         <input type="hidden" id="sf_pitch612" value="">
         <input type="hidden" id="sf_scissorTruss" value="">
-        <input type="hidden" id="sf_standingSeam" value="">
+        <input type="hidden" id="sf_standingSeam_legacy" value="">
         <input type="hidden" id="sf_postWraps" value="">
       </div>
 
@@ -2021,7 +2030,13 @@ function updateStripFromLocalCalc() {
       var bbAdder = window.SauceLabor.calcMetalBBAdder(Q, shedCfgs);
       if (bbAdder) bbAdderAmt = bbAdder.amount;
     }
-    var labor  = baseLabor + cypressAdderAmt + bbAdderAmt;
+    var ssAdderAmt = 0;
+    if (v.forcedType !== 'steel' && window.SauceLabor.calcStandingSeamAdder) {
+      var ssLabQ = Object.assign({}, Q, { truss: v.forcedType === 'steel' ? 'Steel' : 'Wood' });
+      var ssAdder = window.SauceLabor.calcStandingSeamAdder(ssLabQ, shedCfgs);
+      if (ssAdder) ssAdderAmt = ssAdder.amount;
+    }
+    var labor  = baseLabor + cypressAdderAmt + bbAdderAmt + ssAdderAmt;
     var conc   = v.forcedType === 'stud' ? concreteAmtStud : concreteAmt;
     var grand  = matWithMft + tax + labor + conc + shipAmt + esdAmt + manualAdder;
 
@@ -2223,7 +2238,17 @@ function chips(id, opts, getCur, setter, rebuild) {
 
 function buildTrussChips(){
   chips('trussChips',[{val:'Wood',label:'🪵 Wood'},{val:'Steel',label:'🔩 Steel'}],
-    function(){return cfgTruss;},function(v){cfgTruss=v;Q.truss=v;buildPitchChips();buildOHChips();applyRouteUI();});
+    function(){return cfgTruss;},function(v){
+      cfgTruss=v;Q.truss=v;buildPitchChips();buildOHChips();applyRouteUI();
+      // Hide standing seam toggle for steel truss
+      var ssRow = document.getElementById('rowStandingSeam');
+      if (ssRow) ssRow.style.display = (v === 'Steel') ? 'none' : '';
+      // If switching to steel, uncheck standing seam
+      if (v === 'Steel') {
+        var ssEl = document.getElementById('st_standingSeam');
+        if (ssEl) ssEl.checked = false;
+      }
+    });
 }
 function buildPitchChips(){
   var wopts=[{val:4,label:'4/12'},{val:6,label:'6/12'},{val:8,label:'8/12'},{val:10,label:'10/12'}];
@@ -3637,7 +3662,7 @@ function serializeConfig() {
       mbConcreteAdder:(document.getElementById('sf_mbConcreteAdder')||{}).value||'None',
       sfPitch612:    !!(document.getElementById('sf_pitch612')||{}).checked,
       scissorTruss:  !!(document.getElementById('sf_scissorTruss')||{}).checked,
-      standingSeam:  !!(document.getElementById('sf_standingSeam')||{}).checked,
+      standingSeam:  !!(document.getElementById('st_standingSeam')||{}).checked,
       sfPostWraps:   !!(document.getElementById('sf_postWraps')||{}).checked
     }
   };
@@ -3786,7 +3811,7 @@ function restoreConfig(cfg) {
       _sv('sf_mbConcreteAdder',sf.mbConcreteAdder);
       _sv('sf_pitch612',       sf.sfPitch612);
       _sv('sf_scissorTruss',   sf.scissorTruss);
-      _sv('sf_standingSeam',   sf.standingSeam);
+      _sv('st_standingSeam',    sf.standingSeam);
       _sv('sf_postWraps',      sf.sfPostWraps);
       // Trigger mileage display if address present
       if(sf.address) setTimeout(doAddressLookup, 300);
@@ -10070,6 +10095,20 @@ function loadDesignPrompt_unused() {
   // Fallback — call directly
   document.getElementById('loadDesignModal').style.display = 'flex';
   if (typeof fetchSavedDesigns === 'function') fetchSavedDesigns();
+}
+
+function onStandingSeamChange() {
+  var on = !!(document.getElementById('st_standingSeam')||{}).checked;
+  if (on) {
+    // Force 2' truss spacing when standing seam is on
+    var tsEl = document.getElementById('st_trussSpacing');
+    if (tsEl) tsEl.value = '2';
+    // Force OSB roof on
+    var osbEl = document.getElementById('sf_osbRoof');
+    if (osbEl) osbEl.checked = true;
+  }
+  scheduleBuild();
+  try { updateStripFromLocalCalc(); } catch(e) {}
 }
 
 function onWainscotChange() {
@@ -16992,6 +17031,263 @@ window.SauceMaterials.calcMetalScrews = function(Q, WALLS, shedCfgs) {
 };
 
 // Awnings — walk door, window, single slope
+// ===============================================================================
+// STANDING SEAM ROOF SYSTEM
+// Applies to wood truss buildings when st_standingSeam is checked
+// Panel SKU: SS6NFSBK — 16" wide, priced at $2.65/ln ft
+// ===============================================================================
+
+window.SauceMaterials.isStandingSeam = function() {
+  return !!(document.getElementById('st_standingSeam')||{}).checked;
+};
+
+window.SauceMaterials.calcStandingSeam = function(Q, shedCfgs) {
+  var SM = window.SauceMaterials;
+  if (Q.truss === 'Steel') return [];
+
+  var items = [];
+  var PS = 2; // always 2' spacing
+  var RATE = 2.65;
+
+  // Panel length from soffit chart — same as calcSoffitMetal uses
+  var chart = {
+    10:[5.583,5.917,6.583,7.000,7.167,7.583],   12:[6.583,7.000,7.667,8.083,8.167,8.667],
+    14:[7.667,8.083,8.750,9.250,9.250,9.833],   16:[8.750,9.250,9.750,10.333,10.333,10.917],
+    18:[9.750,10.333,10.833,11.500,11.333,12.000],20:[10.833,11.500,11.917,12.583,12.417,13.167],
+    22:[11.917,12.583,12.917,13.667,13.500,14.250],24:[12.917,13.667,14.000,14.833,14.500,15.417],
+    26:[14.000,14.833,15.083,15.917,15.583,16.500],28:[15.083,15.917,16.083,17.083,16.667,17.583],
+    30:[16.083,17.083,17.167,18.167,17.667,18.750],32:[17.167,18.167,18.250,19.333,18.750,19.833],
+    34:[18.250,19.333,19.250,20.417,19.750,21.000],36:[19.250,20.417,20.333,21.500,20.833,22.083],
+    38:[20.333,21.500,21.333,22.667,21.917,23.250],40:[21.333,22.667,22.417,23.750,22.917,24.333],
+    42:[22.417,23.750,23.500,24.917,24.000,25.417],44:[23.417,24.917,24.500,26.000,25.083,26.583],
+    46:[24.500,26.000,25.583,27.083,26.083,27.667],48:[25.583,27.083,26.667,28.250,27.167,28.833],
+    50:[26.667,28.250,27.667,29.333,28.250,29.917],52:[27.667,29.333,28.750,30.500,29.250,31.000],
+    54:[28.750,30.500,29.833,31.583,30.333,32.167],56:[29.833,31.583,30.833,32.750,31.417,33.250],
+    60:[31.917,33.833,33.000,34.917,33.500,35.500]
+  };
+  var ssChart = {
+    6:[6.333,7.417],8:[8.417,9.417],10:[10.417,11.417],12:[12.417,13.500],
+    14:[14.500,15.500],16:[16.500,17.500],18:[18.500,19.583],20:[20.583,21.583],
+    22:[22.583,23.583],24:[24.583,25.667],26:[26.667,27.667],28:[28.667,29.667],
+    30:[30.667,31.750]
+  };
+
+  function colIdx(oh, pitch) {
+    var ohIdx = oh === 0 ? 0 : (oh <= 12 ? 2 : 4);
+    var pOff  = pitch <= 4 ? 0 : 1;
+    return ohIdx + pOff;
+  }
+
+  function panelQty(runFt) {
+    // Convert run to inches, divide by 16", round up
+    return Math.ceil((runFt * 12) / 16);
+  }
+
+  function fmtLen(ft) {
+    var totalIn = Math.round(ft * 12);
+    var f = Math.floor(totalIn / 12);
+    var i = totalIn % 12;
+    return i === 0 ? f + "'" : f + "'" + i + '"';
+  }
+
+  var ci = colIdx(Q.oh, Q.pitch);
+  var mbRow = chart[Q.w];
+  if (!mbRow) return [];
+  var panelLen = mbRow[ci]; // in feet, exact from chart
+  var panelLenFmt = fmtLen(panelLen);
+
+  // -- MAIN BUILDING PANELS --
+  // Two slopes, qty per slope = ceil((run_in_inches) / 16)
+  var qty = panelQty(panelLen) * 2; // both sides
+  items.push({
+    category:    'Roof Metal',
+    description: 'Standing Seam Panels',
+    sku:         'SS6NFSBK',
+    quantity:    qty,
+    metalLength: panelLenFmt,
+    fixedCost:   qty * panelLen * RATE,
+    detail:      Q.w + "' wide  |  " + Q.oh + '" O/H  |  ' + panelLenFmt + ' panels  |  ' + qty + ' total  |  $' + RATE + '/ln ft'
+  });
+
+  // -- SIDE SHED PANELS --
+  (shedCfgs||[]).forEach(function(sc, idx) {
+    if (!sc.w || !sc.l) return;
+    var sLabel = 'Side Shed ' + (idx + 1);
+    var ssRow = ssChart[sc.w];
+    if (!ssRow) return;
+    var ssPanelLen = Q.oh > 0 ? ssRow[1] : ssRow[0];
+    var ssPanelFmt = fmtLen(ssPanelLen);
+    var ssQty = panelQty(ssPanelLen) * 2; // 2 gable ends
+    items.push({
+      category:    'Side Shed Roof Metal',
+      description: sLabel + ' Standing Seam Panels',
+      sku:         'SS6NFSBK',
+      quantity:    ssQty,
+      metalLength: ssPanelFmt,
+      fixedCost:   ssQty * ssPanelLen * RATE,
+      detail:      sc.w + "' wide  |  " + ssPanelFmt + ' panels  |  ' + ssQty + ' total'
+    });
+  });
+
+  // -- OSB ROOF SHEATHING --
+  var roofSqft = (Q.w / Math.cos(Math.atan(Q.pitch / 12))) * Q.l;
+  var osbSheets = Math.ceil(roofSqft / 32);
+  items.push({
+    category:    'Yard',
+    description: 'OSB Roof Sheathing (7/16")',
+    sku:         'OSB716',
+    quantity:    osbSheets,
+    detail:      Math.round(roofSqft) + ' sqft  |  32 sqft/sheet  =  ' + osbSheets + ' sheets'
+  });
+
+  // -- TRIM --
+  // Residential Eave Trim
+  var ps = Q.postSpacing || 10;
+  function trimLen(spacing) { return (spacing === 12 || spacing === 24) ? 12 : 10; }
+  var tLen = trimLen(ps);
+
+  var eaveLF = Q.l * 2; // both eave runs
+  var eaveTrimQty = Math.ceil(eaveLF / tLen) + 1;
+  items.push({ category:'Trim', description:'SS Residential Eave Trim', sku:'SSET6PW'+tLen, quantity:eaveTrimQty, detail: eaveLF + "' eave LF  |  " + tLen + "' pieces" });
+
+  // End Wall Flashing — 2 gable ends
+  var ewLF = Q.w * 2;
+  var ewQty = Math.ceil(ewLF / tLen) + 1;
+  items.push({ category:'Trim', description:'SS End Wall Flashing', sku:'SSEW6PW'+tLen, quantity:ewQty, detail: ewLF + "' gable LF  |  " + tLen + "' pieces" });
+
+  // Gable Rake — use chart-based lengths, same as calcGableRakeTrim
+  var LENGTHS = [10,12,14,16,18,20];
+  function pickLen(n) { for(var i=0;i<LENGTHS.length;i++){if(LENGTHS[i]>=n)return LENGTHS[i];} return 20; }
+  var rakeLen = Math.ceil(mbRow[ci]);
+  var rakeRounded = rakeLen <= 20 ? pickLen(rakeLen) : pickLen(Math.ceil(rakeLen/2));
+  var rakeQty = rakeLen <= 20 ? 4 : 8; // split if > 20'
+  items.push({ category:'Trim', description:'SS Gable Rake', sku:'SSGR6PW'+rakeRounded, quantity:rakeQty, detail:'4 runs  |  ' + rakeRounded + "' each" });
+
+  // Ridge Cap
+  var rcLen = (ps === 12 || ps === 24) ? 12 : 10;
+  var rcQty = Math.ceil(Q.l / rcLen) + 1;
+  items.push({ category:'Trim', description:'SS Ridge Cap', sku:'SSRC6PW'+rcLen, quantity:rcQty, detail: Q.l + "' ridge  |  " + rcLen + "' pieces" });
+
+  // Transition Flashing — when main pitch - shed pitch > 2
+  var tfQty = 0;
+  var tfPieceQty = 0;
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    var shedPitch = sc.ltPitch || 1;
+    if ((Q.pitch - shedPitch) > 2) tfQty++;
+  });
+  if (tfQty > 0) {
+    var tfPieceQty2 = tfQty * (Math.ceil(Q.l / tLen) + 1);
+    tfPieceQty = tfPieceQty2;
+    items.push({ category:'Trim', description:'SS Transition Flashing', sku:'SSTF6PW'+tLen, quantity:tfPieceQty, detail: tfQty + ' shed(s) require transition  |  ' + tLen + "' pieces" });
+  }
+
+  // Valley Panels — 4 per gable extension on eave wall
+  var vpQty = 0;
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.type === 'gable') {
+      var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
+      if (isEaveWall) vpQty += 4;
+    }
+  });
+  if (vpQty > 0) {
+    items.push({ category:'Trim', description:'SS Valley Panels', sku:'SSVP6PW'+tLen, quantity:vpQty, detail: vpQty + ' valley panels' });
+  }
+
+  // Z-Bar: 2 per ridge cap + 1 per gable rake + 1 per transition flashing + 1 per end wall flashing
+  // No z-bar for valley panels or eave trim
+  var zbarQty = (rcQty * 2) + rakeQty + (tfQty > 0 ? tfPieceQty : 0) + ewQty;
+  if (zbarQty > 0) {
+    items.push({ category:'Hardware', description:'SS Z-Bar', sku:'SSZB6PW10', quantity:zbarQty,
+      detail: 'RC×2=' + (rcQty*2) + ' + GR=' + rakeQty + ' + TF=' + (tfQty > 0 ? tfPieceQty : 0) + ' + EW=' + ewQty });
+  }
+
+  // Hardware
+  // Pop Rivets — 1 bag per 700 LF of panels
+  var totalPanelLF = qty * panelLen;
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    var ssRow2 = ssChart[sc.w];
+    if (ssRow2) {
+      var ssLen = Q.oh > 0 ? ssRow2[1] : ssRow2[0];
+      totalPanelLF += panelQty(ssLen) * 2 * ssLen;
+    }
+  });
+  var popRivetBags = Math.ceil(totalPanelLF / 700);
+  if (popRivetBags > 0) items.push({ category:'Hardware', description:'SS Pop Rivets', sku:'MRSPOPPW', quantity:popRivetBags, detail: Math.round(totalPanelLF) + ' panel LF  ÷ 700 = ' + popRivetBags + ' bags' });
+
+  // Pancake Screws — 1 bag per 250 LF
+  var pancakeBags = Math.ceil(totalPanelLF / 250);
+  if (pancakeBags > 0) items.push({ category:'Hardware', description:'SS Pancake Screws', sku:'MRSPAGAL', quantity:pancakeBags, detail: Math.round(totalPanelLF) + ' panel LF  ÷ 250 = ' + pancakeBags + ' bags' });
+
+  // Butyl Tape — total z-bar LF ÷ 45
+  var zbarLF = zbarQty * 10; // each z-bar is 10'
+  var butylRolls = Math.ceil(zbarLF / 45);
+  if (butylRolls > 0) items.push({ category:'Hardware', description:'Butyl Tape', sku:'TAPBT3.4', quantity:butylRolls, detail: zbarLF + "' z-bar LF  ÷ 45' rolls = " + butylRolls });
+
+  return items;
+};
+
+// Standing seam labor adder
+window.SauceLabor = window.SauceLabor || {};
+window.SauceLabor.calcStandingSeamAdder = function(Q, shedCfgs) {
+  if (Q.truss === 'Steel') return null;
+  if (!window.SauceMaterials.isStandingSeam()) return null;
+
+  var chart = {
+    10:[5.583,5.917,6.583,7.000,7.167,7.583],   12:[6.583,7.000,7.667,8.083,8.167,8.667],
+    14:[7.667,8.083,8.750,9.250,9.250,9.833],   16:[8.750,9.250,9.750,10.333,10.333,10.917],
+    18:[9.750,10.333,10.833,11.500,11.333,12.000],20:[10.833,11.500,11.917,12.583,12.417,13.167],
+    22:[11.917,12.583,12.917,13.667,13.500,14.250],24:[12.917,13.667,14.000,14.833,14.500,15.417],
+    26:[14.000,14.833,15.083,15.917,15.583,16.500],28:[15.083,15.917,16.083,17.083,16.667,17.583],
+    30:[16.083,17.083,17.167,18.167,17.667,18.750],32:[17.167,18.167,18.250,19.333,18.750,19.833],
+    34:[18.250,19.333,19.250,20.417,19.750,21.000],36:[19.250,20.417,20.333,21.500,20.833,22.083],
+    38:[20.333,21.500,21.333,22.667,21.917,23.250],40:[21.333,22.667,22.417,23.750,22.917,24.333],
+    42:[22.417,23.750,23.500,24.917,24.000,25.417],44:[23.417,24.917,24.500,26.000,25.083,26.583],
+    46:[24.500,26.000,25.583,27.083,26.083,27.667],48:[25.583,27.083,26.667,28.250,27.167,28.833],
+    50:[26.667,28.250,27.667,29.333,28.250,29.917],52:[27.667,29.333,28.750,30.500,29.250,31.000],
+    54:[28.750,30.500,29.833,31.583,30.333,32.167],56:[29.833,31.583,30.833,32.750,31.417,33.250],
+    60:[31.917,33.833,33.000,34.917,33.500,35.500]
+  };
+  var ssChart = {
+    6:[6.333,7.417],8:[8.417,9.417],10:[10.417,11.417],12:[12.417,13.500],
+    14:[14.500,15.500],16:[16.500,17.500],18:[18.500,19.583],20:[20.583,21.583],
+    22:[22.583,23.583],24:[24.583,25.667],26:[26.667,27.667],28:[28.667,29.667],
+    30:[30.667,31.750]
+  };
+
+  function colIdx(oh, pitch) {
+    var ohIdx = oh === 0 ? 0 : (oh <= 12 ? 2 : 4);
+    return ohIdx + (pitch <= 4 ? 0 : 1);
+  }
+  function panelQty(runFt) { return Math.ceil((runFt * 12) / 16); }
+
+  var ci = colIdx(Q.oh, Q.pitch);
+  var mbRow = chart[Q.w];
+  if (!mbRow) return null;
+
+  var panelLen = mbRow[ci];
+  var qty = panelQty(panelLen) * 2;
+  // sqft = (16/12) × panelLen × qty
+  var totalSqft = (16/12) * panelLen * qty;
+
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    var ssRow = ssChart[sc.w];
+    if (!ssRow) return;
+    var ssLen = Q.oh > 0 ? ssRow[1] : ssRow[0];
+    var ssQty = panelQty(ssLen) * 2;
+    totalSqft += (16/12) * ssLen * ssQty;
+  });
+
+  var amount = totalSqft * 2.5;
+  return {
+    label:  'Standing Seam Install  |  ' + Math.round(totalSqft) + ' panel sqft @ $2.50',
+    amount: amount
+  };
+};
+
 window.SauceMaterials.calcAwnings = function() {
   var items = [];
 
@@ -17247,6 +17543,16 @@ window.SauceLabor.calcMetalBBAdder = function(Q, shedCfgs) {
   };
 };
 
+// Roof system selector — returns standing seam items when toggled, standard metal otherwise
+// Never fires for steel truss regardless of toggle
+window.SauceMaterials.calcRoofSystem = function(Q, shedCfgs) {
+  var SM = window.SauceMaterials;
+  if (Q.truss !== 'Steel' && SM.isStandingSeam()) {
+    return SM.calcStandingSeam(Q, shedCfgs);
+  }
+  return SM.calcRoofMetal(Q, shedCfgs);
+};
+
 window.SauceMaterials.calcPitchAdder = function(Q) {
   if (Q.truss !== 'Wood') return [];
   var pitch = parseInt(Q.pitch);
@@ -17396,7 +17702,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcFootingPads(sfQ, WALLS, [], sfShedCfgs, sfSf).forEach(function(item) { items.push(item); });
 
     // ── METAL ──
-    SM.calcRoofMetal(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcRoofSystem(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcSoffitMetal(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcSidewallMetal(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableMetal(sfQ, WALLS).forEach(function(item) { items.push(item); });
@@ -17616,7 +17922,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcShedLedgers(cyQ, WALLS, cyShedCfgs).forEach(function(item) { items.push(item); });
 
     // Roof metal stays
-    SM.calcRoofMetal(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcRoofSystem(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
 
     // Cypress siding replaces all wall metal
     SM.calcCypress(cyQ, WALLS, cyShedCfgs, allDoors).forEach(function(item) { items.push(item); });
@@ -17790,7 +18096,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     var qty = 1 + Math.floor(openings / 4);
     items.push({ category: 'Hardware', description: 'Roofing Sealant', sku: 'RS00', quantity: qty, detail: '1 base  +  ' + openings + ' openings ÷ 4' });
   })();
-  SM.calcRoofMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcRoofSystem(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSoffitMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcSidewallMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcGableMetal(Q, WALLS).forEach(function(item) { items.push(item); });
@@ -18380,6 +18686,20 @@ window.openLaborModal = function() {
           col.appendChild(bbAdderRow);
           var bbHdrSpan = col.querySelector('div > span:last-child');
           if (bbHdrSpan) bbHdrSpan.textContent = '$' + (c.calc.finalLabor + bbAdder.amount).toFixed(2);
+        }
+      }
+      // Standing Seam — append install adder for all wood truss columns
+      if (c.title !== 'Steel' && window.SauceLabor.calcStandingSeamAdder) {
+        var ssLQ = window._Q || {};
+        var ssShedCfgs = window._shedConfigs || [];
+        var ssAdder = window.SauceLabor.calcStandingSeamAdder(ssLQ, ssShedCfgs);
+        if (ssAdder) {
+          var ssAdderRow = document.createElement('div');
+          ssAdderRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.2);border-radius:7px;margin-top:6px;font-size:11px;';
+          ssAdderRow.innerHTML = '<span style="color:#60a5fa;font-weight:700;">+ ' + ssAdder.label + '</span><span style="color:#60a5fa;font-weight:800;">$' + ssAdder.amount.toFixed(2) + '</span>';
+          col.appendChild(ssAdderRow);
+          var ssHdrSpan = col.querySelector('div > span:last-child');
+          if (ssHdrSpan) ssHdrSpan.textContent = '$' + (c.calc.finalLabor + ssAdder.amount).toFixed(2);
         }
       }
     });
