@@ -12110,6 +12110,9 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
   var STANDARD_LENGTHS = [20, 16, 12, 10, 8]; // for shed fill
   var HEADER_LENGTHS = [20, 12, 10]; // for main building eave headers
 
+  // Is LVL toggled on?
+  var useLVL = !!(document.getElementById('st_lvlHeaders')||{}).checked;
+
   // Fill a wall length with standard lumber pieces, greedy longest first
   function fillWall(wallLen) {
     var pieces = {};
@@ -12126,37 +12129,38 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
     return pieces;
   }
 
-  // SKU prefix based on width
-  function skuPrefix(width) {
-    return (width >= 41 && width <= 60) ? 'CLVL1178' : 'SYP212';
+  // Build a result item — LVL uses boardLen for per-ft pricing, SYP uses unit pricing
+  function makeItem(desc, sku, qty, boardLength, isLVL) {
+    var item = { category:'Yard', description:desc, sku:isLVL ? 'CLVL1178' : sku, quantity:qty };
+    if (isLVL) {
+      item.boardLen = boardLength;
+      item.detail = 'LVL 11 7/8  |  ' + boardLength + "' board  |  qty " + qty + '  |  priced per linear ft';
+    } else {
+      item.detail = '2x12  |  ' + boardLength + "'";
+    }
+    return item;
   }
 
-  var mbGroups   = {}; // main building headers
-  var shedGroups = {}; // side shed headers
+  var mbGroups   = {}; // { sku+len: {sku, qty, len} }
+  var shedGroups = {};
 
-  // Main building — both eave walls, inside + outside (×2 per wall, ×2 walls = ×4)
-  // Headers land on posts (structural + jambs). Use greedy algorithm:
-  // from each post, span as far as possible using shortest board that reaches furthest post.
-  var mbPrefix = skuPrefix(Q.w);
-
+  // Main building — both eave walls, inside + outside (×2)
   ['left', 'right'].forEach(function(wallId) {
     var wallDoors = allDoors.filter(function(d) { return d.wall === wallId; });
     var wLen = Q.l;
-    var sku;
 
     if (wallDoors.length === 0) {
-      // No doors — simple fill of full wall length (most efficient board usage)
       var remaining = wLen;
+      var lengths = useLVL ? HEADER_LENGTHS : HEADER_LENGTHS;
       while (remaining > 0.01) {
-        var longest = HEADER_LENGTHS.find(function(l) { return l <= remaining; });
+        var longest = lengths.find(function(l) { return l <= remaining; });
         if (!longest) break;
-        sku = mbPrefix + longest;
-        mbGroups[sku] = (mbGroups[sku] || 0) + 2; // ×2 inside+outside
+        var key = (useLVL ? 'LVL' : 'SYP212') + longest;
+        mbGroups[key] = mbGroups[key] || { len: longest, qty: 0, isLVL: useLVL };
+        mbGroups[key].qty += 2; // ×2 inside+outside
         remaining = Math.round((remaining - longest) * 100) / 100;
       }
     } else {
-      // Garage doors present — headers must land on posts
-      // Greedy: from each post, span as far as possible using shortest board that reaches furthest post
       var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
       if (posts.length < 2) return;
       var postFts = posts.map(function(p) { return Math.round(p.ft * 1000) / 1000; });
@@ -12171,77 +12175,49 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
         if (furthestIdx === i) break;
         var span = postFts[furthestIdx] - start;
         var board = HEADER_LENGTHS.slice().reverse().find(function(l) { return l >= span - 0.01; });
-        sku = mbPrefix + board;
-        mbGroups[sku] = (mbGroups[sku] || 0) + 2; // ×2 inside+outside
+        var key2 = (useLVL ? 'LVL' : 'SYP212') + board;
+        mbGroups[key2] = mbGroups[key2] || { len: board, qty: 0, isLVL: useLVL };
+        mbGroups[key2].qty += 2; // ×2 inside+outside
         i = furthestIdx;
       }
     }
   });
 
-  // Side sheds — always 2x12, inside + outside (×2 per eave edge)
-  // Applies regardless of which wall shed attaches to
-  // Steel truss buildings already return [] above so no check needed here
+  // Side sheds — always 2x12 regardless of LVL toggle
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
-    var shedPrefix = 'SYP212';
 
     function addShedPieces(len, multiplier) {
       var pieces = fillWall(len);
       Object.keys(pieces).forEach(function(l) {
-        var sku = shedPrefix + l;
-        shedGroups[sku] = (shedGroups[sku] || 0) + pieces[l] * multiplier;
+        var key = 'SYP212' + l;
+        shedGroups[key] = shedGroups[key] || { len: parseInt(l), qty: 0, isLVL: false };
+        shedGroups[key].qty += pieces[l] * multiplier;
       });
     }
 
-    if (sc.type === 'gable') {
-      // Gable extension: two eave edges (front and back of extension) × 2 sides each
-      addShedPieces(sc.l, 4); // 2 edges × 2 sides
-      return;
-    }
-
-    if (sc.type === 'leanto') {
-      // One outer eave edge × 2 (inside + outside)
-      addShedPieces(sc.l, 2);
-      return;
-    }
-
+    if (sc.type === 'gable') { addShedPieces(sc.l, 4); return; }
+    if (sc.type === 'leanto') { addShedPieces(sc.l, 2); return; }
     if (sc.type === 'wrap' || sc.type === 'wrap3') {
-      // Primary leg × 2
       addShedPieces(sc.l, 2);
       if (sc.type === 'wrap3') {
-        // Both secondary legs × 2 each = ×4 total
         var isEave = (sc.wall === 'left' || sc.wall === 'right');
         addShedPieces(isEave ? Q.w : Q.l, 4);
       } else if (sc.wrapLeg > 0) {
-        // One secondary leg × 2
         addShedPieces(sc.wrapLeg, 2);
       }
     }
   });
 
-  // Build separate results for main building and side shed headers
   var results = [];
-
-  Object.keys(mbGroups).sort().forEach(function(sku) {
-    results.push({
-      category:    'Yard',
-      description: 'Main Building Headers',
-      sku:         sku,
-      quantity:    mbGroups[sku],
-      detail:      sku.indexOf('LVL') === 0 ? 'LVL 11 7/8 (cut to length)' : '2x12'
-    });
+  Object.keys(mbGroups).sort().forEach(function(key) {
+    var g = mbGroups[key];
+    results.push(makeItem('Main Building Headers', 'SYP212' + g.len, g.qty, g.len, g.isLVL));
   });
-
-  Object.keys(shedGroups).sort().forEach(function(sku) {
-    results.push({
-      category:    'Yard',
-      description: 'Side Shed Headers',
-      sku:         sku,
-      quantity:    shedGroups[sku],
-      detail:      '2x12'
-    });
+  Object.keys(shedGroups).sort().forEach(function(key) {
+    var g = shedGroups[key];
+    results.push(makeItem('Side Shed Headers', 'SYP212' + g.len, g.qty, g.len, false));
   });
-
   return results;
 };
 
@@ -13906,6 +13882,7 @@ window.SauceMaterials.calcGarageDoorHeaders = function(allDoors) {
   var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
   if (garageDoors.length === 0) return [];
 
+  var useLVL = !!(document.getElementById('st_lvlHeaders')||{}).checked;
   var HEADER_AVAIL = [10, 12, 20];
 
   function headerBoardLen(doorWidth) {
@@ -13917,10 +13894,10 @@ window.SauceMaterials.calcGarageDoorHeaders = function(allDoors) {
   var groups = {};
   garageDoors.forEach(function(d) {
     var headerLen = headerBoardLen(d.w);
-    var isLVL = d.w > 14;
+    var isLVL = useLVL || d.w > 14; // toggle OR wide door
     var sku = isLVL ? 'CLVL1178' : 'SYP212' + headerLen;
-    var key = isLVL ? (sku + '_' + headerLen) : sku; // unique key per length for grouping
-    groups[key] = groups[key] || { sku: sku, qty: 0, boardLen: isLVL ? headerLen : null };
+    var key = isLVL ? (sku + '_' + headerLen) : sku;
+    groups[key] = groups[key] || { sku: sku, qty: 0, boardLen: isLVL ? headerLen : null, isLVL: isLVL };
     groups[key].qty += 2;
   });
 
@@ -13931,7 +13908,7 @@ window.SauceMaterials.calcGarageDoorHeaders = function(allDoors) {
       description: 'Garage Door Headers',
       sku:         g.sku,
       quantity:    g.qty,
-      detail:      "2 per door  |  door width + 2'" + (g.boardLen ? '  |  ' + g.boardLen + '\' LVL per-ft pricing' : '')
+      detail:      "2 per door  |  door width + 2'" + (g.boardLen ? '  |  ' + g.boardLen + "' LVL — priced per linear ft" : '')
     };
     if (g.boardLen) item.boardLen = g.boardLen;
     return item;
