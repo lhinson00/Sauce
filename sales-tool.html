@@ -1486,6 +1486,13 @@ body.customer-mode #custColorChartLink { display: block !important; }
           </div>
           <label class="tog"><input type="checkbox" id="st_esd" onchange="try{updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
         </div>
+        <div class="toggle-row" id="rowCraneFee">
+          <div class="toggle-info">
+            <div class="toggle-lbl">Crane Fee</div>
+            <div class="toggle-sub" id="craneFeeHint">$2,000 — auto on stud/BB &gt;30' or &gt;10'</div>
+          </div>
+          <label class="tog"><input type="checkbox" id="st_craneFee" onchange="try{updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+        </div>
         <div style="margin-top:10px;">
           <div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Cupola</div>
           <div class="chip-row" style="gap:6px;">
@@ -2001,7 +2008,30 @@ function updateStripFromLocalCalc() {
       var osbLabQ = Object.assign({}, Q, { truss: 'Wood' });
       window.SauceMaterials.calcOSBRoof(osbLabQ, shedCfgs).forEach(function(i){ osbRoofAdderAmt += (i.quantity||0) * 10; });
     }
-    var labor  = baseLabor + cypressAdderAmt + bbAdderAmt + ssAdderAmt + osbRoofAdderAmt;
+    // Wet Set Posts — $350/post, post frame only (not stud, not metalBB)
+    var wetSetAdderAmt = 0;
+    if (v.forcedType !== 'stud' && v.forcedType !== 'metalBB' && !!(document.getElementById('st_wetSetPosts')||{}).checked && window.SauceMaterials && window.SauceMaterials.getPostsForWall) {
+      var SM2 = window.SauceMaterials;
+      var wetPostCount = SM2.getPostsForWall('left', Q, WALLS, shedCfgs).length
+                       + SM2.getPostsForWall('right', Q, WALLS, shedCfgs).length
+                       + SM2.getPostsForWall('front', Q, WALLS, shedCfgs).length
+                       + SM2.getPostsForWall('back', Q, WALLS, shedCfgs).length;
+      (shedCfgs||[]).forEach(function(sc){ if (sc.w && sc.l) wetPostCount += Math.ceil(sc.l / (Q.postSpacing||10)) + 1; });
+      wetSetAdderAmt = wetPostCount * 350;
+    }
+    // Post Protectors labor — $10/post
+    var postProtAdderAmt = 0;
+    if (!!(document.getElementById('st_postProtectors')||{}).checked && window.SauceMaterials && window.SauceMaterials.calcPostProtectors) {
+      window.SauceMaterials.calcPostProtectors(Q, WALLS, window._allDoors||[], shedCfgs).forEach(function(i){ postProtAdderAmt += (i.quantity||0) * 10; });
+    }
+    // 6/12 Pitch labor — $0.25/sqft footprint, steel truss only
+    var pitch612AdderAmt = 0;
+    if (v.forcedType === 'steel' && !!(document.getElementById('st_pitch612')||{}).checked) {
+      var p612Sqft = (Q.w||0) * (Q.l||0);
+      (shedCfgs||[]).forEach(function(sc){ if (sc.w && sc.l) p612Sqft += sc.w * sc.l; });
+      pitch612AdderAmt = p612Sqft * 0.25;
+    }
+    var labor  = baseLabor + cypressAdderAmt + bbAdderAmt + ssAdderAmt + osbRoofAdderAmt + wetSetAdderAmt + postProtAdderAmt + pitch612AdderAmt;
     var conc   = v.forcedType === 'stud' ? concreteAmtStud : concreteAmt;
     var grand  = matWithMft + tax + labor + conc + shipAmt + esdAmt + manualAdder;
 
@@ -3609,6 +3639,7 @@ function serializeConfig() {
       postProtectors:!!(document.getElementById('st_postProtectors')||{}).checked,
       gutters:   !!(document.getElementById('st_gutters')||{}).checked,
       esd:       !!(document.getElementById('st_esd')||{}).checked,
+      craneFee:  !!(document.getElementById('st_craneFee')||{}).checked,
       manualAdder:getCombinedManualAdder(),
       manualNotes:(document.getElementById('st_manualNotes')||{}).value||'',
       materialKit:!!(document.getElementById('st_materialKit')||{}).checked,
@@ -3759,6 +3790,7 @@ function restoreConfig(cfg) {
       _sv('st_postProtectors',sf.postProtectors);
       _sv('st_gutters',   sf.gutters);
       _sv('st_esd',       sf.esd);
+      _sv('st_craneFee',  sf.craneFee);
       _sv('st_manualAdder',sf.manualAdder);
       _sv('st_manualNotes',sf.manualNotes);
       _sv('st_materialKit',sf.materialKit);
@@ -10418,6 +10450,23 @@ function applyRouteUI() {
 
   // Concrete summary
   updateConcreteSummary();
+
+  // Crane fee — auto-fires for stud/BB when width > 30' or height > 10'
+  var craneEl   = document.getElementById('st_craneFee');
+  var craneHint = document.getElementById('craneFeeHint');
+  var isStudOrBB = (currentFrameType === 'stud' || cfgTruss === 'Steel'); // BB is stud frame
+  // Actually check forcedType by frame: stud frame OR metalBB
+  var craneAuto = (currentFrameType === 'stud') && ((Q.w||0) > 30 || (Q.h||0) > 10);
+  if (craneEl) {
+    if (craneAuto) {
+      craneEl.checked = true;
+      craneEl.disabled = true;
+      if (craneHint) craneHint.textContent = 'Auto-applied — ' + (Q.w > 30 ? "width > 30'" : '') + (Q.h > 10 ? (Q.w > 30 ? ' + ' : '') + "height > 10'" : '');
+    } else {
+      craneEl.disabled = false;
+      if (craneHint) craneHint.textContent = "$2,000 — auto on stud/BB >30' or >10'";
+    }
+  }
 
   syncOpeningVisibility();
   updateMftRateHint();
@@ -17289,6 +17338,183 @@ window.SauceLabor.calcStandingSeamAdder = function(Q, shedCfgs) {
   };
 };
 
+// ── FINISHED CEILING METAL ────────────────────────────────────────────────────
+// Fires when st_finishedCeiling is checked + building has eave lean-to side sheds.
+// Panel SKU: T9PW + (shed_width + 0.5)' length  |  qty = ceil(shed_length / 3)  |  per shed
+window.SauceMaterials.calcFinishedCeilingMetal = function(Q, shedCfgs) {
+  var on = !!(document.getElementById('st_finishedCeiling')||{}).checked;
+  if (!on) return [];
+  var items = [];
+  var metalType = (document.getElementById('st_roofMetal')||{}).value || 'Painted';
+  var prefix = metalType === '26-Gauge' ? 'T6PW' : metalType === 'Galvalume' ? 'T9PW' : metalType === 'PBR' ? 'P6PW' : 'T9PW';
+  (shedCfgs||[]).forEach(function(sc, idx) {
+    if (!sc.w || !sc.l) return;
+    // Eave lean-to sheds only (wall = left or right)
+    if (sc.type !== 'leanto' && sc.type !== 'single') return;
+    var isEave = (sc.wall === 'left' || sc.wall === 'right');
+    if (!isEave) return;
+    // Panel length = shed width + 6" (0.5')
+    var panelFt  = sc.w + 0.5;
+    var panelIn  = Math.round(panelFt * 12);
+    var wholeFt  = Math.floor(panelIn / 12);
+    var remIn    = panelIn % 12;
+    var lenLabel = remIn === 0 ? wholeFt + "'" : wholeFt + "'" + remIn + '"';
+    var sku      = prefix + lenLabel.replace(/'/g,'').replace(/"/g,'');
+    // Qty = ceil(shed_length / 3)
+    var qty = Math.ceil(sc.l / 3);
+    items.push({
+      category:    'Roof Metal',
+      description: 'Side Shed ' + (idx+1) + ' Finished Ceiling Metal',
+      sku:         prefix,
+      quantity:    qty,
+      metalLength: lenLabel,
+      detail:      sc.w + "' shed + 6\" = " + lenLabel + ' panels  |  ' + sc.l + "' ÷ 3 = " + qty + ' panels'
+    });
+  });
+  return items;
+};
+
+// ── ROCK WAINSCOT ─────────────────────────────────────────────────────────────
+// Fires when st_rockWainscot is checked.
+// $23.50/sqft (< 100 miles) or $25.00/sqft (≥ 100 miles) × (wall_length × 4')
+// Also replaces double angle with RT9PW10 rock trim (same qty math as double angle)
+window.SauceMaterials.calcRockWainscot = function(Q, WALLS, shedCfgs) {
+  var on = !!(document.getElementById('st_rockWainscot')||{}).checked;
+  if (!on) return [];
+  var miles = window._cachedMileage || 0;
+  var rate  = miles >= 100 ? 25.00 : 23.50;
+  var items = [];
+
+  function wallEncl(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? w.encl : 'enclosed';
+  }
+  function wallPS(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+
+  var totalSqft = 0;
+  var rtGroups  = {};
+
+  function addWall(len, ps) {
+    totalSqft += len * 4;
+    var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
+    var sku = 'RT9PW10';
+    rtGroups[sku] = (rtGroups[sku] || 0) + Math.ceil(len / boardLen) + 1;
+  }
+
+  // All enclosed main building walls
+  ['left','right'].forEach(function(side) { if (wallEncl(side) !== 'open') addWall(Q.l, wallPS(side)); });
+  ['front','back'].forEach(function(side) { if (wallEncl(side) !== 'open') addWall(Q.w, wallPS(side)); });
+
+  // Enclosed side shed outer walls
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if (sc.encl !== 'enclosed') return;
+    if (!(sc.enclWalls||[]).includes('outer')) return;
+    var wallLen = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
+    addWall(wallLen, wallPS(sc.wall));
+  });
+
+  if (totalSqft <= 0) return [];
+
+  // Rock material as fixedCost
+  items.push({
+    category:    'Wainscot Metal',
+    description: 'Rock Wainscot',
+    sku:         'ROCKWAINSCOT',
+    quantity:    1,
+    fixedCost:   totalSqft * rate,
+    detail:      Math.round(totalSqft) + ' sqft × $' + rate.toFixed(2) + (miles >= 100 ? ' (100+ mi rate)' : '')
+  });
+
+  // RT9PW10 rock trim
+  Object.keys(rtGroups).forEach(function(sku) {
+    items.push({
+      category:    'Trim',
+      description: 'Rock Wainscot Trim',
+      sku:         sku,
+      quantity:    rtGroups[sku],
+      detail:      'RT9PW10 rock trim'
+    });
+  });
+
+  return items;
+};
+
+// ── POST PROTECTORS ───────────────────────────────────────────────────────────
+// Fires when st_postProtectors is checked.
+// PP6660 for 6x6 posts, PP8860 for 8x8 posts.
+// Covers main building posts + enclosed side shed posts.
+// Labor: $10 per post protector.
+window.SauceMaterials.calcPostProtectors = function(Q, WALLS, allDoors, shedCfgs) {
+  var on = !!(document.getElementById('st_postProtectors')||{}).checked;
+  if (!on) return [];
+  var SM = window.SauceMaterials;
+  var sf = {
+    mbPostSize:   (document.getElementById('st_postSize_left')||{}).value || '6x6',
+    ssPostSize:   (document.getElementById('st_ssPostSize')||{}).value    || '6x6',
+    postsOnTop:   (document.getElementById('st_postsOnTop')||{}).value    || 'No'
+  };
+
+  var counts = { '6x6': 0, '8x8': 0 };
+
+  function addPosts(wallId, postSize) {
+    var cnt = SM.getPostsForWall(wallId, Q, WALLS, allDoors).length;
+    var sz  = postSize === '8x8' ? '8x8' : '6x6';
+    counts[sz] = (counts[sz] || 0) + cnt;
+  }
+
+  // Main building
+  if (sf.postsOnTop !== 'Yes') {
+    ['left','right'].forEach(function(w) { addPosts(w, SM.wallPostSizeFor(w, sf)); });
+    ['front','back'].forEach(function(w) {
+      var wCfg = (WALLS||[]).find(function(x){ return x.id === w; });
+      if (wCfg && wCfg.encl === 'open') return;
+      var posts = SM.getPostsForWall(w, Q, WALLS, allDoors);
+      var sz = SM.wallPostSizeFor(w, sf) === '8x8' ? '8x8' : '6x6';
+      counts[sz] += posts.filter(function(p){ return !p.corner; }).length;
+    });
+  }
+
+  // Enclosed side shed posts
+  (shedCfgs||[]).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.encl !== 'enclosed') return;
+    var shedPostCount = Math.ceil(sc.l / (Q.postSpacing||10)) + 1;
+    var sz = sf.ssPostSize === '8x8' ? '8x8' : '6x6';
+    counts[sz] += shedPostCount;
+  });
+
+  var items = [];
+  if (counts['6x6'] > 0) items.push({ category:'Hardware', description:'Post Protectors 6x6', sku:'PP6660', quantity:counts['6x6'], detail:counts['6x6'] + ' posts' });
+  if (counts['8x8'] > 0) items.push({ category:'Hardware', description:'Post Protectors 8x8', sku:'PP8860', quantity:counts['8x8'], detail:counts['8x8'] + ' posts' });
+  return items;
+};
+
+// ── CRANE FEE ─────────────────────────────────────────────────────────────────
+// $2,000 flat — material line adder.
+// Auto-fires for stud frame and Metal B&B when width > 30' OR height > 10'.
+// Manual toggle (st_craneFee) for all other building types.
+window.SauceMaterials.calcCraneFee = function(Q, forcedType) {
+  var autoFire = false;
+  if (forcedType === 'stud' || forcedType === 'metalBB') {
+    autoFire = ((Q.w || 0) > 30) || ((Q.h || 0) > 10);
+  }
+  var manualOn = !!(document.getElementById('st_craneFee')||{}).checked;
+  if (!autoFire && !manualOn) return [];
+  return [{
+    category:    'Extras',
+    description: 'Crane Fee',
+    sku:         'CRANE',
+    quantity:    1,
+    fixedCost:   2000,
+    detail:      autoFire ? 'Auto — ' + (Q.w > 30 ? 'width > 30\'' : '') + (Q.h > 10 ? (Q.w > 30 ? ' + ' : '') + 'height > 10\'' : '') : 'Manual'
+  }];
+};
+
 window.SauceMaterials.calcAwnings = function() {
   var items = [];
 
@@ -17770,6 +17996,10 @@ window.SauceMaterials.calculate = function(forcedType) {
     })();
 
     SM.calcAwnings().forEach(function(item) { items.push(item); });
+    SM.calcFinishedCeilingMetal(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcRockWainscot(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcPostProtectors(sfQ, WALLS, allDoors, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcCraneFee(sfQ, 'stud').forEach(function(item) { items.push(item); });
 
     return { items: items, building: sfQ.w + "' x " + sfQ.l + "' x " + sfQ.h + "' (STUD FRAME)" };
   }
@@ -17850,6 +18080,10 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcHurricaneBrackets(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcMetalScrews(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcAwnings().forEach(function(item) { items.push(item); });
+    SM.calcFinishedCeilingMetal(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcRockWainscot(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcPostProtectors(bbQ, WALLS, allDoors, bbShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcCraneFee(bbQ, 'metalBB').forEach(function(item) { items.push(item); });
     items.push({ category:'Hardware', description:'Roofing Sealant', sku:'RS00', quantity:1, detail:'1 per quote' });
 
     
@@ -17959,6 +18193,10 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcJoistHangers(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcMetalScrews(cyQ, WALLS, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcAwnings().forEach(function(item) { items.push(item); });
+    SM.calcFinishedCeilingMetal(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcRockWainscot(cyQ, WALLS, cyShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcPostProtectors(cyQ, WALLS, allDoors, cyShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcCraneFee(cyQ, 'cypress').forEach(function(item) { items.push(item); });
     items.push({ category:'Hardware', description:'Roofing Sealant', sku:'RS00', quantity:1, detail:'1 per quote' });
 
     return { items: items, building: cyQ.w + "' x " + cyQ.l + "' x " + cyQ.h + "' (CYPRESS)" };
@@ -18127,6 +18365,10 @@ window.SauceMaterials.calculate = function(forcedType) {
   SM.calcGableRakeTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcRidgeCap(Q).forEach(function(item) { items.push(item); });
   SM.calcAwnings().forEach(function(item) { items.push(item); });
+  SM.calcFinishedCeilingMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcRockWainscot(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcPostProtectors(Q, WALLS, allDoors, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcCraneFee(Q, forcedType||'woodOH').forEach(function(item) { items.push(item); });
   return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "'" };
 };
 
@@ -19783,6 +20025,35 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf) {
   if (postWraps) {
     var totalPosts = SM ? (SM.getPostsForWall('left', Q, WALLS, allDoors).length + SM.getPostsForWall('right', Q, WALLS, allDoors).length + SM.getPostsForWall('front', Q, WALLS, allDoors).length + SM.getPostsForWall('back', Q, WALLS, allDoors).length) : 0;
     if (totalPosts) lines.push({ label: 'Post Wraps  |  ' + totalPosts + ' posts @ $10.00', amount: totalPosts * 10 });
+  }
+
+  // Wet Set Posts — $350 per post, post frame buildings only (not stud, not metalBB)
+  var wetSet = !!(document.getElementById('st_wetSetPosts')||{}).checked;
+  if (wetSet && SM && buildingType !== 'stud' && buildingType !== 'metalBB') {
+    var wetPosts = SM.getPostsForWall('left', Q, WALLS, allDoors).length
+                 + SM.getPostsForWall('right', Q, WALLS, allDoors).length
+                 + SM.getPostsForWall('front', Q, WALLS, allDoors).length
+                 + SM.getPostsForWall('back', Q, WALLS, allDoors).length;
+    (window._shedConfigs||[]).forEach(function(sc) {
+      if (sc.w && sc.l) wetPosts += Math.ceil(sc.l / (Q.postSpacing||10)) + 1;
+    });
+    if (wetPosts > 0) lines.push({ label: 'Wet Set Posts  |  ' + wetPosts + ' posts @ $350.00', amount: wetPosts * 350 });
+  }
+
+  // Post Protectors labor — $10 per protector
+  var postProtOn = !!(document.getElementById('st_postProtectors')||{}).checked;
+  if (postProtOn && SM && SM.calcPostProtectors) {
+    var ppItems = SM.calcPostProtectors(Q, WALLS, allDoors, window._shedConfigs||[]);
+    var ppCount = ppItems.reduce(function(s,i){ return s + (i.quantity||0); }, 0);
+    if (ppCount > 0) lines.push({ label: 'Post Protectors Install  |  ' + ppCount + ' posts @ $10.00', amount: ppCount * 10 });
+  }
+
+  // 6/12 Pitch labor adder — $0.25/sqft of building footprint
+  var pitch612On = !!(document.getElementById('st_pitch612')||{}).checked;
+  if (pitch612On) {
+    var pitch612Sqft = (Q.w||0) * (Q.l||0);
+    (window._shedConfigs||[]).forEach(function(sc){ if (sc.w && sc.l) pitch612Sqft += sc.w * sc.l; });
+    if (pitch612Sqft > 0) lines.push({ label: '6/12 Pitch  |  ' + pitch612Sqft + ' sqft @ $0.25', amount: pitch612Sqft * 0.25 });
   }
 
   // 8x8 / 10x10 post upcharges — per wall
