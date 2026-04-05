@@ -14042,18 +14042,22 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
   var totalSqFt = garageDoors.reduce(function(sum, d) { return sum + (d.w * d.h); }, 0);
   var miles     = window._cachedMileage || 0;
 
-  var rate, detail;
+  var rate, sku, detail;
   if (miles <= 100) {
     rate   = 4.25;
+    sku    = 'GDIP<100MILES';
     detail = miles + ' mi  |  $4.25/sqft';
   } else if (miles <= 150) {
     rate   = 4.50;
+    sku    = 'GDIP<150MILES';
     detail = miles + ' mi  |  $4.50/sqft';
   } else if (miles <= 205) {
     rate   = 5.00;
+    sku    = 'GDIP<205MILES';
     detail = miles + ' mi  |  $5.00/sqft';
   } else {
     rate   = 5.00;
+    sku    = 'GDIP>205MILES';
     var extraMiles = miles - 205;
     var extraFee   = extraMiles * 6.00;
     detail = miles + ' mi  |  $5.00/sqft base + $6.00 × ' + extraMiles + ' extra mi ($' + extraFee.toFixed(2) + ' added)';
@@ -14066,8 +14070,8 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
   return [{
     category:    'Doors',
     description: 'Garage Door Install Fee',
-    sku:         'GDINSTALL',
-    quantity:    1,
+    sku:         sku,
+    quantity:    totalSqFt,
     fixedCost:   total,
     detail:      totalSqFt + ' sqft  |  ' + detail
   }];
@@ -19490,6 +19494,12 @@ function loadInventoryPricing() {
         window.SauceMaterials._priceTable = d.prices;
         try { localStorage.setItem('saucePriceTable', JSON.stringify(d.prices)); } catch(e) {}
         console.log('[Prices] Loaded ' + Object.keys(d.prices).length + ' prices from sheet');
+        // Cache descriptions if backend provides them
+        if (d.descriptions) {
+          window.SauceMaterials._descTable = d.descriptions;
+          try { localStorage.setItem('sauceDescTable', JSON.stringify(d.descriptions)); } catch(e) {}
+          console.log('[Prices] Loaded ' + Object.keys(d.descriptions).length + ' descriptions from sheet');
+        }
         // Refresh local pricing strip with new prices
         setTimeout(function(){ try{ updateStripFromLocalCalc(); }catch(e){} }, 100);
       }
@@ -19519,6 +19529,12 @@ function saveInventoryPricingToSheet() {
 // Load price table from localStorage
 window.SauceMaterials._priceTable = (function() {
   try { return JSON.parse(localStorage.getItem('saucePriceTable') || '{}'); }
+  catch(e) { return {}; }
+})();
+
+// SKU → inventory description table (populated from API when available)
+window.SauceMaterials._descTable = (function() {
+  try { return JSON.parse(localStorage.getItem('sauceDescTable') || '{}'); }
   catch(e) { return {}; }
 })();
 
@@ -21849,6 +21865,12 @@ function csvEscape(val) {
   return s;
 }
 
+function getInventoryDesc(sku) {
+  var dt = window.SauceMaterials && window.SauceMaterials._descTable;
+  if (!dt) return '';
+  return dt[(sku || '').toUpperCase()] || dt[sku] || '';
+}
+
 function buildCSV(items) {
   var CATEGORY_ORDER = [
     'Yard',
@@ -21891,7 +21913,12 @@ function buildCSV(items) {
 
     catMap[cat].forEach(function(item) {
       var sku = item.sku || '';
-      var desc = item.description || '';
+      var desc = (function() {
+        var invDesc = getInventoryDesc(sku);
+        var ourDesc = item.description || '';
+        if (invDesc && ourDesc && invDesc !== ourDesc) return invDesc + ' -- ' + ourDesc;
+        return invDesc || ourDesc;
+      })();
       var qty = item.quantity || 0;
       var comment = item.detail || cat;
       var ft = 0, inVal = 0;
