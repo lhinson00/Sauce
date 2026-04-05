@@ -17955,19 +17955,34 @@ async function generateChecklist() {
     });
   }
 
-  var Q      = window._Q || {};
+  // ── READ FROM GLOBAL STATE (works after save/load restore) ─────────────
+  // Use the global Q object directly — window._Q is only set after triggerBuild fires
+  var Q      = window.Q || window._Q || {};
+  // serializeConfig() reads live DOM elements which are correctly restored by restoreConfig()
   var sf     = (typeof serializeConfig === 'function' ? serializeConfig() : {}).salesFields || {};
   var cu     = window.currentUser || {};
   var county = window._cachedCounty || '';
 
-  // Garage doors
+  // Garage doors — from allDoors (the module-level array, same as window._allDoors)
   var gDoors = (window._allDoors||[]).filter(function(d){ return d.type==='garage' && !d.framedOpening; });
 
-  // Walk doors
+  // Walk doors — classified by type string (no .material property on these objects)
   var wDoors = window._walkDoors || [];
-  var woodWDs  = wDoors.filter(function(d){ return d.material==='wood'||d.material==='steel'||!d.material; });
-  var alumWDs  = wDoors.filter(function(d){ return d.material==='aluminum'||d.material==='alum'; });
-  var fiberWDs = wDoors.filter(function(d){ return d.material==='fiberglass'||d.material==='fiber'; });
+  var woodWDs  = wDoors.filter(function(d){
+    var t = (d.type||'').toUpperCase();
+    return t.indexOf('WOOD') !== -1 || t.indexOf('MAHOGANY') !== -1 ||
+           t.indexOf('CEDAR') !== -1 || t.indexOf('PANEL') !== -1;
+  });
+  var fiberWDs = wDoors.filter(function(d){
+    return (d.type||'').toUpperCase().indexOf('FIBERGLASS') !== -1;
+  });
+  // Everything else (PLYCO ALUM FRAME, 9-LITE PLYCO, FRENCH ALUM, etc.) is aluminum-framed
+  var alumWDs  = wDoors.filter(function(d){
+    var t = (d.type||'').toUpperCase();
+    return t.indexOf('FIBERGLASS') === -1 && t.indexOf('WOOD') === -1 &&
+           t.indexOf('MAHOGANY') === -1 && t.indexOf('CEDAR') === -1 &&
+           t.indexOf('PANEL') === -1;
+  });
 
   // Windows
   var wins = window._windows || [];
@@ -17992,9 +18007,10 @@ async function generateChecklist() {
   var is26g = (sf.roofMetal || '').indexOf('26') !== -1;
   var isStandingSeam = !!(sf.standingSeam);
 
-  // Truss
-  var isWood  = Q.truss !== 'Steel';
-  var isSteel = Q.truss === 'Steel';
+  // Truss — read from Q.truss (restored by restoreConfig), fall back to cfgTruss chip state
+  var _trussType = Q.truss || window.cfgTruss || 'Wood';
+  var isWood  = _trussType !== 'Steel';
+  var isSteel = _trussType === 'Steel';
 
   // Overhang
   var oh = Q.oh || 0;
@@ -18016,27 +18032,47 @@ async function generateChecklist() {
   var insulWalls= sf.insulWalls || false;
   var insulFull = insulRoof && insulWalls;
 
-  // Concrete
-  // ── CONCRETE DATA ─────────────────────────────────────────────────────────
+  // ── CONCRETE DATA ────────────────────────────────────────────────────────
+  // Primary source: concrete modal opts (restored from saved quote or configured in modal)
+  // Fallback: simple st_mainConcrete dropdown value
   var co       = window._lastConcreteOpts || {};
   var coMain   = co.main   || null;
   var coSheds  = co.sheds  || [];
   var coApron  = co.apron  || null;
 
-  // Main concrete
-  var isConc   = !!(coMain && coMain.included);
-  var concThick= isConc ? (coMain.thickness || '4') : '';
+  // Main concrete — use modal opts if available, else fall back to dropdown
+  var _dropConc = (document.getElementById('st_mainConcrete')||{}).value || 'None';
+  var isConc, concThick, hasMono, hasRebar, hasWire;
+  if (coMain && coMain.included) {
+    // Full modal data available
+    isConc    = true;
+    concThick = coMain.thickness || '4';
+    hasMono   = coMain.footers === false;  // slab on grade = no footers
+    var concReinf = coMain.reinforcement || {};
+    hasRebar  = !!(concReinf.rebar);
+    hasWire   = !!(concReinf.wire);
+  } else if (_dropConc !== 'None') {
+    // Simple dropdown only (no modal configured)
+    isConc    = true;
+    concThick = _dropConc === '6' ? '6' : '4';
+    hasMono   = false;
+    hasRebar  = false;
+    hasWire   = false;
+  } else {
+    isConc    = false;
+    concThick = '';
+    hasMono   = false;
+    hasRebar  = false;
+    hasWire   = false;
+  }
   var conc4    = concThick === '4';
   var conc6    = concThick === '6';
   var concNone = !isConc;
-  var hasMono  = isConc && coMain.footers === false;   // footers=false means slab on grade (mono)
-  var concReinf= (coMain && coMain.reinforcement) || {};
-  var hasRebar = !!(concReinf.rebar);
-  var hasWire  = !!(concReinf.wire);
 
-  // Shed concrete — index into coSheds array (matches _shedConfigs order)
-  var coShed0  = coSheds[0] || null;
-  var shedHasConc = !!(coShed0 && coShed0.included);
+  // Shed concrete
+  var coShed0     = coSheds[0] || null;
+  var _ss1Drop    = (document.getElementById('st_ssConcrete')||{}).value || 'None';
+  var shedHasConc = !!(coShed0 && coShed0.included) || (_ss1Drop !== 'None');
 
   // Apron
   var apronSqft= coApron && coApron.included ? (coApron.sqft || 0) : 0;
@@ -18184,9 +18220,10 @@ async function generateChecklist() {
     chk(form, 'walkdoor_cb', wDoors.length > 0);
 
     // Wood walk doors (default if no material specified)
-    var woodWDCount = wDoors.filter(function(d){ return !d.material || d.material==='wood'||d.material==='steel'; }).length;
-    var alumWDCount = wDoors.filter(function(d){ return d.material==='aluminum'||d.material==='alum'; }).length;
-    var fiberWDCount= wDoors.filter(function(d){ return d.material==='fiberglass'||d.material==='fiber'; }).length;
+    // Use the pre-filtered arrays from above (classified by door type string, not .material)
+    var woodWDCount  = woodWDs.length;
+    var alumWDCount  = alumWDs.length;
+    var fiberWDCount = fiberWDs.length;
 
     // Walk door color comes from doorColor on each door object
     var woodWDColor  = woodWDs.length  ? (woodWDs[0].doorColor  || woodWDs[0].color  || '') : '';
