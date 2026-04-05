@@ -1519,6 +1519,13 @@ body.customer-mode #custColorChartLink { display: block !important; }
           </div>
           <label class="tog"><input type="checkbox" id="st_craneFee" onchange="try{updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
         </div>
+        <div class="toggle-row" id="rowCableBracing">
+          <div class="toggle-info">
+            <div class="toggle-lbl">Cable Bracing</div>
+            <div class="toggle-sub">Steel truss only — X-brace cable set</div>
+          </div>
+          <label class="tog"><input type="checkbox" id="st_cableBracing" onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+        </div>
         <div style="margin-top:10px;">
           <div class="sub-label">Cupola</div>
           <div class="chip-row" style="gap:6px;">
@@ -2057,7 +2064,13 @@ function updateStripFromLocalCalc() {
       (shedCfgs||[]).forEach(function(sc){ if (sc.w && sc.l) p612Sqft += sc.w * sc.l; });
       pitch612AdderAmt = p612Sqft * 0.25;
     }
-    var labor  = baseLabor + cypressAdderAmt + bbAdderAmt + ssAdderAmt + osbRoofAdderAmt + wetSetAdderAmt + postProtAdderAmt + pitch612AdderAmt;
+    // Cable Bracing labor — $400/set, steel truss only
+    var cableBracingAdderAmt = 0;
+    if (v.forcedType === 'steel' && !!(document.getElementById('st_cableBracing')||{}).checked && window.SauceMaterials && window.SauceMaterials.calcCableBracing) {
+      var cableItems = window.SauceMaterials.calcCableBracing(Q);
+      if (cableItems.length) cableBracingAdderAmt = (cableItems[0].quantity || 0) * 400;
+    }
+    var labor  = baseLabor + cypressAdderAmt + bbAdderAmt + ssAdderAmt + osbRoofAdderAmt + wetSetAdderAmt + postProtAdderAmt + pitch612AdderAmt + cableBracingAdderAmt;
     var conc   = v.forcedType === 'stud' ? concreteAmtStud : concreteAmt;
     var grand  = matWithMft + tax + labor + conc + shipAmt + esdAmt + manualAdder;
 
@@ -3666,6 +3679,7 @@ function serializeConfig() {
       gutters:   !!(document.getElementById('st_gutters')||{}).checked,
       esd:       !!(document.getElementById('st_esd')||{}).checked,
       craneFee:  !!(document.getElementById('st_craneFee')||{}).checked,
+      cableBracing:!!(document.getElementById('st_cableBracing')||{}).checked,
       manualAdder:getCombinedManualAdder(),
       manualNotes:(document.getElementById('st_manualNotes')||{}).value||'',
       materialKit:!!(document.getElementById('st_materialKit')||{}).checked,
@@ -3819,6 +3833,7 @@ function restoreConfig(cfg) {
       _sv('st_wetSetPosts',sf.wetSetPosts);
       _sv('st_rockWainscot',sf.rockWainscot);
       _sv('st_postProtectors',sf.postProtectors);
+      _sv('st_cableBracing',sf.cableBracing);
       _sv('st_gutters',   sf.gutters);
       _sv('st_esd',       sf.esd);
       _sv('st_craneFee',  sf.craneFee);
@@ -10461,6 +10476,8 @@ function applyRouteUI() {
   if (studCard)  studCard.style.display  = isStud  ? '' : 'none';
   if (ssRow)     ssRow.style.display     = isWood  ? '' : 'none';
   if (osbRow)    osbRow.style.display    = isWood  ? '' : 'none';
+  var cableRow = document.getElementById('rowCableBracing');
+  if (cableRow) cableRow.style.display = isSteel ? '' : 'none';
 
   // If switching to steel, uncheck standing seam
   if (isSteel) {
@@ -17542,6 +17559,37 @@ window.SauceMaterials.calcPostProtectors = function(Q, WALLS, allDoors, shedCfgs
 // $2,000 flat — material line adder.
 // Auto-fires for stud frame and Metal B&B when width > 30' OR height > 10'.
 // Manual toggle (st_craneFee) for all other building types.
+
+// ── CABLE BRACING ─────────────────────────────────────────────────────────────
+// Steel truss only. Toggle: st_cableBracing.
+// SKU determined by building width (Q.w): TSGTCB40/50/60/70/80.
+// Quantity = ceil(Q.l / 40).
+
+window.SauceMaterials.calcCableBracing = function(Q) {
+  if (Q.truss !== 'Steel') return [];
+  var on = !!(document.getElementById('st_cableBracing')||{}).checked;
+  if (!on) return [];
+
+  // SKU map: width → SKU
+  var skuMap = { 40:'TSGTCB40', 50:'TSGTCB50', 60:'TSGTCB60', 70:'TSGTCB70', 80:'TSGTCB80' };
+  var widths  = [40, 50, 60, 70, 80];
+
+  // Find nearest matching width (round up to next available)
+  var w = Q.w || 0;
+  var matched = widths.find(function(v){ return v >= w; }) || widths[widths.length - 1];
+  var sku = skuMap[matched];
+  var qty = Math.ceil((Q.l || 0) / 40);
+  if (qty < 1) qty = 1;
+
+  return [{
+    category:    'Hardware',
+    description: 'X-Brace Cable Set',
+    sku:         sku,
+    quantity:    qty,
+    detail:      Q.l + "' length ÷ 40 = " + qty + ' set(s)  |  ' + w + "' width → " + sku
+  }];
+};
+
 window.SauceMaterials.calcCraneFee = function(Q, forcedType) {
   var autoFire = false;
   if (forcedType === 'stud' || forcedType === 'metalBB') {
@@ -18413,6 +18461,7 @@ window.SauceMaterials.calculate = function(forcedType) {
   SM.calcRockWainscot(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcPostProtectors(Q, WALLS, allDoors, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcCraneFee(Q, forcedType||'woodOH').forEach(function(item) { items.push(item); });
+  SM.calcCableBracing(Q).forEach(function(item) { items.push(item); });
   return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "'" };
 };
 
