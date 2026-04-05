@@ -18111,15 +18111,39 @@ async function generateChecklist() {
   if (porchShed) { porchW = String(porchShed.w||''); porchH = String(porchShed.l||''); }
 
   // Helper: set text field
+  // Helper: set text field value
   function txt(form, id, val) {
-    try { if (val !== null && val !== undefined && val !== '') form.getTextField(id).setText(String(val)); } catch(e) {}
+    try {
+      if (val !== null && val !== undefined && val !== '') {
+        form.getTextField(id).setText(String(val));
+      }
+    } catch(e) {}
   }
-  // Helper: check checkbox
+  // Helper: check/uncheck a checkbox by directly writing /V and /AS
+  // pdf-lib's .check()/.uncheck() need an /AP appearance dict to call
+  // updateFieldAppearances() — these simple Acrobat-created checkboxes lack that,
+  // so we write the raw PDF name objects instead.
   function chk(form, id, condition) {
-    try { if (condition) form.getCheckBox(id).check(); } catch(e) {}
+    try {
+      var cb = form.getCheckBox(id);
+      if (condition) {
+        cb.check();
+        // Also force /V and /AS directly in case .check() didn't take
+        var field = cb.acroField;
+        if (field) {
+          var pdfLib = window.PDFLib;
+          field.dict.set(pdfLib.PDFName.of('V'),  pdfLib.PDFName.of('Yes'));
+          field.dict.set(pdfLib.PDFName.of('AS'), pdfLib.PDFName.of('Yes'));
+        }
+      } else {
+        cb.uncheck();
+      }
+    } catch(e) {}
   }
 
   try {
+    // ── DEBUG: log all key values so any mismatch is visible in console ──
+    console.log('[Checklist] Q.truss='+_trussType+' isWood='+isWood+' isConc='+isConc+' concThick='+concThick+' wDoors='+wDoors.length+' woodWDs='+woodWDs.length+' alumWDs='+alumWDs.length+' gDoors='+gDoors.length+' sheds='+sheds.length+' _lastConcreteOpts='+JSON.stringify(window._lastConcreteOpts && window._lastConcreteOpts.main));
     var pdfBytes = Uint8Array.from(atob(window._CHECKLIST_PDF_B64), function(c){ return c.charCodeAt(0); });
     var pdfDoc   = await PDFLib.PDFDocument.load(pdfBytes, { ignoreEncryption: true });
     var form     = pdfDoc.getForm();
@@ -18326,7 +18350,7 @@ async function generateChecklist() {
         // Shed truss type always matches main building truss type
         chk(form, 'shed_wood',  isWood);
         chk(form, 'shed_steel', isSteel);
-        txt(form, 'shed_pitch', String(sc0.gablePitch || sc0.ltPitch || Q.pitch || 4));
+        txt(form, 'shed_pitch', String(sc0.ltPitch || sc0.gablePitch || 1));
 
         // Shed concrete from concrete modal opts
         chk(form, 'shed_conc_yes', shedHasConc);
