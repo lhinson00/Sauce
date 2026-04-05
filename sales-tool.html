@@ -17976,15 +17976,17 @@ async function generateChecklist() {
   var sheds = window._shedConfigs || [];
   var sc0   = sheds[0] || null;
 
-  // Colors
-  var roofColor     = (document.getElementById('qgRoofColor')||{}).value    || selRoof    || '';
-  var wallColor     = (document.getElementById('qgWallColor')||{}).value    || selWall    || '';
-  var trimColor     = (document.getElementById('qgTrimColor')||{}).value    || selTrim    || '';
-  var wainscotColor = (document.getElementById('qgWainscotColor')||{}).value|| selWainscot|| '';
+  // Colors — use global sel* vars (always the color name, kept in sync with selects)
+  var roofColor     = window.selRoof    || (document.getElementById('qgRoofColor')||{}).value    || '';
+  var wallColor     = window.selWall    || (document.getElementById('qgWallColor')||{}).value    || '';
+  var trimColor     = window.selTrim    || (document.getElementById('qgTrimColor')||{}).value    || '';
+  var wainscotColor = window.selWainscot|| (document.getElementById('qgWainscotColor')||{}).value|| '';
   var soffitColor   = '';
   if (sf.soffitColorCode && window._SKU_MAP && window._SKU_MAP.colors) {
     soffitColor = window._SKU_MAP.colors[sf.soffitColorCode] || sf.soffitColorCode;
   }
+  // Fall back to trim color if no soffit color set
+  if (!soffitColor) soffitColor = trimColor;
 
   // Gauge: roofMetal field — '26-Gauge' → 26g, else 29g
   var is26g = (sf.roofMetal || '').indexOf('26') !== -1;
@@ -18015,11 +18017,32 @@ async function generateChecklist() {
   var insulFull = insulRoof && insulWalls;
 
   // Concrete
-  var concMain = sf.mainConcrete || 'None';
-  var isConc    = concMain !== 'None';
-  var conc4     = concMain === '4';
-  var conc6     = concMain === '6';
-  var concNone  = !isConc;
+  // ── CONCRETE DATA ─────────────────────────────────────────────────────────
+  var co       = window._lastConcreteOpts || {};
+  var coMain   = co.main   || null;
+  var coSheds  = co.sheds  || [];
+  var coApron  = co.apron  || null;
+
+  // Main concrete
+  var isConc   = !!(coMain && coMain.included);
+  var concThick= isConc ? (coMain.thickness || '4') : '';
+  var conc4    = concThick === '4';
+  var conc6    = concThick === '6';
+  var concNone = !isConc;
+  var hasMono  = isConc && coMain.footers === false;   // footers=false means slab on grade (mono)
+  var concReinf= (coMain && coMain.reinforcement) || {};
+  var hasRebar = !!(concReinf.rebar);
+  var hasWire  = !!(concReinf.wire);
+
+  // Shed concrete — index into coSheds array (matches _shedConfigs order)
+  var coShed0  = coSheds[0] || null;
+  var shedHasConc = !!(coShed0 && coShed0.included);
+
+  // Apron
+  var apronSqft= coApron && coApron.included ? (coApron.sqft || 0) : 0;
+  var apronW   = '';
+  var apronL   = '';
+  if (apronSqft > 0 && coApron.w) { apronW = String(coApron.w); apronL = String(coApron.l || ''); }
 
   // Wainscot
   var hasWainscot = sf.wainscot === 'Yes' || sf.wainscot === 'Wainscot' || !!sf.rockWainscot;
@@ -18096,7 +18119,7 @@ async function generateChecklist() {
     txt(form, 'porch_h', porchH);
 
     // ── GARAGE DOORS ─────────────────────────────────────────────────
-    var gdColor = gDoors[0] ? (gDoors[0].color || wallColor) : '';
+    var gdColor = gDoors[0] ? (gDoors[0].doorColor || gDoors[0].color || '') : '';
     txt(form, 'gd_color', gdColor);
     chk(form, 'gd_cb', gDoors.length > 0);
 
@@ -18165,36 +18188,58 @@ async function generateChecklist() {
     var alumWDCount = wDoors.filter(function(d){ return d.material==='aluminum'||d.material==='alum'; }).length;
     var fiberWDCount= wDoors.filter(function(d){ return d.material==='fiberglass'||d.material==='fiber'; }).length;
 
+    // Walk door color comes from doorColor on each door object
+    var woodWDColor  = woodWDs.length  ? (woodWDs[0].doorColor  || woodWDs[0].color  || '') : '';
+    var alumWDColor  = alumWDs.length  ? (alumWDs[0].doorColor  || alumWDs[0].color  || '') : '';
+    var fiberWDColor = fiberWDs.length ? (fiberWDs[0].doorColor || fiberWDs[0].color || '') : '';
+
     if (woodWDCount > 0) {
-      chk(form, 'wd_wood_with', true);  // default with window
-      txt(form, 'wd_wood_color', wallColor);
+      var woodHasWin = woodWDs.some(function(d){ return d.window !== false && d.hasWindow !== false; });
+      chk(form, 'wd_wood_with', woodHasWin);
+      chk(form, 'wd_wood_wo',   !woodHasWin);
+      txt(form, 'wd_wood_color', woodWDColor);
       txt(form, 'wd_wood_qty',   String(woodWDCount));
     }
     if (alumWDCount > 0) {
-      chk(form, 'wd_alum_with', true);
-      txt(form, 'wd_alum_color', wallColor);
+      var alumHasWin = alumWDs.some(function(d){ return d.window !== false && d.hasWindow !== false; });
+      chk(form, 'wd_alum_with', alumHasWin);
+      chk(form, 'wd_alum_wo',   !alumHasWin);
+      txt(form, 'wd_alum_color', alumWDColor);
       txt(form, 'wd_alum_qty',   String(alumWDCount));
     }
     if (fiberWDCount > 0) {
-      chk(form, 'wd_fiber_with', true);
-      txt(form, 'wd_fiber_color', wallColor);
+      var fiberHasWin = fiberWDs.some(function(d){ return d.window !== false && d.hasWindow !== false; });
+      chk(form, 'wd_fiber_with', fiberHasWin);
+      chk(form, 'wd_fiber_wo',   !fiberHasWin);
+      txt(form, 'wd_fiber_color', fiberWDColor);
       txt(form, 'wd_fiber_qty',   String(fiberWDCount));
     }
 
     // ── WINDOWS ───────────────────────────────────────────────────────
-    chk(form, 'windows_cb', wins.length > 0);
-    if (wins.length > 0) {
-      var win1 = wins[0];
-      txt(form, 'win_color', wallColor);
-      txt(form, 'win1_w',   String(win1.w||''));
-      txt(form, 'win1_h',   String(win1.h||''));
-      txt(form, 'win1_qty', '1');
+    // Group windows by type, each unique type = one row
+    var winGroups = {};
+    wins.forEach(function(w) {
+      var key = w.type || 'VW33';
+      if (!winGroups[key]) winGroups[key] = { type: key, qty: 0, frameColor: w.frameColor || w.color || '' };
+      winGroups[key].qty++;
+    });
+    var winArr = Object.values(winGroups);
+
+    chk(form, 'windows_cb', winArr.length > 0);
+    if (winArr.length > 0) {
+      var wg1   = winArr[0];
+      var wdim1 = (typeof winDims === 'function') ? winDims(wg1.type) : {w:'', h:''};
+      txt(form, 'win_color', wg1.frameColor || '');
+      txt(form, 'win1_w',   wdim1.w ? String(wdim1.w) : '');
+      txt(form, 'win1_h',   wdim1.h ? String(wdim1.h) : '');
+      txt(form, 'win1_qty', String(wg1.qty));
     }
-    if (wins.length > 1) {
-      var win2 = wins[1];
-      txt(form, 'win2_w',   String(win2.w||''));
-      txt(form, 'win2_h',   String(win2.h||''));
-      txt(form, 'win2_qty', String(wins.length - 1));
+    if (winArr.length > 1) {
+      var wg2   = winArr[1];
+      var wdim2 = (typeof winDims === 'function') ? winDims(wg2.type) : {w:'', h:''};
+      txt(form, 'win2_w',   wdim2.w ? String(wdim2.w) : '');
+      txt(form, 'win2_h',   wdim2.h ? String(wdim2.h) : '');
+      txt(form, 'win2_qty', String(wg2.qty));
     }
 
     // ── CUPOLA ────────────────────────────────────────────────────────
@@ -18220,11 +18265,15 @@ async function generateChecklist() {
     chk(form, 'conc_none', concNone);
     chk(form, 'conc_4',    conc4);
     chk(form, 'conc_6',    conc6);
+    chk(form, 'conc_mono',  hasMono);
+    chk(form, 'conc_rebar', hasRebar);
+    chk(form, 'conc_wire',  hasWire);
     if (isConc) {
       chk(form, 'conc_main', true);
       if (sheds.length === 1) chk(form, 'conc_w1shed', true);
       if (sheds.length >= 2)  chk(form, 'conc_w2sheds', true);
     }
+    if (apronW) { txt(form, 'apron_w', apronW); txt(form, 'apron_l', apronL); }
 
     // ── SHEDS ─────────────────────────────────────────────────────────
     if (sheds.length > 0) {
@@ -18237,17 +18286,16 @@ async function generateChecklist() {
         txt(form, 'shed_l', String(sc0.l||''));
         txt(form, 'shed_h', String(sc0.h||''));
 
-        var shedIsWood  = sc0.truss !== 'Steel';
-        var shedIsSteel = sc0.truss === 'Steel';
-        chk(form, 'shed_wood',  shedIsWood);
-        chk(form, 'shed_steel', shedIsSteel);
-        txt(form, 'shed_pitch', String(sc0.pitch||Q.pitch||4));
+        // Shed truss type always matches main building truss type
+        chk(form, 'shed_wood',  isWood);
+        chk(form, 'shed_steel', isSteel);
+        txt(form, 'shed_pitch', String(sc0.gablePitch || sc0.ltPitch || Q.pitch || 4));
 
-        var shedConc = !!(sc0.concrete);
-        chk(form, 'shed_conc_yes', shedConc);
-        chk(form, 'shed_conc_no',  !shedConc);
+        // Shed concrete from concrete modal opts
+        chk(form, 'shed_conc_yes', shedHasConc);
+        chk(form, 'shed_conc_no',  !shedHasConc);
 
-        var shedEncl = !!(sc0.enclosed);
+        var shedEncl = sc0.encl === 'enclosed' || sc0.encl === 'partial';
         chk(form, 'shed_encl_yes', shedEncl);
         chk(form, 'shed_encl_no',  !shedEncl);
 
@@ -18263,7 +18311,7 @@ async function generateChecklist() {
     txt(form, 'clr_roof',     roofColor);
     txt(form, 'clr_walls',    wallColor);
     txt(form, 'clr_trim',     trimColor);
-    txt(form, 'clr_soffit',   soffitColor || trimColor);
+    txt(form, 'clr_soffit',   soffitColor);
     if (hasWainscot) txt(form, 'clr_wainscot', wainscotColor);
 
     // ── WEATHERVANE ───────────────────────────────────────────────────
@@ -18273,34 +18321,17 @@ async function generateChecklist() {
     chk(form, 'wv_cb', wvOn);
     if (wvOn) { txt(form, 'wv_size', wvSize); txt(form, 'wv_type', wvType); }
 
-    // ── WALK DOOR W/O WINDOW OPTIONS ──────────────────────────────────
-    // Refine: check if any walk door has no window
-    var woodHasNoWin  = woodWDs.some ? woodWDs.some(function(d){ return !d.window && !d.hasWindow; }) : false;
-    var alumHasNoWin  = alumWDs.some ? alumWDs.some(function(d){ return !d.window && !d.hasWindow; }) : false;
-    var fiberHasNoWin = fiberWDs.some ? fiberWDs.some(function(d){ return !d.window && !d.hasWindow; }) : false;
-    if (woodWDCount > 0 && woodHasNoWin)  { chk(form, 'wd_wood_wo', true); }
-    if (alumWDCount > 0 && alumHasNoWin)  { chk(form, 'wd_alum_wo', true); }
-    if (fiberWDCount > 0 && fiberHasNoWin){ chk(form, 'wd_fiber_wo', true); }
-
     // ── WINDOW GRIDS ──────────────────────────────────────────────────
     var hasGrids = wins.some ? wins.some(function(w){ return w.grids || w.grid; }) : false;
     chk(form, 'win_grids_yes', hasGrids);
     chk(form, 'win_grids_no',  wins.length > 0 && !hasGrids);
 
-    // ── CONCRETE DETAILS ──────────────────────────────────────────────
-    var hasMono  = concMain.toLowerCase && concMain.toLowerCase().indexOf('mono') !== -1;
-    var hasRebar = concMain.toLowerCase && concMain.toLowerCase().indexOf('rebar') !== -1;
-    var hasWire  = concMain.toLowerCase && concMain.toLowerCase().indexOf('wire') !== -1;
-    chk(form, 'conc_mono',  hasMono);
-    chk(form, 'conc_rebar', hasRebar);
-    chk(form, 'conc_wire',  hasWire);
-
     // ── ADMIN / NOTES ─────────────────────────────────────────────────
     var manNotes = sf.manualNotes || '';
     if (manNotes) txt(form, 'notes1', manNotes);
 
-    // ── FLATTEN & DOWNLOAD ────────────────────────────────────────────
-    form.flatten();
+    // ── SAVE & DOWNLOAD (keep form fillable — salesman completes remaining fields) ──
+    // Do NOT call form.flatten() — this preserves all fields as interactive for the salesman
     var filledBytes = await pdfDoc.save();
     var blob = new Blob([filledBytes], {type: 'application/pdf'});
     var url  = URL.createObjectURL(blob);
