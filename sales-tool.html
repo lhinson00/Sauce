@@ -2890,7 +2890,7 @@ function spaceWindowsEvenly(wallId) {
 
 // ═══════════════════════════════════════════════════════
 function addGarageDoor(){
-  var d={id:nextDoorId++,sizeKey:'10x10',wall:'back',w:10,h:10,offset:0,type:'garage',icon:'🚪',insulated:false,framedOpening:false};
+  var d={id:nextDoorId++,sizeKey:'10x10',wall:'back',w:10,h:10,offset:0,type:'garage',icon:'🚪',insulated:false,fullView:false,framedOpening:false};
   var wall=WALLS.find(function(w){return w.id==='back';})||{len:Q.w};
   d.offset=Math.round((wall.len-d.w)/2*12)/12;
   allDoors.push(d);
@@ -2931,7 +2931,8 @@ function setGarageProp(id,prop,val){
     var wall=WALLS.find(function(w){return w.id===val;})||{len:Q.l};
     d.offset=Math.round((wall.len-d.w)/2*12)/12;
   }
-  else if(prop==='insulated'){ d.insulated = val; }
+  else if(prop==='insulated'){ d.insulated = val; d.fullView = false; }
+  else if(prop==='fullView'){ d.fullView = val; d.insulated = false; }
   else if(prop==='framedOpening'){ d.framedOpening = val; }
   else { d[prop]=val; }
   renderGarageDoors(); scheduleBuild();
@@ -2976,8 +2977,9 @@ function renderGarageDoors(){
       +'</div>'
       +'<div style="display:flex;gap:6px;align-items:center;padding:4px 0 2px;">'
       +'<span style="font-size:10px;color:var(--muted);font-weight:600;">Insulation:</span>'
-      +'<button onclick="setGarageProp('+d.id+',\'insulated\',false)" style="padding:3px 10px;border-radius:5px;border:'+(d.insulated?'1px solid #5e5e5e':'1px solid #FF8200')+';background:'+(d.insulated?'transparent':'rgba(255,130,0,.15)')+';color:'+(d.insulated?'#888888':'#FF8200')+';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Standard</button>'
+      +'<button onclick="setGarageProp('+d.id+',\'insulated\',false)" style="padding:3px 10px;border-radius:5px;border:'+(!d.insulated&&!d.fullView?'1px solid #FF8200':'1px solid #5e5e5e')+';background:'+(!d.insulated&&!d.fullView?'rgba(255,130,0,.15)':'transparent')+';color:'+(!d.insulated&&!d.fullView?'#FF8200':'#888888')+';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Standard</button>'
       +'<button onclick="setGarageProp('+d.id+',\'insulated\',true)" style="padding:3px 10px;border-radius:5px;border:'+(d.insulated?'1px solid #FF8200':'1px solid #5e5e5e')+';background:'+(d.insulated?'rgba(255,130,0,.15)':'transparent')+';color:'+(d.insulated?'#FF8200':'#888888')+';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Insulated</button>'
+      +(['10x10','10x12','12x12'].indexOf(d.sizeKey)>-1?'<button onclick="setGarageProp('+d.id+',\'fullView\',true)" style="padding:3px 10px;border-radius:5px;border:'+(d.fullView?'1px solid #FF8200':'1px solid #5e5e5e')+';background:'+(d.fullView?'rgba(255,130,0,.15)':'transparent')+';color:'+(d.fullView?'#FF8200':'#888888')+';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Full View Glass</button>':'')
       +'</div>'
       +'<div style="display:flex;gap:6px;align-items:center;padding:2px 0 4px;">'
       +'<span style="font-size:10px;color:var(--muted);font-weight:600;">Type:</span>'
@@ -8724,7 +8726,7 @@ async function generateQuotePDF() {
 
   // Greeting
   doc.setFont('helvetica','normal'); doc.setFontSize(11); setTxt(col.text);
-  doc.text('Hi ' + firstName + ',', MG, y); y += 16;
+  doc.text('Hi ' + custName + ',', MG, y); y += 16;
   doc.setFontSize(10);
   doc.text('Thanks for giving us the opportunity to quote your building. Here\u2019s your', MG, y);
   y += 13;
@@ -14192,6 +14194,29 @@ window.SauceMaterials.calcGarageDoors = function(allDoors) {
   var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
   if (!garageDoors.length) return [];
 
+  // Full Glass pricing — fixed cost, not from inventory
+  var fullGlassPrices = {
+    '10x10': 9000,
+    '10x12': 10750,
+    '12x12': 12250
+  };
+
+  // Full Glass doors — separate pass
+  var fullGlassItems = [];
+  garageDoors.filter(function(d){ return d.fullView && !d.framedOpening; }).forEach(function(d) {
+    var sizeKey = d.w + 'x' + d.h;
+    var price = fullGlassPrices[sizeKey];
+    var sku = 'GDC' + d.w + d.h + 'FVG';
+    fullGlassItems.push({
+      category:    'Doors',
+      description: sizeKey + ' Insulated Full View Tempered Glass Garage Door',
+      sku:         sku,
+      quantity:    1,
+      fixedCost:   price || 0,
+      detail:      sizeKey + ' Full Glass View'
+    });
+  });
+
   // SKU map: key = "WxH:insulated" → sku
   var skuMap = {
     '8x8:0':'GD88W',     '8x8:1':'GD88INW',
@@ -14215,19 +14240,21 @@ window.SauceMaterials.calcGarageDoors = function(allDoors) {
     '18x10:0':'GD1810W', '18x10:1':'GD1810INSW',
     '18x12:0':'GD1812W', '18x12:1':'GD1812INSW',
     '18x14:0':'GD1814W', '18x14:1':'GD1814INSW',
-    '20x14:0':'GD2014W', '20x14:1':'GD2014INSW'
+    '20x14:0':'GD2014W', '20x14:1':'GD2014INSW',
+    '10x10:FV':'GDC1010FVG', '10x12:FV':'GDC1012FVG', '12x12:FV':'GDC1212FVG'
   };
 
   var groups = {};
   garageDoors.forEach(function(d) {
     if (d.framedOpening) return; // framed opening — no door SKU
-    var key = d.w + 'x' + d.h + ':' + (d.insulated ? '1' : '0');
+    if (d.fullView) return; // handled separately above
+    var key = d.fullView ? (d.w + 'x' + d.h + ':FV') : (d.w + 'x' + d.h + ':' + (d.insulated ? '1' : '0'));
     var sku = skuMap[key];
-    if (!sku) sku = 'GD' + d.w + d.h + (d.insulated ? 'INW' : 'W'); // fallback
+    if (!sku) sku = d.fullView ? ('GDC' + d.w + d.h + 'FVG') : ('GD' + d.w + d.h + (d.insulated ? 'INW' : 'W')); // fallback
     groups[sku] = (groups[sku] || 0) + 1;
   });
 
-  return Object.keys(groups).sort().map(function(sku) {
+  var standardItems = Object.keys(groups).sort().map(function(sku) {
     return {
       category:    'Doors',
       description: 'Garage Door',
@@ -14236,6 +14263,7 @@ window.SauceMaterials.calcGarageDoors = function(allDoors) {
       detail:      'overhead door'
     };
   });
+  return fullGlassItems.concat(standardItems);
 };
 
 // ── GARAGE DOOR INSTALL FEE ───────────────────────────────────────────────────
@@ -14252,7 +14280,7 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
 
   var rate, sku, detail;
   // SKU always GDIP<100MILES — Paradigm system default; rate still varies by mileage
-  sku = 'GDIP<100MILES';
+  sku = 'GDC';
   if (miles <= 0 || miles <= 100) {
     rate   = 4.25;
     detail = (miles > 0 ? miles + ' mi  |  ' : '') + '$4.25/sqft';
@@ -21345,8 +21373,10 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
   var framedGDs = allDoors.filter(function(d){ return d.type === 'garage' && d.framedOpening; });
   garageDoors.forEach(function(d) {
     var isLarge = d.w > 12 && d.h > 12;
-    var rate = isLarge ? 200 : 125;
-    lines.push({ label: 'Garage Door ' + d.w + 'x' + d.h + (isLarge ? ' (over 12x12)' : '') + ' @ $' + rate, amount: rate });
+    var fvRates = {'10x10':9000,'10x12':10750,'12x12':12250};
+    var rate = d.fullView ? (fvRates[d.sizeKey]||9000) : (isLarge ? 200 : 125);
+    var rateLabel = d.fullView ? 'Full View Glass' : (isLarge ? '(over 12x12)' : '');
+    lines.push({ label: 'Garage Door ' + d.w + 'x' + d.h + (rateLabel?' '+rateLabel:'') + ' @ $' + rate, amount: rate });
   });
   framedGDs.forEach(function(d) {
     lines.push({ label: 'Garage Door Framed Opening ' + d.w + 'x' + d.h + ' @ $125', amount: 125 });
