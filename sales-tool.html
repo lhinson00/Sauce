@@ -21819,25 +21819,25 @@ function onColorCodeChange() {
 // Category → CSV section header label mapping
 var CSV_SECTION_MAP = {
   'Yard':                  'YARD',
-  'Labor':                 'LABOR',
-  'Concrete':              'CONCRETE',
-  'Roof Metal':            'ROOF METAL',
-  'Side Shed Roof Metal':  'SIDE SHED ROOF METAL',
-  'Sidewall Metal':        'SIDEWALL METAL',
-  'Gable Metal':           'GABLE METAL',
-  'Side Shed Gable Metal': 'SIDE SHED GABLE METAL',
-  'Wainscot Metal':        'WAINSCOT METAL',
-  'Soffit Metal':          'SOFFIT METAL',
-  'Skirt Metal':           'SKIRT METAL',
-  'Metal':                 'METAL',
-  'Trim':                  'TRIM',
-  'Extras':                'EXTRAS',
-  'Insulation':            'INSULATION',
+  'Roof Metal':            'ROOF',
+  'Side Shed Roof Metal':  'ROOF-SIDE SHED',
+  'Sidewall Metal':        'SIDEWALL',
+  'Gable Metal':           'GABLE',
+  'Side Shed Gable Metal': 'GABLE-SIDE SHED',
+  'Wainscot Metal':        'WAINSCOT',
+  'Soffit Metal':          'SOFFIT',
+  'Skirt Metal':           'SKIRTS',
+  'Metal':                 'SIDEWALL',
+  'Trim':                  'Trim',
+  'Extras':                'Trim',
+  'Insulation':            'HARDWARE',
   'Doors':                 'DOORS',
-  'Barn Doors':            'BARN DOORS',
-  'Walk Doors':            'WALK DOORS',
+  'Barn Doors':            'DOORS',
+  'Walk Doors':            'DOORS',
   'Windows':               'WINDOWS',
-  'Hardware':              'HARDWARE'
+  'Hardware':              'HARDWARE',
+  'Labor':                 'HARDWARE',
+  'Concrete':              'HARDWARE'
 };
 
 // Panel categories whose SKU is a base prefix (length comes from metalLength)
@@ -21967,11 +21967,10 @@ window.exportMaterialCSV = function(buildType, labelStr) {
     // Append labor + concrete COM rows to items clone
     var exportItems = result.items.slice();
 
-    // ── LABOR ────────────────────────────────────────────────────────────
+    // ── LABOR — single COM row with total ───────────────────────────────
     try {
       var SL = window.SauceLabor;
       if (SL && SL.calculate) {
-        // Map buildType to the override config SauceLabor.calculate expects
         var laborOverride = null;
         if (buildType === 'woodOH')   laborOverride = { truss: 'Wood',  oh: window._Q.oh > 0 ? window._Q.oh : 18, frameType: 'post' };
         if (buildType === 'woodNoOH') laborOverride = { truss: 'Wood',  oh: 0,  frameType: 'post' };
@@ -21979,31 +21978,11 @@ window.exportMaterialCSV = function(buildType, labelStr) {
         if (buildType === 'stud')     laborOverride = { truss: 'Wood',  oh: window._Q.oh > 0 ? window._Q.oh : 18, frameType: 'stud' };
         if (buildType === 'cypress')  laborOverride = { truss: 'Wood',  oh: window._Q.oh > 0 ? window._Q.oh : 18, frameType: 'post' };
         if (buildType === 'metalBB')  laborOverride = { truss: 'Wood',  oh: window._Q.oh > 0 ? window._Q.oh : 18, frameType: 'stud' };
-
         var laborResult = laborOverride ? SL.calculate(laborOverride) : SL.calculate();
-        if (laborResult && laborResult.lines && laborResult.lines.length) {
-          exportItems.push({ category: 'Labor', description: 'LABOR', sku: 'COM', quantity: 1, detail: '' });
-          laborResult.lines.forEach(function(line) {
-            exportItems.push({
-              category: 'Labor',
-              description: line.label || '',
-              sku: 'COM',
-              quantity: 1,
-              detail: '$' + (line.amount || 0).toFixed(2)
-            });
-          });
-          if (laborResult.minApplied) {
-            exportItems.push({
-              category: 'Labor',
-              description: 'Minimum Applied  |  calculated $' + laborResult.subtotal.toFixed(2),
-              sku: 'COM',
-              quantity: 1,
-              detail: '$' + laborResult.minimum.toFixed(2)
-            });
-          }
+        if (laborResult && laborResult.finalLabor) {
           exportItems.push({
             category: 'Labor',
-            description: 'Labor Total',
+            description: 'Labor To Install',
             sku: 'COM',
             quantity: 1,
             detail: '$' + laborResult.finalLabor.toFixed(2)
@@ -22012,45 +21991,35 @@ window.exportMaterialCSV = function(buildType, labelStr) {
       }
     } catch(laborErr) { console.warn('[CSV Export] Labor error:', laborErr); }
 
-    // ── CONCRETE ─────────────────────────────────────────────────────────
+    // ── CONCRETE — single COM row with total ─────────────────────────────
     try {
       var SC = window.SauceConcrete;
       var co = window._lastConcreteOpts;
       var county = window._cachedCounty || '';
       var Q = window._Q || {};
       var shedCfgs = window._shedConfigs || [];
-
       if (SC && co) {
-        var concSections = [];
+        var concTotal = 0;
         if (co.main && co.main.included) {
-          concSections.push({ label: 'Main Building', sqft: Q.w * Q.l, opts: co.main });
+          concTotal += SC.calculate(county, Q.w * Q.l, co.main).finalCost;
         }
         (shedCfgs || []).forEach(function(sc, i) {
           var sOpts = co.sheds && co.sheds[i];
           if (sOpts && sOpts.included && sc.w && sc.l) {
-            concSections.push({ label: 'Side Shed ' + (i+1), sqft: sc.w * sc.l, opts: sOpts });
+            concTotal += SC.calculate(county, sc.w * sc.l, sOpts).finalCost;
           }
         });
         if (co.apron && co.apron.included && co.apron.sqft) {
-          concSections.push({ label: 'Apron', sqft: co.apron.sqft, opts: co.apron });
+          concTotal += SC.calculate(county, co.apron.sqft, co.apron).finalCost;
         }
-
-        if (concSections.length) {
-          exportItems.push({ category: 'Concrete', description: 'CONCRETE', sku: 'COM', quantity: 1, detail: '' });
-          concSections.forEach(function(sec) {
-            var cr = SC.calculate(county, sec.sqft, sec.opts);
-            if (cr && cr.lines && cr.lines.length) {
-              exportItems.push({ category: 'Concrete', description: sec.label, sku: 'COM', quantity: 1, detail: '' });
-              cr.lines.forEach(function(line) {
-                exportItems.push({
-                  category: 'Concrete',
-                  description: line.label || '',
-                  sku: 'COM',
-                  quantity: 1,
-                  detail: '$' + (line.amount || 0).toFixed(2)
-                });
-              });
-            }
+        if (concTotal > 0) {
+          var concFinal = Math.max(concTotal, 3500);
+          exportItems.push({
+            category: 'Concrete',
+            description: 'Concrete',
+            sku: 'COM',
+            quantity: 1,
+            detail: '$' + concFinal.toFixed(2)
           });
         }
       }
