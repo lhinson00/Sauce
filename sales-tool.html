@@ -4030,9 +4030,13 @@ function restoreConfig(cfg) {
       var exCon=document.getElementById('exConcrete'); if(exCon) exCon.checked=conOn;
       var conOpts=document.getElementById('concreteOpts'); if(conOpts) conOpts.style.display=conOn?'':'none';
       if(cfg.extras.concreteAreas) { concreteAreas=cfg.extras.concreteAreas; }
-      // Always reset concrete opts on load — prevents stale concrete from previous quote bleeding in
-      window._lastConcreteOpts = cfg.extras.concreteOpts || null;
-      if (!conOn) window._lastConcreteOpts = null; // concrete not enabled — wipe it
+      // Restore concrete opts — always set from saved data, clear only if concrete was off
+      if (conOn && cfg.extras.concreteOpts) {
+        window._lastConcreteOpts = cfg.extras.concreteOpts;
+      } else if (!conOn) {
+        window._lastConcreteOpts = null; // was off — clear any stale data from previous quote
+      }
+      // If conOn but no concreteOpts saved (old format) — leave _lastConcreteOpts as-is
       if(cfg.extras.concreteZip) { _cachedZip = cfg.extras.concreteZip; }
       if(cfg.extras.concreteCounty) { _cachedCounty = cfg.extras.concreteCounty; }
       if(cfg.extras.materialAdders) {
@@ -10142,6 +10146,30 @@ async function sendSalesQuoteEmail() {
     }
     if (!selectedPrices.length) { alert('Please select at least one price to include.'); btn.disabled=false; btn.textContent='Send Email'; return; }
 
+    // Build filtered 3D link — only include totals for checked types
+    var _filteredCfg = serializeConfig();
+    var _cu = window.currentUser || {};
+    var _filteredTotals = {};
+    selectedPrices.forEach(function(sp) {
+      if (sp.type === 'WoodOH')        _filteredTotals.totalOH      = fmtPriceFull(sp.results.total || 0);
+      if (sp.type === 'WoodNoOH')      _filteredTotals.totalNoOH    = fmtPriceFull(sp.results.total || 0);
+      if (sp.type === 'EnclosedSteel') _filteredTotals.totalSteel   = fmtPriceFull(sp.results.total || 0);
+      if (sp.type === 'StudFramed')    _filteredTotals.totalStud    = fmtPriceFull(sp.results.total || 0);
+      if (sp.type === 'Cypress')       _filteredTotals.totalCypress = fmtPriceFull(sp.results.total || 0);
+      if (sp.type === 'MetalBB')       _filteredTotals.totalBB      = fmtPriceFull(sp.results.total || 0);
+    });
+    // First selected type's total as the primary
+    _filteredTotals.total = selectedPrices.length ? fmtPriceFull(selectedPrices[0].results.total || 0) : '';
+    _filteredCfg._viewData = {
+      pricingResults: _filteredTotals,
+      salesmanName:    _cu.fullName || _cu.username || '',
+      salesmanPhone:   _cu.phone   || '',
+      salesmanEmail:   _cu.email   || '',
+      salesmanCompany: _cu.company || ''
+    };
+    var _filteredEnc = await safeEncodeCompressed(_filteredCfg);
+    var _filteredLink = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + _filteredEnc;
+
     var resp = await fetchWithTimeout(API_URL, {
       method: 'POST',
       headers: {'Content-Type': 'text/plain'},
@@ -10152,7 +10180,7 @@ async function sendSalesQuoteEmail() {
         salesmanEmail: salesmanEmail,
         customerEmail: customerEmail,
         personalNote:  note,
-        configLink:    (window._savedSnapshot || {}).configLink || '',
+        configLink:    _filteredLink,
         username:      (window.currentUser || {}).username || '',
         selectedPrices: selectedPrices,
         attachNewCustomer: !!(document.getElementById('eqAttachNewCustomer') && document.getElementById('eqAttachNewCustomer').checked)
@@ -10232,11 +10260,13 @@ function populateViewCard(snapshot) {
   if (pricesEl) {
     var priceBlocks = [];
     var entries = [
-      { lbl: 'Stud Frame',  val: p.totalStud  || '' },
-      { lbl: 'W/ Soffit',   val: p.totalOH    || (p.total && !p.totalNoOH && !p.totalStud ? p.total : '') },
-      { lbl: 'No Soffit',   val: p.totalNoOH  || '' },
-      { lbl: 'Steel Truss', val: p.totalSteel || '' },
-      { lbl: 'Total',       val: (!p.totalOH && !p.totalNoOH && !p.totalSteel && !p.totalStud) ? (p.total || p.totalCombined || '') : '' }
+      { lbl: 'Stud Frame',  val: p.totalStud     || '' },
+      { lbl: 'W/ Soffit',   val: p.totalOH       || (p.total && !p.totalNoOH && !p.totalStud ? p.total : '') },
+      { lbl: 'No Soffit',   val: p.totalNoOH     || '' },
+      { lbl: 'Steel Truss', val: p.totalSteel    || '' },
+      { lbl: 'Cypress',     val: p.totalCypress  || '' },
+      { lbl: 'Metal B&B',   val: p.totalBB       || '' },
+      { lbl: 'Total',       val: (!p.totalOH && !p.totalNoOH && !p.totalSteel && !p.totalStud && !p.totalCypress && !p.totalBB) ? (p.total || p.totalCombined || '') : '' }
     ];
     entries.forEach(function(e) {
       if (!e.val || e.val === '$0' || e.val === '$0.00') return;
@@ -14293,8 +14323,19 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
   var miles     = window._cachedMileage || 0;
 
   var rate, sku, detail;
-  // SKU always GDIP<100MILES — Paradigm system default; rate still varies by mileage
-  sku = 'GDC';
+  var hasFullView = garageDoors.some(function(d){ return d.fullView; });
+  if (hasFullView) {
+    // Full view glass doors — use GDC
+    sku = 'GDC';
+  } else if (miles <= 100) {
+    sku = 'GDIP<100MILES';
+  } else if (miles <= 150) {
+    sku = 'GDIP<150MILES';
+  } else if (miles <= 205) {
+    sku = 'GDIP<205MILES';
+  } else {
+    sku = 'GDIP>205MILES';
+  }
   if (miles <= 0 || miles <= 100) {
     rate   = 4.25;
     detail = (miles > 0 ? miles + ' mi  |  ' : '') + '$4.25/sqft';
