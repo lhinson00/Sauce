@@ -1807,6 +1807,8 @@ body.customer-mode #custColorChartLink { display: block !important; }
         <div class="vp-spinner"></div>
         <div class="vp-loading-text">Building your model…</div>
       </div>
+      <button id="vpImportBtn" onclick="document.getElementById('pdfImportInput').click()" style="position:absolute;top:46px;left:14px;z-index:20;padding:6px 12px;background:rgba(75,75,75,.88);border:1px solid rgba(255,130,0,.35);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;backdrop-filter:blur(8px);letter-spacing:.4px;">📄 Import Quote</button>
+      <input type="file" id="pdfImportInput" accept=".pdf" style="display:none;" onchange="importCompetitorPDF(this)">
       <button id="vpWallToggle" onclick="vpToggleWalls()" style="position:absolute;top:10px;right:296px;z-index:20;padding:6px 12px;background:rgba(75,75,75,.88);border:1px solid rgba(255,130,0,.35);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;backdrop-filter:blur(8px);letter-spacing:.4px;">🏗️ Hide Walls</button>
       <button id="vpPostToggle" onclick="vpTogglePosts()" style="position:absolute;top:10px;right:150px;z-index:20;padding:6px 12px;background:rgba(75,75,75,.88);border:1px solid rgba(255,255,255,.15);border-radius:8px;color:#888888;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;backdrop-filter:blur(8px);letter-spacing:.4px;">🪵 Show Posts</button>
       <button id="vpDimToggle" onclick="vpToggleDims()" style="position:absolute;top:10px;right:14px;z-index:20;padding:6px 12px;background:rgba(75,75,75,.88);border:1px solid rgba(255,130,0,.35);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;backdrop-filter:blur(8px);letter-spacing:.4px;">📐 Hide Dims</button>
@@ -3360,6 +3362,303 @@ function renderWindows(){
     list.appendChild(div);
     setTimeout(function(){setupStripDrag('strip_win_'+d.id,'win',d.id,wall.len);},0);
   });
+}
+
+
+// ═══════════════════════════════════════════════════════
+// COMPETITOR PDF IMPORT
+// ═══════════════════════════════════════════════════════
+async function importCompetitorPDF(input) {
+  var file = input.files[0];
+  if (!file) return;
+  input.value = '';
+
+  // Show loading state on button
+  var btn = document.getElementById('vpImportBtn');
+  var origText = btn.textContent;
+  btn.textContent = '⏳ Reading...';
+  btn.disabled = true;
+
+  try {
+    // Read PDF as base64 for Claude API
+    var b64 = await new Promise(function(res, rej) {
+      var reader = new FileReader();
+      reader.onload = function(e) { res(e.target.result.split(',')[1]); };
+      reader.onerror = rej;
+      reader.readAsDataURL(file);
+    });
+
+    // Extract text via Claude API with vision
+    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'base64', media_type: 'application/pdf', data: b64 }
+            },
+            {
+              type: 'text',
+              text: 'Extract building quote info from this PDF and return ONLY valid JSON with these exact keys (omit any you cannot find):\n' +
+                '{"custName":"","custPhone":"","custEmail":"","custAddress":"","custCity":"","' +
+                'width":0,"length":0,"height":0,"pitch":0,"truss":"Wood","' +
+                'eavePS":0,"gablePS":0,"soffit":false,"wainscot":false,"' +
+                'insulation":"","insulRoof":false,"insulWalls":false,"' +
+                'concrete":"None","gauge":29,"' +
+                'roofColor":"","wallColor":"","trimColor":"","wainscotColor":"","' +
+                'garageDoors":[{"w":0,"h":0,"qty":1,"wall":"front","insulated":false}],"' +
+                'sheds":[{"wall":"left","w":0,"l":0}]}\n\n' +
+                'Rules:\n' +
+                '- pitch: only 4,6,8,10 are valid\n' +
+                '- eavePS/gablePS: only 8,10,12,16,20,24 are valid\n' +
+                '- gauge: only 26 or 29\n' +
+                '- insulation values: "None","Double Bubble Foil","Double Bubble White","Therma Guard","Astro Armour","2 Vinyl Back","3 Vinyl Back","Solar Eclipse"\n' +
+                '- insulRoof=true if roof only or full building, insulWalls=true only if full building\n' +
+                '- concrete: "None","4","6"\n' +
+                '- shed wall mapping: A=front B=left C=back D=right\n' +
+                '- sheds default to open sides, roof only — do not include enclosure fields\n' +
+                '- garage door wall is always "front" unless clearly stated otherwise\n' +
+                '- Return ONLY the JSON object, no explanation'
+            }
+          ]
+        }]
+      })
+    });
+
+    var data = await resp.json();
+    var raw = (data.content||[]).map(function(b){ return b.text||''; }).join('');
+    // Strip any markdown fences
+    raw = raw.replace(/```json|```/g,'').trim();
+    var parsed = JSON.parse(raw);
+
+    // Apply to tool
+    var filled = [];
+    var skipped = [];
+
+    function tryFill(label, fn) {
+      try { var r = fn(); if (r !== false) filled.push(label); }
+      catch(e) { skipped.push(label); }
+    }
+
+    // Customer info
+    if (parsed.custName)    tryFill('Customer Name',  function(){ var e=document.getElementById('st_name');    if(e){e.value=parsed.custName;}    return true; });
+    if (parsed.custPhone)   tryFill('Phone',           function(){ var e=document.getElementById('st_phone');   if(e){e.value=parsed.custPhone;}   return true; });
+    if (parsed.custEmail)   tryFill('Email',           function(){ var e=document.getElementById('st_email');   if(e){e.value=parsed.custEmail;}   return true; });
+    if (parsed.custAddress) tryFill('Address',         function(){ var e=document.getElementById('st_address'); if(e){e.value=parsed.custAddress+' '+( parsed.custCity||'');}  return true; });
+
+    // Dimensions
+    if (parsed.width  && parsed.width  > 0) tryFill('Width',  function(){ setQ('w', parseInt(parsed.width));  return true; });
+    if (parsed.length && parsed.length > 0) tryFill('Length', function(){ setQ('l', parseInt(parsed.length)); return true; });
+    if (parsed.height && parsed.height > 0) tryFill('Height', function(){ setQ('h', parseInt(parsed.height)); return true; });
+
+    // Pitch — validate
+    var validPitches = [4,6,8,10];
+    if (parsed.pitch && validPitches.indexOf(parseInt(parsed.pitch)) !== -1) {
+      tryFill('Roof Pitch', function(){ setQ('pitch', parseInt(parsed.pitch)); buildPitchChips(); return true; });
+    } else if (parsed.pitch) { skipped.push('Roof Pitch ('+parsed.pitch+'/12 not available)'); }
+
+    // Truss
+    if (parsed.truss) {
+      var t = parsed.truss.toLowerCase().indexOf('steel') !== -1 ? 'Steel' : 'Wood';
+      tryFill('Truss Type', function(){ setQ('truss', t); buildTrussChips(); buildPitchChips(); return true; });
+    }
+
+    // Post spacing — validate
+    var validPS = [8,10,12,16,20,24];
+    if (parsed.eavePS && validPS.indexOf(parseInt(parsed.eavePS)) !== -1) {
+      tryFill('Eave Post Spacing', function(){ setQ('eavePS', parseInt(parsed.eavePS)); setQ('postSpacing', parseInt(parsed.eavePS)); buildPSChips(); return true; });
+    } else if (parsed.eavePS) { skipped.push('Eave Post Spacing ('+parsed.eavePS+'' not available)'); }
+
+    if (parsed.gablePS && validPS.indexOf(parseInt(parsed.gablePS)) !== -1) {
+      tryFill('Gable Post Spacing', function(){ setQ('gablePS', parseInt(parsed.gablePS)); buildPSChips(); return true; });
+    } else if (parsed.gablePS) { skipped.push('Gable Post Spacing ('+parsed.gablePS+'' not available)'); }
+
+    // Soffit / Wainscot
+    if (parsed.soffit !== undefined) {
+      tryFill('Soffit', function(){
+        var wall = WALLS.find(function(w){ return w.id==='left'||w.id==='right'; });
+        if (wall) { WALLS.forEach(function(w){ if(w.encl==='enclosed'||w.encl==='partial') { w.soffit=!!parsed.soffit; } }); }
+        Q.soffit = !!parsed.soffit;
+        return true;
+      });
+    }
+    if (parsed.wainscot !== undefined) {
+      tryFill('Wainscot', function(){
+        var el = document.getElementById('qgWainscot');
+        if (el) { el.checked = !!parsed.wainscot; toggleExtra('wainscot', !!parsed.wainscot); }
+        return true;
+      });
+    }
+
+    // Insulation
+    var validInsul = ['None','Double Bubble Foil','Double Bubble White','Therma Guard','Astro Armour','2 Vinyl Back','3 Vinyl Back','Solar Eclipse'];
+    if (parsed.insulation && validInsul.indexOf(parsed.insulation) !== -1) {
+      tryFill('Insulation', function(){
+        var el = document.getElementById('st_insulation');
+        if (el) { el.value = parsed.insulation; onInsulationChange(); }
+        if (parsed.insulRoof !== undefined) { var r=document.getElementById('st_insulRoof'); if(r) r.checked=!!parsed.insulRoof; }
+        if (parsed.insulWalls !== undefined) { var w=document.getElementById('st_insulWalls'); if(w) w.checked=!!parsed.insulWalls; }
+        return true;
+      });
+    } else if (parsed.insulation && parsed.insulation !== 'None') {
+      skipped.push('Insulation type ('+parsed.insulation+')');
+    }
+
+    // Concrete
+    if (parsed.concrete && parsed.concrete !== 'None') {
+      tryFill('Concrete', function(){
+        var el = document.getElementById('st_mainConcrete');
+        if (el) el.value = parsed.concrete;
+        // Also set _lastConcreteOpts
+        if (!window._lastConcreteOpts) window._lastConcreteOpts = { main: null, sheds: [] };
+        window._lastConcreteOpts.main = { included: true, thickness: parsed.concrete, footers: false, psi: 3500, reinforcement: { wire: false, rebar: false }, metalLedge: false, stamped: false };
+        return true;
+      });
+    }
+
+    // Gauge
+    if (parsed.gauge === 26 || parsed.gauge === 29) {
+      tryFill('Metal Gauge', function(){
+        var el = document.getElementById('st_gauge');
+        if (el) el.value = String(parsed.gauge);
+        return true;
+      });
+    }
+
+    // Colors — set by name, find matching color code
+    function setColorByName(elId, colorName) {
+      if (!colorName) return false;
+      var el = document.getElementById(elId);
+      if (!el) return false;
+      var name = colorName.toLowerCase().replace(/[^a-z0-9]/g,'');
+      // Try to find option that matches
+      for (var i=0; i<el.options.length; i++) {
+        var optText = el.options[i].text.toLowerCase().replace(/[^a-z0-9]/g,'');
+        if (optText.indexOf(name) !== -1 || name.indexOf(optText.replace('gray','grey').replace('grey','gray')) !== -1) {
+          el.value = el.options[i].value;
+          el.dispatchEvent(new Event('change'));
+          return true;
+        }
+      }
+      return false;
+    }
+    if (parsed.roofColor)     tryFill('Roof Color',     function(){ return setColorByName('st_roofColorCode',    parsed.roofColor)    || (skipped.push('Roof Color ('+parsed.roofColor+')'), false); });
+    if (parsed.wallColor)     tryFill('Wall Color',     function(){ return setColorByName('st_wallColorCode',    parsed.wallColor)    || (skipped.push('Wall Color ('+parsed.wallColor+')'), false); });
+    if (parsed.trimColor)     tryFill('Trim Color',     function(){ return setColorByName('st_trimColorCode',    parsed.trimColor)    || (skipped.push('Trim Color ('+parsed.trimColor+')'), false); });
+    if (parsed.wainscotColor) tryFill('Wainscot Color', function(){ return setColorByName('st_wainscotColorCode',parsed.wainscotColor)|| (skipped.push('Wainscot Color ('+parsed.wainscotColor+')'), false); });
+
+    // Garage doors
+    if (parsed.garageDoors && parsed.garageDoors.length) {
+      tryFill('Garage Door(s)', function(){
+        parsed.garageDoors.forEach(function(gd) {
+          if (!gd.w || !gd.h) return;
+          var qty = gd.qty || 1;
+          for (var i=0; i<qty; i++) {
+            var d = { id: nextDoorId++, type:'garage', w:parseInt(gd.w), h:parseInt(gd.h),
+                      wall: gd.wall||'front', insulated:!!gd.insulated, framedOpening:false, fullView:false };
+            var sizeKey = d.w+'x'+d.h+':'+(d.insulated?'1':'0');
+            d.size = d.w+'x'+d.h;
+            allDoors.push(d);
+          }
+        });
+        renderGarageDoors();
+        return true;
+      });
+    }
+
+    // Sheds
+    if (parsed.sheds && parsed.sheds.length) {
+      tryFill('Side Shed(s)', function(){
+        parsed.sheds.forEach(function(sh) {
+          if (window._shedConfigs.length >= 2) return;
+          var wall = sh.wall || 'left';
+          var isEave = (wall==='left'||wall==='right');
+          var sc = {
+            id: nextShedId++,
+            idx: window._shedConfigs.length,
+            label: 'Side Shed '+(window._shedConfigs.length+1),
+            wall: wall,
+            type: 'leanto',
+            w: parseFloat(sh.w) || parseFloat(sh.depth) || 12,
+            l: parseFloat(sh.l) || parseFloat(sh.length) || Q.l,
+            h: Q.h,
+            pitch: Q.pitch,
+            truss: Q.truss,
+            encl: 'roofonly',
+            concrete: false,
+            insulRoof: false,
+            insulFull: false,
+            postSpacing: Q.postSpacing || 10,
+            doors: []
+          };
+          window._shedConfigs.push(sc);
+        });
+        renderSheds();
+        return true;
+      });
+    }
+
+    // Rebuild everything
+    buildWallGrid();
+    buildTrussChips();
+    buildPitchChips();
+    buildOHChips();
+    buildPSChips();
+    scheduleBuild();
+    setTimeout(function(){ updateStripFromLocalCalc(); }, 400);
+
+    // Show result banner
+    showImportBanner(filled, skipped);
+
+  } catch(e) {
+    console.error('[Import]', e);
+    showImportBanner([], [], 'Could not parse PDF: '+e.message);
+  }
+
+  btn.textContent = origText;
+  btn.disabled = false;
+}
+
+function showImportBanner(filled, skipped, error) {
+  var existing = document.getElementById('importBanner');
+  if (existing) existing.remove();
+
+  var banner = document.createElement('div');
+  banner.id = 'importBanner';
+  banner.style.cssText = 'position:fixed;bottom:90px;left:50%;transform:translateX(-50%);z-index:9999;' +
+    'background:#1e293b;border:1px solid rgba(255,130,0,.4);border-radius:12px;padding:14px 20px;' +
+    'font-family:Outfit,sans-serif;max-width:480px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.4);';
+
+  if (error) {
+    banner.innerHTML = '<div style="color:#ef4444;font-weight:800;font-size:13px;">❌ Import Failed</div>' +
+      '<div style="color:#888;font-size:11px;margin-top:4px;">'+error+'</div>';
+  } else {
+    var html = '<div style="color:#4ade80;font-weight:800;font-size:13px;">✅ Quote Imported — '+filled.length+' fields filled</div>';
+    if (filled.length) {
+      html += '<div style="color:#4ade80;font-size:10px;margin-top:6px;opacity:.8;">'+filled.join(' · ')+'</div>';
+    }
+    if (skipped.length) {
+      html += '<div style="color:#FF8200;font-weight:700;font-size:11px;margin-top:8px;">⚠️ Needs manual entry:</div>';
+      html += '<div style="color:#FF8200;font-size:10px;margin-top:3px;">'+skipped.join(' · ')+'</div>';
+    }
+    banner.innerHTML = html;
+  }
+
+  // Close button
+  var close = document.createElement('button');
+  close.textContent = '✕';
+  close.style.cssText = 'position:absolute;top:8px;right:10px;background:none;border:none;color:#888;font-size:14px;cursor:pointer;font-family:Outfit,sans-serif;';
+  close.onclick = function(){ banner.remove(); };
+  banner.appendChild(close);
+
+  document.body.appendChild(banner);
+  // Auto-dismiss after 12 seconds
+  setTimeout(function(){ if(banner.parentNode) banner.remove(); }, 12000);
 }
 
 function refreshOpenings(){
