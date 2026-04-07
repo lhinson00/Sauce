@@ -12659,8 +12659,8 @@ window.SauceMaterials.calcSackcrete = function(Q, WALLS, allDoors, shedCfgs, sf)
 
   var totalBags = 0;
 
-  // Main building posts — skip entirely when posts on top
-  if (!onTop) {
+  // Main building posts — skip entirely when posts on top OR in shed-only mode
+  if (!onTop && !window._shedOnlyMode) {
     // Eave posts — per wall
     ['left', 'right'].forEach(function(wallId) {
       var wallSize = SM.wallPostSizeFor(wallId, sf);
@@ -13057,7 +13057,7 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
 // 2 of total are gable trusses, remainder are regular trusses
 // SKU based on building width and whether overhang is selected
 
-window.SauceMaterials.calcWoodTrusses = function(Q) {
+window.SauceMaterials.calcWoodTrusses = function(Q, shedCfgs) {
   if (Q.truss !== 'Wood') return [];
 
   var w  = Q.w;
@@ -13200,6 +13200,39 @@ window.SauceMaterials.calcWoodTrusses = function(Q) {
       detail:      'Please verify SKU for ' + w + "' width"
     });
   }
+
+  // Gable extension trusses — 20' wide trusses spanning the extension width
+  // Qty = ceil(extension length / truss spacing) + 1, per extension
+  (shedCfgs||[]).forEach(function(sc) {
+    if (sc.type !== 'gable') return;
+    if (!sc.w || !sc.l) return;
+    var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
+    if (!isEaveWall) return;
+    var extW        = sc.w;  // extension depth = truss span (e.g. 20')
+    var extL        = sc.l;  // extension length along eave wall (e.g. 20')
+    var extGableSKU = gableMap[extW]   || ('EXT-WIDTH-' + extW + "'-SKU-NOT-FOUND");
+    var extRegSKU   = regularMap[extW] || ('EXT-WIDTH-' + extW + "'-SKU-NOT-FOUND");
+    var extRegQty   = Math.floor(extL / spacing); // e.g. 20'/5' = 4 regular
+    var extGableQty = 1;                           // 1 gable truss at the open gable end
+    // Regular trusses
+    if (extRegQty > 0) {
+      results.push({
+        category:    'Yard',
+        description: 'Gable Extension Trusses',
+        sku:         extRegSKU,
+        quantity:    extRegQty,
+        detail:      extW + "' span  |  " + extRegQty + ' @ ' + spacing + "' spacing  |  " + (hasOH ? '12" overhang' : 'no overhang')
+      });
+    }
+    // Gable truss at open end
+    results.push({
+      category:    'Yard',
+      description: 'Gable Extension — Gable Truss',
+      sku:         extGableSKU,
+      quantity:    extGableQty,
+      detail:      extW + "' span  |  gable end  |  " + (hasOH ? '12" overhang' : 'no overhang')
+    });
+  });
 
   return results;
 };
@@ -13364,6 +13397,59 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
 // Wood truss buildings only. One ledger per shed wall attachment.
 // Size = one step up from rafter depth (2x12 stays 2x12).
 // Length filled using structural post spacing only (no garage door jambs).
+// ── GABLE EXTENSION ROOF FRAMING ─────────────────────────────────────────────
+// Wood truss only. Frames the 12' (Q.w/2) roof plane from extension peak to main ridge.
+// Ridge board:  SYP212xx — length = sc.l + 2', qty = 1
+// Valley boards: SYP210xx — length = sc.l + 2', qty = 2 (one each side)
+// Rafters: SYP2616 (16' boards, cut from ~14' needed based on 11'11" panel + 2')
+//   Spaced every 2' along the run. qty = (floor(sc.l/2)+1) × 2 sides
+
+window.SauceMaterials.calcGableExtRoofFraming = function(Q, shedCfgs) {
+  if (Q.truss !== 'Wood') return [];
+
+  var results = [];
+
+  (shedCfgs || []).forEach(function(sc) {
+    if (sc.type !== 'gable') return;
+    if (!sc.w || !sc.l) return;
+    if (!(sc.wall==='left'||sc.wall==='right')) return;
+
+    var runLen = sc.l + 2; // ridge and valley boards are 2' longer than extension length
+
+    // Ridge board — SYP212xx, 1 piece
+    results.push({
+      category:    'Yard',
+      description: 'Gable Ext Ridge Board',
+      sku:         'SYP212' + runLen,
+      quantity:    1,
+      detail:      sc.l + "' ext run + 2'  |  1 ridge board"
+    });
+
+    // Valley boards — SYP210xx, 2 pieces (one each side, resting on main building roof)
+    results.push({
+      category:    'Yard',
+      description: 'Gable Ext Valley Boards',
+      sku:         'SYP210' + runLen,
+      quantity:    2,
+      detail:      sc.l + "' ext run + 2'  |  2 valleys (one per side)"
+    });
+
+    // Rafters — 16' boards (panel = 11'11" + 2' tail = ~14', send 16')
+    // Spaced every 2' along extension length: floor(sc.l/2)+1 per side × 2 sides
+    var raftersPerSide = Math.floor(sc.l / 2) + 1;
+    var rafterQty      = raftersPerSide * 2;
+    results.push({
+      category:    'Yard',
+      description: 'Gable Ext Rafters',
+      sku:         'SYP2616',
+      quantity:    rafterQty,
+      detail:      raftersPerSide + ' per side × 2 sides  |  2\' spacing  |  cut from 16\' (panel 11\'11\" + 2\')'
+    });
+  });
+
+  return results;
+};
+
 // Uses same greedy board algorithm as headers (10', 12', 20').
 
 window.SauceMaterials.calcShedLedgers = function(Q, WALLS, shedCfgs) {
@@ -13979,6 +14065,8 @@ window.SauceMaterials.calcWoodOHShedPurlins = function(Q, shedCfgs) {
 
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.type === 'gable') return; // gable extensions handled separately below
+
     var count = ssPurlinsPerRun[sc.w];
     if (!count) return;
 
@@ -14000,6 +14088,65 @@ window.SauceMaterials.calcWoodOHShedPurlins = function(Q, shedCfgs) {
     });
   });
 
+  // Gable extensions — use main building purlin chart (gable roof, not single slope)
+  // Run length per side = sc.l + 1' OH gable end + Q.w/2
+  // Purlin count from purlinsPerRun chart keyed on sc.w (truss span)
+  var purlinsPerRun = {
+    10:{OH12_412:10,OH12_612:10,OH18_412:10,OH18_612:10},
+    12:{OH12_412:10,OH12_612:12,OH18_412:12,OH18_612:12},
+    14:{OH12_412:12,OH12_612:12,OH18_412:12,OH18_612:12},
+    16:{OH12_412:12,OH12_612:14,OH18_412:14,OH18_612:14},
+    18:{OH12_412:14,OH12_612:14,OH18_412:14,OH18_612:14},
+    20:{OH12_412:14,OH12_612:16,OH18_412:16,OH18_612:16},
+    22:{OH12_412:16,OH12_612:16,OH18_412:16,OH18_612:18},
+    24:{OH12_412:16,OH12_612:18,OH18_412:18,OH18_612:18},
+    26:{OH12_412:18,OH12_612:18,OH18_412:18,OH18_612:20},
+    28:{OH12_412:20,OH12_612:20,OH18_412:20,OH18_612:20},
+    30:{OH12_412:20,OH12_612:22,OH18_412:20,OH18_612:22}
+  };
+  function getOHKey(oh, pitch) {
+    return (oh <= 12 ? 'OH12' : 'OH18') + '_' + (pitch <= 4 ? '412' : '612');
+  }
+
+  (shedCfgs || []).forEach(function(sc) {
+    if (sc.type !== 'gable') return;
+    if (!sc.w || !sc.l) return;
+    if (!(sc.wall==='left'||sc.wall==='right')) return;
+
+    var widthMap = purlinsPerRun[sc.w];
+    if (!widthMap) return;
+    var purlinCount = widthMap[getOHKey(Q.oh, Q.pitch)];
+    if (!purlinCount) return;
+
+    // Run per side:
+    // Eave wall: extension length + 1' OH + half main building width (panels cross over)
+    // Gable end: extension length + 1' OH only (no crossing)
+    var ohFtG      = Q.oh > 0 ? 1 : 0;
+    var isEaveExt  = (sc.wall==='left'||sc.wall==='right');
+    var runPerSide = isEaveExt
+      ? sc.l + ohFtG + (Q.w / 2)
+      : sc.l + ohFtG;
+
+    // Same end-board + fill logic as main building OH purlins, applied twice (×2 sides)
+    var remaining = runPerSide - covered;
+    var runBoards = {};
+    runBoards[endBoard] = 2;
+    if (remaining > 0) {
+      var fill = fillRemaining(remaining, trussSpacing);
+      Object.keys(fill).forEach(function(len) {
+        runBoards[len] = (runBoards[len]||0) + fill[len];
+      });
+    }
+
+    // ×2 sides
+    Object.keys(runBoards).forEach(function(len) {
+      var runs     = runBoards[len] * 2;
+      var quantity = Math.ceil(runs * purlinCount);
+      var _syp = window.SauceMaterials.syp24(len, quantity);
+      groups[_syp.sku] = (groups[_syp.sku]||0) + _syp.quantity;
+    });
+  });
+
   return Object.keys(groups).sort().map(function(sku) {
     return {
       category:    'Yard',
@@ -14015,17 +14162,39 @@ window.SauceMaterials.calcWoodOHShedPurlins = function(Q, shedCfgs) {
 // Wood truss only. SKU: SYP2420. Always 20' boards.
 // Quantity = floor(width / 5) × ceil(length / 20)
 
-window.SauceMaterials.calcTrussBracing = function(Q) {
+window.SauceMaterials.calcTrussBracing = function(Q, shedCfgs) {
   if (Q.truss !== 'Wood') return [];
+
+  var totalQty = 0;
+  var details  = [];
+
+  // Main building
   var runs     = Math.ceil(Q.l / 20);
-  var quantity = Math.ceil(Math.floor(Q.w / 5) * runs);
-  if (quantity <= 0) return [];
+  var qty      = Math.ceil(Math.floor(Q.w / 5) * runs);
+  if (qty > 0) {
+    totalQty += qty;
+    details.push(Math.floor(Q.w/5) + ' braces/run × ' + runs + ' runs  |  ' + Q.w + "' wide  |  " + Q.l + "' long");
+  }
+
+  // Gable extensions — wood truss bracing along the extension run
+  (shedCfgs || []).forEach(function(sc) {
+    if (sc.type !== 'gable') return;
+    if (!sc.w || !sc.l) return;
+    var extRuns = Math.ceil(sc.l / 20);
+    var extQty  = Math.ceil(Math.floor(sc.w / 5) * extRuns);
+    if (extQty > 0) {
+      totalQty += extQty;
+      details.push(Math.floor(sc.w/5) + ' braces/run × ' + extRuns + ' runs  |  ' + sc.w + "' ext span  |  " + sc.l + "' run");
+    }
+  });
+
+  if (totalQty <= 0) return [];
   return [{
     category:    'Yard',
     description: 'Truss Bracing',
     sku:         'SYP2420',
-    quantity:    quantity,
-    detail:      Math.floor(Q.w/5) + ' braces/run × ' + runs + ' runs  |  ' + Q.w + "' wide  |  " + Q.l + "' long"
+    quantity:    totalQty,
+    detail:      details.join('  +  ')
   }];
 };
 
@@ -15052,6 +15221,24 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
   // Side sheds
   (shedCfgs||[]).forEach(function(sc) {
     if (!sc.w || !sc.l) return;
+
+    // Gable extension — uses wood truss chart for panel length
+    if (sc.type === 'gable') {
+      var extMetalLen = getMetalLen(sc.w, Q.truss, Q.oh, Q.pitch);
+      if (extMetalLen) {
+        var ohFtG = Q.oh > 0 ? 1 : 0;
+        var isEaveWall = (sc.wall==='left'||sc.wall==='right');
+        // Eave wall: panels cross over main building → add half main building width
+        // Gable end: panels only span extension depth, no crossing
+        var runPerSide = isEaveWall
+          ? sc.l + ohFtG + (Q.w / 2)   // e.g. 20 + 1 + 12 = 33'
+          : sc.l + ohFtG;               // e.g. 20 + 1 = 21'
+        var gablePanels = Math.ceil(runPerSide / 3) * 2;
+        addPanel(extMetalLen, gablePanels, true);
+      }
+      return;
+    }
+
     var ssLen = getSSMetalLen(sc.w, Q.truss, Q.oh);
     if (!ssLen) return;
     var ssAdder = 0;
@@ -15377,21 +15564,31 @@ window.SauceMaterials.calcOpenGableMetal = function(Q, WALLS, shedCfgs) {
     });
   }
 
-  // Gable extensions (always open, clear span)
+  // Gable extensions on eave walls
+  // Wood truss: stepped triangle same as main building gable metal (pitch-based increment)
+  // Steel truss: use existing knee-brace sequence
   (shedCfgs||[]).forEach(function(sc) {
     if (sc.type !== 'gable') return;
     if (!sc.w) return;
-    var seq = buildSequence(sc.w);
-    seq.forEach(function(lenFt) {
+    var isEaveWall = (sc.wall==='left'||sc.wall==='right');
+    if (!isEaveWall) return;
+
+    // One gable end is open (outer), other ties into main building roof — only 1 end needs metal
+    // qty = 2 (one gable end × 2 sides). Sequence starts at 3', then +1' per piece based on pitch.
+    var extPieces = Math.ceil((sc.w / 2) / 3);
+    var extStart  = 3; // 3' first piece (not 5'6" — that's for steel open walls)
+    var extIncr   = 3 * Q.pitch / 12; // same pitch-based increment
+    for (var i = 0; i < extPieces; i++) {
+      var lenFt = extStart + i * extIncr;
       results.push({
         category:    'Side Shed Gable Metal',
         description: 'Gable Extension Metal',
         sku:         skuPrefix,
-        quantity:    4,
+        quantity:    2,
         metalLength: fmtFtInExact(lenFt),
-        detail:      displayType + "  |  " + sc.w + "' extension  |  open gable"
+        detail:      displayType + "  |  " + sc.w + "' ext  |  " + Q.pitch + "/12  |  outer gable end only"
       });
-    });
+    }
   });
 
   return results;
@@ -17613,13 +17810,22 @@ window.SauceMaterials.calcJoistHangers = function(Q, shedCfgs) {
 
   var groups = {};
 
+  var spacing = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
+
   (shedCfgs||[]).forEach(function(sc) {
     if (!sc.w || !sc.l) return;
-    if (sc.type === 'gable') return;
     if (sc.wall !== 'left' && sc.wall !== 'right') return;
 
     var depth = rafterDepth[sc.w] || 10;
     var sku   = 'JH2' + (depth < 10 ? '0' + depth : depth);
+
+    if (sc.type === 'gable') {
+      // Gable extension: one hanger per truss (floor(sc.l/spacing)+1)
+      var count = Math.floor(sc.l / spacing) + 1;
+      groups[sku] = (groups[sku] || 0) + count;
+      return;
+    }
+
     var count = Math.floor(sc.l / 2) + 2;
     groups[sku] = (groups[sku] || 0) + count;
   });
@@ -17648,8 +17854,15 @@ window.SauceMaterials.calcHurricaneBrackets = function(Q, shedCfgs) {
 
   (shedCfgs||[]).forEach(function(sc) {
     if (!sc.w || !sc.l) return;
-    if (sc.type === 'gable') return;
     if (sc.wall !== 'left' && sc.wall !== 'right') return;
+
+    if (sc.type === 'gable') {
+      // Gable extension: (floor(sc.l / spacing) + 1) trusses × 2 clips each
+      var extTrusses = Math.floor(sc.l / spacing) + 1;
+      qty += extTrusses * 2;
+      return;
+    }
+
     qty += Math.floor(sc.l / 2) + 2;
   });
 
@@ -19553,9 +19766,17 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcShedPosts(Q, WALLS, shedCfgs, sf).forEach(function(item) { items.push(item); });
     SM.calcFootingPads(Q, WALLS, [], shedCfgs, sf).forEach(function(item) { items.push(item); });
     SM.calcPostBrackets(Q, WALLS, [], shedCfgs, sf).forEach(function(item) { items.push(item); });
+    // QCR — sackcrete per shed post (was missing from shed-only mode)
+    var shedSackcrete = SM.calcSackcrete(Q, WALLS, [], shedCfgs, sf);
+    if (shedSackcrete) {
+      items.push(shedSackcrete);
+      var shedPallets = Math.ceil(shedSackcrete.quantity / 42);
+      if (shedPallets > 0) items.push({ category:'Yard', description:'Pallet Charge', sku:'PAL', quantity:shedPallets, detail:shedSackcrete.quantity+' bags  |  1 pallet per 42 bags' });
+    }
     // Shed framing (rafters) + ledgers
     SM.calcShedFraming(Q, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedLedgers(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcGableExtRoofFraming(Q, shedCfgs).forEach(function(item) { items.push(item); });
     // Steel shed trusses + purlins
     SM.calcSteelShedTrusses(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
     pushBuffered(SM.calcSteelShedPurlins(Q, shedCfgs));
@@ -19614,14 +19835,14 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcStudOSBWalls(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcStudOSBRoof(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     // Trusses same as Wood OH
-    SM.calcWoodTrusses(sfQ).forEach(function(item) { items.push(item); });
+    SM.calcWoodTrusses(sfQ, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
     SM.calcPitchAdder(sfQ).forEach(function(item) { items.push(item); });
     // Garage door headers same rule
     SM.calcGarageDoorHeaders(allDoors).forEach(function(item) { items.push(item); });
     // Fly rafters, fascia, truss bracing — same as Wood OH
     SM.calcFlyRafters(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcEaveFascia(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
-    SM.calcTrussBracing(sfQ).forEach(function(item) { items.push(item); });
+    SM.calcTrussBracing(sfQ, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
     // Purlins — same as Wood OH (with buffer)
     pushBuffered(SM.calcWoodOHPurlins(sfQ));
     pushBuffered(SM.calcWoodOHShedPurlins(sfQ, sfShedCfgs));
@@ -19630,6 +19851,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     // Open side sheds follow standard post frame rules (rafters, ledgers, etc.)
     SM.calcShedFraming(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedLedgers(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcGableExtRoofFraming(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedPosts(sfQ, WALLS, sfShedCfgs, sfSf).forEach(function(item) { items.push(item); });
     // Footing pads only for in-ground shed posts (footers=false or no concrete selected)
     // calcFootingPads already skips shed posts when footers=true, so this is correct as-is
@@ -19729,16 +19951,17 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcStudShedWalls(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcStudSillSealer(bbQ).forEach(function(item) { items.push(item); });
     SM.calcStudAnchorBolts(bbQ).forEach(function(item) { items.push(item); });
-    SM.calcWoodTrusses(bbQ).forEach(function(item) { items.push(item); });
+    SM.calcWoodTrusses(bbQ, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
     SM.calcPitchAdder(bbQ).forEach(function(item) { items.push(item); });
     SM.calcGarageDoorHeaders(allDoors).forEach(function(item) { items.push(item); });
     SM.calcFlyRafters(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcEaveFascia(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
-    SM.calcTrussBracing(bbQ).forEach(function(item) { items.push(item); });
+    SM.calcTrussBracing(bbQ, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
     pushBuffered(SM.calcWoodOHPurlins(bbQ));
     pushBuffered(SM.calcWoodOHShedPurlins(bbQ, bbShedCfgs));
     SM.calcShedFraming(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedLedgers(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcGableExtRoofFraming(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedPosts(bbQ, WALLS, bbShedCfgs, bbSf).forEach(function(item) { items.push(item); });
     SM.calcFootingPads(bbQ, WALLS, [], bbShedCfgs, bbSf).forEach(function(item) { items.push(item); });
 
@@ -19864,14 +20087,15 @@ window.SauceMaterials.calculate = function(forcedType) {
     var cySackcrete = SM.calcSackcrete(cyQ, WALLS, allDoors, cyShedCfgs, sf);
     if (cySackcrete) items.push(cySackcrete);
     SM.calcHeaders(cyQ, WALLS, allDoors, cyShedCfgs).forEach(function(item) { items.push(item); });
-    SM.calcWoodTrusses(cyQ).forEach(function(item) { items.push(item); });
+    SM.calcWoodTrusses(cyQ, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
     SM.calcPitchAdder(cyQ).forEach(function(item) { items.push(item); });
     SM.calcFlyRafters(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
-    SM.calcTrussBracing(cyQ).forEach(function(item) { items.push(item); });
+    SM.calcTrussBracing(cyQ, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
     pushBuffered(SM.calcWoodOHPurlins(cyQ));
     pushBuffered(SM.calcWoodOHShedPurlins(cyQ, cyShedCfgs));
     SM.calcShedFraming(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedLedgers(cyQ, WALLS, cyShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcGableExtRoofFraming(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
 
     // Roof metal stays
     SM.calcRoofSystem(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
@@ -19949,7 +20173,7 @@ window.SauceMaterials.calculate = function(forcedType) {
   SM.calcHeaders(Q, WALLS, allDoors, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcGarageDoorHeaders(allDoors).forEach(function(item) { items.push(item); });
   // Trusses
-  SM.calcWoodTrusses(Q).forEach(function(item) { items.push(item); });
+  SM.calcWoodTrusses(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcPitchAdder(Q).forEach(function(item) { items.push(item); });
   SM.calcSteelTrusses(Q).forEach(function(item) { items.push(item); });
   SM.calcSteelShedTrusses(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
@@ -19968,6 +20192,7 @@ window.SauceMaterials.calculate = function(forcedType) {
   })();
   // Ledger Nailer + Ledger (from calcShedLedgers)
   SM.calcShedLedgers(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  SM.calcGableExtRoofFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   // Rafters (from calcShedFraming)
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   // Purlins — main building then side shed
@@ -19978,7 +20203,7 @@ window.SauceMaterials.calculate = function(forcedType) {
   pushBuffered(SM.calcWoodShedPurlins(Q, window._shedConfigs||[]));
   pushBuffered(SM.calcWoodOHShedPurlins(Q, window._shedConfigs||[]));
   // Truss Bracing
-  SM.calcTrussBracing(Q).forEach(function(item) { items.push(item); });
+  SM.calcTrussBracing(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   // Fly Rafters
   SM.calcFlyRafters(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   // Fascia
@@ -21992,7 +22217,8 @@ window.SauceLabor.calcSideSheds = function(shedCfgs) {
   (shedCfgs||[]).forEach(function(sc, idx) {
     if (!sc.w || !sc.l) return;
     var shedSqFt = sc.w * sc.l;
-    var label = 'Side Shed ' + (idx + 1) + ' (' + sc.w + "' × " + sc.l + "')";
+    var typeLabel = sc.type === 'gable' ? 'Gable Extension' : 'Side Shed';
+    var label = typeLabel + ' ' + (idx + 1) + ' (' + sc.w + "' × " + sc.l + "')";
 
     // Flat rate — boundary always goes to higher tier
     var shedRate, shedTierLabel;
