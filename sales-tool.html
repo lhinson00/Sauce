@@ -1474,10 +1474,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
       <!-- ─── WOOD TRUSS OPTIONS ─── -->
       <div class="sec" id="secWoodTrussOptions" style="display:none;">
         <div class="sec-title"><span class="icon">🪵</span>Wood Truss Options</div>
-        <div class="toggle-row">
-          <div class="toggle-info"><div class="toggle-lbl">Finished Ceiling</div></div>
-          <label class="tog"><input type="checkbox" id="st_finishedCeiling" onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
-        </div>
+        <!-- Finished Ceiling moved to per-shed toggle in shed panel -->
         <div class="toggle-row">
           <div class="toggle-info">
             <div class="toggle-lbl">Post Wraps</div>
@@ -3967,6 +3964,9 @@ function renderSheds(){
       +'<div class="shed-type-chips">'+posChips+'</div>'
       +customOffRow+'</div>'
       +extraOptions
+      // Finished ceiling toggle — leanto/wrap sheds on eave walls only
+      +(isLeanto && (sc.wall==='left'||sc.wall==='right') ? (
+        '<div class="toggle-row" style="margin-bottom:6px;padding:6px 0;">'        +'<div class="toggle-info"><div class="toggle-lbl">Finished Ceiling</div><div class="toggle-sub">Ceiling joists + liner panels</div></div>'        +'<label class="tog"><input type="checkbox" id="shedCeil_'+sc.id+'" '+(sc.finishedCeiling?'checked':'')+' onchange="setShedProp('+sc.id+',\'finishedCeiling\',this.checked);scheduleBuild();updateStripFromLocalCalc()"><span class="tog-track"></span></label>'        +'</div>'      ) : '')
       +(function(){
         if (sc.encl !== 'enclosed' && sc.encl !== 'partial') return '';
         var sid = sc.id;
@@ -13311,7 +13311,6 @@ window.SauceMaterials.calcSteelTrusses = function(Q) {
 // SKU determined by shed width.
 
 window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
-  var finishedCeiling = !!(document.getElementById('st_finishedCeiling')||{}).checked;
   if (Q.truss !== 'Wood') return [];
 
   var rafterMap = {
@@ -13336,16 +13335,22 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
     20: 'SYP2624'
   };
 
-  var rafterGroups = {};
-  var joistGroups  = {};
+  var rafterGroups      = {};
+  var joistGroups       = {};
+  var joistHangerGroups = {};
 
-  function addFraming(width, length) {
+  function addFraming(width, length, finCeil) {
     if (!width || width <= 0 || !length || length <= 0) return;
     var qty     = Math.floor(length / 2) + 2;
     var rSku    = rafterMap[width];
     var jSku    = joistMap[width];
     if (rSku) rafterGroups[rSku] = (rafterGroups[rSku] || 0) + qty;
-    if (jSku && finishedCeiling) joistGroups[jSku] = (joistGroups[jSku] || 0) + qty;
+    if (jSku && finCeil) {
+      joistGroups[jSku] = (joistGroups[jSku] || 0) + qty;
+      // 2 joist hangers per joist
+      var jhSku = 'JH2' + width; // e.g. JH212, JH214, JH216
+      joistHangerGroups[jhSku] = (joistHangerGroups[jhSku] || 0) + (qty * 2);
+    }
   }
 
   (shedCfgs || []).forEach(function(sc) {
@@ -13355,15 +13360,15 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
     var isEave = (sc.wall === 'left' || sc.wall === 'right');
 
     if (sc.type === 'leanto') {
-      addFraming(sc.w, sc.l);
+      addFraming(sc.w, sc.l, sc.finishedCeiling);
       return;
     }
 
     if (sc.type === 'wrap') {
       // Primary leg
-      addFraming(sc.w, sc.l);
+      addFraming(sc.w, sc.l, sc.finishedCeiling);
       // Secondary leg (wrapLeg)
-      if (sc.wrapLeg > 0) addFraming(sc.w, sc.wrapLeg);
+      if (sc.wrapLeg > 0) addFraming(sc.w, sc.wrapLeg, sc.finishedCeiling);
       return;
     }
 
@@ -13372,8 +13377,8 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
       addFraming(sc.w, sc.l);
       // Both secondary legs
       var secLen = isEave ? Q.w : Q.l;
-      addFraming(sc.w, secLen);
-      addFraming(sc.w, secLen);
+      addFraming(sc.w, secLen, sc.finishedCeiling);
+      addFraming(sc.w, secLen, sc.finishedCeiling);
       return;
     }
   });
@@ -13396,7 +13401,17 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
       description: 'Side Shed Ceiling Joists',
       sku:         sku,
       quantity:    joistGroups[sku],
-      detail:      "2ft spacing  |  length/2 + 2"
+      detail:      '2ft spacing  |  length/2 + 2'
+    });
+  });
+
+  Object.keys(joistHangerGroups).sort().forEach(function(sku) {
+    results.push({
+      category:    'Hardware',
+      description: 'Ceiling Joist Hangers',
+      sku:         sku,
+      quantity:    joistHangerGroups[sku],
+      detail:      '2 per joist  |  finished ceiling'
     });
   });
 
@@ -18414,8 +18429,9 @@ window.SauceLabor.calcStandingSeamAdder = function(Q, shedCfgs) {
 // Fires when st_finishedCeiling is checked + building has eave lean-to side sheds.
 // Panel SKU: T9PW + (shed_width + 0.5)' length  |  qty = ceil(shed_length / 3)  |  per shed
 window.SauceMaterials.calcFinishedCeilingMetal = function(Q, shedCfgs) {
-  var on = !!(document.getElementById('st_finishedCeiling')||{}).checked;
-  if (!on) return [];
+  // Now per-shed — always run, each shed checks its own finishedCeiling flag
+  var anyOn = (shedCfgs||[]).some(function(sc){ return !!sc.finishedCeiling; });
+  if (!anyOn) return [];
   var items = [];
   var metalType = normalizeMetalType((document.getElementById('st_roofMetal')||{}).value || 'Tuff-Rib 29ga');
   var _ceilCode=getSkuColorCode('wall');
@@ -18424,6 +18440,7 @@ window.SauceMaterials.calcFinishedCeilingMetal = function(Q, shedCfgs) {
   (shedCfgs||[]).forEach(function(sc, idx) {
     if (!sc.w || !sc.l) return;
     // Eave lean-to sheds only (wall = left or right)
+    if (!sc.finishedCeiling) return;
     if (sc.type !== 'leanto' && sc.type !== 'single') return;
     var isEave = (sc.wall === 'left' || sc.wall === 'right');
     if (!isEave) return;
