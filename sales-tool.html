@@ -3388,50 +3388,20 @@ async function importCompetitorPDF(input) {
       reader.readAsDataURL(file);
     });
 
-    // Extract text via Claude API with vision
-    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+    // Route through GAS to avoid CORS — GAS calls Claude server-side
+    var resp = await fetchWithTimeout(API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: { type: 'base64', media_type: 'application/pdf', data: b64 }
-            },
-            {
-              type: 'text',
-              text: 'Extract building quote info from this PDF and return ONLY valid JSON with these exact keys (omit any you cannot find):\n' +
-                '{"custName":"","custPhone":"","custEmail":"","custAddress":"","custCity":"","' +
-                'width":0,"length":0,"height":0,"pitch":0,"truss":"Wood","' +
-                'eavePS":0,"gablePS":0,"soffit":false,"wainscot":false,"' +
-                'insulation":"","insulRoof":false,"insulWalls":false,"' +
-                'concrete":"None","gauge":29,"' +
-                'roofColor":"","wallColor":"","trimColor":"","wainscotColor":"","' +
-                'garageDoors":[{"w":0,"h":0,"qty":1,"wall":"front","insulated":false}],"' +
-                'sheds":[{"wall":"left","w":0,"l":0}]}\n\n' +
-                'Rules:\n' +
-                '- pitch: only 4,6,8,10 are valid\n' +
-                '- eavePS/gablePS: only 8,10,12,16,20,24 are valid\n' +
-                '- gauge: only 26 or 29\n' +
-                '- insulation values: "None","Double Bubble Foil","Double Bubble White","Therma Guard","Astro Armour","2 Vinyl Back","3 Vinyl Back","Solar Eclipse"\n' +
-                '- insulRoof=true if roof only or full building, insulWalls=true only if full building\n' +
-                '- concrete: "None","4","6"\n' +
-                '- shed wall mapping: A=front B=left C=back D=right\n' +
-                '- sheds default to open sides, roof only — do not include enclosure fields\n' +
-                '- garage door wall is always "front" unless clearly stated otherwise\n' +
-                '- Return ONLY the JSON object, no explanation'
-            }
-          ]
-        }]
+        action: 'parsePdf',
+        token: getToken(),
+        pdfBase64: b64
       })
     });
 
-    var data = await resp.json();
-    var raw = (data.content||[]).map(function(b){ return b.text||''; }).join('');
+    var data = await safeJson(resp);
+    if (!data.success) throw new Error(data.error || 'GAS parsePdf failed');
+    var raw = data.result || '';
     // Strip any markdown fences
     raw = raw.replace(/```json|```/g,'').trim();
     var parsed = JSON.parse(raw);
