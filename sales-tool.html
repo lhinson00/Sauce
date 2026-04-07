@@ -1927,6 +1927,51 @@ function wallLabel(id) { return (WALLS.find(function(w){return w.id===id;})||{})
 // BUILD / RENDER
 // ═══════════════════════════════════════════════════════
 var _buildTimer = null;
+
+// ── TOOL USAGE TRACKING ──────────────────────────────────────────────────────
+// Logs key events to ToolActivity sheet in GAS. Non-blocking — fire and forget.
+var _lastLoggedPrice = null;
+var _priceLogTimer   = null;
+
+function logToolEvent(eventType, meta) {
+  try {
+    var user = (window.currentUser || {}).username || 'anonymous';
+    var payload = {
+      action:    'logToolEvent',
+      token:     typeof getToken === 'function' ? getToken() : '',
+      username:  user,
+      eventType: eventType,
+      meta:      meta || {},
+      timestamp: new Date().toISOString()
+    };
+    // Fire and forget — don't await, don't block
+    fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(payload)
+    }).catch(function(){});
+  } catch(e) {}
+}
+
+// Debounced price log — only fires when price stabilizes for 3s
+function logPriceCalculated() {
+  clearTimeout(_priceLogTimer);
+  _priceLogTimer = setTimeout(function() {
+    try {
+      var Q = window._Q || {};
+      var dims = Q.w + "'×" + Q.l + "'×" + Q.h + "'";
+      var oh   = window._lastPriceOH    || {};
+      var nooh = window._lastPriceNoOH  || {};
+      var st   = window._lastPriceSteel || {};
+      var price = oh.total || nooh.total || st.total || 0;
+      if (!price || price === _lastLoggedPrice) return;
+      _lastLoggedPrice = price;
+      var cust = (document.getElementById('st_name')||{}).value || '';
+      logToolEvent('price_calculated', { dims: dims, price: price, customer: cust });
+    } catch(e) {}
+  }, 3000);
+}
+
 function scheduleBuild() {
   clearTimeout(_buildTimer);
   _buildTimer = setTimeout(triggerBuild, 320);
@@ -2223,6 +2268,8 @@ function triggerBuild() {
   window.peakH = Q.h + (Q.w/2)*(Q.pitch/12);
   var placed = allDoors.filter(function(d){return d.wall;});
   try { build3DReplay(placed, window._shedConfigs, WALLS); } catch(e){ console.error('3D:',e); }
+  // Track price calculation (debounced)
+  try { logPriceCalculated(); } catch(e) {}
   // Apply smart post visibility after build (respects shed enclosure state)
   if(window._3d && window._3d.grps) {
     var _g = window._3d.grps;
@@ -4217,11 +4264,11 @@ async function openActivityLog() {
   table.style.cssText = 'width:100%;border-collapse:collapse;font-size:11px;';
   table.innerHTML = '<thead><tr style="background:#2a3a50;position:sticky;top:0;">'
     + '<th style="padding:9px 12px;text-align:left;color:#FF8200;font-weight:700;letter-spacing:.5px;">TIME</th>'
-    + '<th style="padding:9px 12px;text-align:left;color:#FF8200;font-weight:700;">SALESMAN</th>'
+    + '<th style="padding:9px 12px;text-align:left;color:#FF8200;font-weight:700;">USER</th>'
+    + '<th style="padding:9px 12px;text-align:left;color:#FF8200;font-weight:700;">EVENT</th>'
     + '<th style="padding:9px 12px;text-align:left;color:#FF8200;font-weight:700;">CUSTOMER</th>'
-    + '<th style="padding:9px 12px;text-align:left;color:#FF8200;font-weight:700;">TYPE</th>'
-    + '<th style="padding:9px 12px;text-align:right;color:#FF8200;font-weight:700;">TOTAL</th>'
-    + '<th style="padding:9px 12px;text-align:left;color:#FF8200;font-weight:700;">STATUS</th>'
+    + '<th style="padding:9px 12px;text-align:left;color:#FF8200;font-weight:700;">BUILDING</th>'
+    + '<th style="padding:9px 12px;text-align:right;color:#FF8200;font-weight:700;">PRICE</th>'
     + '</tr></thead>'
     + '<tbody id="alBody"><tr><td colspan="6" style="padding:24px;text-align:center;color:#888;">Loading...</td></tr></tbody>';
   tableWrap.appendChild(table);
@@ -4236,7 +4283,7 @@ async function openActivityLog() {
     var resp = await fetchWithTimeout(API_URL, {
       method: 'POST',
       headers: {'Content-Type': 'text/plain'},
-      body: JSON.stringify({ action: 'getActivityLog', token: getToken(), username: (window.currentUser||{}).username||'' })
+      body: JSON.stringify({ action: 'getToolActivity', token: getToken(), username: (window.currentUser||{}).username||'' })
     }, 15000);
     var data = await safeJson(resp);
     if (data.success) allActivities = data.activities || [];
@@ -4271,9 +4318,10 @@ async function openActivityLog() {
     var byUser = {};
     filtered.forEach(function(a) {
       var u = a.username || 'Unknown';
-      if (!byUser[u]) byUser[u] = { count: 0, total: 0 };
+      if (!byUser[u]) byUser[u] = { count: 0, saves: 0, prices: 0 };
       byUser[u].count++;
-      byUser[u].total += parseFloat(a.totalPrice) || 0;
+      if (a.eventType === 'quote_saved')      byUser[u].saves++;
+      if (a.eventType === 'price_calculated') byUser[u].prices++;
     });
 
     var sr = document.getElementById('alSummaryRow');
@@ -4301,17 +4349,20 @@ async function openActivityLog() {
     filtered.forEach(function(a, i) {
       var ts = a.timestamp ? new Date(a.timestamp) : null;
       var dateStr = ts ? (ts.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) + ' ' + ts.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})) : '—';
-      var total = parseFloat(a.totalPrice) || 0;
-      var totalStr = total > 0 ? '$' + total.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0}) : '—';
+      var meta = a.meta || {};
+      var price = parseFloat(meta.price) || 0;
+      var totalStr = price > 0 ? '$' + price.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0}) : '—';
+      var eventLabel = { page_load:'🔓 Load', price_calculated:'💰 Price', quote_saved:'💾 Save' }[a.eventType] || a.eventType || '—';
+      var eventColor = { page_load:'#60a5fa', price_calculated:'#4ade80', quote_saved:'#fbbf24' }[a.eventType] || '#888';
       var bg = i % 2 === 0 ? '#1a2744' : '#1e293b';
       var tr = document.createElement('tr');
       tr.style.background = bg;
-      tr.innerHTML = '<td style="padding:8px 12px;color:#888;">' + dateStr + '</td>'
+      tr.innerHTML = '<td style="padding:8px 12px;color:#888;font-size:10px;">' + dateStr + '</td>'
         + '<td style="padding:8px 12px;color:#f0f3f7;font-weight:600;">' + (a.username||'—') + '</td>'
-        + '<td style="padding:8px 12px;color:#c8d0dc;">' + (a.customerName||'—') + '</td>'
-        + '<td style="padding:8px 12px;"><span style="background:rgba(255,130,0,.15);color:#FF8200;border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;">' + (a.calculatorType||'—') + '</span></td>'
-        + '<td style="padding:8px 12px;text-align:right;color:#4ade80;font-weight:700;">' + totalStr + '</td>'
-        + '<td style="padding:8px 12px;color:#888;">' + (a.status||'—') + '</td>';
+        + '<td style="padding:8px 12px;"><span style="background:rgba(255,255,255,.07);color:' + eventColor + ';border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700;">' + eventLabel + '</span></td>'
+        + '<td style="padding:8px 12px;color:#c8d0dc;">' + (meta.customer||'—') + '</td>'
+        + '<td style="padding:8px 12px;color:#888;font-size:10px;">' + (meta.dims||'—') + '</td>'
+        + '<td style="padding:8px 12px;text-align:right;color:#4ade80;font-weight:700;">' + totalStr + '</td>';
       tbody.appendChild(tr);
     });
   }
@@ -10417,6 +10468,16 @@ async function saveSalesQuote() {
     if (!data.success) throw new Error(data.error || 'Save failed');
 
     window._savedQuoteId = data.quoteId || ('ST-' + Date.now());
+    // Track quote save
+    try {
+      var _qs_name = (document.getElementById('st_name')||{}).value || '';
+      var _qs_Q    = window._Q || {};
+      logToolEvent('quote_saved', {
+        quoteId:  window._savedQuoteId,
+        customer: _qs_name,
+        dims:     _qs_Q.w + "'×" + _qs_Q.l + "'×" + _qs_Q.h + "'"
+      });
+    } catch(e) {}
     window._savedSnapshot = snapshot;
     window._loadedQuoteId = null; // Cleared — now pointing to fresh save
 
@@ -10839,6 +10900,7 @@ function initSalesAuth() {
         setTimeout(warmPing, 500);
         loadInventoryPricing();
         console.log('[Sales] Auto-logged in as:', u.username);
+        try { logToolEvent('page_load', { referrer: document.referrer || 'direct' }); } catch(e) {}
         // Fire address lookup immediately so shipping/mileage is ready
         setTimeout(function() {
           var addr = (document.getElementById('st_address')||{}).value || '';
@@ -10941,7 +11003,8 @@ async function doSalesLogin() {
         materialList: data.materialList|| false,
         isDemo:       data.isDemo      || false
       };
-      window.currentUser.token = data.token || '';
+
+      try { logToolEvent('page_load', { referrer: document.referrer || 'direct' }); } catch(e) {}      window.currentUser.token = data.token || '';
       window.currentUser.loginExpiry = Date.now() + 8*60*60*1000;
       sessionStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
