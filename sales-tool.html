@@ -12488,11 +12488,10 @@ window.SauceMaterials.calcGablePosts = function(Q, WALLS, allDoors, sf) {
   return Object.values(skuGroups).sort(function(a, b) { return a.postLen - b.postLen; }).map(function(g) {
     return {
       category: 'Yard',
-      description: 'Gable Posts',
+      description: 'Gable Posts — Front & Back',
       sku: g.sku,
       quantity: g.quantity,
-      detail: g.postSize + ' × ' + g.postLen + "ft gable posts"
-    };
+      detail: g.postSize + ' × ' + g.postLen + "ft gable posts"    };
   });
 };
 
@@ -12535,19 +12534,22 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
     var postLen    = Math.ceil(totalH / 2) * 2;
     var sku        = skuBase + postLen;
 
-    function add(count) {
-      allPosts.push({ sku: sku, postLen: postLen, quantity: count });
+    function add(count, lbl) {
+      var wallCap = sc.wall.charAt(0).toUpperCase() + sc.wall.slice(1);
+      allPosts.push({ sku: sku, postLen: postLen, quantity: count, label: lbl || 'Side Shed Posts — ' + wallCap });
     }
 
     if (sc.type === 'gable') {
       // Clear span — only 2 corner posts at eave height
       var gLen = Math.ceil((Q.h + ground) / 2) * 2;
-      allPosts.push({ sku: skuBase + gLen, postLen: gLen, quantity: 2 });
+      var wallCapG = sc.wall.charAt(0).toUpperCase() + sc.wall.slice(1);
+      allPosts.push({ sku: skuBase + gLen, postLen: gLen, quantity: 2, label: 'Gable Extension Posts — ' + wallCapG });
       return;
     }
 
     if (sc.type === 'leanto') {
-      add(lineCount(sc.l, attachPS));
+      var wallCapL = sc.wall.charAt(0).toUpperCase() + sc.wall.slice(1);
+      allPosts.push({ sku: sku, postLen: postLen, quantity: lineCount(sc.l, attachPS), label: 'Side Shed Posts — ' + wallCapL });
       return;
     }
 
@@ -12589,21 +12591,21 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
     }
   });
 
-  // Group by SKU
+  // Group by SKU + label
   var skuGroups = {};
   allPosts.forEach(function(p) {
-    if (!skuGroups[p.sku]) skuGroups[p.sku] = { sku: p.sku, postLen: p.postLen, quantity: 0 };
-    skuGroups[p.sku].quantity += p.quantity;
+    var key = p.sku + '|' + (p.label||'');
+    if (!skuGroups[key]) skuGroups[key] = { sku: p.sku, postLen: p.postLen, quantity: 0, label: p.label||'Side Shed Posts' };
+    skuGroups[key].quantity += p.quantity;
   });
 
   return Object.values(skuGroups).sort(function(a, b) { return a.postLen - b.postLen; }).map(function(g) {
     return {
       category: 'Yard',
-      description: 'Side Shed Posts',
+      description: g.label || 'Side Shed Posts',
       sku: g.sku,
       quantity: g.quantity,
-      detail: postSize + ' x ' + g.postLen + "ft shed posts"
-    };
+      detail: postSize + ' x ' + g.postLen + "ft shed posts"    };
   });
 };
 
@@ -15150,17 +15152,19 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
   function toInches(ft) { return Math.ceil(ft * 12); }
 
   function fmtFtIn(ft) {
-    var totalIn = Math.ceil(ft * 12);
+    var totalIn = Math.round(ft * 12); // round not ceil — preserves 11'11" from 11.917
     var f = Math.floor(totalIn / 12);
     var i = totalIn % 12;
     return i === 0 ? f + "'" : f + "'" + i + '"';
   }
 
   var mainGroups = {};  // key → {qty, lenFt}  — main building runs
-  var extGroups  = {};  // key → {qty, lenFt}  — side shed extensions
+  var extGroups  = {};  // key → {qty, lenFt}  — gable extension panels only
+  var shedGroups = {};  // key → {qty, lenFt}  — lean-to/wrap shed panels
 
-  function addPanel(lenFt, qty, isExt) {
-    var store = isExt ? extGroups : mainGroups;
+  function addPanel(lenFt, qty, dest) {
+    // dest: false=main, 'ext'=gable extension, 'shed'=lean-to shed
+    var store = dest === 'ext' ? extGroups : dest === 'shed' ? shedGroups : mainGroups;
     var key = lenFt.toFixed(4);
     if (!store[key]) store[key] = { lenFt: lenFt, qty: 0 };
     store[key].qty += qty;
@@ -15234,7 +15238,7 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
           ? sc.l + ohFtG + (Q.w / 2)   // e.g. 20 + 1 + 12 = 33'
           : sc.l + ohFtG;               // e.g. 20 + 1 = 21'
         var gablePanels = Math.ceil(runPerSide / 3) * 2;
-        addPanel(extMetalLen, gablePanels, true);
+        addPanel(extMetalLen, gablePanels, 'ext');
       }
       return;
     }
@@ -15249,7 +15253,7 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
         sc.type !== 'gable') {
       ssAdder = 10/12;
     }
-    addPanel(ssLen + ssAdder, Math.ceil(sc.l / 3), true);
+    addPanel(ssLen + ssAdder, Math.ceil(sc.l / 3), 'shed');
   });
 
   var results = [];
@@ -15271,6 +15275,18 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
     results.push({
       category:    'Side Shed Roof Metal',
       description: 'Extension',
+      sku:         skuPrefix,
+      quantity:    g.qty,
+      metalLength: fmtFtIn(g.lenFt),
+      detail:      metalType + "  |  3' wide panels"
+    });
+  });
+
+  Object.keys(shedGroups).sort().forEach(function(key) {
+    var g = shedGroups[key];
+    results.push({
+      category:    'Side Shed Roof Metal',
+      description: 'Side Shed',
       sku:         skuPrefix,
       quantity:    g.qty,
       metalLength: fmtFtIn(g.lenFt),
