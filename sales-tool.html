@@ -23389,6 +23389,111 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     }
   }
 
+  // ── Capture feature snapshot from serializeConfig ───────
+  function readFeatures() {
+    var cfg = (typeof serializeConfig === 'function') ? serializeConfig() : {};
+    var sf  = cfg.salesFields || {};
+    var Q2  = cfg.Q || {};
+    var wd  = (cfg.walkDoors || []).filter(function(d){ return !d.framedOpening; });
+    var gd  = (cfg.doors     || []).filter(function(d){ return d.type === 'garage' && !d.framedOpening; });
+    var sh  = cfg.sheds || [];
+    return {
+      w:            Q2.w || 0,
+      l:            Q2.l || 0,
+      h:            Q2.h || 0,
+      pitch:        Q2.pitch || 4,
+      truss:        Q2.truss || '',
+      oh:           Q2.oh || 0,
+      wainscot:     sf.wainscot === 'Yes',
+      insulation:   sf.insulation !== 'None' && !!sf.insulation,
+      insulType:    sf.insulation || 'None',
+      insulRoof:    !!sf.insulRoof,
+      insulWalls:   !!sf.insulWalls,
+      standingSeam: !!sf.standingSeam,
+      osbRoof:      !!sf.osbRoof,
+      concrete:     !!(cfg.extras && cfg.extras.concreteOn),
+      garageDoors:  gd.length,
+      walkDoors:    wd.length,
+      sheds:        sh.length,
+      postWraps:    !!sf.postWraps,
+      barjoist:     !!sf.barjoist,
+      gutters:      !!sf.gutters,
+      roofMetal:    sf.roofMetal || '',
+      wallMetal:    sf.wallMetal || '',
+      roofColor:    cfg.colors ? cfg.colors.roof : '',
+      wallColor:    cfg.colors ? cfg.colors.wall : ''
+    };
+  }
+
+  // ── Auto-diff two feature snapshots → plain English notes ──
+  function diffFeatures(a, b) {
+    var notes = [];
+    function yn(v) { return v ? 'Yes' : 'No'; }
+
+    // Dimensions
+    if (a.w !== b.w || a.l !== b.l || a.h !== b.h) {
+      notes.push('Size changed from ' + a.w + '×' + a.l + '×' + a.h + ' to ' + b.w + '×' + b.l + '×' + b.h);
+    }
+    if (a.pitch !== b.pitch) {
+      notes.push('Pitch changed from ' + a.pitch + '/12 to ' + b.pitch + '/12');
+    }
+    if (a.oh !== b.oh) {
+      notes.push('Overhang changed from ' + a.oh + '″ to ' + b.oh + '″');
+    }
+    // Roof
+    if (a.standingSeam !== b.standingSeam) {
+      notes.push('Standing seam roof: ' + yn(a.standingSeam) + ' → ' + yn(b.standingSeam));
+    }
+    if (a.osbRoof !== b.osbRoof) {
+      notes.push('OSB roof sheathing: ' + yn(a.osbRoof) + ' → ' + yn(b.osbRoof));
+    }
+    if (a.roofMetal !== b.roofMetal && b.roofMetal) {
+      notes.push('Roof metal: ' + (a.roofMetal||'—') + ' → ' + b.roofMetal);
+    }
+    if (a.roofColor !== b.roofColor && b.roofColor) {
+      notes.push('Roof color: ' + (a.roofColor||'—') + ' → ' + b.roofColor);
+    }
+    // Walls
+    if (a.wainscot !== b.wainscot) {
+      notes.push('Wainscot: ' + yn(a.wainscot) + ' → ' + yn(b.wainscot));
+    }
+    if (a.wallMetal !== b.wallMetal && b.wallMetal) {
+      notes.push('Wall metal: ' + (a.wallMetal||'—') + ' → ' + b.wallMetal);
+    }
+    if (a.wallColor !== b.wallColor && b.wallColor) {
+      notes.push('Wall color: ' + (a.wallColor||'—') + ' → ' + b.wallColor);
+    }
+    // Insulation
+    if (a.insulation !== b.insulation || a.insulType !== b.insulType) {
+      if (!a.insulation && b.insulation)  notes.push('Insulation added: ' + b.insulType + (b.insulRoof ? ' (roof)' : '') + (b.insulWalls ? ' (walls)' : ''));
+      else if (a.insulation && !b.insulation) notes.push('Insulation removed');
+      else if (a.insulType !== b.insulType)   notes.push('Insulation type: ' + a.insulType + ' → ' + b.insulType);
+    } else if (a.insulation && b.insulation && (a.insulRoof !== b.insulRoof || a.insulWalls !== b.insulWalls)) {
+      notes.push('Insulation coverage changed (roof: ' + yn(b.insulRoof) + ', walls: ' + yn(b.insulWalls) + ')');
+    }
+    // Concrete
+    if (a.concrete !== b.concrete) {
+      notes.push('Concrete slab: ' + yn(a.concrete) + ' → ' + yn(b.concrete));
+    }
+    // Doors
+    if (a.garageDoors !== b.garageDoors) {
+      notes.push('Garage doors: ' + a.garageDoors + ' → ' + b.garageDoors);
+    }
+    if (a.walkDoors !== b.walkDoors) {
+      notes.push('Walk doors: ' + a.walkDoors + ' → ' + b.walkDoors);
+    }
+    // Sheds
+    if (a.sheds !== b.sheds) {
+      notes.push('Side structures: ' + a.sheds + ' → ' + b.sheds);
+    }
+    // Extras
+    if (a.postWraps !== b.postWraps)  notes.push('Post wraps: ' + yn(a.postWraps) + ' → ' + yn(b.postWraps));
+    if (a.barjoist !== b.barjoist)    notes.push('Bar joist: ' + yn(a.barjoist) + ' → ' + yn(b.barjoist));
+    if (a.gutters !== b.gutters)      notes.push('Gutters: ' + yn(a.gutters) + ' → ' + yn(b.gutters));
+
+    return notes;
+  }
+
   // ── Save current build into next slot ─────────────────
   CMP.saveToCompare = function() {
     if (CMP.slots.length >= CMP.MAX) {
@@ -23397,7 +23502,6 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     }
     // Force strip recalc so totals are fresh before snapshotting
     try { updateStripFromLocalCalc(); } catch(e) {}
-    // Small delay to let strip populate _lastPrice* globals
     setTimeout(function() {
       var idx   = CMP.slots.length;
       var label = 'Option ' + String.fromCharCode(65 + idx);
@@ -23406,7 +23510,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         showToast('Pricing not ready — wait a moment and try again', 'warn');
         return;
       }
-      CMP.slots.push({ label: label, dims: dims(), totals: totals });
+      CMP.slots.push({ label: label, dims: dims(), totals: totals, features: readFeatures() });
       updateBtn();
       showToast('Saved as ' + label, 'ok');
       var m = document.getElementById('cmpModal');
@@ -23446,6 +23550,119 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     CMP.slots = [];
     updateBtn();
     CMP.close();
+  };
+
+  // ── Send comparison via existing GAS sendQuoteEmail ───
+  CMP.sendComparison = function() {
+    if ((window.currentUser||{}).username !== 'lain.hinson') return;
+    var customerEmail = ((document.getElementById('cmpToEmail')||{}).value||'').trim();
+    if (!customerEmail) { alert('Please enter a customer email address.'); return; }
+
+    var slots = CMP.slots;
+    if (slots.length < 1) { alert('No options saved to compare.'); return; }
+
+    var sendBtn = document.querySelector('.cmp-send-wrap button');
+    if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = 'Sending…'; }
+
+    // ── Build comparison table text ────────────────────
+    var TYPE_LABELS2 = {
+      woodOH:'W/ Soffit', woodNoOH:'No Soffit',
+      steel:'Steel', stud:'Stud Frame',
+      cypress:'Cypress', metalBB:'Metal B&B'
+    };
+    function fmtN(n) { return (n && n > 0) ? '$' + Math.round(n).toLocaleString('en-US') : '—'; }
+
+    var allTypes = [];
+    slots.forEach(function(s){ Object.keys(s.totals||{}).forEach(function(k){ if(allTypes.indexOf(k)<0) allTypes.push(k); }); });
+
+    var lines = [];
+    lines.push('BUILD COMPARISON');
+    lines.push('');
+
+    // Option headers with dims
+    slots.forEach(function(s, i) {
+      lines.push(String.fromCharCode(65+i) + ') ' + s.label + '  —  ' + (s.dims||''));
+    });
+    lines.push('');
+
+    // Price table per build type
+    allTypes.forEach(function(k) {
+      lines.push('[ ' + (TYPE_LABELS2[k]||k) + ' ]');
+      slots.forEach(function(s, i) {
+        var t = (s.totals||{})[k];
+        if (!t) { lines.push('  ' + String.fromCharCode(65+i) + ') —'); return; }
+        lines.push('  ' + String.fromCharCode(65+i) + ') Materials ' + fmtN(t.material)
+          + '  |  Labor ' + fmtN(t.labor)
+          + (t.concrete > 0 ? '  |  Concrete ' + fmtN(t.concrete) : '')
+          + '  |  Total ' + fmtN(t.total));
+        // Delta vs Option A
+        if (i > 0 && slots[0].totals && slots[0].totals[k]) {
+          var delta = t.total - slots[0].totals[k].total;
+          var sign  = delta >= 0 ? '+' : '';
+          lines.push('     vs Option A: ' + sign + fmtN(Math.abs(delta)) + (delta < 0 ? ' less' : delta > 0 ? ' more' : ' same'));
+        }
+      });
+      lines.push('');
+    });
+
+    // What changed sections
+    if (slots[0] && slots[0].features) {
+      slots.slice(1).forEach(function(s, i) {
+        if (!s.features) return;
+        var diffs = diffFeatures(slots[0].features, s.features);
+        lines.push('CHANGES: ' + s.label + ' vs ' + slots[0].label);
+        if (diffs.length) {
+          diffs.forEach(function(d){ lines.push('  • ' + d); });
+        } else {
+          lines.push('  No configuration changes detected');
+        }
+        lines.push('');
+      });
+    }
+
+    // Salesperson notes
+    var notes = ((document.getElementById('cmpNotes')||{}).value||'').trim();
+    if (notes) {
+      lines.push('NOTES');
+      lines.push(notes);
+    }
+
+    var personalNote = lines.join('
+');
+    var cu = window.currentUser || {};
+
+    // Build a minimal selectedPrices array from Option A totals
+    var selectedPrices = [];
+    Object.keys(slots[0].totals||{}).forEach(function(k) {
+      var t = slots[0].totals[k];
+      selectedPrices.push({ type: k, label: TYPE_LABELS2[k]||k, results: t });
+    });
+
+    fetchWithTimeout(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({
+        action:        'sendQuoteEmail',
+        token:         getToken(),
+        snapshotId:    window._savedQuoteId || '',
+        salesmanEmail: cu.email || '',
+        customerEmail: customerEmail,
+        personalNote:  personalNote,
+        username:      'lain.hinson',
+        selectedPrices: selectedPrices
+      })
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send Comparison'; }
+      if (!data.success) throw new Error(data.error || 'Send failed');
+      showToast('Comparison sent to ' + customerEmail, 'ok');
+      var inp = document.getElementById('cmpToEmail'); if (inp) inp.value = '';
+    })
+    .catch(function(err) {
+      if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send Comparison'; }
+      alert('Error sending: ' + err.message);
+    });
   };
 
   // ── Render modal ───────────────────────────────────────
@@ -23520,7 +23737,48 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         });
         deltaHtml += '</tr>';
       });
-      deltaHtml += '</tbody></table></div>';
+      deltaHtml += '</tbody></table>';
+
+      // ── Auto-detected change notes ──────────────────────
+      var notesHtml = '';
+      if (base.features) {
+        slots.slice(1).forEach(function(s, i) {
+          if (!s.features) return;
+          var diffs = diffFeatures(base.features, s.features);
+          if (!diffs.length) {
+            notesHtml += '<div class="cmp-changes-block">'
+              + '<div class="cmp-changes-label">' + esc(s.label) + ' vs ' + esc(base.label) + '</div>'
+              + '<div class="cmp-changes-none">No configuration changes detected</div>'
+              + '</div>';
+          } else {
+            notesHtml += '<div class="cmp-changes-block">'
+              + '<div class="cmp-changes-label">' + esc(s.label) + ' vs ' + esc(base.label) + '</div>'
+              + '<ul class="cmp-changes-list">'
+              + diffs.map(function(d){ return '<li>' + esc(d) + '</li>'; }).join('')
+              + '</ul></div>';
+          }
+        });
+      }
+      if (notesHtml) {
+        deltaHtml += '<div class="cmp-changes-wrap">'
+          + '<div class="cmp-delta-title" style="margin-top:16px;">What Changed</div>'
+          + notesHtml
+          + '</div>';
+      }
+      deltaHtml += '</div>';
+
+      // ── Notes field + Send button (lain only) ───────────
+      var isLain = (window.currentUser||{}).username === 'lain.hinson';
+      deltaHtml += '<div class="cmp-send-wrap">'
+        + '<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888;margin-bottom:6px;">Additional Notes (optional)</div>'
+        + '<textarea id="cmpNotes" rows="3" placeholder="Add context for the customer..." style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,130,0,.2);background:rgba(255,255,255,.04);color:#e2e8f0;font-size:12px;font-family:Outfit,sans-serif;resize:vertical;outline:none;"></textarea>'
+        + (isLain
+          ? '<div style="display:flex;gap:8px;margin-top:10px;">'
+            + '<input id="cmpToEmail" type="email" placeholder="Customer email" style="flex:1;padding:7px 10px;border-radius:7px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:#e2e8f0;font-size:11px;font-family:Outfit,sans-serif;outline:none;">'
+            + '<button onclick="window._CompareEngine.sendComparison()" style="padding:7px 18px;border-radius:7px;border:none;background:linear-gradient(135deg,#FF8200,#cc6800);color:#1a2232;font-size:11px;font-weight:800;font-family:Outfit,sans-serif;cursor:pointer;letter-spacing:.3px;white-space:nowrap;">Send Comparison</button>'
+            + '</div>'
+          : '')
+        + '</div>';
     }
 
     m.querySelector('#cmpCards').innerHTML = cardsHtml;
@@ -23601,6 +23859,16 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       '.cmp-d-same{font-size:10px;color:#888;font-family:Outfit,sans-serif;margin-top:2px;}',
       '#cmpClearAll{background:none;border:1px solid rgba(239,68,68,.25);border-radius:6px;color:#f87171;font-size:10px;font-family:Outfit,sans-serif;font-weight:700;padding:4px 10px;cursor:pointer;}',
       '#cmpClearAll:hover{background:rgba(239,68,68,.1);}',
+      // Change notes
+      '.cmp-changes-wrap{margin-top:12px;}',
+      '.cmp-changes-block{margin-bottom:10px;}',
+      '.cmp-changes-label{font-size:10px;font-weight:700;color:#FF8200;font-family:Outfit,sans-serif;margin-bottom:5px;}',
+      '.cmp-changes-list{margin:0;padding-left:16px;display:flex;flex-direction:column;gap:3px;}',
+      '.cmp-changes-list li{font-size:11px;color:#ccc;font-family:Outfit,sans-serif;}',
+      '.cmp-changes-none{font-size:11px;color:#555;font-family:Outfit,sans-serif;font-style:italic;}',
+      // Send section
+      '.cmp-send-wrap{margin-top:16px;padding-top:16px;border-top:1px solid rgba(255,255,255,.06);}',
+      '.cmp-send-wrap input:focus{border-color:rgba(255,130,0,.4)!important;outline:none;}',
     ].join('');
     document.head.appendChild(style);
 
