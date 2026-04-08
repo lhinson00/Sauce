@@ -23345,7 +23345,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
 // ═══════════════════════════════════════════════════════
 (function() {
 
-  var CMP = window._CompareEngine = { slots: [], MAX: 3 };
+  var CMP = window._CompareEngine = { slots: [], MAX: 3, activeTypes: null }; // activeTypes: null = all
 
   var TYPE_LABELS = {
     woodOH:'W/ Soffit', woodNoOH:'No Soffit',
@@ -23527,6 +23527,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
 
   CMP.clearSlot = function(idx) {
     CMP.slots.splice(idx, 1);
+    if (CMP.slots.length === 0) CMP.activeTypes = null;
     updateBtn();
     var m = safeModal();
     if (m) renderModal();
@@ -23538,6 +23539,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
 
   CMP.clearAll = function() {
     CMP.slots = [];
+    CMP.activeTypes = null;
     updateBtn();
     CMP.close();
   };
@@ -23660,11 +23662,47 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
   };
 
   // ── Render modal ───────────────────────────────────────
+  // -- Toggle a build type filter
+  CMP.toggleType = function(k) {
+    if (!CMP.activeTypes) {
+      var all = [];
+      CMP.slots.forEach(function(s) {
+        Object.keys(s.totals||{}).forEach(function(t) { if (all.indexOf(t) < 0) all.push(t); });
+      });
+      CMP.activeTypes = all.filter(function(t) { return t !== k; });
+    } else {
+      var idx = CMP.activeTypes.indexOf(k);
+      if (idx < 0) CMP.activeTypes.push(k);
+      else CMP.activeTypes.splice(idx, 1);
+    }
+    renderModal();
+  };
+
+  // -- Render modal
   function renderModal() {
     var m = safeModal();
     if (!m) return;
-
     var slots = CMP.slots;
+    var allAvailTypes = [];
+    slots.forEach(function(s) {
+      Object.keys(s.totals||{}).forEach(function(k) {
+        if (allAvailTypes.indexOf(k) < 0) allAvailTypes.push(k);
+      });
+    });
+    if (!CMP.activeTypes) CMP.activeTypes = allAvailTypes.slice();
+    var visibleTypes = allAvailTypes.filter(function(k) {
+      return CMP.activeTypes.indexOf(k) >= 0;
+    });
+
+    // Filter bar
+    var filterHtml = '<div class="cmp-filter-bar"><span class="cmp-filter-label">Show:</span>';
+    allAvailTypes.forEach(function(k) {
+      var on = CMP.activeTypes.indexOf(k) >= 0;
+      filterHtml += '<label class="cmp-filter-chip' + (on ? ' cmp-filter-on' : '') + '">'
+        + '<input type="checkbox"' + (on ? ' checked' : '') + ' onchange="window._CompareEngine.toggleType(\'' + k + '\')" style="display:none;">'
+        + (TYPE_LABELS[k]||k) + '</label>';
+    });
+    filterHtml += '</div>';
 
     // Slot cards
     var cardsHtml = '';
@@ -23677,9 +23715,8 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         +     ' onblur="window._CompareEngine.renameSlot(' + idx + ',this.value)">'
         +   '<button class="cmp-x-btn" onclick="window._CompareEngine.clearSlot(' + idx + ')">\u2715</button>'
         + '</div>'
-        + '<div class="cmp-dims">\ud83d\udcd0 ' + esc(slot.dims) + '</div>';
-
-      var types = Object.keys(slot.totals || {});
+        + '<div class="cmp-dims">&#128208; ' + esc(slot.dims) + '</div>';
+      var types = visibleTypes.filter(function(k) { return slot.totals && slot.totals[k]; });
       if (types.length) {
         cardsHtml += '<div class="cmp-types">';
         types.forEach(function(k) {
@@ -23694,29 +23731,21 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         });
         cardsHtml += '</div>';
       } else {
-        cardsHtml += '<div class="cmp-no-totals">No pricing yet \u2014 wait for strip to calculate</div>';
+        cardsHtml += '<div class="cmp-no-totals">No pricing for selected types</div>';
       }
       cardsHtml += '</div>';
     });
 
-    // Delta table + change notes (2+ slots)
+    // Delta table + change notes
     var deltaHtml = '';
-    if (slots.length >= 2) {
-      var allTypes = [];
-      slots.forEach(function(s) {
-        Object.keys(s.totals||{}).forEach(function(k) {
-          if (allTypes.indexOf(k) < 0) allTypes.push(k);
-        });
-      });
+    if (slots.length >= 2 && visibleTypes.length > 0) {
       var base = slots[0];
-
       deltaHtml += '<div class="cmp-delta-wrap">';
       deltaHtml += '<div class="cmp-delta-title">Price Delta vs. ' + esc(base.label) + '</div>';
       deltaHtml += '<table class="cmp-delta-tbl"><thead><tr><th>Build Type</th>';
       slots.forEach(function(s) { deltaHtml += '<th>' + esc(s.label) + '</th>'; });
       deltaHtml += '</tr></thead><tbody>';
-
-      allTypes.forEach(function(k) {
+      visibleTypes.forEach(function(k) {
         deltaHtml += '<tr><td class="cmp-delta-type">' + (TYPE_LABELS[k]||k) + '</td>';
         var baseTotal = ((base.totals||{})[k]||{}).total || 0;
         slots.forEach(function(s, i) {
@@ -23726,8 +23755,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
           } else {
             var d = t - baseTotal;
             var cls = d > 0 ? 'cmp-d-more' : (d < 0 ? 'cmp-d-less' : 'cmp-d-same');
-            var deltaStr = d === 0 ? 'same'
-              : (d > 0 ? '+' + fmt(d) : fmt(d) + ' less');
+            var deltaStr = d === 0 ? 'same' : (d > 0 ? '+' + fmt(d) : fmt(d) + ' less');
             deltaHtml += '<td><div class="cmp-delta-val">' + fmt(t) + '</div>'
               + (baseTotal > 0 ? '<div class="' + cls + '">' + deltaStr + '</div>' : '')
               + '</td>';
@@ -23736,8 +23764,6 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         deltaHtml += '</tr>';
       });
       deltaHtml += '</tbody></table>';
-
-      // What changed
       var changesHtml = '';
       if (base.features) {
         slots.slice(1).forEach(function(s) {
@@ -23758,13 +23784,10 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       if (changesHtml) {
         deltaHtml += '<div class="cmp-changes-wrap">'
           + '<div class="cmp-delta-title" style="margin-top:16px;">What Changed</div>'
-          + changesHtml
-          + '</div>';
+          + changesHtml + '</div>';
       }
       deltaHtml += '</div>';
     }
-
-    // Notes + send (always visible once at least 1 slot)
     var isLain = (window.currentUser||{}).username === 'lain.hinson';
     deltaHtml += '<div class="cmp-send-wrap">'
       + '<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888;margin-bottom:6px;">Notes (optional)</div>'
@@ -23776,84 +23799,8 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
           + '</div>'
         : '')
       + '</div>';
-
-    m.querySelector('#cmpCards').innerHTML = cardsHtml;
-    m.querySelector('#cmpDelta').innerHTML = deltaHtml;
+    m.querySelector('#cmpFilter').innerHTML = filterHtml;
+    m.querySelector('#cmpCards').innerHTML  = cardsHtml;
+    m.querySelector('#cmpDelta').innerHTML  = deltaHtml;
   }
 
-  // ── Styles + modal DOM ────────────────────────────────
-  document.addEventListener('DOMContentLoaded', function() {
-    var style = document.createElement('style');
-    style.textContent = [
-      '#cmpModal{display:none;position:fixed;inset:0;z-index:9800;background:rgba(0,0,0,.65);backdrop-filter:blur(4px);overflow-y:auto;}',
-      '#cmpInner{max-width:980px;margin:28px auto;background:#1a2232;border-radius:16px;border:1px solid rgba(255,255,255,.1);box-shadow:0 24px 80px rgba(0,0,0,.6);overflow:hidden;}',
-      '#cmpHeader{display:flex;align-items:center;gap:10px;padding:14px 20px;background:rgba(255,130,0,.07);border-bottom:1px solid rgba(255,130,0,.15);}',
-      '#cmpHeaderTitle{font-family:Outfit,sans-serif;font-weight:800;font-size:14px;color:#FF8200;}',
-      '#cmpHeaderSub{font-size:11px;color:#666;}',
-      '#cmpCloseBtn{margin-left:auto;background:none;border:none;color:#666;font-size:18px;cursor:pointer;line-height:1;padding:0 2px;}',
-      '#cmpCloseBtn:hover{color:#fff;}',
-      '#cmpBody{padding:20px;display:flex;flex-direction:column;gap:20px;}',
-      '#cmpCards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;}',
-      '.cmp-card{background:#0f1827;border:1.5px solid rgba(255,255,255,.07);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px;}',
-      '.cmp-card-header{display:flex;align-items:center;gap:8px;}',
-      '.cmp-badge{font-family:Outfit,sans-serif;font-size:11px;font-weight:800;color:#fff;background:rgba(255,130,0,.25);border:1px solid rgba(255,130,0,.4);border-radius:6px;padding:2px 9px;flex-shrink:0;}',
-      '.cmp-label-inp{flex:1;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:6px;color:#fff;font-size:12px;font-family:Outfit,sans-serif;font-weight:700;padding:4px 8px;outline:none;}',
-      '.cmp-label-inp:focus{border-color:rgba(255,130,0,.5);}',
-      '.cmp-x-btn{background:none;border:none;color:#555;font-size:14px;cursor:pointer;padding:0 2px;flex-shrink:0;}',
-      '.cmp-x-btn:hover{color:#f87171;}',
-      '.cmp-dims{font-size:11px;color:#888;font-family:Outfit,sans-serif;}',
-      '.cmp-types{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;}',
-      '.cmp-type-block{background:rgba(255,255,255,.03);border-radius:8px;padding:8px;}',
-      '.cmp-type-lbl{font-size:9px;font-weight:800;color:#FF8200;font-family:Outfit,sans-serif;letter-spacing:.5px;margin-bottom:5px;}',
-      '.cmp-type-row{display:flex;justify-content:space-between;font-size:10px;color:#888;font-family:Outfit,sans-serif;margin-bottom:2px;}',
-      '.cmp-type-row span:last-child{color:#ccc;font-weight:600;}',
-      '.cmp-type-total{display:flex;justify-content:space-between;font-size:11px;font-weight:800;font-family:Outfit,sans-serif;color:#fff;margin-top:4px;padding-top:4px;border-top:1px solid rgba(255,255,255,.06);}',
-      '.cmp-type-total span:last-child{color:#FF8200;}',
-      '.cmp-no-totals{font-size:11px;color:#555;text-align:center;padding:12px 0;}',
-      '.cmp-delta-wrap{padding-top:4px;}',
-      '.cmp-delta-title{font-size:10px;font-weight:800;font-family:Outfit,sans-serif;color:#888;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;}',
-      '.cmp-delta-tbl{width:100%;border-collapse:collapse;font-size:11px;}',
-      '.cmp-delta-tbl th{text-align:left;color:#888;font-weight:700;font-family:Outfit,sans-serif;padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.06);}',
-      '.cmp-delta-tbl td{padding:6px 10px;vertical-align:top;border-bottom:1px solid rgba(255,255,255,.03);}',
-      '.cmp-delta-type{color:#aaa;font-family:Outfit,sans-serif;}',
-      '.cmp-delta-base{color:#e2e8f0;font-weight:700;font-family:Outfit,sans-serif;}',
-      '.cmp-delta-val{color:#e2e8f0;font-weight:700;font-family:Outfit,sans-serif;}',
-      '.cmp-d-more{font-size:10px;color:#f87171;font-weight:600;font-family:Outfit,sans-serif;margin-top:2px;}',
-      '.cmp-d-less{font-size:10px;color:#4ade80;font-weight:600;font-family:Outfit,sans-serif;margin-top:2px;}',
-      '.cmp-d-same{font-size:10px;color:#888;font-family:Outfit,sans-serif;margin-top:2px;}',
-      '.cmp-changes-wrap{margin-top:12px;}',
-      '.cmp-changes-block{margin-bottom:10px;}',
-      '.cmp-changes-label{font-size:10px;font-weight:700;color:#FF8200;font-family:Outfit,sans-serif;margin-bottom:5px;}',
-      '.cmp-changes-list{margin:0;padding-left:16px;display:flex;flex-direction:column;gap:3px;}',
-      '.cmp-changes-list li{font-size:11px;color:#ccc;font-family:Outfit,sans-serif;}',
-      '.cmp-changes-none{font-size:11px;color:#555;font-family:Outfit,sans-serif;font-style:italic;}',
-      '.cmp-send-wrap{margin-top:16px;padding-top:16px;border-top:1px solid rgba(255,255,255,.06);}',
-      '.cmp-send-wrap input:focus{border-color:rgba(255,130,0,.4)!important;outline:none;}',
-      '#cmpClearAll{background:none;border:1px solid rgba(239,68,68,.25);border-radius:6px;color:#f87171;font-size:10px;font-family:Outfit,sans-serif;font-weight:700;padding:4px 10px;cursor:pointer;}',
-      '#cmpClearAll:hover{background:rgba(239,68,68,.1);}',
-    ].join('');
-    document.head.appendChild(style);
-
-    var modal = document.createElement('div');
-    modal.id = 'cmpModal';
-    modal.innerHTML = '<div id="cmpInner">'
-      + '<div id="cmpHeader">'
-      +   '<span id="cmpHeaderTitle">\u21c4 Build Comparison</span>'
-      +   '<span id="cmpHeaderSub">Save builds using the topbar button, then compare here</span>'
-      +   '<button id="cmpCloseBtn" onclick="window._CompareEngine.close()">\u2715</button>'
-      + '</div>'
-      + '<div id="cmpBody">'
-      +   '<div id="cmpCards"></div>'
-      +   '<div id="cmpDelta"></div>'
-      +   '<div style="display:flex;justify-content:flex-end;margin-top:8px;">'
-      +     '<button id="cmpClearAll" onclick="window._CompareEngine.clearAll()">Clear All</button>'
-      +   '</div>'
-      + '</div>'
-      + '</div>';
-    document.body.appendChild(modal);
-
-    modal.addEventListener('click', function(e) { if (e.target === modal) CMP.close(); });
-  });
-
-})();
-</script>
