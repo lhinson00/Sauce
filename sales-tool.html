@@ -1552,7 +1552,22 @@ body.customer-mode #custColorChartLink { display: block !important; }
         </div>
         <div class="toggle-row" id="rowGutters">
           <div class="toggle-info"><div class="toggle-lbl">Gutters</div></div>
-          <label class="tog"><input type="checkbox" id="st_gutters" onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+          <label class="tog"><input type="checkbox" id="st_gutters" onchange="try{var gop=document.getElementById('gutterOptions');if(gop)gop.style.display=this.checked?'block':'none';scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+        </div>
+        <div id="gutterOptions" style="display:none;padding:4px 0 6px 0;">
+          <div style="display:flex;flex-direction:column;gap:3px;margin-bottom:6px;">
+            <div style="font-size:9px;color:var(--muted);font-weight:600;">Material Type</div>
+            <select id="st_gutterType" onchange="try{updateStripFromLocalCalc();}catch(e){}" style="font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
+              <option value="SGS" selected>Standard ($9.50/LF)</option>
+              <option value="SGSCOM">Copper Metallic ($12.50/LF)</option>
+              <option value="SGSC">Real Copper ($21.00/LF)</option>
+              <option value="SGSGA">Galvalume ($15.50/LF)</option>
+            </select>
+          </div>
+          <div class="toggle-row" style="margin:0;">
+            <div class="toggle-info"><div class="toggle-lbl" style="font-size:11px;">Gutter Guard (+$8.00/LF)</div></div>
+            <label class="tog"><input type="checkbox" id="st_gutterGuard" onchange="try{updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+          </div>
         </div>
         <div class="toggle-row" id="rowESD">
           <div class="toggle-info">
@@ -4449,7 +4464,9 @@ function serializeConfig() {
       rwBack:   !!(document.getElementById('st_rwBack')||{}).checked,
       rwColorCode: (document.getElementById('st_rwColorCode')||{}).value||'',
       postProtectors:!!(document.getElementById('st_postProtectors')||{}).checked,
-      gutters:   !!(document.getElementById('st_gutters')||{}).checked,
+      gutters:      !!(document.getElementById('st_gutters')||{}).checked,
+      gutterType:   (document.getElementById('st_gutterType')||{}).value||'SGS',
+      gutterGuard:  !!(document.getElementById('st_gutterGuard')||{}).checked,
       esd:       !!(document.getElementById('st_esd')||{}).checked,
       craneFee:  !!(document.getElementById('st_craneFee')||{}).checked,
       cableBracing:!!(document.getElementById('st_cableBracing')||{}).checked,
@@ -4641,6 +4658,10 @@ function restoreConfig(cfg) {
       _sv('st_postProtectors',sf.postProtectors);
       _sv('st_cableBracing',sf.cableBracing);
       _sv('st_gutters',   sf.gutters);
+      _sv('st_gutterType', sf.gutterType);
+      _sv('st_gutterGuard',sf.gutterGuard);
+      // Show/hide gutter options panel on restore
+      (function(){ var gop=document.getElementById('gutterOptions'); if(gop) gop.style.display=sf.gutters?'':'none'; })();
       _sv('st_esd',       sf.esd);
       _sv('st_craneFee',  sf.craneFee);
       _sv('st_manualAdder',sf.manualAdder);
@@ -19707,6 +19728,120 @@ async function generateChecklist() {
 }
 
 
+// ── GUTTERS ─────────────────────────────────────────────────────────────────────────────
+// Toggle: st_gutters. Material type: st_gutterType. Guard toggle: st_gutterGuard.
+// Rates: SGS=$9.50 | SGSCOM=$12.50 | SGSC=$21.00 | SGSGA=$15.50 | SGSGG guard=$8.00
+// Gutter LF = (building length + OH ft) x 2 eave sides
+//   + any DROPPED lean-to eave runs (dropFt > 0): (shed length + OH ft) x 1 per dropped shed
+// Downspout qty = 1 per corner + 1 per every 40 ft of eave run (each side separately)
+// Downspout LF = (building height + 6) x DS qty
+// Fuel surcharge: $0.75/mile for each mile over 75 (SKU: SGSM)
+// Minimum: $500 total ($1000 for Real Copper / SGSC)
+// All items go to Hardware category, labeled as Gutter.
+
+window.SauceMaterials.calcGutters = function(Q, shedCfgs) {
+  var on = !!(document.getElementById('st_gutters')||{}).checked;
+  if (!on) return [];
+
+  var matType  = (document.getElementById('st_gutterType')||{}).value || 'SGS';
+  var hasGuard = !!(document.getElementById('st_gutterGuard')||{}).checked;
+  var miles    = window._cachedMileage || 0;
+  var ohFt     = (Q.oh || 0) / 12; // overhang in feet
+
+  // Rates per LF
+  var rates = { SGS: 9.50, SGSCOM: 12.50, SGSC: 21.00, SGSGA: 15.50 };
+  var rate  = rates[matType] || 9.50;
+  var guardRate = 8.00;
+  var minCharge = (matType === 'SGSC') ? 1000 : 500;
+
+  // ── Gutter runs ────────────────────────────────────────
+  // Main building: both eave sides (left + right)
+  var gutterRuns = []; // [{label, gutterLF, eaveRunLF}]
+
+  var mainEaveLF = Q.l + ohFt;
+  gutterRuns.push({ label: 'Main left eave',  gutterLF: mainEaveLF, eaveRunLF: Q.l });
+  gutterRuns.push({ label: 'Main right eave', gutterLF: mainEaveLF, eaveRunLF: Q.l });
+
+  // Dropped lean-to sheds only (dropFt > 0, eave walls, not gable type)
+  (shedCfgs || []).forEach(function(sc) {
+    if (!sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    if (!sc.wall || (sc.wall !== 'left' && sc.wall !== 'right')) return;
+    var drop = parseFloat(sc.dropFt || 0);
+    if (drop <= 0) return; // flush/non-dropped — no separate gutter
+    var shedEaveLF = sc.l + ohFt;
+    gutterRuns.push({ label: 'Shed eave (' + sc.wall + ')', gutterLF: shedEaveLF, eaveRunLF: sc.l });
+  });
+
+  var totalGutterLF = gutterRuns.reduce(function(s, r) { return s + r.gutterLF; }, 0);
+
+  // ── Downspout qty and LF ───────────────────────────────
+  // Per run: 1 per corner (always 2 per run) + 1 per every 40 ft of eave run beyond first 40 ft
+  var totalDSQty = 0;
+  gutterRuns.forEach(function(r) {
+    var dsQty = 2 + Math.floor(r.eaveRunLF / 40); // 2 corners + 1 per 40ft interval beyond start
+    totalDSQty += dsQty;
+  });
+  var dsLFEach  = Q.h + 6;
+  var totalDSLF = totalDSQty * dsLFEach;
+
+  // Combined gutter + downspout LF for pricing
+  var totalBillableLF = totalGutterLF + totalDSLF;
+
+  // ── Cost calculations ──────────────────────────────────
+  var gutterCost  = totalBillableLF * rate;
+  var guardCost   = hasGuard ? totalGutterLF * guardRate : 0;
+  var fuelCost    = miles > 75 ? (miles - 75) * 0.75 : 0;
+  var subtotal    = gutterCost + guardCost + fuelCost;
+  var finalCost   = Math.max(subtotal, minCharge);
+  var minApplied  = finalCost > subtotal;
+
+  var matLabels = { SGS: 'Standard', SGSCOM: 'Copper Metallic', SGSC: 'Real Copper', SGSGA: 'Galvalume' };
+
+  var items = [];
+
+  // Main gutter line item
+  var gutterDetail = matLabels[matType] + '  |  Gutter: ' + Math.round(totalGutterLF) + ' LF'
+    + '  |  DS: ' + totalDSQty + ' x ' + dsLFEach + ' LF = ' + Math.round(totalDSLF) + ' LF'
+    + '  |  Total: ' + Math.round(totalBillableLF) + ' LF @ $' + rate + '/LF';
+  if (minApplied) gutterDetail += '  |  $' + minCharge + ' minimum applied';
+
+  items.push({
+    category:    'Hardware',
+    description: 'Gutter & Downspout',
+    sku:         matType,
+    quantity:    Math.round(totalBillableLF),
+    fixedCost:   finalCost,
+    detail:      gutterDetail
+  });
+
+  // Gutter guard line item
+  if (hasGuard) {
+    items.push({
+      category:    'Hardware',
+      description: 'Gutter Guard',
+      sku:         'SGSGG',
+      quantity:    Math.round(totalGutterLF),
+      fixedCost:   guardCost,
+      detail:      Math.round(totalGutterLF) + ' LF @ $' + guardRate + '/LF'
+    });
+  }
+
+  // Fuel surcharge
+  if (fuelCost > 0) {
+    items.push({
+      category:    'Hardware',
+      description: 'Gutter Fuel Surcharge',
+      sku:         'SGSM',
+      quantity:    miles - 75,
+      fixedCost:   fuelCost,
+      detail:      (miles - 75) + ' miles over 75 @ $0.75/mile'
+    });
+  }
+
+  return items;
+};
+
 // ── CABLE BRACING ─────────────────────────────────────────────────────────────
 // Steel truss only. Toggle: st_cableBracing.
 // SKU determined by building width (Q.w): TSGTCB40/50/60/70/80.
@@ -20140,6 +20275,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcInsulation(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcMetalScrews(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcAwnings().forEach(function(item) { items.push(item); });
+    SM.calcGutters(Q, shedCfgs).forEach(function(item) { items.push(item); });
     items.push({ category: 'Hardware', description: 'Roofing Sealant', sku: 'RS00', quantity: 1, detail: 'shed only' });
     return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "' (SHED ONLY)", shedOnly: true };
   }
@@ -20252,6 +20388,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     })();
 
     SM.calcAwnings().forEach(function(item) { items.push(item); });
+    SM.calcGutters(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcFinishedCeilingMetal(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcRockWainscot(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcPostProtectors(sfQ, WALLS, allDoors, sfShedCfgs).forEach(function(item) { items.push(item); });
@@ -20337,6 +20474,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcHurricaneBrackets(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcMetalScrews(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcAwnings().forEach(function(item) { items.push(item); });
+    SM.calcGutters(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcFinishedCeilingMetal(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcRockWainscot(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcPostProtectors(bbQ, WALLS, allDoors, bbShedCfgs).forEach(function(item) { items.push(item); });
@@ -20456,6 +20594,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcJoistHangers(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcMetalScrews(cyQ, WALLS, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcAwnings().forEach(function(item) { items.push(item); });
+    SM.calcGutters(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcFinishedCeilingMetal(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcRockWainscot(cyQ, WALLS, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcPostProtectors(cyQ, WALLS, allDoors, cyShedCfgs).forEach(function(item) { items.push(item); });
@@ -20629,6 +20768,7 @@ window.SauceMaterials.calculate = function(forcedType) {
   SM.calcGableRakeTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcRidgeCap(Q).forEach(function(item) { items.push(item); });
   SM.calcAwnings().forEach(function(item) { items.push(item); });
+    SM.calcGutters(Q, shedCfgs).forEach(function(item) { items.push(item); });
   SM.calcFinishedCeilingMetal(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcRockWainscot(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcPostProtectors(Q, WALLS, allDoors, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
