@@ -11737,6 +11737,16 @@ function showToast(msg, type, duration) {
 function checkTokenResponse(data) {
   // Returns true if response indicates session expired or rate limited
   if (data && data.sessionExpired) {
+    // Only force logout if the client-side 1am expiry has actually passed.
+    // If the user logged in this morning their loginExpiry is tonight at 1am —
+    // a GAS token rejection before then should NOT interrupt their work day.
+    var cu = window.currentUser || {};
+    var clientStillValid = cu.loginExpiry && Date.now() < cu.loginExpiry;
+    if (clientStillValid) {
+      // Silently ignore the server-side rejection — session is still good until 1am
+      console.warn('[Auth] GAS returned sessionExpired but client loginExpiry not reached — continuing session');
+      return false;
+    }
     showToast('Session expired — please log in again.', 'warn', 4000);
     handleSessionExpired();
     return true;
@@ -22567,10 +22577,10 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
   var garageDoors = allDoors.filter(function(d){ return d.type === 'garage' && !d.framedOpening; });
   var framedGDs = allDoors.filter(function(d){ return d.type === 'garage' && d.framedOpening; });
   garageDoors.forEach(function(d) {
-    var isLarge = d.w > 12 && d.h > 12;
+    var isLarge = (d.w * d.h) > 144;
     var fvRates = {'10x10':9000,'10x12':10750,'12x12':12250};
     var rate = d.fullView ? (fvRates[d.sizeKey]||9000) : (isLarge ? 200 : 125);
-    var rateLabel = d.fullView ? 'Full View Glass' : (isLarge ? '(over 12x12)' : '');
+    var rateLabel = d.fullView ? 'Full View Glass' : (isLarge ? '(over 144 sqft)' : '');
     lines.push({ label: 'Garage Door ' + d.w + 'x' + d.h + (rateLabel?' '+rateLabel:'') + ' @ $' + rate, amount: rate });
   });
   framedGDs.forEach(function(d) {
@@ -22612,9 +22622,9 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
         lines.push({ label: 'Shed Garage Door Framed Opening ' + gd.size + ' @ $125', amount: 125 });
         return;
       }
-      var isLarge = w > 12 && h > 12;
+      var isLarge = (w * h) > 144;
       var rate = isLarge ? 200 : 125;
-      lines.push({ label: 'Shed Garage Door ' + gd.size + (isLarge?' (over 12x12)':'') + ' @ $' + rate, amount: rate });
+      lines.push({ label: 'Shed Garage Door ' + gd.size + (isLarge?' (over 144 sqft)':'') + ' @ $' + rate, amount: rate });
     });
     (sc.walkDoors||[]).forEach(function(wd) {
       if (wd.framedOpening) {
@@ -23892,30 +23902,70 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       return;
     }
 
+    // doSend — called after we have a valid snapshotId
+    function doSend(snapshotId) {
+      fetchWithTimeout(API_URL, {
+        method:  'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({
+          action:         'sendQuoteEmail',
+          token:          (typeof getToken === 'function') ? getToken() : '',
+          snapshotId:     snapshotId,
+          salesmanEmail:  cu.email || '',
+          customerEmail:  customerEmail,
+          personalNote:   personalNote,
+          username:       'lain.hinson',
+          selectedPrices: selectedPrices
+        })
+      })
+      .then(function(data) {
+        // fetchWithTimeout resolves with already-parsed JSON — no .json() call needed
+        if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send Comparison'; }
+        if (!data.success) throw new Error(data.error || 'Send failed');
+        toast('Comparison sent to ' + customerEmail, 'ok');
+        if (emailEl) emailEl.value = '';
+      })
+      .catch(function(err) {
+        if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send Comparison'; }
+        alert('Error sending: ' + err.message);
+      });
+    }
+
+    // If a quote has already been saved this session, use its ID directly
+    if (window._savedQuoteId) {
+      doSend(window._savedQuoteId);
+      return;
+    }
+
+    // No saved quote yet — save a minimal snapshot first so GAS has a record to attach the email to
+    var Q2 = window._Q || {};
+    var name2 = (document.getElementById('st_name')||{}).value || 'Comparison';
+    var minSnapshot = {
+      calculatorName: 'Sales Tool',
+      calculatorFile: 'sales-tool.html',
+      salesman:       cu.username || 'lain.hinson',
+      salesmanName:   cu.fullName || 'Lain Hinson',
+      customerName:   name2,
+      phone:          (document.getElementById('st_phone')||{}).value || '',
+      email:          customerEmail,
+      address:        (document.getElementById('st_address')||{}).value || '',
+      formFields:     { width: Q2.w, length: Q2.l, height: Q2.h, pitch: Q2.pitch, truss: Q2.truss },
+      pricingResults: {},
+      timestamp:      new Date().toISOString()
+    };
     fetchWithTimeout(API_URL, {
       method:  'POST',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({
-        action:         'sendQuoteEmail',
-        token:          (typeof getToken === 'function') ? getToken() : '',
-        snapshotId:     window._savedQuoteId || '',
-        salesmanEmail:  cu.email || '',
-        customerEmail:  customerEmail,
-        personalNote:   personalNote,
-        username:       'lain.hinson',
-        selectedPrices: selectedPrices
-      })
+      body: JSON.stringify({ action: 'saveQuoteSnapshot', username: cu.username || 'lain.hinson', token: (typeof getToken === 'function') ? getToken() : '', snapshot: minSnapshot })
     })
-    .then(function(r) { return r.json(); })
     .then(function(data) {
-      if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send Comparison'; }
-      if (!data.success) throw new Error(data.error || 'Send failed');
-      toast('Comparison sent to ' + customerEmail, 'ok');
-      if (emailEl) emailEl.value = '';
+      var sid = (data && data.quoteId) ? data.quoteId : ('CMP-' + Date.now());
+      window._savedQuoteId = sid;
+      doSend(sid);
     })
     .catch(function(err) {
-      if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send Comparison'; }
-      alert('Error sending: ' + err.message);
+      // Snapshot save failed — try sending anyway with a generated ID
+      doSend('CMP-' + Date.now());
     });
   };
 
