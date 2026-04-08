@@ -1104,6 +1104,11 @@ body.customer-mode #custColorChartLink { display: block !important; }
         </div>
       </div>
 
+      <!-- COMPARISON SAVE BUTTON -->
+      <div id="cmpSaveBar" style="padding:0 0 10px;">
+        <button id="cmpSaveBtn" onclick="window._CompareEngine.saveToCompare()" style="width:100%;padding:8px 12px;border-radius:8px;border:1.5px solid rgba(255,130,0,.35);background:rgba(255,130,0,.08);color:#FF8200;font-family:'Outfit',sans-serif;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:.5px;display:flex;align-items:center;justify-content:center;gap:6px;"><span>⊞</span><span id="cmpSaveBtnLabel">Save to Comparison</span></button>
+      </div>
+
       <!-- DIMENSIONS -->
       <div class="sec">
         <div class="sec-title"><span class="icon">📐</span>Dimensions</div>
@@ -23332,331 +23337,267 @@ window.exportMaterialCSV = function(buildType, labelStr) {
 
 document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns(); setTimeout(vcInitColorPickers, 200); });
 
-// ═══════════════════════════════════════════════════════
-// COMPARISON ENGINE
-// ═══════════════════════════════════════════════════════
+</script>
 
+<script>
+// ═══════════════════════════════════════════════════════
+// COMPARISON ENGINE v2
+// ═══════════════════════════════════════════════════════
 (function() {
 
-  // ── State ─────────────────────────────────────────────
-  var CMP = window._CompareEngine = {
-    slots: [],          // [{label, config, totals, locked}]
-    activeSlot: null,   // index of slot currently loaded in estimator
-    MAX: 3
+  var CMP = window._CompareEngine = { slots: [], MAX: 3 };
+
+  var TYPE_LABELS = {
+    woodOH:'W/ Soffit', woodNoOH:'No Soffit',
+    steel:'Steel', stud:'Stud Frame',
+    cypress:'Cypress', metalBB:'Metal B&B'
   };
 
-  var BUILD_TYPE_LABELS = {
-    woodOH:   'W/ Soffit', woodNoOH: 'No Soffit',
-    steel:    'Steel',     stud:     'Stud Frame',
-    cypress:  'Cypress',   metalBB:  'Metal B&B'
-  };
-
-  function fmtDollars(n) {
+  function fmt(n) {
     if (!n || n <= 0) return '—';
     return '$' + Math.round(n).toLocaleString('en-US');
   }
 
-  // ── Read current totals from _lastPrice* globals ──────
-  function readCurrentTotals() {
-    var sources = {
-      woodOH:   window._lastPriceOH,
-      woodNoOH: window._lastPriceNoOH,
-      steel:    window._lastPriceSteel,
-      stud:     window._lastPriceStud,
-      cypress:  window._lastPriceCypress,
-      metalBB:  window._lastPriceBB
+  function readTotals() {
+    var map = {
+      woodOH:window._lastPriceOH, woodNoOH:window._lastPriceNoOH,
+      steel:window._lastPriceSteel, stud:window._lastPriceStud,
+      cypress:window._lastPriceCypress, metalBB:window._lastPriceBB
     };
     var out = {};
-    Object.keys(sources).forEach(function(k) {
-      var p = sources[k];
-      if (p && p.total > 0) {
-        out[k] = { material: p.material||0, labor: p.labor||0, concrete: p.concrete||0, total: p.total||0 };
-      }
+    Object.keys(map).forEach(function(k){
+      var p = map[k];
+      if (p && p.total > 0) out[k] = { material:p.material||0, labor:p.labor||0, concrete:p.concrete||0, total:p.total||0 };
     });
     return out;
   }
 
-  // ── Snapshot current estimator state into a slot ──────
-  function snapshotToSlot(idx) {
-    var cfg = (typeof serializeConfig === 'function') ? serializeConfig() : {};
-    var Q   = window._Q || {};
-    var totals = readCurrentTotals();
-    var label = CMP.slots[idx] ? CMP.slots[idx].label : ('Option ' + String.fromCharCode(65 + idx));
-    CMP.slots[idx] = {
-      label:  label,
-      dims:   Q.w + '×' + Q.l + '×' + Q.h,
-      config: JSON.parse(JSON.stringify(cfg)),
-      totals: totals
-    };
-    renderCompareModal();
-  }
-
-  // ── Load a slot into the estimator ────────────────────
-  function loadSlot(idx) {
-    var slot = CMP.slots[idx];
-    if (!slot || !slot.config) return;
-    CMP.activeSlot = idx;
-    if (typeof restoreConfig === 'function') {
-      restoreConfig(slot.config);
-    }
-    renderCompareModal();
-    showToast('Loaded ' + slot.label + ' into estimator', 'ok');
-  }
-
-  // ── Update active slot totals live after each build ───
-  function refreshActiveSlot() {
-    if (CMP.activeSlot === null) return;
-    if (!CMP.slots[CMP.activeSlot]) return;
-    CMP.slots[CMP.activeSlot].totals = readCurrentTotals();
+  function dims() {
     var Q = window._Q || {};
-    CMP.slots[CMP.activeSlot].dims = Q.w + '×' + Q.l + '×' + Q.h;
-    if (document.getElementById('cmpModal') && document.getElementById('cmpModal').style.display !== 'none') {
-      renderCompareModal();
-    }
+    return (Q.w||'?') + '×' + (Q.l||'?') + '×' + (Q.h||'?');
   }
 
-  // Hook into updateStripFromLocalCalc to refresh live
-  var _origStrip = window.updateStripFromLocalCalc;
-  window.updateStripFromLocalCalc = function() {
-    if (typeof _origStrip === 'function') _origStrip.apply(this, arguments);
-    try { refreshActiveSlot(); } catch(e) {}
+  function updateBtn() {
+    var lbl = document.getElementById('cmpSaveBtnLabel');
+    if (!lbl) return;
+    var n = CMP.slots.length;
+    lbl.textContent = n === 0
+      ? 'Save to Comparison'
+      : 'Save to Comparison (' + n + ')';
+  }
+
+  // ── Save current build into next slot ─────────────────
+  CMP.saveToCompare = function() {
+    if (CMP.slots.length >= CMP.MAX) {
+      showToast('Max 3 options — clear one to continue', 'warn');
+      return;
+    }
+    var idx   = CMP.slots.length;
+    var label = 'Option ' + String.fromCharCode(65 + idx);
+    CMP.slots.push({ label: label, dims: dims(), totals: readTotals() });
+    updateBtn();
+    showToast('Saved as ' + label + ' — tweak and save again for next option', 'ok');
+    // If compare modal is open, refresh it
+    var m = document.getElementById('cmpModal');
+    if (m && m.style.display !== 'none') renderModal();
   };
 
-  // ── Build Compare button in topbar ────────────────────
-  document.addEventListener('DOMContentLoaded', function() {
-    // Inject Compare button into topbar
-    var topbar = document.querySelector('.topbar');
-    if (!topbar) return;
-    var btn = document.createElement('button');
-    btn.id = 'cmpOpenBtn';
-    btn.title = 'Compare Builds';
-    btn.innerHTML = '⇄ Compare';
-    btn.style.cssText = 'margin-left:auto;padding:5px 12px;border-radius:7px;border:1.5px solid rgba(255,130,0,.4);background:rgba(255,130,0,.1);color:#FF8200;font-family:Outfit,sans-serif;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:.5px;';
-    btn.onclick = function() { openCompareModal(); };
-    topbar.appendChild(btn);
+  // ── Open compare modal ─────────────────────────────────
+  CMP.open = function() {
+    if (CMP.slots.length === 0) {
+      showToast('Save at least one build first using the button above', 'warn');
+      return;
+    }
+    renderModal();
+    document.getElementById('cmpModal').style.display = 'block';
+  };
 
-    // Inject modal HTML
-    var modal = document.createElement('div');
-    modal.id = 'cmpModal';
-    modal.style.cssText = 'display:none;position:fixed;inset:0;z-index:9800;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);overflow-y:auto;';
-    modal.innerHTML = '<div id="cmpInner" style="max-width:960px;margin:32px auto;background:#1a2232;border-radius:16px;border:1px solid rgba(255,255,255,.1);box-shadow:0 24px 80px rgba(0,0,0,.6);overflow:hidden;">'
-      + '<div style="display:flex;align-items:center;gap:12px;padding:16px 20px;background:rgba(255,130,0,.08);border-bottom:1px solid rgba(255,130,0,.15);">'
-      + '<span style="font-family:Outfit,sans-serif;font-weight:800;font-size:14px;color:#FF8200;">⇄ Build Comparison</span>'
-      + '<span style="font-size:11px;color:#888;margin-left:4px;">Save up to 3 options and compare side by side</span>'
-      + '<button onclick="window._CompareEngine.close()" style="margin-left:auto;background:none;border:none;color:#888;font-size:18px;cursor:pointer;padding:0 4px;">✕</button>'
-      + '</div>'
-      + '<div id="cmpSlots" style="padding:20px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;"></div>'
-      + '<div id="cmpDeltaBar" style="padding:0 20px 20px;"></div>'
-      + '</div>';
-    document.body.appendChild(modal);
+  CMP.close = function() {
+    document.getElementById('cmpModal').style.display = 'none';
+  };
 
-    // Inject styles
-    var style = document.createElement('style');
-    style.textContent = [
-      '#cmpModal .cmp-slot{background:#0f1827;border:1.5px solid rgba(255,255,255,.08);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px;}',
-      '#cmpModal .cmp-slot.cmp-active{border-color:rgba(255,130,0,.5);box-shadow:0 0 0 1px rgba(255,130,0,.2);}',
-      '#cmpModal .cmp-slot-header{display:flex;align-items:center;gap:8px;}',
-      '#cmpModal .cmp-slot-badge{font-family:Outfit,sans-serif;font-size:11px;font-weight:800;color:#fff;background:rgba(255,130,0,.2);border:1px solid rgba(255,130,0,.35);border-radius:6px;padding:2px 8px;}',
-      '#cmpModal .cmp-slot-badge.cmp-active-badge{background:rgba(255,130,0,.35);border-color:#FF8200;}',
-      '#cmpModal .cmp-label-input{flex:1;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:6px;color:#fff;font-size:12px;font-family:Outfit,sans-serif;font-weight:700;padding:4px 8px;outline:none;}',
-      '#cmpModal .cmp-label-input:focus{border-color:rgba(255,130,0,.5);}',
-      '#cmpModal .cmp-dims{font-size:11px;color:#aaa;font-family:Outfit,sans-serif;}',
-      '#cmpModal .cmp-totals{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;}',
-      '#cmpModal .cmp-row{display:flex;justify-content:space-between;font-size:11px;}',
-      '#cmpModal .cmp-row-lbl{color:#888;}',
-      '#cmpModal .cmp-row-val{color:#e2e8f0;font-weight:600;font-family:Outfit,sans-serif;}',
-      '#cmpModal .cmp-divider{border:none;border-top:1px solid rgba(255,255,255,.06);margin:2px 0;}',
-      '#cmpModal .cmp-grand{display:flex;justify-content:space-between;font-size:13px;font-weight:800;font-family:Outfit,sans-serif;color:#fff;margin-top:2px;}',
-      '#cmpModal .cmp-grand-val{color:#FF8200;}',
-      '#cmpModal .cmp-actions{display:flex;gap:6px;margin-top:4px;}',
-      '#cmpModal .cmp-btn{flex:1;padding:7px 6px;border-radius:7px;font-size:10px;font-weight:700;font-family:Outfit,sans-serif;cursor:pointer;letter-spacing:.4px;border:1.5px solid;}',
-      '#cmpModal .cmp-btn-save{background:rgba(255,130,0,.15);border-color:rgba(255,130,0,.4);color:#FF8200;}',
-      '#cmpModal .cmp-btn-save:hover{background:rgba(255,130,0,.25);}',
-      '#cmpModal .cmp-btn-load{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.15);color:#ccc;}',
-      '#cmpModal .cmp-btn-load:hover{background:rgba(255,255,255,.12);color:#fff;}',
-      '#cmpModal .cmp-btn-clear{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.2);color:#f87171;}',
-      '#cmpModal .cmp-btn-clear:hover{background:rgba(239,68,68,.15);}',
-      '#cmpModal .cmp-empty{text-align:center;padding:24px 12px;color:#555;font-size:12px;}',
-      '#cmpModal .cmp-empty-icon{font-size:28px;margin-bottom:8px;}',
-      '#cmpModal .cmp-delta-table{width:100%;border-collapse:collapse;font-size:11px;}',
-      '#cmpModal .cmp-delta-table th{text-align:left;color:#888;font-weight:600;font-family:Outfit,sans-serif;padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.06);}',
-      '#cmpModal .cmp-delta-table td{padding:5px 8px;color:#ccc;font-family:Outfit,sans-serif;}',
-      '#cmpModal .cmp-delta-table tr:hover td{background:rgba(255,255,255,.03);}',
-      '#cmpModal .cmp-delta-pos{color:#4ade80;font-weight:700;}',
-      '#cmpModal .cmp-delta-neg{color:#f87171;font-weight:700;}',
-      '#cmpModal .cmp-delta-zero{color:#888;}',
-      '#cmpModal .cmp-add-btn{width:100%;padding:14px;border:2px dashed rgba(255,130,0,.2);border-radius:12px;background:none;color:rgba(255,130,0,.5);font-size:12px;font-weight:700;font-family:Outfit,sans-serif;cursor:pointer;letter-spacing:.5px;transition:all .15s;}',
-      '#cmpModal .cmp-add-btn:hover{border-color:rgba(255,130,0,.5);color:#FF8200;background:rgba(255,130,0,.05);}',
-    ].join('\n');
-    document.head.appendChild(style);
-  });
+  CMP.clearSlot = function(idx) {
+    CMP.slots.splice(idx, 1);
+    // Re-label remaining slots
+    CMP.slots.forEach(function(s, i){ s.label = s.label || ('Option ' + String.fromCharCode(65+i)); });
+    updateBtn();
+    renderModal();
+  };
 
-  // ── Render modal content ───────────────────────────────
-  function renderCompareModal() {
-    var slotsEl  = document.getElementById('cmpSlots');
-    var deltaEl  = document.getElementById('cmpDeltaBar');
-    if (!slotsEl) return;
+  CMP.renameSlot = function(idx, val) {
+    if (CMP.slots[idx]) CMP.slots[idx].label = val || ('Option ' + String.fromCharCode(65+idx));
+  };
 
-    // Build slots HTML
-    var html = '';
-    for (var i = 0; i < CMP.MAX; i++) {
-      var slot = CMP.slots[i];
-      var isActive = (CMP.activeSlot === i);
+  CMP.clearAll = function() {
+    CMP.slots = [];
+    updateBtn();
+    CMP.close();
+  };
 
-      if (!slot) {
-        // Empty slot — show add button if it's next in sequence
-        var isNext = (i === CMP.slots.length);
-        if (isNext) {
-          html += '<div>'
-            + '<button class="cmp-add-btn" onclick="window._CompareEngine.addSlot(' + i + ')">'
-            + '+ Save Current Build as Option ' + String.fromCharCode(65 + i)
-            + '</button></div>';
-        }
-        continue;
-      }
+  // ── Render modal ───────────────────────────────────────
+  function renderModal() {
+    var m = document.getElementById('cmpModal');
+    if (!m) return;
 
-      var badgeClass = 'cmp-slot-badge' + (isActive ? ' cmp-active-badge' : '');
-      var cardClass  = 'cmp-slot' + (isActive ? ' cmp-active' : '');
+    var slots = CMP.slots;
 
-      html += '<div class="' + cardClass + '">';
-      html += '<div class="cmp-slot-header">'
-        + '<span class="' + badgeClass + '">' + String.fromCharCode(65 + i) + '</span>'
-        + '<input class="cmp-label-input" value="' + escHtml(slot.label) + '" '
-        + 'onchange="window._CompareEngine.renameSlot(' + i + ',this.value)" '
-        + 'onblur="window._CompareEngine.renameSlot(' + i + ',this.value)">'
-        + (isActive ? '<span style="font-size:9px;color:#FF8200;font-weight:700;font-family:Outfit,sans-serif;">LIVE</span>' : '')
-        + '</div>';
+    // Build slot cards
+    var cardsHtml = '';
+    slots.forEach(function(slot, idx) {
+      cardsHtml += '<div class="cmp-card">'
+        + '<div class="cmp-card-header">'
+        +   '<div class="cmp-badge">' + String.fromCharCode(65+idx) + '</div>'
+        +   '<input class="cmp-label-inp" value="' + esc(slot.label) + '" '
+        +     'onchange="window._CompareEngine.renameSlot(' + idx + ',this.value)" '
+        +     'onblur="window._CompareEngine.renameSlot(' + idx + ',this.value)">'
+        +   '<button class="cmp-x-btn" onclick="window._CompareEngine.clearSlot(' + idx + ')">✕</button>'
+        + '</div>'
+        + '<div class="cmp-dims">📐 ' + esc(slot.dims) + '</div>';
 
-      if (slot.dims) {
-        html += '<div class="cmp-dims">📐 ' + slot.dims + '</div>';
-      }
-
-      // Totals per build type
-      var totals = slot.totals || {};
-      var types = Object.keys(totals);
-      if (types.length > 0) {
-        html += '<div class="cmp-totals">';
+      var types = Object.keys(slot.totals || {});
+      if (types.length) {
+        cardsHtml += '<div class="cmp-types">';
         types.forEach(function(k) {
-          var t = totals[k];
-          html += '<div>'
-            + '<div style="font-size:9px;color:#FF8200;font-weight:700;font-family:Outfit,sans-serif;margin-bottom:3px;">' + (BUILD_TYPE_LABELS[k]||k) + '</div>'
-            + '<div class="cmp-row"><span class="cmp-row-lbl">Materials</span><span class="cmp-row-val">' + fmtDollars(t.material) + '</span></div>'
-            + '<div class="cmp-row"><span class="cmp-row-lbl">Labor</span><span class="cmp-row-val">' + fmtDollars(t.labor) + '</span></div>'
-            + '<div class="cmp-row"><span class="cmp-row-lbl">Concrete</span><span class="cmp-row-val">' + fmtDollars(t.concrete) + '</span></div>'
-            + '<hr class="cmp-divider">'
-            + '<div class="cmp-grand"><span>Total</span><span class="cmp-grand-val">' + fmtDollars(t.total) + '</span></div>'
+          var t = slot.totals[k];
+          cardsHtml += '<div class="cmp-type-block">'
+            + '<div class="cmp-type-lbl">' + (TYPE_LABELS[k]||k) + '</div>'
+            + '<div class="cmp-type-row"><span>Materials</span><span>' + fmt(t.material) + '</span></div>'
+            + '<div class="cmp-type-row"><span>Labor</span><span>' + fmt(t.labor) + '</span></div>'
+            + (t.concrete > 0 ? '<div class="cmp-type-row"><span>Concrete</span><span>' + fmt(t.concrete) + '</span></div>' : '')
+            + '<div class="cmp-type-total"><span>Total</span><span>' + fmt(t.total) + '</span></div>'
             + '</div>';
         });
-        html += '</div>';
+        cardsHtml += '</div>';
       } else {
-        html += '<div class="cmp-empty"><div class="cmp-empty-icon">📋</div>No pricing yet — build something first</div>';
+        cardsHtml += '<div class="cmp-no-totals">No pricing available</div>';
       }
+      cardsHtml += '</div>';
+    });
 
-      html += '<div class="cmp-actions">';
-      html += '<button class="cmp-btn cmp-btn-save" onclick="window._CompareEngine.saveSlot(' + i + ')" title="Update this option with current estimator state">↺ Update</button>';
-      if (!isActive) {
-        html += '<button class="cmp-btn cmp-btn-load" onclick="window._CompareEngine.loadSlot(' + i + ')" title="Load this option into the estimator">→ Load</button>';
-      }
-      html += '<button class="cmp-btn cmp-btn-clear" onclick="window._CompareEngine.clearSlot(' + i + ')" title="Remove this option">✕</button>';
-      html += '</div>';
-      html += '</div>';
-    }
-
-    // Add slot button if under max and all existing are filled
-    if (CMP.slots.length < CMP.MAX && CMP.slots.length > 0 && CMP.slots.length === CMP.slots.filter(Boolean).length) {
-      html += '<div>'
-        + '<button class="cmp-add-btn" onclick="window._CompareEngine.addSlot(' + CMP.slots.length + ')">'
-        + '+ Save Current Build as Option ' + String.fromCharCode(65 + CMP.slots.length)
-        + '</button></div>';
-    }
-
-    slotsEl.innerHTML = html || '<div class="cmp-empty" style="grid-column:1/-1;padding:40px;"><div class="cmp-empty-icon">⇄</div><div>Save your first build to start comparing</div></div>';
-
-    // Delta table — only if 2+ slots with totals
-    var filledSlots = CMP.slots.filter(function(s){ return s && s.totals && Object.keys(s.totals).length > 0; });
-    if (filledSlots.length >= 2) {
-      var baseSlot = filledSlots[0];
+    // Delta table — 2+ slots
+    var deltaHtml = '';
+    if (slots.length >= 2) {
       var allTypes = [];
-      filledSlots.forEach(function(s){ Object.keys(s.totals||{}).forEach(function(k){ if(allTypes.indexOf(k)===-1) allTypes.push(k); }); });
+      slots.forEach(function(s){ Object.keys(s.totals||{}).forEach(function(k){ if(allTypes.indexOf(k)<0) allTypes.push(k); }); });
+      var base = slots[0];
 
-      var dHtml = '<div style="margin-top:4px;padding-top:16px;border-top:1px solid rgba(255,255,255,.06);">'
-        + '<div style="font-size:10px;font-weight:800;font-family:Outfit,sans-serif;color:#888;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;">Price Delta vs. Option A</div>'
-        + '<table class="cmp-delta-table"><thead><tr><th>Build Type</th>';
-      filledSlots.forEach(function(s,i){ dHtml += '<th>' + escHtml(s.label) + '</th>'; });
-      dHtml += '</tr></thead><tbody>';
+      deltaHtml = '<div class="cmp-delta-wrap">'
+        + '<div class="cmp-delta-title">Price Delta vs. Option A</div>'
+        + '<table class="cmp-delta-tbl"><thead><tr>'
+        + '<th>Build Type</th>';
+      slots.forEach(function(s){ deltaHtml += '<th>' + esc(s.label) + '</th>'; });
+      deltaHtml += '</tr></thead><tbody>';
 
       allTypes.forEach(function(k) {
-        dHtml += '<tr><td style="color:#aaa;">' + (BUILD_TYPE_LABELS[k]||k) + '</td>';
-        var baseTotal = (baseSlot.totals[k]||{}).total || 0;
-        filledSlots.forEach(function(s, i) {
-          var t = (s.totals[k]||{}).total || 0;
+        deltaHtml += '<tr><td class="cmp-delta-type">' + (TYPE_LABELS[k]||k) + '</td>';
+        var baseTotal = ((base.totals||{})[k]||{}).total || 0;
+        slots.forEach(function(s, i) {
+          var t = ((s.totals||{})[k]||{}).total || 0;
           if (i === 0) {
-            dHtml += '<td style="color:#e2e8f0;font-weight:700;">' + fmtDollars(t) + '</td>';
+            deltaHtml += '<td class="cmp-delta-base">' + fmt(t) + '</td>';
           } else {
-            var delta = t - baseTotal;
-            var cls   = delta > 0 ? 'cmp-delta-neg' : (delta < 0 ? 'cmp-delta-pos' : 'cmp-delta-zero');
-            var sign  = delta > 0 ? '+' : '';
-            dHtml += '<td class="' + cls + '">'
-              + fmtDollars(t)
-              + (baseTotal > 0 ? '<br><span style="font-size:10px;">' + sign + fmtDollars(delta) + '</span>' : '')
+            var d = t - baseTotal;
+            var cls = d > 0 ? 'cmp-d-more' : (d < 0 ? 'cmp-d-less' : 'cmp-d-same');
+            var sign = d > 0 ? '+' : '';
+            deltaHtml += '<td><div class="cmp-delta-val">' + fmt(t) + '</div>'
+              + (baseTotal > 0 ? '<div class="' + cls + '">' + sign + fmt(Math.abs(d)) + (d < 0 ? ' less' : ' more') + '</div>' : '')
               + '</td>';
           }
         });
-        dHtml += '</tr>';
+        deltaHtml += '</tr>';
       });
-
-      dHtml += '</tbody></table></div>';
-      deltaEl.innerHTML = dHtml;
-    } else {
-      deltaEl.innerHTML = '';
+      deltaHtml += '</tbody></table></div>';
     }
+
+    m.querySelector('#cmpCards').innerHTML = cardsHtml;
+    m.querySelector('#cmpDelta').innerHTML = deltaHtml;
   }
 
-  function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
-  // ── Public API ────────────────────────────────────────
-  CMP.open = function() { openCompareModal(); };
-  CMP.close = function() {
-    var m = document.getElementById('cmpModal');
-    if (m) m.style.display = 'none';
-  };
-  CMP.addSlot = function(idx) {
-    snapshotToSlot(idx);
-    CMP.activeSlot = idx;
-    renderCompareModal();
-    showToast('Saved as Option ' + String.fromCharCode(65 + idx), 'ok');
-  };
-  CMP.saveSlot = function(idx) {
-    snapshotToSlot(idx);
-    showToast('Option ' + String.fromCharCode(65 + idx) + ' updated', 'ok');
-  };
-  CMP.loadSlot = function(idx) { loadSlot(idx); };
-  CMP.clearSlot = function(idx) {
-    CMP.slots.splice(idx, 1);
-    if (CMP.activeSlot === idx) CMP.activeSlot = null;
-    else if (CMP.activeSlot > idx) CMP.activeSlot--;
-    renderCompareModal();
-  };
-  CMP.renameSlot = function(idx, val) {
-    if (CMP.slots[idx]) { CMP.slots[idx].label = val || ('Option ' + String.fromCharCode(65 + idx)); }
-  };
+  // ── DOM init ───────────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', function() {
 
-  function openCompareModal() {
-    var m = document.getElementById('cmpModal');
-    if (!m) return;
-    // If no active slot yet and no slots saved, prime slot 0 with current state
-    if (CMP.slots.length === 0) {
-      snapshotToSlot(0);
-      CMP.activeSlot = 0;
+    // ⇄ Compare button in topbar
+    var topbar = document.querySelector('.topbar');
+    if (topbar) {
+      var tb = document.createElement('button');
+      tb.id = 'cmpTopBtn';
+      tb.innerHTML = '⇄ Compare';
+      tb.title = 'View comparison';
+      tb.style.cssText = 'margin-left:auto;padding:5px 12px;border-radius:7px;border:1.5px solid rgba(255,130,0,.4);background:rgba(255,130,0,.1);color:#FF8200;font-family:Outfit,sans-serif;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:.5px;';
+      tb.onclick = function() { CMP.open(); };
+      topbar.appendChild(tb);
     }
-    renderCompareModal();
-    m.style.display = 'block';
-  }
 
-  // Close on backdrop click
-  document.addEventListener('click', function(e) {
-    var m = document.getElementById('cmpModal');
-    if (m && e.target === m) m.style.display = 'none';
+    // Styles
+    var style = document.createElement('style');
+    style.textContent = [
+      // Modal shell
+      '#cmpModal{display:none;position:fixed;inset:0;z-index:9800;background:rgba(0,0,0,.65);backdrop-filter:blur(4px);overflow-y:auto;}',
+      '#cmpInner{max-width:980px;margin:28px auto;background:#1a2232;border-radius:16px;border:1px solid rgba(255,255,255,.1);box-shadow:0 24px 80px rgba(0,0,0,.6);overflow:hidden;}',
+      '#cmpHeader{display:flex;align-items:center;gap:10px;padding:14px 20px;background:rgba(255,130,0,.07);border-bottom:1px solid rgba(255,130,0,.15);}',
+      '#cmpHeaderTitle{font-family:Outfit,sans-serif;font-weight:800;font-size:14px;color:#FF8200;}',
+      '#cmpHeaderSub{font-size:11px;color:#666;}',
+      '#cmpCloseBtn{margin-left:auto;background:none;border:none;color:#666;font-size:18px;cursor:pointer;line-height:1;padding:0 2px;}',
+      '#cmpCloseBtn:hover{color:#fff;}',
+      '#cmpBody{padding:20px;display:flex;flex-direction:column;gap:20px;}',
+      '#cmpCards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;}',
+      // Slot card
+      '.cmp-card{background:#0f1827;border:1.5px solid rgba(255,255,255,.07);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px;}',
+      '.cmp-card-header{display:flex;align-items:center;gap:8px;}',
+      '.cmp-badge{font-family:Outfit,sans-serif;font-size:11px;font-weight:800;color:#fff;background:rgba(255,130,0,.25);border:1px solid rgba(255,130,0,.4);border-radius:6px;padding:2px 9px;flex-shrink:0;}',
+      '.cmp-label-inp{flex:1;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:6px;color:#fff;font-size:12px;font-family:Outfit,sans-serif;font-weight:700;padding:4px 8px;outline:none;}',
+      '.cmp-label-inp:focus{border-color:rgba(255,130,0,.5);}',
+      '.cmp-x-btn{background:none;border:none;color:#555;font-size:14px;cursor:pointer;padding:0 2px;flex-shrink:0;}',
+      '.cmp-x-btn:hover{color:#f87171;}',
+      '.cmp-dims{font-size:11px;color:#888;font-family:Outfit,sans-serif;}',
+      '.cmp-types{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;}',
+      '.cmp-type-block{background:rgba(255,255,255,.03);border-radius:8px;padding:8px;}',
+      '.cmp-type-lbl{font-size:9px;font-weight:800;color:#FF8200;font-family:Outfit,sans-serif;letter-spacing:.5px;margin-bottom:5px;}',
+      '.cmp-type-row{display:flex;justify-content:space-between;font-size:10px;color:#888;font-family:Outfit,sans-serif;margin-bottom:2px;}',
+      '.cmp-type-row span:last-child{color:#ccc;font-weight:600;}',
+      '.cmp-type-total{display:flex;justify-content:space-between;font-size:11px;font-weight:800;font-family:Outfit,sans-serif;color:#fff;margin-top:4px;padding-top:4px;border-top:1px solid rgba(255,255,255,.06);}',
+      '.cmp-type-total span:last-child{color:#FF8200;}',
+      '.cmp-no-totals{font-size:11px;color:#555;text-align:center;padding:12px 0;}',
+      // Delta table
+      '.cmp-delta-wrap{padding-top:4px;}',
+      '.cmp-delta-title{font-size:10px;font-weight:800;font-family:Outfit,sans-serif;color:#888;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;}',
+      '.cmp-delta-tbl{width:100%;border-collapse:collapse;font-size:11px;}',
+      '.cmp-delta-tbl th{text-align:left;color:#888;font-weight:700;font-family:Outfit,sans-serif;padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.06);}',
+      '.cmp-delta-tbl td{padding:6px 10px;vertical-align:top;border-bottom:1px solid rgba(255,255,255,.03);}',
+      '.cmp-delta-type{color:#aaa;font-family:Outfit,sans-serif;}',
+      '.cmp-delta-base{color:#e2e8f0;font-weight:700;font-family:Outfit,sans-serif;}',
+      '.cmp-delta-val{color:#e2e8f0;font-weight:700;font-family:Outfit,sans-serif;}',
+      '.cmp-d-more{font-size:10px;color:#f87171;font-weight:600;font-family:Outfit,sans-serif;margin-top:2px;}',
+      '.cmp-d-less{font-size:10px;color:#4ade80;font-weight:600;font-family:Outfit,sans-serif;margin-top:2px;}',
+      '.cmp-d-same{font-size:10px;color:#888;font-family:Outfit,sans-serif;margin-top:2px;}',
+      '#cmpClearAll{background:none;border:1px solid rgba(239,68,68,.25);border-radius:6px;color:#f87171;font-size:10px;font-family:Outfit,sans-serif;font-weight:700;padding:4px 10px;cursor:pointer;}',
+      '#cmpClearAll:hover{background:rgba(239,68,68,.1);}',
+    ].join('');
+    document.head.appendChild(style);
+
+    // Modal HTML
+    var modal = document.createElement('div');
+    modal.id = 'cmpModal';
+    modal.innerHTML = '<div id="cmpInner">'
+      + '<div id="cmpHeader">'
+      +   '<span id="cmpHeaderTitle">⇄ Build Comparison</span>'
+      +   '<span id="cmpHeaderSub">Save builds using the button in the estimator panel, then compare here</span>'
+      +   '<button id="cmpCloseBtn" onclick="window._CompareEngine.close()">✕</button>'
+      + '</div>'
+      + '<div id="cmpBody">'
+      +   '<div id="cmpCards"></div>'
+      +   '<div id="cmpDelta"></div>'
+      +   '<div style="display:flex;justify-content:flex-end;">'
+      +     '<button id="cmpClearAll" onclick="window._CompareEngine.clearAll()">Clear All</button>'
+      +   '</div>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(modal);
+
+    // Close on backdrop click
+    modal.addEventListener('click', function(e) { if (e.target === modal) CMP.close(); });
   });
 
 })();
