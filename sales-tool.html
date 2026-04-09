@@ -10017,6 +10017,28 @@ function buildQuotePDFModal() {
   document.body.appendChild(m);
 }
 
+// Returns the quote PDF as a Blob for attachment — same content as the download PDF
+async function generateQuotePdfBlob() {
+  var Q = window._Q || {};
+  var J = window.jspdf && window.jspdf.jsPDF;
+  if (!J) return null;
+  // Run the same PDF generation but capture the blob instead of downloading
+  // We temporarily override doc.output to intercept the blob
+  var _blobResult = null;
+  try {
+    // Build the PDF by calling generateQuotePDF internals
+    // The cleanest way: re-run generateQuotePDF but return blob instead of sharing/downloading
+    // We do this by setting a flag that the output handler checks
+    window._pdfBlobCapture = true;
+    await generateQuotePDF();
+    _blobResult = window._pdfBlobCaptured || null;
+  } finally {
+    window._pdfBlobCapture = false;
+    window._pdfBlobCaptured = null;
+  }
+  return _blobResult;
+}
+
 async function generateQuotePDF() {
   var Q = window._Q || {};
   var J = window.jspdf && window.jspdf.jsPDF;
@@ -10676,6 +10698,13 @@ async function generateQuotePDF() {
   // ── OUTPUT — mobile-aware ──
   var blob = doc.output('blob');
   var fileName = (custName.replace(/\s+/g,'_') + '_' + dims.replace(/'/g,'').replace(/\s/g,'') + '_quote.pdf');
+
+  // If called from generateQuotePdfBlob — capture and return, don't download
+  if (window._pdfBlobCapture) {
+    window._pdfBlobCaptured = blob;
+    return;
+  }
+
   var isMobileDevice = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
 
   // iOS/Android: Web Share API — navigator.share must be the FIRST async call
@@ -12133,9 +12162,7 @@ function buildSpecText() {
 async function sendSalesQuoteEmail() {
   var salesmanEmail = (document.getElementById('eqSalesmanEmail')||{}).value.trim();
   var customerEmail = (document.getElementById('eqCustomerEmail')||{}).value.trim();
-  var noteExtra = (document.getElementById('eqNote')||{}).value.trim();
-  var specText = (typeof buildSpecText === 'function') ? buildSpecText() : '';
-  var note = specText + (noteExtra ? '\n\n' + noteExtra : '');
+  var note = (document.getElementById('eqNote')||{}).value.trim();
   if (!salesmanEmail && !customerEmail) { alert('Please enter at least one email address.'); return; }
 
   var btn = document.getElementById('eqSendBtn');
@@ -12190,6 +12217,22 @@ async function sendSalesQuoteEmail() {
     var _filteredEnc = await safeEncodeCompressed(_filteredCfg);
     var _filteredLink = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + _filteredEnc;
 
+    // Generate PDF and encode as base64 for attachment
+    var _quotePdfB64 = '';
+    try {
+      var _J = window.jspdf && window.jspdf.jsPDF;
+      if (_J && typeof generateQuotePdfBlob === 'function') {
+        var _pdfBlob = await generateQuotePdfBlob();
+        if (_pdfBlob) {
+          _quotePdfB64 = await new Promise(function(res) {
+            var reader = new FileReader();
+            reader.onload = function(e) { res(e.target.result.split(',')[1]); };
+            reader.readAsDataURL(_pdfBlob);
+          });
+        }
+      }
+    } catch(pdfErr) { console.warn('[Email] PDF generation failed:', pdfErr.message); }
+
     var resp = await fetchWithTimeout(API_URL, {
       method: 'POST',
       headers: {'Content-Type': 'text/plain'},
@@ -12203,7 +12246,9 @@ async function sendSalesQuoteEmail() {
         configLink:    _filteredLink,
         username:      (window.currentUser || {}).username || '',
         selectedPrices: selectedPrices,
-        attachNewCustomer: !!(document.getElementById('eqAttachNewCustomer') && document.getElementById('eqAttachNewCustomer').checked)
+        attachNewCustomer: !!(document.getElementById('eqAttachNewCustomer') && document.getElementById('eqAttachNewCustomer').checked),
+        pdfBase64:     _quotePdfB64 || '',
+        pdfFileName:   ((document.getElementById('st_name')||{}).value||'Customer').replace(/\s+/g,'_') + '_Quote.pdf'
       })
     });
     var data = await safeJson(resp);
@@ -25315,8 +25360,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     if (notes) { lines.push('NOTES'); lines.push(notes); }
 
     // Prepend building spec to comparison email
-    var specPrefix = (typeof buildSpecText === 'function') ? buildSpecText() : '';
-    var personalNote = (specPrefix ? specPrefix + '\n\n══════════════════════════════\nCOMPARISON OPTIONS\n══════════════════════════════\n\n' : '') + lines.join('\n');
+    var personalNote = lines.join('\n');
     var cu = window.currentUser || {};
 
     var selectedPrices = [];
