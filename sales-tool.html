@@ -4526,7 +4526,11 @@ function serializeConfig() {
       cupolaOn:!!(document.getElementById('exCupola')||{}).checked,
       cupolaSize:(document.getElementById('qgCupolaSize')||{}).value||'24',
       cupolaQty:(document.getElementById('qgCupolaQty')||{}).value||'1',
-      concreteOn: !!(window._lastConcreteOpts && (window._lastConcreteOpts.main && window._lastConcreteOpts.main.included)),
+      concreteOn: !!(window._lastConcreteOpts && (
+        (window._lastConcreteOpts.main && window._lastConcreteOpts.main.included) ||
+        (window._lastConcreteOpts.sheds && window._lastConcreteOpts.sheds.some(function(s){return s&&s.included;})) ||
+        (window._lastConcreteOpts.aprons && window._lastConcreteOpts.aprons.some(function(a){return a&&a.included;}))
+      )),
       concreteAreas:JSON.parse(JSON.stringify(concreteAreas)),
       concreteOpts: window._lastConcreteOpts ? JSON.parse(JSON.stringify(window._lastConcreteOpts)) : null,
       concreteZip: _cachedZip || '',
@@ -4689,8 +4693,12 @@ function restoreConfig(cfg) {
       }
       // Concrete is "on" if the checkbox was saved as on OR if concreteOpts has included data
       var _savedCO = cfg.extras.concreteOpts || null;
-      var _hasConcreteData = _savedCO && (_savedCO.main && _savedCO.main.included);
-      var conOn = !!cfg.extras.concreteOn || _hasConcreteData;
+      var _hasConcreteData = _savedCO && (
+        (_savedCO.main && _savedCO.main.included) ||
+        (_savedCO.sheds && _savedCO.sheds.some(function(s){return s&&s.included;})) ||
+        (_savedCO.aprons && _savedCO.aprons.some(function(a){return a&&a.included;}))
+      );
+      var conOn = !!cfg.extras.concreteOn || !!_hasConcreteData;
       // exConcrete element doesn't exist in DOM — display is controlled by concreteOpts visibility only
       var conOpts=document.getElementById('concreteOpts'); if(conOpts) conOpts.style.display=conOn?'':'none';
       if(cfg.extras.concreteAreas) { concreteAreas=cfg.extras.concreteAreas; }
@@ -9538,7 +9546,7 @@ async function generateQuotePDF() {
       doc.setFont('helvetica','normal'); doc.setFontSize(9); setTxt(col.muted);
       doc.text(lineItems[li][0], MG+8, yPos+12);
       doc.setFont('helvetica','bold'); setTxt(col.navy);
-      doc.text('Included', MG+bodyW-8, yPos+12, {align:'right'});
+      doc.text('$' + Math.round(n).toLocaleString('en-US'), MG+bodyW-8, yPos+12, {align:'right'});
       yPos += 18; idx++;
     }
     // Total row
@@ -9614,9 +9622,22 @@ async function generateQuotePDF() {
   }
   y += 70;
 
-  // Valid note
+  // ── ESTIMATE NOTICE BANNER ─────────────────────────────────────────────
+  if (y + 70 > PH - 60) { doc.addPage('letter','portrait'); y = MG + 20; }
+  setFill('#fff3cd'); doc.rect(MG, y, bodyW, 52, 'F');
+  setFill('#f59e0b'); doc.rect(MG, y, 3, 52, 'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(9);
+  doc.setTextColor(120, 80, 0);
+  doc.text('⚠  IMPORTANT — PLEASE READ', MG+10, y+14);
+  doc.setFont('helvetica','normal'); doc.setFontSize(8);
+  doc.setTextColor(100, 65, 0);
+  var noteLine1 = 'The material, labor, concrete, tax, and delivery figures shown are ESTIMATES based on the quoted building specs.';
+  var noteLine2 = 'Final pricing may vary based on site conditions, material availability, and confirmed options. This quote is valid for 7 days.';
+  doc.text(noteLine1, MG+10, y+27, {maxWidth: bodyW-16});
+  doc.text(noteLine2, MG+10, y+39, {maxWidth: bodyW-16});
+  y += 62;
   doc.setFont('helvetica','italic'); doc.setFontSize(8); setTxt('#999999');
-  doc.text('This quote is valid for 14 days from the date above.', PW/2, y+8, {align:'center'});
+  doc.text('Quote valid for 7 days from ' + dateStr + '.', PW/2, y+8, {align:'center'});
   y += 20;
 
   // ════════════════════════════════════════════════════════════
@@ -9819,11 +9840,19 @@ async function generateQuotePDF() {
     if (wins2.length) {
       specSection('Windows');
       rowIdx2 = 0;
+      // Group windows by type + frameColor + grids + framedOpening
+      var winGroups = {};
       wins2.forEach(function(w) {
-        var wt = w.type||'Window';
-        if (w.framedOpening) { specRow2(wt, 'Framed Opening'); return; }
-        var wv = (w.frameColor||'White') + ' Frame  —  ' + (w.grids!==false?'With Grids':'No Grids');
-        specRow2(wt, wv);
+        var key = (w.type||'Window') + '|' + (w.framedOpening?'framed':(w.frameColor||'White')+'|'+(w.grids!==false?'grids':'nogrids'));
+        if (!winGroups[key]) winGroups[key] = { type:w.type||'Window', frameColor:w.frameColor||'White', grids:w.grids!==false, framedOpening:!!w.framedOpening, qty:0 };
+        winGroups[key].qty++;
+      });
+      Object.keys(winGroups).forEach(function(k) {
+        var g = winGroups[k];
+        var qty = g.qty > 1 ? g.qty + ' ×  ' : '';
+        if (g.framedOpening) { specRow2(qty + g.type, 'Framed Opening'); return; }
+        var wv = g.frameColor + ' Frame  —  ' + (g.grids?'With Grids':'No Grids');
+        specRow2(qty + g.type, wv);
       });
     }
 
