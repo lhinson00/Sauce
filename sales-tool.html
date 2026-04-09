@@ -6343,7 +6343,18 @@ function _applyFieldsInner(parsed, tryFill) {
   if (parsed.height > 0) tryFill('Height',  function(){ setDim('h', parseInt(parsed.height)); return true; });
     var vp=[4,6,8,10];
   if (parsed.pitch && vp.indexOf(parseInt(parsed.pitch))!==-1) tryFill('Pitch', function(){ Q.pitch=parseInt(parsed.pitch); buildPitchChips(); return true; });
-  if (parsed.truss) tryFill('Truss', function(){ var m={'Wood':'Wood','Steel':'Steel','Stud':'Stud','Cypress':'Cypress','MetalBB':'MetalBB'}; Q.truss=m[parsed.truss]||'Wood'; buildTrussChips(); buildPitchChips(); return true; });
+  if (parsed.truss) tryFill('Truss', function(){
+    var m={'Wood':'Wood','Steel':'Steel','Stud':'Stud','Cypress':'Cypress','MetalBB':'MetalBB'};
+    Q.truss = m[parsed.truss]||'Wood';
+    // Also update cfgTruss so pricing and route detection see the right type
+    if (typeof cfgTruss !== 'undefined') cfgTruss = Q.truss;
+    buildTrussChips(); buildPitchChips(); applyRouteUI();
+    // For Cypress — show the widows peak row
+    if (Q.truss === 'Cypress' || Q.truss === 'MetalBB') {
+      var wpRow = document.getElementById('rowWidowsPeak'); if(wpRow) wpRow.style.display='';
+    }
+    return true;
+  });
   if (parsed.soffit !== undefined) tryFill('Soffit', function(){ Q.soffit=!!parsed.soffit; return true; });
   if (parsed.trussSpacing) tryFill('Truss Spacing', function(){ var e=document.getElementById('st_trussSpacing'); if(e) e.value=String(parsed.trussSpacing); return true; });
   if (parsed.eavePS) tryFill('Post Spacing', function(){ Q.eavePS=parseInt(parsed.eavePS); Q.postSpacing=parseInt(parsed.eavePS); buildPSChips(); return true; });
@@ -6378,7 +6389,7 @@ function _applyFieldsInner(parsed, tryFill) {
         var wo=WALLS.find(function(wl){return wl.id===gdWall;})||{len:Q.w};
         var centered=!gd.fieldLocated&&gd.placement==='center';
         var spaced=!gd.fieldLocated&&gd.placement==='spaced';
-        for(var i=0;i<qty;i++) allDoors.push({id:nextDoorId++,type:'garage',icon:'🚪',w:gd.w,h:gd.h,sizeKey:gd.w+'x'+gd.h,size:gd.w+'x'+gd.h,wall:gdWall,insulated:!!gd.insulated,framedOpening:false,fullView:!!gd.fullView,gdColor:gd.color||'White',offset:centered?Math.round((wo.len-gd.w)/2*12)/12:0});
+        for(var i=0;i<qty;i++) allDoors.push({id:nextDoorId++,type:'garage',icon:'🚪',w:gd.w,h:gd.h,sizeKey:gd.w+'x'+gd.h,size:gd.w+'x'+gd.h,wall:gdWall,insulated:!!gd.insulated,framedOpening:false,fullView:!!gd.fullView,doorColor:gd.color||'White',offset:centered?Math.round((wo.len-gd.w)/2*12)/12:0});
       if(spaced) _sdw.push(gdWall);
       });
       renderGarageDoors();
@@ -6441,7 +6452,22 @@ function _applyFieldsInner(parsed, tryFill) {
     if(parsed.gutterType){var gtMap={'Standard':'SGS','Copper Metallic':'SGSCOM','Real Copper':'SGSC','Galvalume':'SGSGA'}; var gt=document.getElementById('st_gutterType'); if(gt) gt.value=gtMap[parsed.gutterType]||'SGS';}
       return true;
     });
-  if (parsed.cupolaSize) tryFill('Cupola', function(){ var e=document.getElementById('qgCupolaSize'); if(e){e.value=parsed.cupolaSize;toggleExtra('cupola',true);} if(parsed.cupolaQty){var q=document.getElementById('qgCupolaQty');if(q)q.value=String(parsed.cupolaQty);} return true; });
+  if (parsed.cupolaSize) tryFill('Cupola', function(){
+    var e=document.getElementById('qgCupolaSize');
+    if(e){
+      // Force string and validate — valid: 24,30,36,48
+      var csz = String(parseInt(parsed.cupolaSize)||24);
+      if(['24','30','36','48'].indexOf(csz)===-1) csz='24';
+      e.value = csz;
+      try{toggleExtra('cupola',true);}catch(er){}
+    }
+    if(parsed.cupolaQty){
+      var q=document.getElementById('qgCupolaQty');
+      if(q) q.value=String(parseInt(parsed.cupolaQty)||1);
+    }
+    try{scheduleBuild();updateStripFromLocalCalc();}catch(er){}
+    return true;
+  });
   if (parsed.farmTax)        tryFill('Farm Tax',       function(){ var e=document.getElementById('st_farmTax');      if(e) e.checked=true; return true; });
   if (parsed.materialOnly)   tryFill('Material Only',  function(){ var e=document.getElementById('st_materialKit');   if(e) e.checked=true; return true; });
   if (parsed.craneFee)       tryFill('Crane Fee',      function(){ var e=document.getElementById('st_craneFee');    if(e) e.checked=true; return true; });
@@ -6772,6 +6798,9 @@ function buildVoicePromptInit() {
     '- "mahogany", "mahogany glass", "wood glass door" → "CENTRAL WOODWORKS 3/0 MAHOGANY 3/4 GLASS 4-LITE LH"',
     '- "textured fiberglass", "bronze fiberglass" → "TEXTURED FIBERGLASS 4-LITE SDL RH BRONZE"',
     '- "framed opening walk door", "walk door framed" → framedOpening:true',
+    '- WALK DOOR COLOR: "black walk door", "black entry door" → color:"Black"',
+    '  "white walk door" → color:"White" (default)',
+    '  Add color field to each walk door object',
     '- "field located" → fieldLocated:true (DEFAULT for walk doors)',
     '- "centered", "spaced evenly" → placement + fieldLocated:false',
     '',
@@ -7122,7 +7151,7 @@ function applyVoiceQuote(parsed, overlay) {
         var spaced   = !gd.fieldLocated && gd.placement==='spaced';
         for(var i=0;i<qty;i++) {
           var off = centered ? Math.round((wo.len-gd.w)/2*12)/12 : 0;
-          allDoors.push({id:nextDoorId++,type:'garage',icon:'&#x1F6AA;',w:gd.w,h:gd.h,sizeKey:gd.w+'x'+gd.h,size:gd.w+'x'+gd.h,wall:gdWall,insulated:!!gd.insulated,framedOpening:false,fullView:!!gd.fullView,gdColor:gd.color||'White',offset:off});
+          allDoors.push({id:nextDoorId++,type:'garage',icon:'&#x1F6AA;',w:gd.w,h:gd.h,sizeKey:gd.w+'x'+gd.h,size:gd.w+'x'+gd.h,wall:gdWall,insulated:!!gd.insulated,framedOpening:false,fullView:!!gd.fullView,doorColor:gd.color||'White',offset:off});
         }
         if (spaced) _spacedDoorWalls.push(gdWall);
       });
@@ -7145,7 +7174,7 @@ function applyVoiceQuote(parsed, overlay) {
         var spaced   = wd.placement==='spaced';
         for(var i=0;i<qty;i++) {
           var off = centered ? Math.round((wo.len-3)/2*12)/12 : 0;
-          window._walkDoors.push({id:nextWDId++,type:dtype,wall:wdWall,offset:off,framedOpening:false,doorColor:'White'});
+          window._walkDoors.push({id:nextWDId++,type:dtype,wall:wdWall,offset:off,framedOpening:false,doorColor:wd.color||'White'});
         }
         if (spaced) _spacedDoorWalls.push(wdWall);
       });
