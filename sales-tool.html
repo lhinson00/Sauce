@@ -5877,6 +5877,7 @@ async function openVoiceReview(transcript, sourceOverlay) {
     '  "postProtectors": boolean,',
     '  "gutters": boolean,',
     '  "cupola": boolean,',
+    '  "sheds": [{"wall":"left"|"right"|"front"|"back","w":number,"l":number,"encl":"open"|"enclosed"|"roofonly","dropFt":number,"concrete":boolean}],',
     '  "flags": ["describe anything ambiguous, unclear, or not captured"]',
     '}',
     '',
@@ -6001,6 +6002,16 @@ async function openVoiceReview(transcript, sourceOverlay) {
     '- "gutters", "rain gutters" → gutters:true',
     '- "cupola" → cupola:true',
     '',
+    'SIDE SHEDS / LEAN-TOS:',
+    '- "12 foot lean-to on the left", "12 wide lean-to left side", "12 by 40 lean-to on the left" → sheds:[{wall:"left",w:12,l:40}]',
+    '- Wall mapping: "left side","left eave" → wall:"left" | "right side","right eave" → wall:"right" | "front" → wall:"front" | "back","rear" → wall:"back"',
+    '- w = how far the shed sticks out (depth). l = how long it runs (defaults to building length for eave sheds, building width for gable sheds)',
+    '- "enclosed lean-to", "enclosed shed" → encl:"enclosed"',
+    '- "open lean-to", "roof only" → encl:"roofonly" (default)',
+    '- "2 foot drop", "dropped 2 feet" → dropFt:2',
+    '- "concrete in the shed", "shed slab" → concrete:true',
+    '- Up to 2 sheds supported',
+    '',
     'GENERAL:',
     '- Spoken numbers are sometimes transcribed as words — always convert to digits',
     '- If something is unclear or could mean two things, capture your best interpretation AND add it to flags',
@@ -6119,6 +6130,20 @@ function showVoiceReviewCard(parsed, transcript, overlay) {
   if (parsed.postProtectors) specRows.push(['Post Protectors', 'Yes']);
   if (parsed.gutters)        specRows.push(['Gutters', 'Yes']);
   if (parsed.cupola)         specRows.push(['Cupola', 'Yes']);
+  // Sheds
+  if (parsed.sheds && parsed.sheds.length) {
+    var shedRows = [];
+    var shedWallLabels = {left:'Left Side',right:'Right Side',front:'Front',back:'Back'};
+    var enclLabels2 = {enclosed:'Enclosed',open:'Open',roofonly:'Roof Only'};
+    parsed.sheds.forEach(function(sh,i) {
+      var sdesc = (sh.w||'?') + "' × " + (sh.l||'?') + "'";
+      var encl = enclLabels2[sh.encl] || (sh.encl||'Roof Only');
+      if (sh.dropFt) encl += ' — ' + sh.dropFt + "' drop";
+      if (sh.concrete) encl += ' — Concrete';
+      shedRows.push([(shedWallLabels[sh.wall]||sh.wall||'Side') + ' Lean-to', sdesc + ' — ' + encl]);
+    });
+    var shedSec = section('Side Structures', shedRows); if (shedSec) scroll.appendChild(shedSec);
+  }
   s = section('Specs & Upgrades', specRows); if (s) scroll.appendChild(s);
 
   if (parsed.flags && parsed.flags.length) {
@@ -6291,6 +6316,42 @@ function applyVoiceQuote(parsed, overlay) {
     if (parsed.postProtectors) tryFill('Post Protectors', function(){ var e=document.getElementById('st_postProtectors'); if(e) e.checked=true; return true; });
     if (parsed.gutters)        tryFill('Gutters',         function(){ var e=document.getElementById('st_gutters');        if(e) e.checked=true; return true; });
     if (parsed.cupola)         tryFill('Cupola',          function(){ var e=document.getElementById('qgCupolaSize');      if(e){e.value='24';toggleExtra('cupola',true);} return true; });
+
+    // Sheds
+    if (parsed.sheds && parsed.sheds.length) tryFill('Side Shed(s)', function(){
+      parsed.sheds.forEach(function(sh) {
+        if (window._shedConfigs.length >= 2) return;
+        var sidx = window._shedConfigs.length;
+        var swall = sh.wall || (sidx===0 ? 'left' : 'right');
+        var isEave = (swall==='left'||swall==='right');
+        var shedW = parseFloat(sh.w) || 12;
+        var shedL = parseFloat(sh.l) || (isEave ? Q.l : Q.w);
+        var sc = {
+          id: nextShedId++, idx: sidx,
+          label: 'Side Shed '+(sidx+1),
+          wall: swall, type: 'leanto',
+          wrapDir: 'cw', wrapLeg: 0,
+          w: shedW, l: shedL, origL: shedL,
+          encl: sh.encl || 'roofonly',
+          enclWalls: ['outer','gable1','gable2'],
+          position: 'center', offsetFt: 0,
+          gablePS: 10, gablePitch: 4,
+          timberFrame: 'metal',
+          ltPitch: 1, dropFt: parseFloat(sh.dropFt)||0,
+          frameStyle: 'metal',
+          _open: true
+        };
+        window._shedConfigs.push(sc);
+        if (sh.concrete) {
+          if (!window._lastConcreteOpts) window._lastConcreteOpts = { main: null, sheds: [] };
+          while (window._lastConcreteOpts.sheds.length <= sidx) window._lastConcreteOpts.sheds.push(null);
+          window._lastConcreteOpts.sheds[sidx] = { included: true, thickness: '4', footers: false };
+          var selId = sidx===0 ? 'st_ssConcrete' : 'st_ss2Concrete';
+          var sel = document.getElementById(selId); if (sel) sel.value = 'Yes';
+        }
+      });
+      renderSheds(); return true;
+    });
 
     buildWallGrid(); buildTrussChips(); buildPitchChips(); buildOHChips(); buildPSChips();
     try { populateColorDropdowns(); } catch(e) {}
