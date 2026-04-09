@@ -5702,7 +5702,7 @@ function openVoiceQuoteModal() {
   midCol.style.cssText = 'flex:1;min-width:0;';
   var txBox = document.createElement('div');
   txBox.id = 'vqTranscript';
-  txBox.style.cssText = 'font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  txBox.style.cssText = 'font-size:11px;color:#94a3b8;white-space:normal;overflow:hidden;max-width:100%;word-break:break-word;';
   txBox.textContent = 'Tap mic to speak';
   var statusEl = document.createElement('div');
   statusEl.id = 'vqStatus';
@@ -5855,6 +5855,482 @@ function openVoiceQuoteModal() {
 
 // ── Apply a single voice chunk — interprets via GAS, applies silently ─────────
 // ── Shared field apply — used by both local parser and Claude results ───────
+// ═══════════════════════════════════════════════════════════════════════════
+// LOCAL VOICE PARSER — instant field extraction without API call
+// Returns { parsed: {}, unmatched: "remaining text", confidence: 0-1 }
+// ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// LOCAL VOICE PARSER — instant field extraction without API call
+// Returns { parsed: {}, unmatched: "remaining text", confidence: 0-1 }
+// ═══════════════════════════════════════════════════════════════════════════
+function localVoiceParse(rawText) {
+  // Normalize: lowercase, fix known mishearings, standardize spacing
+  var t = rawText.toLowerCase()
+    .replace(/\bstill\b/g, 'steel')
+    .replace(/\bsteal\b/g, 'steel')
+    .replace(/\bsoft\s*it\b/g, 'soffit')
+    .replace(/\bgalvaloom\b/g, 'galvalume')
+    .replace(/\bgalvalum\b/g, 'galvalume')
+    .replace(/\btherma\s*guard\b/g, 'therma-guard')
+    .replace(/\bthermal\s*guard\b/g, 'therma-guard')
+    .replace(/\bthermaGuard\b/g, 'therma-guard')
+    .replace(/\btough\s*rib\b/g, 'tuff-rib')
+    .replace(/\bpbr\b/g, 'pbr')
+    .replace(/\bb\s*&\s*b\b/g, 'board and batten')
+    .replace(/\beave\s*walls?\b/g, 'eave wall')
+    .replace(/\bgable\s*walls?\b/g, 'gable wall')
+    .replace(/\b(\d+)\s*\/\s*12\b/g, '$1pitch')
+    .replace(/\bone\b/g,'1').replace(/\btwo\b/g,'2').replace(/\bthree\b/g,'3')
+    .replace(/\bfour\b/g,'4').replace(/\bfive\b/g,'5').replace(/\bsix\b/g,'6')
+    .replace(/\bseven\b/g,'7').replace(/\beight\b/g,'8').replace(/\bnine\b/g,'9')
+    .replace(/\bten\b/g,'10').replace(/\beleven\b/g,'11').replace(/\btwelve\b/g,'12')
+    .replace(/\bthirteen\b/g,'13').replace(/\bfourteen\b/g,'14').replace(/\bfifteen\b/g,'15')
+    .replace(/\bsixteen\b/g,'16').replace(/\btwenty\b/g,'20').replace(/\bthirty\b/g,'30')
+    .replace(/\bforty\b/g,'40').replace(/\bfifty\b/g,'50').replace(/\bsixty\b/g,'60')
+    .replace(/\bseventy\b/g,'70').replace(/\beighty\b/g,'80').replace(/\bninety\b/g,'90')
+    .replace(/\bone\s*hundred\b/g,'100').replace(/\bone\s*twenty\b/g,'120')
+    .replace(/\bone\s*forty\b/g,'140').replace(/\bone\s*sixty\b/g,'160')
+    .replace(/(\d+)\s+to\s+(\d+\s*[x×])/g, '$1 $2')
+    .replace(/\bclosed\s+to\s+(\d)/g, '$1')
+    .replace(/\ball\s+(?:4|four)\s+walls?\s+(?:and\s+)?(?:enclosed|closed)\b/g, 'fully enclosed')
+    .replace(/\s+/g,' ').trim();
+
+  var p = {};
+  var matched = [];
+
+  function mark(label) { matched.push(label); }
+  function num(s) { return parseInt(s, 10); }
+
+  // ── CUSTOMER ──────────────────────────────────────────────────────────────
+  var nameM = t.match(/(?:quote\s+for|customer\s+is|customer\s+name(?:\s+is)?|name(?:\s+is)?)\s+([a-z][a-z\s]{1,30}?)(?:\s*,|\s+phone|\s+building|\s+dimensions|$)/);
+  if (nameM) { p.custName = nameM[1].replace(/\b\w/g,function(c){return c.toUpperCase();}); mark('Name'); }
+
+  var phoneM = t.match(/(?:^|\s)(\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]\d{4})(?=\s|$|,)/);
+  if (!phoneM) phoneM = t.match(/\b(\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]\d{4})(?!\d)/);
+  if (phoneM) { p.custPhone = phoneM[1].replace(/[^\d]/g,'').replace(/(\d{3})(\d{3})(\d{4})/,'$1-$2-$3'); mark('Phone'); }
+
+  var emailM = t.match(/\b([\w.]+)\s+(?:at|@)\s+([\w.]+)\s+(?:dot)\s+([\w]+)\b/);
+  if (emailM) { p.custEmail = emailM[1]+'@'+emailM[2]+'.'+emailM[3]; mark('Email'); }
+
+  var addrM = t.match(/(?:address\s+(?:is\s+)?)?(\d+\s+[a-z]+(?:\s+[a-z]+){1,4})\s+(?:in\s+)?([a-z]+(?:\s+[a-z]+)?)\s+(?:tennessee|tn|kentucky|ky|alabama|al|georgia|ga|ohio|oh|indiana|in|missouri|mo|arkansas|ar|mississippi|ms|texas|tx|florida|fl)/);
+  if (addrM) { p.custAddress = addrM[1]+', '+addrM[2]; mark('Address'); }
+
+  // ── DIMENSIONS ────────────────────────────────────────────────────────────
+  // "40 wide 60 long 14 tall" or "40x60x14" or "40 by 60 by 14"
+  var dimM = t.match(/(\d+)\s*(?:foot|ft|')?\s*(?:wide|width|w)\D{0,6}(\d+)\s*(?:foot|ft|')?\s*(?:long|length|l)\D{0,6}(\d+)\s*(?:foot|ft|')?\s*(?:tall|high|height|h)/);
+  if (!dimM) dimM = t.match(/(\d+)\s*[x×by\-]\s*(\d+)\s*[x×by\-]\s*(\d+)/);
+  if (!dimM) {
+    // "40 by 60 by 14"
+    dimM = t.match(/\b(\d+)\s+by\s+(\d+)\s+by\s+(\d+)\b/);
+  }
+  if (dimM) {
+    p.width = num(dimM[1]); p.length = num(dimM[2]); p.height = num(dimM[3]);
+    mark('Width'); mark('Length'); mark('Height');
+  } else {
+    // Individual dimension fallbacks
+    var wM = t.match(/(\d+)\s*(?:foot|ft|')?\s*(?:wide|width)/);
+    var lM = t.match(/(\d+)\s*(?:foot|ft|')?\s*(?:long|length)/);
+    var hM = t.match(/(\d+)\s*(?:foot|ft|')?\s*(?:tall|high|height)/);
+    if (wM) { p.width  = num(wM[1]); mark('Width');  }
+    if (lM) { p.length = num(lM[1]); mark('Length'); }
+    if (hM) { p.height = num(hM[1]); mark('Height'); }
+  }
+
+  // ── PITCH ─────────────────────────────────────────────────────────────────
+  var pitchM = t.match(/(\d+)\s*pitch|(\d+)\s*\/\s*12|(\d+)pitch/);
+  if (pitchM) {
+    var pv = num(pitchM[1]||pitchM[2]||pitchM[3]);
+    if ([4,6,8,10].indexOf(pv) !== -1) { p.pitch = pv; mark('Pitch'); }
+  }
+
+  // ── TRUSS ─────────────────────────────────────────────────────────────────
+  if (/\bsteel\s+truss\b|\bsteel\s+frame\b|\ball\s+steel\b/.test(t))          { p.truss = 'Steel';   mark('Truss'); }
+  else if (/\bstud\s+frame\b|\bstud\s+wall\b|\bstick\s+frame\b/.test(t))      { p.truss = 'Stud';    mark('Truss'); }
+  else if (/\bcypress\b/.test(t) && !/\bcypress\s+ave\b/.test(t))             { p.truss = 'Cypress'; mark('Truss'); }
+  else if (/\bboard\s+and\s+batten\b|\bmetal\s+bb\b/.test(t))                 { p.truss = 'MetalBB'; mark('Truss'); }
+  else if (/\bwood\s+truss\b|\bwood\s+frame\b|\bstandard\s+truss\b/.test(t))  { p.truss = 'Wood';    mark('Truss'); }
+
+  // ── SOFFIT ────────────────────────────────────────────────────────────────
+  if      (/\bno\s+soffit\b|\bwithout\s+soffit\b|\bopen\s+eave\b/.test(t))    { p.soffit = false; mark('Soffit'); }
+  else if (/\bwith\s+soffit\b|\bhas\s+soffit\b|\bsoffit\b|\boverhang\b/.test(t)) { p.soffit = true; mark('Soffit'); }
+
+  // ── TRUSS SPACING ─────────────────────────────────────────────────────────
+  var tsM = t.match(/(\d+)\s*(?:foot|ft|')?\s*(?:truss\s+spacing|on\s+truss|truss\s+on\s+center)/);
+  if (tsM && [2,4,5].indexOf(num(tsM[1])) !== -1) { p.trussSpacing = num(tsM[1]); mark('Truss Spacing'); }
+
+  // ── POST SPACING ──────────────────────────────────────────────────────────
+  var validPS = [8,10,12,16,20,24];
+  var psM = t.match(/(\d+)\s*(?:foot|ft|')?\s*(?:on\s+center|oc|o\.c\.)\b(?!\s*truss)/);
+  if (!psM) psM = t.match(/(?:post\s+spacing\s+(?:is\s+)?|spacing\s+of\s+)(\d+)/);
+  if (psM && validPS.indexOf(num(psM[1])) !== -1) { p.eavePS = num(psM[1]); mark('Post Spacing'); }
+  var gpsM = t.match(/gable\s+spacing\s+(?:is\s+)?(\d+)|(\d+)\s*(?:foot|ft)?\s*gable\s+spacing/);
+  if (gpsM && validPS.indexOf(num(gpsM[1]||gpsM[2])) !== -1) { p.gablePS = num(gpsM[1]||gpsM[2]); mark('Gable Spacing'); }
+
+  // ── POST SIZE ─────────────────────────────────────────────────────────────
+  var postM = t.match(/\b(6x6|8x8|10x10|12x12)\s*(?:posts?|columns?)(?!\s*(?:garage|door|window|insulated))/);
+  if (postM) { p.postSize = postM[1]; mark('Post Size'); }
+
+  // ── POSTS ON TOP ──────────────────────────────────────────────────────────
+  if      (/\bposts?\s+on\s+top\b|\bmono\s*slab\b/.test(t))  { p.postsOnTop = true;  mark('Posts On Top'); }
+  else if (/\bposts?\s+in\s+(?:the\s+)?ground\b/.test(t))    { p.postsOnTop = false; mark('Posts On Top'); }
+
+  // ── GAUGE / METAL PROFILE ─────────────────────────────────────────────────
+  var gauge = null;
+  if (/\b26\s*(?:gauge|ga)\b/.test(t))      gauge = 26;
+  else if (/\b29\s*(?:gauge|ga)\b/.test(t)) gauge = 29;
+  if (gauge) { p.gauge = gauge; mark('Gauge'); }
+
+  var ss = /\bstanding\s+se[ae]m\b/.test(t);
+  if (ss) { p.standingSeam = true; p.roofMetal = 'Standing Seam 26ga'; mark('Standing Seam'); }
+
+  var pbr = /\bpbr\b/.test(t);
+  if (!ss) {
+    var g = gauge || 29;
+    if (/\btuff[\s\-]?rib\b/.test(t) || /\bstandard\s+panel\b/.test(t)) {
+      p.roofMetal = 'Tuff-Rib '+g+'ga';
+      p.wallMetal = 'Tuff-Rib '+g+'ga';
+    }
+    if (pbr) {
+      if (/\bpbr\s+roof\b/.test(t)) p.roofMetal = 'PBR 26ga';
+      else if (/\bpbr\s+wall\b/.test(t)) p.wallMetal = 'PBR 26ga';
+      else { p.roofMetal = 'PBR 26ga'; p.wallMetal = 'PBR 26ga'; }
+    }
+    if (/\bboard\s+and\s+batten\b/.test(t)) { p.wallMetal = 'Board & Batten 26ga'; }
+  }
+
+  // ── COLORS ────────────────────────────────────────────────────────────────
+  var colorMap = {
+    'pure white':'Pure White','bone white':'Bone White','bone':'Bone White',
+    'ivory':'Ivory','stone':'Stone','tan':'Tan','buckskin':'Buckskin',
+    'light gray':'Light Gray','light grey':'Light Gray',
+    'galvalume':'Galvalume','galvanized':'Galvanized',
+    'county charcoal':'County Charcoal','charcoal':'County Charcoal',
+    'blue charcoal':'Blue Charcoal',
+    'gloss black':'Gloss Black','black':'Gloss Black',
+    'matte black':'Matte Black','frost black':'Frost Black',
+    'clay':'Clay','brown':'Brown','bronze':'Bronze','frost bronze':'Frost Bronze',
+    'frost charcoal':'Frost Charcoal',
+    'copper metallic':'Copper Metallic','copper metal':'Copper Metallic',
+    'barn red':'Barn Red','bright red':'Bright Red','dark red':'Dark Red',
+    'red':'Bright Red','burgundy':'Burgundy',
+    'patina green':'Patina Green','patina':'Patina Green',
+    'forest green':'Forest Green','dark green':'Forest Green','evergreen':'Forest Green',
+    'hawaiian blue':'Hawaiian Blue','gallery blue':'Gallery Blue',
+    'rough sawn cedar':'Rough Sawn Cedar','cedar':'Rough Sawn Cedar',
+    'distressed cedar':'Distressed Rough Sawn Cedar','gray cedar':'Gray Rough Sawn Cedar',
+    'white':'Pure White'
+  };
+
+  function extractColor(context) {
+    var colorKeys = Object.keys(colorMap).sort(function(a,b){return b.length-a.length;});
+    for (var i=0; i<colorKeys.length; i++) {
+      var k = colorKeys[i];
+      var re = new RegExp('\\b'+k.replace(/\s+/g,'\\s+')+'\\b');
+      if (re.test(context)) return colorMap[k];
+    }
+    return null;
+  }
+
+  // Extract colors by context
+  // Positional color parsing: find each color keyword and check what follows
+  // Split by color keywords and check what context word (roof/wall/trim) follows
+  var colorKeys2 = Object.keys(colorMap).sort(function(a,b){return b.length-a.length;});
+  // Color extraction: find color in text, check what follows within 3 words
+  colorKeys2.forEach(function(ck) {
+    var re = new RegExp('\\b' + ck.replace(/\s+/g, '\\s+') + '\\b', 'g');
+    var cm2;
+    while ((cm2 = re.exec(t)) !== null) {
+      // Look at up to 3 words after the color match
+      var after = t.substring(cm2.index + cm2[0].length).trimLeft().split(/\s+/).slice(0,3).join(' ');
+      // Look at up to 2 words before for "roof/wall/trim COLOR" pattern
+      var before = t.substring(Math.max(0, cm2.index - 20), cm2.index).trimRight().split(/\s+/).slice(-2).join(' ');
+      var color = colorMap[ck];
+      var assignedTo = null;
+      if (/\broof\b/.test(after) && !p.roofColor)     { p.roofColor = color; mark('Roof Color'); assignedTo='roof'; }
+      else if (/\bwalls?\b/.test(after) && !p.wallColor)  { p.wallColor = color; mark('Wall Color'); assignedTo='wall'; }
+      else if (/\btrim\b/.test(after) && !p.trimColor)    { p.trimColor = color; mark('Trim Color'); assignedTo='trim'; }
+      else if (/\bwainscot\b/.test(after) && !p.wainscotColor) { p.wainscotColor = color; mark('Wainscot Color'); assignedTo='wainscot'; }
+      // Reverse: context word before color
+      if (!assignedTo) {
+        if (/\broof\b/.test(before) && !p.roofColor)    { p.roofColor = color; mark('Roof Color'); }
+        else if (/\bwall\b/.test(before) && !p.wallColor)   { p.wallColor = color; mark('Wall Color'); }
+        else if (/\btrim\b/.test(before) && !p.trimColor)   { p.trimColor = color; mark('Trim Color'); }
+        else if (/\bwainscot\b/.test(before) && !p.wainscotColor) { p.wainscotColor = color; mark('Wainscot Color'); }
+      }
+    }
+  });
+
+  // ── WAINSCOT ──────────────────────────────────────────────────────────────
+  if      (/\bno\s+wainscot\b/.test(t))                          { p.wainscot = false; mark('Wainscot'); }
+  else if (/\bstone\s+wainscot\b|\brock\s+wainscot\b/.test(t))   { p.wainscot = true; p.stoneWainscot = true; mark('Wainscot'); }
+  else if (/\bwainscot(?:ing)?\b/.test(t))                        { p.wainscot = true; mark('Wainscot'); }
+
+  // ── ENCLOSURE ─────────────────────────────────────────────────────────────
+  // Named configs
+  if (/\broof\s+(?:and\s+)?(?:upper\s+)?gable\s+(?:with\s+)?enclosed\s+gable(?:\s+ends?)?\b|\brg\s+gable/.test(t)) {
+    p.enclosure = {front:'enclosed',back:'enclosed',left:'open',right:'open'}; mark('Enclosure');
+  } else if (/\broof\s+(?:and\s+)?(?:upper\s+)?gable\s+(?:with\s+)?(?:2\s+|two\s+)?side\s+walls?\b|\brg\s+side/.test(t)) {
+    p.enclosure = {front:'open',back:'open',left:'enclosed',right:'enclosed'}; mark('Enclosure');
+  } else if (/\broof\s+(?:and\s+)?(?:upper\s+)?gable\b|\broof\s+only\b|\brg\s+steel\b/.test(t)) {
+    p.enclosure = {front:'open',back:'open',left:'open',right:'open'}; mark('Enclosure');
+  } else if (/\bfully\s+enclosed\b|\ball\s+(?:four\s+)?walls?\s+(?:and\s+)?(?:enclosed|closed)\b|\benclosed\s+all\b|\ball\s+(?:around|sides?)\s+(?:enclosed|closed)\b/.test(t)) {
+    p.enclosure = {front:'enclosed',back:'enclosed',left:'enclosed',right:'enclosed'}; mark('Enclosure');
+  } else {
+    // Per-wall
+    var enc = {};
+    var walls = ['front','back','left','right'];
+    var wallAliases = {front:['front','gable\\s+end'],back:['back','rear'],left:['left','left\\s+eave','left\\s+side'],right:['right','right\\s+eave','right\\s+side']};
+    walls.forEach(function(w) {
+      var aliases = wallAliases[w].join('|');
+      if (new RegExp('(?:'+aliases+')\\s+(?:wall\\s+)?(?:is\\s+)?(?:roof\\s+)?only').test(t)) { enc[w]='open'; }
+      else if (new RegExp('open\\s+(?:on\\s+)?(?:the\\s+)?(?:'+aliases+')').test(t)) { enc[w]='open'; }
+      else if (new RegExp('(?:'+aliases+')\\s+(?:wall\\s+)?(?:is\\s+)?(?:open|not\\s+enclosed)').test(t)) { enc[w]='open'; }
+      else if (new RegExp('(?:'+aliases+')\\s+(?:wall\\s+)?(?:is\\s+)?enclosed').test(t)) { enc[w]='enclosed'; }
+      else if (new RegExp('enclosed\\s+(?:'+aliases+')').test(t)) { enc[w]='enclosed'; }
+    });
+    if (/\beave\s+walls?\s+open\b|\beaves?\s+open\b/.test(t)) { enc.left='open'; enc.right='open'; }
+    if (/\bgable\s+walls?\s+open\b/.test(t))                  { enc.front='open'; enc.back='open'; }
+    if (/\beave\s+walls?\s+(?:enclosed|closed)\b/.test(t))    { enc.left='enclosed'; enc.right='enclosed'; }
+    if (/\bgable\s+walls?\s+(?:enclosed|closed)\b/.test(t))   { enc.front='enclosed'; enc.back='enclosed'; }
+    if (Object.keys(enc).length) { p.enclosure = enc; mark('Enclosure'); }
+  }
+
+  // ── GARAGE DOORS ──────────────────────────────────────────────────────────
+  var gdRe = /(\d+)\s*[x×by]\s*(\d+)\s*(?:foot|ft|')?\s*(insulated|non-?insulated|standard)?\s*(?:insulated\s+)?garage\s+door/g;
+  // Also: "garage door NxN" pattern
+  var gdRe2 = /(\d+)\s*(?:insulated|non-?insulated)?\s*(\d+)\s*[x×by]\s*(\d+)\s*(?:insulated)?\s*(?:garage\s+)?doors?/g;
+  // "two 10x10 insulated" before "garage door"
+  var gdRe3 = /(\d+)?\s*(\d+)\s*[x×by]\s*(\d+)\s*(insulated|non-?insulated)?/g;
+
+  var wallMap = {front:'back',back:'front',left:'left',right:'right',
+    'front gable':'back','back gable':'front','rear':'front',
+    'front wall':'back','back wall':'front',
+    'left side':'left','right side':'right','left eave':'left','right eave':'right'};
+
+  function getWall(context) {
+    var walls = Object.keys(wallMap).sort(function(a,b){return b.length-a.length;});
+    for (var i=0;i<walls.length;i++) {
+      if (context.indexOf(walls[i])!==-1) return wallMap[walls[i]];
+    }
+    return null;
+  }
+
+  function getPlacement(context) {
+    if (/\bcentered?\b/.test(context)) return 'center';
+    if (/\bspaced\s+evenly\b|\bevenly\s+spaced\b|\bequally\s+spaced\b/.test(context)) return 'spaced';
+    return null;
+  }
+
+  // Match garage doors: "N NxN insulated on the WALL"
+  var gdFullRe = /(\d+)?\s*(\d+)\s*[x×by]\s*(\d+)\s*(?:foot|ft)?\s*(insulated|non[- ]?insulated|standard|full\s+view)?\s*(?:insulated\s+)?(?:full\s+view\s+)?garage\s+doors?(?:\s+(?:centered?|spaced\s+evenly|on\s+(?:the\s+)?(?:front(?:\s+gable)?|back(?:\s+gable)?|left(?:\s+(?:eave|side))?|right(?:\s+(?:eave|side))?))?)?/g;
+  var gdMatches = [];
+  var gdM;
+  while ((gdM = gdFullRe.exec(t)) !== null) {
+    var qty = gdM[1] ? num(gdM[1]) : 1;
+    var w = num(gdM[2]), h = num(gdM[3]);
+    if (w < 6 || w > 24 || h < 6 || h > 16) continue; // sanity check
+    var insulated = /insulated/.test(gdM[4]||'') && !/non/.test(gdM[4]||'');
+    var fv = /full\s*view/.test(gdM[4]||'') || /full\s*view/.test(gdM[0]);
+    // Find wall from surrounding text
+    var start = Math.max(0, gdM.index-30);
+    var end = Math.min(t.length, gdM.index+gdM[0].length+60);
+    var ctx = t.substring(start,end);
+    var wall = getWall(ctx) || 'back';
+    var placement = getPlacement(ctx);
+    var fl = !placement;
+    // Also check broader context for spaced/centered
+    var broadCtx = t.substring(Math.max(0,gdM.index-50),Math.min(t.length,gdM.index+gdM[0].length+80));
+    if (!placement) placement = getPlacement(broadCtx);
+    if (placement) fl = false;
+    gdMatches.push({w:w,h:h,qty:qty,insulated:insulated,fullView:fv,wall:wall,placement:placement,fieldLocated:fl});
+  }
+  if (gdMatches.length) { p.garageDoors = gdMatches; mark('Garage Door(s)'); }
+
+  // ── GD OPENER ─────────────────────────────────────────────────────────────
+  if (/\bjackshaft\b/.test(t)) {
+    p.gdOpener = 'Jackshaft';
+    var opQM = t.match(/(\d+)\s*jackshaft|jackshaft\s*(?:opener\s*)?(?:quantity\s*)?(\d+)/);
+    p.gdOpenerQty = opQM ? num(opQM[1]||opQM[2]) : 1;
+    mark('GD Opener');
+  } else if (/\bmj\s*opener\b|\bgdmj\b/.test(t)) {
+    p.gdOpener = 'MJ'; p.gdOpenerQty = 1; mark('GD Opener');
+  }
+  if (/\bgd\s*windows?\b|\bwindows?\s+in\s+(?:the\s+)?doors?\b|\bgarage\s+door\s*windows?\b/.test(t)) {
+    p.gdWindows = true; mark('GD Windows');
+  }
+
+  // ── WALK DOORS ────────────────────────────────────────────────────────────
+  var walkDoorTypes = {
+    'solid|standard walk door|plyco(?! 99)|3/0 plyco(?! 99)': 'WHITE 3/0 PLYCO ALUMINUM FRAME',
+    'black solid|black door(?! double)': 'BLACK 3/0 PLYCO ALUMINUM FRAME',
+    '4/0|48\\s*inch|4\\s*foot door|plyco\\s*99': 'WHITE PLYCO 99 4/0 ALUM FRAME',
+    '6\\s*foot french|french door|french': 'WHITE 6/0 FRENCH ALUM FRAME',
+    'black half glass|black half lite': 'BLACK 3/0 -1/2 GLASS PLYCO LH',
+    'half glass|half lite|half light|1/2 glass': '3/0 PLYCO 1/2 GLASS L.H.',
+    '9 lite|9 light|nine lite': '3/0 9-LITE PLYCO RH',
+    '6 panel fiberglass|6 panel smooth': '3/0 6 PANEL LH SMOOTH FIBERGLASS',
+    'smooth half glass|half glass fiberglass': '3/0 1/2 GLASS LH SMOOTH FIBERGLASS',
+    '6 foot full view double|full view double': '6/0 FULL VIEW NO GRIDS LH',
+    '6 foot half glass|double half glass': '6/0 1/2 GLASS NO GRIDS LH',
+    'mahogany': 'CENTRAL WOODWORKS 3/0 MAHOGANY 3/4 GLASS 4-LITE LH'
+  };
+
+  // Match "N walk door(s) [type]" or "N [type] walk door(s)"
+  var wdRe = /(\d+)?\s*(?:([a-z\s]+?)\s+)?walk\s+doors?(?:\s+([a-z\s]+?))?(?:\s+(?:on\s+(?:the\s+)?)?(?:front|back|left|right|field))?/g;
+  var wdMatches = [];
+  var wdM;
+  while ((wdM = wdRe.exec(t)) !== null) {
+    var qty = wdM[1] ? num(wdM[1]) : 1;
+    var typeHint = (wdM[2]||'') + ' ' + (wdM[3]||'');
+    var dtype = 'WHITE 3/0 PLYCO ALUMINUM FRAME'; // default solid
+    var typeKeys = Object.keys(walkDoorTypes);
+    for (var i=0;i<typeKeys.length;i++) {
+      if (new RegExp(typeKeys[i]).test(typeHint.trim()||t)) {
+        dtype = walkDoorTypes[typeKeys[i]]; break;
+      }
+    }
+    var ctx2 = t.substring(Math.max(0,wdM.index-20),Math.min(t.length,wdM.index+wdM[0].length+40));
+    var fl2 = !/centered?|spaced\s+evenly/.test(ctx2);
+    var pl2 = getPlacement(ctx2);
+    var wall2 = getWall(ctx2);
+    wdMatches.push({type:dtype,qty:qty,wall:wall2||'back',fieldLocated:fl2,placement:pl2});
+  }
+  if (wdMatches.length) { p.walkDoors = wdMatches; mark('Walk Door(s)'); }
+
+  // ── WINDOWS ───────────────────────────────────────────────────────────────
+  var winSizeMap = {'23':'VW23','2x3':'VW23','33':'VW33','3x3':'VW33','34':'VW34','3x4':'VW34','35':'VW35','3x5':'VW35','36':'VW36','3x6':'VW36'};
+  var winRe = /(\d+)?\s*(?:v[w]?(?:bl)?t?)?([23][x×by][3456]|2[3]|3[3456])\s*(?:window|win)?(?:\s+(?:with\s+grids?|no\s+grids?|grids?|black\s+frame|white\s+frame))?/g;
+  var winMatches = [];
+  var winM;
+  while ((winM = winRe.exec(t)) !== null) {
+    var qty = winM[1] ? num(winM[1]) : 1;
+    var sizeRaw = winM[2].replace(/[x×by]/g,'x').replace(/\s/g,'');
+    // Normalize "2x3" → "23"
+    var sizeKey = sizeRaw.replace('x','');
+    if (sizeKey.length > 2) sizeKey = sizeRaw.replace('x','');
+    var wType = winSizeMap[sizeRaw] || winSizeMap[sizeKey] || 'VW34';
+    var ctx3 = t.substring(Math.max(0,winM.index-10),Math.min(t.length,winM.index+winM[0].length+50));
+    var grids = /\bwith\s+grids?\b/.test(ctx3) ? true : /\bno\s+grids?\b/.test(ctx3) ? false : false;
+    var frameColor = /\bblack\s+frame\b/.test(ctx3) ? 'Black' : 'White';
+    var wall3 = getWall(ctx3);
+    var fl3 = !/centered?|spaced\s+evenly/.test(ctx3);
+    var pl3 = getPlacement(ctx3);
+    winMatches.push({type:wType,qty:qty,grids:grids,frameColor:frameColor,wall:wall3||'back',fieldLocated:fl3,placement:pl3});
+  }
+  if (winMatches.length) { p.windows = winMatches; mark('Window(s)'); }
+
+  // ── INSULATION ────────────────────────────────────────────────────────────
+  var insulMap = {
+    'therma[- ]guard|thermoguard|thermo[- ]guard|therma\\b':'Therma Guard',
+    'double\\s+bubble\\s+foil':'Double Bubble Foil',
+    'double\\s+bubble\\s+white':'Double Bubble White',
+    'double\\s+bubble':'Double Bubble Foil',
+    '3\\s*(?:inch|in|")\\s*vinyl|3\\s*vinyl\\s*back':'3 Vinyl Back',
+    '2\\s*(?:inch|in|")\\s*vinyl|2\\s*vinyl\\s*back':'2 Vinyl Back',
+    'solar\\s+eclipse':'Solar Eclipse'
+  };
+  var insulKeys = Object.keys(insulMap);
+  for (var i=0;i<insulKeys.length;i++) {
+    if (new RegExp(insulKeys[i]).test(t)) {
+      p.insulation = insulMap[insulKeys[i]];
+      p.insulRoof  = !/walls?\s+only\b/.test(t);
+      p.insulWalls = !/roof\s+only\b/.test(t) && /walls?\b/.test(t) ? true : /full\s+build|both\b/.test(t);
+      if (/roof\s+only/.test(t)) { p.insulRoof=true; p.insulWalls=false; }
+      else if (/walls?\s+only/.test(t)) { p.insulRoof=false; p.insulWalls=true; }
+      else { p.insulRoof=true; p.insulWalls=true; }
+      mark('Insulation'); break;
+    }
+  }
+
+  // ── CONCRETE ──────────────────────────────────────────────────────────────
+  if (/\bno\s+concrete\b/.test(t)) { p.concrete = 'None'; mark('Concrete'); }
+  else {
+    var concM = t.match(/(\d+)\s*[-]?(?:inch|in|")\s*(?:concrete|slab)|(?:concrete|slab)\s*(\d+)[-]?(?:inch|in|")/); if (concM && !concM[1]) concM[1]=concM[2];
+    if (!concM) concM = t.match(/(?:concrete|slab)\s*(\d+)\s*(?:inch|in|")/);
+    if (concM) {
+      var ct = num(concM[1]);
+      if (ct === 4 || ct === 6) { p.concrete = String(ct); mark('Concrete'); }
+    }
+    if (p.concrete) {
+      if (/\brebar\b/.test(t)) { p.concreteRebar = true; mark('Rebar'); }
+      if (/\bwire\s+mesh\b|\bwire\b/.test(t)) { p.concreteWire = true; mark('Wire'); }
+      if (/\bfooters?\b/.test(t)) { p.concreteFooters = true; mark('Footers'); }
+      if (/\bstamped\b/.test(t)) { p.concreteStamped = true; mark('Stamped'); }
+      if (/\bmetal\s+ledge\b/.test(t)) { p.concreteMetalLedge = true; mark('Metal Ledge'); }
+      var psiM = t.match(/(\d{4})\s*psi/);
+      if (psiM) { p.concretePSI = num(psiM[1]); mark('PSI'); }
+    }
+  }
+
+  // ── SHEDS ─────────────────────────────────────────────────────────────────
+    var shedRe = /(?:(\d+)\s*[x×by]\s*)?(\d+)\s*(?:foot|ft|')\s*(?:(?:wide|depth)\s+)?(?:lean[\s-]?to|shed)(?:\s+on\s+(?:the\s+)?)?(?:(left|right|front|back)(?:\s+(?:eave|side|wall))?)?/g;
+  var shedMatches = [];
+  var shedM;
+  while ((shedM = shedRe.exec(t)) !== null) {
+    // group1=paired length (e.g. '12x40'), group2=main number, group3=wall
+    var sw = num(shedM[2]); // width/depth — the main number
+    var sl = shedM[1] ? num(shedM[1]) : 0; // length if paired
+    var swall = shedM[3] || (shedMatches.length === 0 ? 'left' : 'right');
+    var sctx = t.substring(Math.max(0,shedM.index-10),Math.min(t.length,shedM.index+shedM[0].length+60));
+    var encl = /\benclosed\b/.test(sctx) ? 'enclosed' : /\bopen\b/.test(sctx) ? 'open' : 'roofonly';
+    var dropM = sctx.match(/(\d+)\s*(?:foot|ft|')?\s*drop/);
+    var dropFt = dropM ? num(dropM[1]) : 0;
+    var sconc = /\bconcrete\b/.test(sctx);
+    shedMatches.push({wall:swall,w:sw,l:sl||0,encl:encl,dropFt:dropFt,concrete:sconc});
+  }
+  if (shedMatches.length) { p.sheds = shedMatches; mark('Shed(s)'); }
+
+  // ── UPGRADES ──────────────────────────────────────────────────────────────
+  if (/\besd\b|\bengineered\s+(?:stamped?\s+)?drawings?\b|\bstamped?\s+drawings?\b|\bstamp\s+drawing/.test(t)) { p.esd=true; mark('ESD'); }
+  if (/\bpost\s+protectors?\b|\bcolumn\s+guards?\b/.test(t)) { p.postProtectors=true; mark('Post Protectors'); }
+  if (/\bpost\s+wraps?\b/.test(t)) { p.postWraps=true; mark('Post Wraps'); }
+  if (/\bwet\s+set\b/.test(t)) { p.wetSetPosts=true; mark('Wet Set'); }
+  if (/\blvl\b|\blaminated\s+(?:veneer\s+)?headers?\b/.test(t)) { p.lvlHeaders=true; mark('LVL'); }
+  if (/\bcable\s+brac(?:ing|e)\b/.test(t)) { p.cableBracing=true; mark('Cable Bracing'); }
+  if (/\bwidows?\s+peak\b/.test(t)) { p.widowsPeak=true; mark("Widow's Peak"); }
+  if (/\bcrane\s+fee\b|\bcrane\b/.test(t)) { p.craneFee=true; mark('Crane Fee'); }
+  if (/\bfarm\s+tax\b|\btax\s+exempt\b|\bno\s+tax\b/.test(t)) { p.farmTax=true; mark('Farm Tax'); }
+  if (/\bmaterial\s+only\b|\bno\s+labor\b|\bmaterials\s+only\b/.test(t)) { p.materialOnly=true; mark('Material Only'); }
+
+  // Bar joist
+  var bjM = t.match(/(\d+)?\s*bar\s+joists?/);
+  if (bjM) { p.barjoist=true; p.barjoistQty=bjM[1]?num(bjM[1]):1; mark('Bar Joist'); }
+
+  // ── GUTTERS ───────────────────────────────────────────────────────────────
+  if (/\bgutters?\b/.test(t) && !/\bno\s+gutters?\b/.test(t)) {
+    p.gutters = true; mark('Gutters');
+    if      (/\breal\s+copper\b/.test(t))                         p.gutterType = 'Real Copper';
+    else if (/\bcopper\s+metallic\b|\bcopper\s+metal\b/.test(t)) p.gutterType = 'Copper Metallic';
+    else if (/\bgalvalume\s+gutter\b/.test(t))                    p.gutterType = 'Galvalume';
+    else                                                           p.gutterType = 'Standard';
+    if (/\bgutter\s+guard\b|\bleaf\s+guard\b/.test(t)) p.gutterGuard = true;
+  }
+
+  // ── CUPOLA ────────────────────────────────────────────────────────────────
+  // Handle speech artifacts: '124-in' = '1 24-inch', '24in' = 24-inch
+  var tCupola = t.replace(/(\d)(24|30|36|48)-?(?:in|inch)/g, '$1 $2 inch');
+  var cupolaM = tCupola.match(/(?:(\d+)\s+)?(\d+)\s*(?:inch|in|")?\s*cupola/);
+  if (cupolaM) {
+    var cqty = cupolaM[1] ? num(cupolaM[1]) : 1;
+    var csz = num(cupolaM[2]);
+    if ([24,30,36,48].indexOf(csz) !== -1) { p.cupolaSize=String(csz); p.cupolaQty=cqty; mark('Cupola'); }
+  }
+
+  // ── AWNINGS ───────────────────────────────────────────────────────────────
+  var wdAwM = t.match(/(\d+)\s*walk\s+door\s+awnings?/);
+  if (wdAwM) { p.wdAwningQty=num(wdAwM[1]); mark('WD Awnings'); }
+  var winAwM = t.match(/(\d+)\s*window\s+awnings?/);
+  if (winAwM) { p.winAwningQty=num(winAwM[1]); mark('Win Awnings'); }
+  var ssAwM = t.match(/(\d+)\s*(?:shed|side\s+shed)\s+awnings?/);
+  if (ssAwM) { p.ssAwningQty=num(ssAwM[1]); mark('Shed Awnings'); }
+
+  // ── CONFIDENCE SCORE ──────────────────────────────────────────────────────
+  var totalWords = t.split(/\s+/).length;
+  var confidence = Math.min(1, matched.length / Math.max(1, totalWords / 4));
+
+  return { parsed: p, matched: matched, confidence: confidence };
+}
+
 function _applyFieldsInner(parsed, tryFill) {
   window._vqSpacedDoorWalls = window._vqSpacedDoorWalls || [];
   window._vqSpacedWinWalls  = window._vqSpacedWinWalls  || [];
