@@ -5681,7 +5681,12 @@ function openVoiceQuoteModal() {
   hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid rgba(255,130,0,.2);flex-shrink:0;';
   hdr.innerHTML = '<div><div style="font-size:17px;font-weight:800;color:#f0f3f7;">&#x1F3A4; Voice Quote</div>'
     + '<div style="font-size:11px;color:#888;margin-top:2px;">Speak the full quote — tap Done when finished</div></div>'
-    + '<button onclick="document.getElementById(&quot;voiceQuoteModal&quot;).remove()" style="background:none;border:none;color:#888;font-size:22px;cursor:pointer;padding:4px;">&#x2715;</button>';
+    + '<div style="display:flex;align-items:center;gap:10px;">'
+    + '<div id="vqLiveWrap" style="display:flex;align-items:center;gap:6px;cursor:pointer;" onclick="vqToggleLive()">'
+    + '<div id="vqLiveDot" style="width:8px;height:8px;border-radius:50%;background:#555;transition:background .2s;"></div>'
+    + '<span id="vqLiveLbl" style="font-size:10px;font-weight:700;color:#555;letter-spacing:.8px;">LIVE</span></div>'
+    + '<button onclick="document.getElementById(&quot;voiceQuoteModal&quot;).remove()" style="background:none;border:none;color:#888;font-size:22px;cursor:pointer;padding:4px;">&#x2715;</button>'
+    + '</div>';
   overlay.appendChild(hdr);
 
   var txWrap = document.createElement('div');
@@ -5697,6 +5702,11 @@ function openVoiceQuoteModal() {
   statusEl.style.cssText = 'text-align:center;font-size:11px;font-weight:700;letter-spacing:.8px;padding:8px;color:#888;';
   statusEl.textContent = 'READY';
   txWrap.appendChild(statusEl);
+  // Live mode applied-fields ticker
+  var liveLog = document.createElement('div');
+  liveLog.id = 'vqLiveLog';
+  liveLog.style.cssText = 'display:none;min-height:32px;padding:6px 12px;background:rgba(74,222,128,.06);border:1px solid rgba(74,222,128,.15);border-radius:8px;font-size:11px;color:#4ade80;font-weight:600;line-height:1.6;margin-top:4px;';
+  txWrap.appendChild(liveLog);
   overlay.appendChild(txWrap);
 
   var ctrl = document.createElement('div');
@@ -5739,6 +5749,29 @@ function openVoiceQuoteModal() {
   var isListening = false;
   var restartPending = false;
   var pauseTimer = null;
+  var liveMode = false;
+  var livePending = false;       // Claude call in flight
+  var liveProcessed = '';        // transcript already sent to Claude
+  var LIVE_PAUSE_MS = 2000;      // silence before triggering live update
+
+  window.vqToggleLive = function() {
+    liveMode = !liveMode;
+    var dot = document.getElementById('vqLiveDot');
+    var lbl = document.getElementById('vqLiveLbl');
+    var log = document.getElementById('vqLiveLog');
+    if (liveMode) {
+      dot.style.background = '#4ade80';
+      dot.style.boxShadow = '0 0 6px rgba(74,222,128,.6)';
+      lbl.style.color = '#4ade80';
+      log.style.display = 'block';
+      log.textContent = 'Live mode on — fields will update as you speak';
+    } else {
+      dot.style.background = '#555';
+      dot.style.boxShadow = 'none';
+      lbl.style.color = '#555';
+      log.style.display = 'none';
+    }
+  };
 
   function setListening(on) {
     isListening = on;
@@ -5769,8 +5802,15 @@ function openVoiceQuoteModal() {
     }
     updateTranscript(interim);
     pauseTimer = setTimeout(function() {
-      if (isListening) statusEl.textContent = '… STILL LISTENING';
-    }, 2200);
+      if (isListening && liveMode && !overlay._livePending) {
+        var newText = fullTranscript.trim();
+        if (newText.length > 10 && newText !== (overlay._liveProcessed||'')) {
+          liveSendToClaudeAndApply(newText, overlay._liveProcessed||'');
+        }
+      } else if (isListening) {
+        statusEl.textContent = '… STILL LISTENING';
+      }
+    }, LIVE_PAUSE_MS);
   };
 
   recog.onend = function() {
@@ -5816,9 +5856,152 @@ function openVoiceQuoteModal() {
     if (!fullTranscript.trim()) return;
     isListening = false; restartPending = false;
     try { recog.stop(); } catch(e) {}
+    var t = fullTranscript.trim().toLowerCase().replace(/[^a-z0-9\s]/g,'').trim();
+    // Voice command shortcuts — handle without sending to Claude
+    if (/^(save|save quote|save the quote|save it)$/.test(t)) {
+      overlay.remove();
+      try { saveSalesQuote(); } catch(e) { alert('Save failed: ' + e.message); }
+      return;
+    }
+    if (/^(pdf|generate pdf|create pdf|open pdf|show pdf)$/.test(t)) {
+      overlay.remove();
+      try { openQuotePDFModal(); } catch(e) {}
+      return;
+    }
+    if (/^(email|send email|email quote|send quote)$/.test(t)) {
+      overlay.remove();
+      try { openEmailQuoteModal(); } catch(e) {}
+      return;
+    }
+    if (/^(concrete|open concrete|concrete modal)$/.test(t)) {
+      overlay.remove();
+      try { openConcreteModal(); } catch(e) {}
+      return;
+    }
+    if (/^(labor|open labor|labor modal)$/.test(t)) {
+      overlay.remove();
+      try { openLaborModal(); } catch(e) {}
+      return;
+    }
     openVoiceReview(fullTranscript.trim(), overlay);
   };
 }
+
+// ── Live mode: send new transcript chunk to Claude and apply immediately ──────
+async function liveSendToClaudeAndApply(fullText, alreadyProcessed) {
+  var overlay = document.getElementById('voiceQuoteModal');
+  var statusEl = document.getElementById('vqStatus');
+  var liveLog  = document.getElementById('vqLiveLog');
+  if (!overlay) return;
+
+  // Mark in-flight
+  overlay._livePending = true;
+  if (statusEl) { statusEl.style.color='#f59e0b'; statusEl.textContent='⚡ INTERPRETING…'; }
+
+  // Build a delta-aware prompt — send full transcript but tell Claude to focus on new content
+  var colorList = Object.keys(window.COLOR_HEX || {}).join(', ') || 'Galvalume, Pure White, County Charcoal, Gloss Black, Matte Black, Barn Red, Forest Green';
+  var deltaNote = alreadyProcessed
+    ? 'Previously processed: "' + alreadyProcessed + '". Focus on NEW information added since then, but return ALL fields heard so far.'
+    : 'This is the first pass — extract everything mentioned.';
+
+  var prompt = 'You are interpreting a spoken building quote for a pole barn estimator. ' + deltaNote + '\n\nReturn ONLY a JSON object with the fields you are confident about. No markdown.\n\nFULL TRANSCRIPT SO FAR:\n"' + fullText + '"\n\nExtract any of these fields mentioned (omit any not heard):\n{"custName":string,"custPhone":string,"width":number,"length":number,"height":number,"pitch":number,"truss":"Wood"|"Steel"|"Stud"|"Cypress"|"MetalBB","soffit":boolean,"roofColor":string,"wallColor":string,"trimColor":string,"enclosure":{"front":"enclosed"|"open"|"partial","back":"enclosed"|"open"|"partial","left":"enclosed"|"open"|"partial","right":"enclosed"|"open"|"partial"},"garageDoors":[{"w":number,"h":number,"qty":number,"insulated":boolean,"wall":"front"|"back"|"left"|"right","placement":"center"|"spaced","fieldLocated":boolean}],"walkDoors":[{"type":string,"qty":number,"fieldLocated":boolean}],"windows":[{"type":string,"qty":number,"grids":boolean,"frameColor":"White"|"Black","fieldLocated":boolean}],"insulation":"None"|"Double Bubble Foil"|"Double Bubble White"|"Therma Guard"|"2 Vinyl Back"|"3 Vinyl Back"|"Solar Eclipse","insulRoof":boolean,"insulWalls":boolean,"concrete":"4"|"6"|"None","gutters":boolean,"esd":boolean,"postProtectors":boolean,"flags":["anything unclear"]}\n\nAvailable colors: ' + colorList + '\nRules: default truss=Wood, default gauge=29, still=steel, soft it=soffit, front/back=gable walls, left/right=eave walls.';
+
+  try {
+    var resp = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action: 'parseVoice', token: (typeof getToken==='function'?getToken():''), transcript: fullText, prompt: prompt }),
+      redirect: 'follow'
+    });
+    if (!resp.ok) throw new Error('Server ' + resp.status);
+    var txt = await resp.text();
+    var data = JSON.parse(txt);
+    if (!data.success) throw new Error(data.error || 'GAS error');
+    var raw = (data.result||'').replace(/```json|```/g,'').trim();
+    var parsed = JSON.parse(raw);
+
+    // Apply fields silently (no review card) — reuse applyVoiceQuote logic
+    var applied = [];
+    function liveSet(label, fn) { try { if(fn()!==false) applied.push(label); } catch(e){} }
+
+    if (parsed.custName)  liveSet('Name',   function(){ var e=document.getElementById('st_name');  if(e) e.value=parsed.custName;  return true; });
+    if (parsed.custPhone) liveSet('Phone',  function(){ var e=document.getElementById('st_phone'); if(e) e.value=parsed.custPhone; return true; });
+    if (parsed.width  > 0) liveSet('Width',  function(){ setDim('w',parseInt(parsed.width));  return true; });
+    if (parsed.length > 0) liveSet('Length', function(){ setDim('l',parseInt(parsed.length)); return true; });
+    if (parsed.height > 0) liveSet('Height', function(){ setDim('h',parseInt(parsed.height)); return true; });
+    var vp=[4,6,8,10];
+    if (parsed.pitch && vp.indexOf(parseInt(parsed.pitch))!==-1) liveSet('Pitch', function(){ Q.pitch=parseInt(parsed.pitch); buildPitchChips(); return true; });
+    if (parsed.truss) liveSet('Truss', function(){ var m={'Wood':'Wood','Steel':'Steel','Stud':'Stud','Cypress':'Cypress','MetalBB':'MetalBB'}; Q.truss=m[parsed.truss]||'Wood'; buildTrussChips(); buildPitchChips(); return true; });
+    if (parsed.soffit!==undefined) liveSet('Soffit', function(){ Q.soffit=!!parsed.soffit; return true; });
+
+    function liveColor(elId, name) {
+      var el=document.getElementById(elId); if(!el||!name) return false;
+      var nm=name.toLowerCase().replace(/[^a-z0-9]/g,'');
+      for(var i=0;i<el.options.length;i++){ var ot=el.options[i].text.toLowerCase().replace(/[^a-z0-9]/g,''); if(ot.indexOf(nm)!==-1||nm.indexOf(ot)!==-1){el.value=el.options[i].value;el.dispatchEvent(new Event('change'));return true;} }
+      return false;
+    }
+    if (parsed.roofColor) liveSet('Roof Color', function(){ return liveColor('st_roofColorCode',parsed.roofColor); });
+    if (parsed.wallColor) liveSet('Wall Color', function(){ return liveColor('st_wallColorCode',parsed.wallColor); });
+    if (parsed.trimColor) liveSet('Trim Color', function(){ return liveColor('st_trimColorCode',parsed.trimColor); });
+
+    if (parsed.enclosure) liveSet('Enclosure', function(){
+      var wm={front:'back',back:'front',left:'left',right:'right'};
+      Object.keys(parsed.enclosure).forEach(function(side){ var w=WALLS.find(function(wl){return wl.id===(wm[side]||side);}); if(w) w.encl=parsed.enclosure[side]; });
+      buildWallGrid(); return true;
+    });
+
+    if (parsed.garageDoors && parsed.garageDoors.length) liveSet('Doors', function(){
+      allDoors = allDoors.filter(function(d){ return d.type!=='garage'; }); // replace, don't stack
+      var wm={front:'back',back:'front',left:'left',right:'right'};
+      var _sdw=[];
+      parsed.garageDoors.forEach(function(gd){
+        var qty=parseInt(gd.qty)||1, gdWall=wm[gd.wall]||'back';
+        var wo=WALLS.find(function(wl){return wl.id===gdWall;})||{len:Q.w};
+        var centered=!gd.fieldLocated&&gd.placement==='center';
+        var spaced=!gd.fieldLocated&&gd.placement==='spaced';
+        for(var i=0;i<qty;i++) allDoors.push({id:nextDoorId++,type:'garage',icon:'🚪',w:gd.w,h:gd.h,sizeKey:gd.w+'x'+gd.h,size:gd.w+'x'+gd.h,wall:gdWall,insulated:!!gd.insulated,framedOpening:false,fullView:!!gd.fullView,offset:centered?Math.round((wo.len-gd.w)/2*12)/12:0});
+        if(spaced) _sdw.push(gdWall);
+      });
+      renderGarageDoors();
+      if(_sdw.length) setTimeout(function(){ _sdw.forEach(function(w){try{spaceDoorsEvenly(w);}catch(e){}});scheduleBuild(); },600);
+      return true;
+    });
+
+    var vi=['None','Double Bubble Foil','Double Bubble White','Therma Guard','2 Vinyl Back','3 Vinyl Back','Solar Eclipse'];
+    if (parsed.insulation && vi.indexOf(parsed.insulation)!==-1) liveSet('Insulation', function(){
+      var el=document.getElementById('st_insulation'); if(el){el.value=parsed.insulation;try{onInsulationChange();}catch(e){}}
+      var r=document.getElementById('st_insulRoof'); if(r) r.checked=!!parsed.insulRoof;
+      var w=document.getElementById('st_insulWalls'); if(w) w.checked=!!parsed.insulWalls;
+      return true;
+    });
+    if (parsed.concrete && parsed.concrete!=='None') liveSet('Concrete', function(){
+      var el=document.getElementById('st_mainConcrete'); if(el) el.value=parsed.concrete; return true;
+    });
+    if (parsed.esd)            liveSet('ESD',            function(){ var e=document.getElementById('st_esd');            if(e) e.checked=true; return true; });
+    if (parsed.postProtectors) liveSet('Post Protectors',function(){ var e=document.getElementById('st_postProtectors'); if(e) e.checked=true; return true; });
+    if (parsed.gutters)        liveSet('Gutters',        function(){ var e=document.getElementById('st_gutters');        if(e) e.checked=true; return true; });
+
+    // Rebuild
+    buildTrussChips(); buildPitchChips(); buildOHChips(); buildPSChips();
+    try { populateColorDropdowns(); } catch(e) {}
+    scheduleBuild();
+    setTimeout(function(){ try{updateStripFromLocalCalc();}catch(e){}}, 400);
+
+    // Mark processed
+    overlay._liveProcessed = fullText;
+
+    // Update status
+    if (statusEl) { statusEl.style.color='#4ade80'; statusEl.textContent='● LISTENING'; }
+    if (liveLog && applied.length) {
+      liveLog.textContent = '✓ Applied: ' + applied.join(', ') + (parsed.flags&&parsed.flags.length?' — ⚠ '+parsed.flags[0]:'');
+    }
+  } catch(err) {
+    if (statusEl) { statusEl.style.color='#ef4444'; statusEl.textContent='⚠ ' + (err.message||'Error') + ' — still listening'; }
+  } finally {
+    overlay._livePending = false;
+  }
+}
+
 
 async function openVoiceReview(transcript, sourceOverlay) {
   sourceOverlay.innerHTML = '';
