@@ -1759,6 +1759,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
       <!-- Row 1: Quote actions -->
       <div style="display:flex;gap:6px;">
         <button class="act-btn secondary" onclick="generatePostLayout()">📋 Post PDF</button>
+        <button class="act-btn secondary" id="voiceQuoteBtn" onclick="openVoiceQuoteModal()" style="background:rgba(255,130,0,.12);border-color:rgba(255,130,0,.4);color:#FF8200;">🎙️ Voice</button>
         <button class="act-btn secondary" id="vpSaveDesign" onclick="generateChecklist()">📋 Checklist PDF</button>
         <button class="act-btn primary" id="saveQuoteBtn" onclick="saveSalesQuote()">💾 Save Quote</button>
         <button class="act-btn secondary" id="emailQuoteBtn" onclick="openEmailQuoteModal()" style="display:none;">✉️ Email</button>
@@ -5629,6 +5630,428 @@ function vpToggleWalls() {
 
   setTimeout(triggerBuild, 400);
 })();
+
+
+// ═══════════════════════════════════════════════════════════════════
+// VOICE QUOTE
+// ═══════════════════════════════════════════════════════════════════
+
+function openVoiceQuoteModal() {
+  var existing = document.getElementById('voiceQuoteModal');
+  if (existing) { existing.remove(); return; }
+
+  var overlay = document.createElement('div');
+  overlay.id = 'voiceQuoteModal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:#0f172a;z-index:10000;display:flex;flex-direction:column;font-family:Outfit,sans-serif;';
+
+  var hdr = document.createElement('div');
+  hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid rgba(255,130,0,.2);flex-shrink:0;';
+  hdr.innerHTML = '<div><div style="font-size:17px;font-weight:800;color:#f0f3f7;">&#x1F3A4; Voice Quote</div>'
+    + '<div style="font-size:11px;color:#888;margin-top:2px;">Speak the full quote — tap Done when finished</div></div>'
+    + '<button onclick="document.getElementById(&quot;voiceQuoteModal&quot;).remove()" style="background:none;border:none;color:#888;font-size:22px;cursor:pointer;padding:4px;">&#x2715;</button>';
+  overlay.appendChild(hdr);
+
+  var txWrap = document.createElement('div');
+  txWrap.style.cssText = 'flex:1;overflow-y:auto;padding:20px;';
+  var txBox = document.createElement('div');
+  txBox.id = 'vqTranscript';
+  txBox.style.cssText = 'min-height:120px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:16px;font-size:14px;color:#e2e8f0;line-height:1.7;white-space:pre-wrap;word-break:break-word;';
+  txBox.textContent = 'Tap the mic button below and start speaking…';
+  txWrap.appendChild(txBox);
+
+  var statusEl = document.createElement('div');
+  statusEl.id = 'vqStatus';
+  statusEl.style.cssText = 'text-align:center;font-size:11px;font-weight:700;letter-spacing:.8px;padding:8px;color:#888;';
+  statusEl.textContent = 'READY';
+  txWrap.appendChild(statusEl);
+  overlay.appendChild(txWrap);
+
+  var ctrl = document.createElement('div');
+  ctrl.style.cssText = 'padding:20px;display:flex;flex-direction:column;align-items:center;gap:14px;flex-shrink:0;border-top:1px solid rgba(255,255,255,.06);';
+
+  var micBtn = document.createElement('button');
+  micBtn.id = 'vqMicBtn';
+  micBtn.style.cssText = 'width:80px;height:80px;border-radius:50%;border:3px solid #FF8200;background:rgba(255,130,0,.15);color:#FF8200;font-size:32px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;';
+  micBtn.innerHTML = '&#x1F3A4;';
+  ctrl.appendChild(micBtn);
+
+  var btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:10px;width:100%;max-width:340px;';
+  var clearBtn = document.createElement('button');
+  clearBtn.textContent = 'Clear';
+  clearBtn.style.cssText = 'flex:1;padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,.15);background:transparent;color:#888;font-size:13px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+  var doneBtn = document.createElement('button');
+  doneBtn.textContent = 'Review Quote →';
+  doneBtn.id = 'vqDoneBtn';
+  doneBtn.style.cssText = 'flex:2;padding:12px;border-radius:10px;border:none;background:linear-gradient(135deg,#FF8200,#cc6800);color:#fff;font-size:13px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;opacity:.4;pointer-events:none;';
+  btnRow.appendChild(clearBtn);
+  btnRow.appendChild(doneBtn);
+  ctrl.appendChild(btnRow);
+  overlay.appendChild(ctrl);
+  document.body.appendChild(overlay);
+
+  var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRec) {
+    txBox.textContent = 'Voice input is not supported in this browser. Please use Chrome (Android) or Safari (iPhone).';
+    statusEl.textContent = 'NOT SUPPORTED';
+    return;
+  }
+
+  var recog = new SpeechRec();
+  recog.continuous = true;
+  recog.interimResults = true;
+  recog.lang = 'en-US';
+
+  var fullTranscript = '';
+  var isListening = false;
+  var restartPending = false;
+  var pauseTimer = null;
+
+  function setListening(on) {
+    isListening = on;
+    micBtn.style.borderColor = on ? '#ef4444' : '#FF8200';
+    micBtn.style.background  = on ? 'rgba(239,68,68,.2)' : 'rgba(255,130,0,.15)';
+    micBtn.style.color       = on ? '#ef4444' : '#FF8200';
+    micBtn.innerHTML         = on ? '&#x23F9;' : '&#x1F3A4;';
+    micBtn.style.boxShadow   = on ? '0 0 0 8px rgba(239,68,68,.15)' : 'none';
+    statusEl.style.color     = on ? '#ef4444' : '#888';
+    statusEl.textContent     = on ? '● LISTENING' : (fullTranscript ? 'PAUSED — TAP MIC TO CONTINUE' : 'READY');
+  }
+
+  function updateTranscript(interim) {
+    txBox.textContent = fullTranscript + (interim ? ' ' + interim : '');
+    txBox.scrollTop = txBox.scrollHeight;
+    if (fullTranscript.trim().length > 10) {
+      doneBtn.style.opacity = '1';
+      doneBtn.style.pointerEvents = 'auto';
+    }
+  }
+
+  recog.onresult = function(e) {
+    clearTimeout(pauseTimer);
+    var interim = '';
+    for (var i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) { fullTranscript += e.results[i][0].transcript + ' '; }
+      else { interim += e.results[i][0].transcript; }
+    }
+    updateTranscript(interim);
+    pauseTimer = setTimeout(function() {
+      if (isListening) statusEl.textContent = '… STILL LISTENING';
+    }, 2200);
+  };
+
+  recog.onend = function() {
+    clearTimeout(pauseTimer);
+    if (isListening && !restartPending) {
+      restartPending = true;
+      setTimeout(function() {
+        restartPending = false;
+        if (isListening) { try { recog.start(); } catch(e) {} }
+      }, 150);
+    } else { setListening(false); }
+  };
+
+  recog.onerror = function(e) {
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+    statusEl.textContent = 'Error: ' + e.error;
+    setListening(false);
+  };
+
+  micBtn.onclick = function() {
+    if (isListening) {
+      isListening = false; restartPending = false;
+      try { recog.stop(); } catch(e) {}
+      setListening(false);
+    } else {
+      isListening = true;
+      try { recog.start(); setListening(true); } catch(e) {
+        statusEl.textContent = 'Could not start mic: ' + e.message;
+        isListening = false;
+      }
+    }
+  };
+
+  clearBtn.onclick = function() {
+    fullTranscript = ''; isListening = false; restartPending = false;
+    try { recog.stop(); } catch(e) {}
+    setListening(false);
+    txBox.textContent = 'Tap the mic button below and start speaking…';
+    doneBtn.style.opacity = '0.4'; doneBtn.style.pointerEvents = 'none';
+  };
+
+  doneBtn.onclick = function() {
+    if (!fullTranscript.trim()) return;
+    isListening = false; restartPending = false;
+    try { recog.stop(); } catch(e) {}
+    openVoiceReview(fullTranscript.trim(), overlay);
+  };
+}
+
+async function openVoiceReview(transcript, sourceOverlay) {
+  sourceOverlay.innerHTML = '';
+  sourceOverlay.style.cssText = 'position:fixed;inset:0;background:#0f172a;z-index:10000;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:Outfit,sans-serif;gap:16px;';
+  var spinWrap = document.createElement('div');
+  spinWrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:16px;';
+  var spinStyle = document.createElement('style');
+  spinStyle.id = 'vqSpinStyle';
+  spinStyle.textContent = '@keyframes vqSpin{to{transform:rotate(360deg)}}';
+  if (!document.getElementById('vqSpinStyle')) document.head.appendChild(spinStyle);
+  var spinner = document.createElement('div');
+  spinner.style.cssText = 'width:48px;height:48px;border:4px solid rgba(255,130,0,.2);border-top-color:#FF8200;border-radius:50%;animation:vqSpin 1s linear infinite;';
+  var loadTxt = document.createElement('div');
+  loadTxt.style.cssText = 'color:#888;font-size:13px;font-weight:600;';
+  loadTxt.textContent = 'Interpreting your quote…';
+  spinWrap.appendChild(spinner); spinWrap.appendChild(loadTxt);
+  sourceOverlay.appendChild(spinWrap);
+
+  var colorList = Object.keys(window.COLOR_HEX || {}).join(', ') || 'Galvalume, Pure White, Bone White, Ivory, Stone, Tan, Buckskin, Light Gray, County Charcoal, Blue Charcoal, Gloss Black, Matte Black, Clay, Brown, Bronze, Burgundy, Burnished Slate, Copper Penny, Patina Green, Evergreen, Forest Green, Bright Red, Barn Red, Slate Blue, Medium Bronze';
+
+  var prompt = 'You are interpreting a spoken building quote for a pole barn estimator. Extract specs and return ONLY a JSON object with no markdown.\n\nTRANSCRIPT:\n"' + transcript + '"\n\nJSON fields (omit any not mentioned):\n{\n  "custName": string,\n  "custPhone": string,\n  "custEmail": string,\n  "custAddress": string,\n  "width": number,\n  "length": number,\n  "height": number,\n  "pitch": number (4,6,8,10 only),\n  "truss": "Wood"|"Steel"|"Stud"|"Cypress"|"MetalBB",\n  "soffit": boolean,\n  "gauge": 29|26,\n  "roofMetal": "Tuff-Rib 29ga"|"Tuff-Rib 26ga"|"PBR 26ga"|"Standing Seam 26ga",\n  "wallMetal": "Tuff-Rib 29ga"|"Tuff-Rib 26ga"|"PBR 26ga"|"Board & Batten 26ga",\n  "roofColor": string,\n  "wallColor": string,\n  "trimColor": string,\n  "enclosure": {"front":"enclosed"|"open"|"partial","back":"enclosed"|"open"|"partial","left":"enclosed"|"open"|"partial","right":"enclosed"|"open"|"partial"},\n  "garageDoors": [{"w":number,"h":number,"qty":number,"insulated":boolean,"wall":"front"|"back"|"left"|"right","fullView":boolean}],\n  "walkDoors": [{"type":"solid"|"half-glass"|"french","qty":number,"fieldLocated":boolean}],\n  "windows": [{"type":"VW23"|"VW33"|"VW34"|"VW35"|"VW36","qty":number,"grids":boolean,"frameColor":"White"|"Black","fieldLocated":boolean}],\n  "insulation": "None"|"Double Bubble Foil"|"Double Bubble White"|"Therma Guard"|"2 Vinyl Back"|"3 Vinyl Back"|"Solar Eclipse",\n  "insulRoof": boolean,\n  "insulWalls": boolean,\n  "concrete": "4"|"6"|"None",\n  "esd": boolean,\n  "postProtectors": boolean,\n  "gutters": boolean,\n  "cupola": boolean,\n  "flags": ["anything ambiguous or not captured"]\n}\n\nRules: default gauge 29, default truss Wood, soffit:true means overhang with soffit, front/back gable = wall front/back, field located = fieldLocated:true, color not in list goes to flags. Available colors: ' + colorList;
+
+  try {
+    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1000, messages: [{ role: 'user', content: prompt }] })
+    });
+    var apiData = await resp.json();
+    var raw = (apiData.content && apiData.content[0] && apiData.content[0].text) || '';
+    raw = raw.replace(/```json|```/g,'').trim();
+    var parsed = JSON.parse(raw);
+    showVoiceReviewCard(parsed, transcript, sourceOverlay);
+  } catch(e) {
+    sourceOverlay.innerHTML = '';
+    var errDiv = document.createElement('div');
+    errDiv.style.cssText = 'color:#ef4444;text-align:center;padding:40px 20px;font-size:14px;font-family:Outfit,sans-serif;';
+    errDiv.innerHTML = '<div style="font-size:32px;margin-bottom:12px;">&#x26A0;&#xFE0F;</div><div style="font-weight:800;margin-bottom:8px;">Could not interpret transcript</div><div style="color:#888;font-size:12px;margin-bottom:20px;">' + e.message + '</div><button onclick="document.getElementById(&quot;voiceQuoteModal&quot;).remove()" style="padding:10px 24px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:transparent;color:#888;font-size:13px;cursor:pointer;font-family:Outfit,sans-serif;">Close</button>';
+    sourceOverlay.appendChild(errDiv);
+  }
+}
+
+function showVoiceReviewCard(parsed, transcript, overlay) {
+  overlay.innerHTML = '';
+  overlay.style.cssText = 'position:fixed;inset:0;background:#0f172a;z-index:10000;display:flex;flex-direction:column;font-family:Outfit,sans-serif;';
+
+  var hdr = document.createElement('div');
+  hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid rgba(255,130,0,.2);flex-shrink:0;';
+  hdr.innerHTML = '<div><div style="font-size:16px;font-weight:800;color:#f0f3f7;">&#x1F4CB; Review Quote</div><div style="font-size:11px;color:#888;margin-top:1px;">Confirm details then tap Apply</div></div><button onclick="document.getElementById(&quot;voiceQuoteModal&quot;).remove()" style="background:none;border:none;color:#888;font-size:22px;cursor:pointer;padding:4px;">&#x2715;</button>';
+  overlay.appendChild(hdr);
+
+  var scroll = document.createElement('div');
+  scroll.style.cssText = 'flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:12px;';
+
+  function section(title, rows) {
+    if (!rows.length) return null;
+    var div = document.createElement('div');
+    div.style.cssText = 'background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:10px;overflow:hidden;';
+    var th = document.createElement('div');
+    th.style.cssText = 'background:rgba(255,130,0,.1);padding:8px 12px;font-size:9px;font-weight:800;color:#FF8200;letter-spacing:1px;text-transform:uppercase;border-bottom:1px solid rgba(255,130,0,.15);';
+    th.textContent = title;
+    div.appendChild(th);
+    rows.forEach(function(r, i) {
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:8px 12px;font-size:12px;' + (i%2===0?'background:rgba(255,255,255,.015)':'');
+      row.innerHTML = '<span style="color:#94a3b8;flex-shrink:0;">' + r[0] + '</span><span style="color:#f0f3f7;font-weight:700;text-align:right;padding-left:8px;">' + r[1] + '</span>';
+      div.appendChild(row);
+    });
+    return div;
+  }
+
+  var custRows = [];
+  if (parsed.custName)    custRows.push(['Name',    parsed.custName]);
+  if (parsed.custPhone)   custRows.push(['Phone',   parsed.custPhone]);
+  if (parsed.custEmail)   custRows.push(['Email',   parsed.custEmail]);
+  if (parsed.custAddress) custRows.push(['Address', parsed.custAddress]);
+  var s = section('Customer', custRows); if (s) scroll.appendChild(s);
+
+  var bldgRows = [];
+  if (parsed.width&&parsed.length&&parsed.height) bldgRows.push(['Dimensions', parsed.width+"' × "+parsed.length+"' × "+parsed.height+"'"]);
+  if (parsed.pitch)    bldgRows.push(['Pitch',   parsed.pitch+'/12']);
+  if (parsed.truss)    bldgRows.push(['Truss',   parsed.truss]);
+  if (parsed.soffit!==undefined) bldgRows.push(['Soffit', parsed.soffit ? 'Yes — w/ overhang' : 'No soffit']);
+  if (parsed.roofMetal) bldgRows.push(['Roof Metal', parsed.roofMetal]);
+  if (parsed.wallMetal) bldgRows.push(['Wall Metal', parsed.wallMetal]);
+  if (parsed.roofColor) bldgRows.push(['Roof Color', parsed.roofColor]);
+  if (parsed.wallColor) bldgRows.push(['Wall Color', parsed.wallColor]);
+  if (parsed.trimColor) bldgRows.push(['Trim Color', parsed.trimColor]);
+  if (parsed.enclosure) {
+    ['front','back','left','right'].forEach(function(w){
+      if (parsed.enclosure[w]) bldgRows.push([w.charAt(0).toUpperCase()+w.slice(1)+' Wall', parsed.enclosure[w]]);
+    });
+  }
+  s = section('Building', bldgRows); if (s) scroll.appendChild(s);
+
+  var doorRows = [];
+  (parsed.garageDoors||[]).forEach(function(gd){ doorRows.push(['Garage Door', (gd.qty>1?gd.qty+'× ':'')+gd.w+"'×"+gd.h+"'"+(gd.insulated?' Insulated':'')+(gd.wall?' — '+gd.wall:'')+( gd.fullView?' Full View':'')] ); });
+  (parsed.walkDoors||[]).forEach(function(wd){ doorRows.push(['Walk Door', (wd.qty>1?wd.qty+'× ':'')+wd.type+(wd.fieldLocated?' (Field Located)':'')]); });
+  (parsed.windows||[]).forEach(function(win){ doorRows.push(['Window', (win.qty>1?win.qty+'× ':'')+win.type+(win.grids?' w/Grids':' No Grids')+(win.frameColor?' '+win.frameColor:'')+(win.fieldLocated?' (Field Located)':'')]); });
+  s = section('Doors & Windows', doorRows); if (s) scroll.appendChild(s);
+
+  var specRows = [];
+  if (parsed.insulation && parsed.insulation!=='None') {
+    var iloc=[]; if(parsed.insulRoof) iloc.push('Roof'); if(parsed.insulWalls) iloc.push('Walls');
+    specRows.push(['Insulation', parsed.insulation+(iloc.length?' — '+iloc.join(' & '):'')]);
+  }
+  if (parsed.concrete && parsed.concrete!=='None') specRows.push(['Concrete', parsed.concrete+'" Slab']);
+  if (parsed.esd)            specRows.push(['Engineered Drawings', 'Yes']);
+  if (parsed.postProtectors) specRows.push(['Post Protectors', 'Yes']);
+  if (parsed.gutters)        specRows.push(['Gutters', 'Yes']);
+  if (parsed.cupola)         specRows.push(['Cupola', 'Yes']);
+  s = section('Specs & Upgrades', specRows); if (s) scroll.appendChild(s);
+
+  if (parsed.flags && parsed.flags.length) {
+    var flagDiv = document.createElement('div');
+    flagDiv.style.cssText = 'background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:10px;padding:12px;';
+    flagDiv.innerHTML = '<div style="font-size:9px;font-weight:800;color:#f59e0b;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">&#x26A0; Not Captured — Review Manually</div>';
+    parsed.flags.forEach(function(f){ var fi=document.createElement('div'); fi.style.cssText='font-size:11px;color:#fcd34d;padding:3px 0;'; fi.textContent='• '+f; flagDiv.appendChild(fi); });
+    scroll.appendChild(flagDiv);
+  }
+
+  var txToggle = document.createElement('div');
+  txToggle.style.cssText = 'text-align:center;color:#555;font-size:11px;cursor:pointer;padding:4px;';
+  txToggle.textContent = 'Show transcript ▾';
+  var txDisplay = document.createElement('div');
+  txDisplay.style.cssText = 'display:none;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:12px;font-size:11px;color:#64748b;line-height:1.6;white-space:pre-wrap;margin-top:4px;';
+  txDisplay.textContent = transcript;
+  txToggle.onclick = function() { var sh=txDisplay.style.display!=='none'; txDisplay.style.display=sh?'none':'block'; txToggle.textContent=sh?'Show transcript ▾':'Hide transcript ▴'; };
+  scroll.appendChild(txToggle); scroll.appendChild(txDisplay);
+  overlay.appendChild(scroll);
+
+  var foot = document.createElement('div');
+  foot.style.cssText = 'padding:16px 20px;display:flex;gap:10px;border-top:1px solid rgba(255,255,255,.06);flex-shrink:0;';
+  var rerecBtn = document.createElement('button');
+  rerecBtn.innerHTML = '&#x1F3A4; Re-record';
+  rerecBtn.style.cssText = 'flex:1;padding:13px;border-radius:10px;border:1px solid rgba(255,255,255,.15);background:transparent;color:#94a3b8;font-size:13px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+  rerecBtn.onclick = function() { overlay.remove(); openVoiceQuoteModal(); };
+  var applyBtn = document.createElement('button');
+  applyBtn.innerHTML = '&#x2705; Apply to Estimator';
+  applyBtn.style.cssText = 'flex:2;padding:13px;border-radius:10px;border:none;background:linear-gradient(135deg,#FF8200,#cc6800);color:#fff;font-size:13px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;';
+  applyBtn.onclick = function() { applyVoiceQuote(parsed, overlay); };
+  foot.appendChild(rerecBtn); foot.appendChild(applyBtn);
+  overlay.appendChild(foot);
+}
+
+function applyVoiceQuote(parsed, overlay) {
+  try {
+    var filled = [], skipped = [];
+    function tryFill(label, fn) { try { var r=fn(); if(r!==false) filled.push(label); } catch(e) { skipped.push(label); } }
+
+    if (parsed.custName)    tryFill('Customer', function(){ var e=document.getElementById('st_name');    if(e) e.value=parsed.custName;    return true; });
+    if (parsed.custPhone)   tryFill('Phone',    function(){ var e=document.getElementById('st_phone');   if(e) e.value=parsed.custPhone;   return true; });
+    if (parsed.custEmail)   tryFill('Email',    function(){ var e=document.getElementById('st_email');   if(e) e.value=parsed.custEmail;   return true; });
+    if (parsed.custAddress) tryFill('Address',  function(){ var e=document.getElementById('st_address'); if(e){ e.value=parsed.custAddress; scheduleAddressLookup(); } return true; });
+
+    if (parsed.width  > 0) tryFill('Width',  function(){ setDim('w', parseInt(parsed.width));  return true; });
+    if (parsed.length > 0) tryFill('Length', function(){ setDim('l', parseInt(parsed.length)); return true; });
+    if (parsed.height > 0) tryFill('Height', function(){ setDim('h', parseInt(parsed.height)); return true; });
+
+    var vp = [4,6,8,10];
+    if (parsed.pitch && vp.indexOf(parseInt(parsed.pitch))!==-1) tryFill('Pitch', function(){ Q.pitch=parseInt(parsed.pitch); buildPitchChips(); return true; });
+
+    if (parsed.truss) tryFill('Truss', function(){
+      var tMap={'Wood':'Wood','Steel':'Steel','Stud':'Stud','Cypress':'Cypress','MetalBB':'MetalBB'};
+      Q.truss = tMap[parsed.truss]||'Wood'; buildTrussChips(); buildPitchChips(); return true;
+    });
+
+    if (parsed.soffit !== undefined) tryFill('Soffit', function(){ Q.soffit=!!parsed.soffit; return true; });
+
+    if (parsed.roofMetal) tryFill('Roof Metal', function(){ var e=document.getElementById('st_roofMetal'); if(e) e.value=parsed.roofMetal; return true; });
+    if (parsed.wallMetal) tryFill('Wall Metal', function(){ var e=document.getElementById('st_wallMetal'); if(e) e.value=parsed.wallMetal; return true; });
+
+    if (!parsed.roofMetal && !parsed.wallMetal && parsed.gauge) tryFill('Gauge', function(){
+      var sfx = parsed.gauge===26 ? '26ga' : '29ga';
+      ['st_roofMetal','st_wallMetal','st_trimMetal'].forEach(function(id){
+        var el=document.getElementById(id);
+        if(el) for(var i=0;i<el.options.length;i++){ if(el.options[i].value.indexOf(sfx)!==-1){ el.value=el.options[i].value; break; } }
+      });
+      return true;
+    });
+
+    function setColorByName(elId, colorName) {
+      var el=document.getElementById(elId); if(!el||!colorName) return false;
+      var nm=colorName.toLowerCase().replace(/[^a-z0-9]/g,'');
+      for(var i=0;i<el.options.length;i++){
+        var ot=el.options[i].text.toLowerCase().replace(/[^a-z0-9]/g,'');
+        if(ot.indexOf(nm)!==-1||nm.indexOf(ot)!==-1){el.value=el.options[i].value;el.dispatchEvent(new Event('change'));return true;}
+      }
+      return false;
+    }
+    if (parsed.roofColor) tryFill('Roof Color', function(){ return setColorByName('st_roofColorCode',parsed.roofColor)||(skipped.push('Roof Color ('+parsed.roofColor+')'),false); });
+    if (parsed.wallColor) tryFill('Wall Color', function(){ return setColorByName('st_wallColorCode',parsed.wallColor)||(skipped.push('Wall Color ('+parsed.wallColor+')'),false); });
+    if (parsed.trimColor) tryFill('Trim Color', function(){ return setColorByName('st_trimColorCode',parsed.trimColor)||(skipped.push('Trim Color ('+parsed.trimColor+')'),false); });
+
+    if (parsed.enclosure) tryFill('Enclosure', function(){
+      var wm={front:'back',back:'front',left:'left',right:'right'};
+      Object.keys(parsed.enclosure).forEach(function(side){
+        var w=WALLS.find(function(wl){return wl.id===(wm[side]||side);}); if(w) w.encl=parsed.enclosure[side];
+      });
+      buildWallGrid(); return true;
+    });
+
+    if (parsed.garageDoors && parsed.garageDoors.length) tryFill('Garage Door(s)', function(){
+      var wm={front:'back',back:'front',left:'left',right:'right'};
+      parsed.garageDoors.forEach(function(gd){
+        var qty=parseInt(gd.qty)||1, gdWall=wm[gd.wall]||'back';
+        var wo=WALLS.find(function(wl){return wl.id===gdWall;})||{len:Q.w};
+        for(var i=0;i<qty;i++) allDoors.push({id:nextDoorId++,type:'garage',icon:'&#x1F6AA;',w:gd.w,h:gd.h,sizeKey:gd.w+'x'+gd.h,size:gd.w+'x'+gd.h,wall:gdWall,insulated:!!gd.insulated,framedOpening:false,fullView:!!gd.fullView,offset:Math.round((wo.len-gd.w)/2*12)/12});
+      });
+      renderGarageDoors(); return true;
+    });
+
+    if (parsed.walkDoors && parsed.walkDoors.length) tryFill('Walk Door(s)', function(){
+      var tm={'solid':'WHITE 3/0 PLYCO ALUMINUM FRAME','half-glass':'3/0 PLYCO 1/2 GLASS L.H.','french':'WHITE 6/0 FRENCH ALUM FRAME'};
+      var placed=!(parsed.walkDoors[0]&&parsed.walkDoors[0].fieldLocated);
+      window._walkDoorsFieldLocated=!placed;
+      var tgl=document.getElementById('st_wdPlaced'); if(tgl) tgl.checked=placed;
+      parsed.walkDoors.forEach(function(wd){
+        var qty=parseInt(wd.qty)||1, dtype=tm[wd.type]||'WHITE 3/0 PLYCO ALUMINUM FRAME';
+        for(var i=0;i<qty;i++) window._walkDoors.push({id:nextWDId++,type:dtype,wall:'back',offset:0,framedOpening:false,doorColor:'White'});
+      });
+      renderWalkDoors(); return true;
+    });
+
+    if (parsed.windows && parsed.windows.length) tryFill('Window(s)', function(){
+      var placed=!(parsed.windows[0]&&parsed.windows[0].fieldLocated);
+      window._windowsFieldLocated=!placed;
+      var tgl=document.getElementById('st_winPlaced'); if(tgl) tgl.checked=placed;
+      parsed.windows.forEach(function(win){
+        var qty=parseInt(win.qty)||1;
+        for(var i=0;i<qty;i++) window._windows.push({id:nextWinId++,type:win.type||'VW33',wall:'back',sillH:4,offset:0,framedOpening:false,grids:win.grids!==false,frameColor:win.frameColor||'White'});
+      });
+      renderWindows(); return true;
+    });
+
+    var vi=['None','Double Bubble Foil','Double Bubble White','Therma Guard','2 Vinyl Back','3 Vinyl Back','Solar Eclipse'];
+    if (parsed.insulation && vi.indexOf(parsed.insulation)!==-1) tryFill('Insulation', function(){
+      var el=document.getElementById('st_insulation'); if(el){el.value=parsed.insulation;try{onInsulationChange();}catch(e){}}
+      var r=document.getElementById('st_insulRoof'); if(r) r.checked=!!parsed.insulRoof;
+      var w=document.getElementById('st_insulWalls'); if(w) w.checked=!!parsed.insulWalls;
+      return true;
+    });
+
+    if (parsed.concrete && parsed.concrete!=='None') tryFill('Concrete', function(){
+      var el=document.getElementById('st_mainConcrete'); if(el) el.value=parsed.concrete;
+      if(!window._lastConcreteOpts) window._lastConcreteOpts={main:null,sheds:[]};
+      window._lastConcreteOpts.main={included:true,thickness:parsed.concrete,footers:false,psi:3500,reinforcement:{wire:false,rebar:false},metalLedge:false,stamped:false};
+      return true;
+    });
+
+    if (parsed.esd)            tryFill('ESD',            function(){ var e=document.getElementById('st_esd');            if(e) e.checked=true; return true; });
+    if (parsed.postProtectors) tryFill('Post Protectors', function(){ var e=document.getElementById('st_postProtectors'); if(e) e.checked=true; return true; });
+    if (parsed.gutters)        tryFill('Gutters',         function(){ var e=document.getElementById('st_gutters');        if(e) e.checked=true; return true; });
+    if (parsed.cupola)         tryFill('Cupola',          function(){ var e=document.getElementById('qgCupolaSize');      if(e){e.value='24';toggleExtra('cupola',true);} return true; });
+
+    buildWallGrid(); buildTrussChips(); buildPitchChips(); buildOHChips(); buildPSChips();
+    try { populateColorDropdowns(); } catch(e) {}
+    scheduleBuild();
+    setTimeout(function(){ try{updateStripFromLocalCalc();}catch(e){} }, 400);
+    overlay.remove();
+    showImportBanner(filled, skipped);
+  } catch(e) {
+    console.error('[VoiceApply]', e);
+    alert('Error applying quote: ' + e.message);
+  }
+}
 </script>
 
 <!-- 3D ENGINE (verbatim, animation instant-show patch) -->
