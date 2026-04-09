@@ -5854,10 +5854,165 @@ function openVoiceQuoteModal() {
 
 
 // ── Apply a single voice chunk — interprets via GAS, applies silently ─────────
+// ── Shared field apply — used by both local parser and Claude results ───────
+function _applyFieldsInner(parsed, tryFill) {
+  window._vqSpacedDoorWalls = window._vqSpacedDoorWalls || [];
+  window._vqSpacedWinWalls  = window._vqSpacedWinWalls  || [];
+  if (parsed.custName)    tryFill('Name',    function(){ var e=document.getElementById('st_name');  if(e) e.value=parsed.custName;    return true; });
+  if (parsed.custPhone)   tryFill('Phone',   function(){ var e=document.getElementById('st_phone');   if(e) e.value=parsed.custPhone;   return true; });
+  if (parsed.custEmail)   tryFill('Email',   function(){ var e=document.getElementById('st_email');   if(e) e.value=parsed.custEmail;   return true; });
+  if (parsed.custAddress) tryFill('Address', function(){ var e=document.getElementById('st_address'); if(e){ e.value=parsed.custAddress; scheduleAddressLookup(); } return true; });
+  if (parsed.width  > 0) tryFill('Width',   function(){ setDim('w', parseInt(parsed.width));  return true; });
+  if (parsed.length > 0) tryFill('Length',  function(){ setDim('l', parseInt(parsed.length)); return true; });
+  if (parsed.height > 0) tryFill('Height',  function(){ setDim('h', parseInt(parsed.height)); return true; });
+    var vp=[4,6,8,10];
+  if (parsed.pitch && vp.indexOf(parseInt(parsed.pitch))!==-1) tryFill('Pitch', function(){ Q.pitch=parseInt(parsed.pitch); buildPitchChips(); return true; });
+  if (parsed.truss) tryFill('Truss', function(){ var m={'Wood':'Wood','Steel':'Steel','Stud':'Stud','Cypress':'Cypress','MetalBB':'MetalBB'}; Q.truss=m[parsed.truss]||'Wood'; buildTrussChips(); buildPitchChips(); return true; });
+  if (parsed.soffit !== undefined) tryFill('Soffit', function(){ Q.soffit=!!parsed.soffit; return true; });
+  if (parsed.trussSpacing) tryFill('Truss Spacing', function(){ var e=document.getElementById('st_trussSpacing'); if(e) e.value=String(parsed.trussSpacing); return true; });
+  if (parsed.eavePS) tryFill('Post Spacing', function(){ Q.eavePS=parseInt(parsed.eavePS); Q.postSpacing=parseInt(parsed.eavePS); buildPSChips(); return true; });
+  if (parsed.postsOnTop!==undefined) tryFill('Posts On Top', function(){ var e=document.getElementById('st_postsOnTop'); if(e) e.value=parsed.postsOnTop?'Yes':'No'; return true; });
+  if (parsed.roofMetal) tryFill('Roof Metal', function(){ var e=document.getElementById('st_roofMetal'); if(e) e.value=parsed.roofMetal; return true; });
+  if (parsed.wallMetal) tryFill('Wall Metal', function(){ var e=document.getElementById('st_wallMetal'); if(e) e.value=parsed.wallMetal; return true; });
+
+    function setColor(elId, name) {
+      var el=document.getElementById(elId); if(!el||!name) return false;
+      var nm=name.toLowerCase().replace(/[^a-z0-9]/g,'');
+      for(var i=0;i<el.options.length;i++){ var ot=el.options[i].text.toLowerCase().replace(/[^a-z0-9]/g,''); if(ot.indexOf(nm)!==-1||nm.indexOf(ot)!==-1){el.value=el.options[i].value;el.dispatchEvent(new Event('change'));return true;} }
+      return false;
+    }
+  if (parsed.roofColor) tryFill('Roof Color', function(){ return setColor('st_roofColorCode', parsed.roofColor); });
+  if (parsed.wallColor) tryFill('Wall Color', function(){ return setColor('st_wallColorCode', parsed.wallColor); });
+  if (parsed.trimColor) tryFill('Trim Color', function(){ return setColor('st_trimColorCode', parsed.trimColor); });
+
+  if (parsed.wainscot) tryFill('Wainscot', function(){ var e=document.getElementById('st_wainscot'); if(e){e.value='Yes';try{onWainscotChange();}catch(er){}} return true; });
+  if (parsed.wainscotColor) tryFill('Wainscot Color', function(){ return setColor('st_wainscotColorCode', parsed.wainscotColor); });
+  if (parsed.standingSeam) tryFill('Standing Seam', function(){ var e=document.getElementById('st_standingSeam'); if(e){e.checked=true;try{onStandingSeamChange();}catch(er){}} return true; });
+
+  if (parsed.enclosure) tryFill('Enclosure', function(){
+      var wm={front:'back',back:'front',left:'left',right:'right'};
+      Object.keys(parsed.enclosure).forEach(function(side){ var w=WALLS.find(function(wl){return wl.id===(wm[side]||side);}); if(w) w.encl=parsed.enclosure[side]; });
+      buildWallGrid(); return true;
+    });
+
+  if (parsed.garageDoors && parsed.garageDoors.length) tryFill('Garage Door(s)', function(){
+      var wm={front:'back',back:'front',left:'left',right:'right'}, _sdw=[];
+      parsed.garageDoors.forEach(function(gd){
+        var qty=parseInt(gd.qty)||1, gdWall=wm[gd.wall]||'back';
+        var wo=WALLS.find(function(wl){return wl.id===gdWall;})||{len:Q.w};
+        var centered=!gd.fieldLocated&&gd.placement==='center';
+        var spaced=!gd.fieldLocated&&gd.placement==='spaced';
+        for(var i=0;i<qty;i++) allDoors.push({id:nextDoorId++,type:'garage',icon:'🚪',w:gd.w,h:gd.h,sizeKey:gd.w+'x'+gd.h,size:gd.w+'x'+gd.h,wall:gdWall,insulated:!!gd.insulated,framedOpening:false,fullView:!!gd.fullView,offset:centered?Math.round((wo.len-gd.w)/2*12)/12:0});
+      if(spaced) _sdw.push(gdWall);
+      });
+      renderGarageDoors();
+    if(_sdw.length) setTimeout(function(){ _sdw.forEach(function(w){try{spaceDoorsEvenly(w);}catch(e){}});scheduleBuild();},600);
+      return true;
+    });
+
+  if (parsed.walkDoors && parsed.walkDoors.length) tryFill('Walk Door(s)', function(){
+      var tm={'solid':'WHITE 3/0 PLYCO ALUMINUM FRAME','half-glass':'3/0 PLYCO 1/2 GLASS L.H.','french':'WHITE 6/0 FRENCH ALUM FRAME'};
+      var wm={front:'back',back:'front',left:'left',right:'right'};
+      var placed=parsed.walkDoors.some(function(wd){return wd.fieldLocated===false||wd.placement;});
+      window._walkDoorsFieldLocated=!placed;
+      parsed.walkDoors.forEach(function(wd){
+        var qty=parseInt(wd.qty)||1, dtype=tm[wd.type]||'WHITE 3/0 PLYCO ALUMINUM FRAME';
+        var wdWall=wm[wd.wall]||'back';
+        for(var i=0;i<qty;i++) window._walkDoors.push({id:nextWDId++,type:dtype,wall:wdWall,offset:0,framedOpening:false,doorColor:'White'});
+      });
+      renderWalkDoors(); return true;
+    });
+
+  if (parsed.windows && parsed.windows.length) tryFill('Window(s)', function(){
+      var wm={front:'back',back:'front',left:'left',right:'right'};
+      var placed=parsed.windows.some(function(win){return win.fieldLocated===false||win.placement;});
+      window._windowsFieldLocated=!placed;
+      parsed.windows.forEach(function(win){
+        var qty=parseInt(win.qty)||1, winWall=wm[win.wall]||'back';
+        for(var i=0;i<qty;i++) window._windows.push({id:nextWinId++,type:win.type||'VW34',wall:winWall,sillH:4,offset:0,framedOpening:false,grids:win.grids!==false,frameColor:win.frameColor||'White'});
+      });
+      renderWindows(); return true;
+    });
+
+    var vi=['None','Double Bubble Foil','Double Bubble White','Therma Guard','2 Vinyl Back','3 Vinyl Back','Solar Eclipse'];
+  if (parsed.insulation && vi.indexOf(parsed.insulation)!==-1) tryFill('Insulation', function(){
+      var el=document.getElementById('st_insulation'); if(el){el.value=parsed.insulation;try{onInsulationChange();}catch(e){}}
+      var r=document.getElementById('st_insulRoof'); if(r) r.checked=!!parsed.insulRoof;
+      var w=document.getElementById('st_insulWalls'); if(w) w.checked=!!parsed.insulWalls;
+      return true;
+    });
+  if (parsed.concrete && parsed.concrete!=='None') tryFill('Concrete', function(){
+      var el=document.getElementById('st_mainConcrete'); if(el) el.value=parsed.concrete;
+    if(!window._lastConcreteOpts) window._lastConcreteOpts={main:null,sheds:[]};
+      window._lastConcreteOpts.main={included:true,thickness:parsed.concrete,footers:!!parsed.concreteFooters,psi:parseInt(parsed.concretePSI)||3500,reinforcement:{rebar:!!parsed.concreteRebar,wire:!!parsed.concreteWire},metalLedge:!!parsed.concreteMetalLedge,stamped:!!parsed.concreteStamped};
+      return true;
+    });
+  if (parsed.sheds && parsed.sheds.length) tryFill('Shed(s)', function(){
+      parsed.sheds.forEach(function(sh){
+      if(window._shedConfigs.length>=2) return;
+        var sidx=window._shedConfigs.length, swall=sh.wall||(sidx===0?'left':'right');
+        var isEave=(swall==='left'||swall==='right');
+        var sc={id:nextShedId++,idx:sidx,label:'Side Shed '+(sidx+1),wall:swall,type:'leanto',wrapDir:'cw',wrapLeg:0,w:parseFloat(sh.w)||12,l:parseFloat(sh.l)||(isEave?Q.l:Q.w),origL:parseFloat(sh.l)||(isEave?Q.l:Q.w),encl:sh.encl||'roofonly',enclWalls:['outer','gable1','gable2'],position:'center',offsetFt:0,gablePS:10,gablePitch:4,timberFrame:'metal',ltPitch:1,dropFt:parseFloat(sh.dropFt)||0,frameStyle:'metal',_open:true};
+        window._shedConfigs.push(sc);
+      });
+      renderSheds(); return true;
+    });
+  if (parsed.esd)            tryFill('ESD',            function(){ var e=document.getElementById('st_esd');          if(e) e.checked=true; return true; });
+  if (parsed.postProtectors) tryFill('Post Protectors',function(){ var e=document.getElementById('st_postProtectors'); if(e) e.checked=true; return true; });
+  if (parsed.postWraps)      tryFill('Post Wraps',     function(){ var e=document.getElementById('st_postWraps');    if(e) e.checked=true; return true; });
+  if (parsed.gutters)        tryFill('Gutters',        function(){
+      var e=document.getElementById('st_gutters'); if(e) e.checked=true;
+    if(parsed.gutterType){var gtMap={'Standard':'SGS','Copper Metallic':'SGSCOM','Real Copper':'SGSC','Galvalume':'SGSGA'}; var gt=document.getElementById('st_gutterType'); if(gt) gt.value=gtMap[parsed.gutterType]||'SGS';}
+      return true;
+    });
+  if (parsed.cupolaSize) tryFill('Cupola', function(){ var e=document.getElementById('qgCupolaSize'); if(e){e.value=parsed.cupolaSize;toggleExtra('cupola',true);} if(parsed.cupolaQty){var q=document.getElementById('qgCupolaQty');if(q)q.value=String(parsed.cupolaQty);} return true; });
+  if (parsed.farmTax)        tryFill('Farm Tax',       function(){ var e=document.getElementById('st_farmTax');      if(e) e.checked=true; return true; });
+  if (parsed.materialOnly)   tryFill('Material Only',  function(){ var e=document.getElementById('st_materialKit');   if(e) e.checked=true; return true; });
+  if (parsed.craneFee)       tryFill('Crane Fee',      function(){ var e=document.getElementById('st_craneFee');    if(e) e.checked=true; return true; });
+}
+
+function applyParsedFields(parsed, filled, skipped) {
+  if (!filled) filled = []; if (!skipped) skipped = [];
+  function tryFill(label, fn) { try { if(fn()!==false) filled.push(label); } catch(e){ skipped.push(label); } }
+  if (!window._vqAccumulated) window._vqAccumulated = {};
+  Object.keys(parsed).forEach(function(k){ if(k!=='flags') window._vqAccumulated[k]=parsed[k]; });
+  _applyFieldsInner(parsed, tryFill);
+  buildWallGrid(); buildTrussChips(); buildPitchChips(); buildOHChips(); buildPSChips();
+  try { populateColorDropdowns(); } catch(e) {}
+  var _sdw=window._vqSpacedDoorWalls||[], _sww=window._vqSpacedWinWalls||[];
+  scheduleBuild();
+  setTimeout(function(){ try{updateStripFromLocalCalc();}catch(e){}},400);
+  if(_sdw.length||_sww.length) setTimeout(function(){
+    _sdw.forEach(function(w){try{spaceDoorsEvenly(w);}catch(e){}});
+    _sww.forEach(function(w){try{spaceWindowsEvenly(w);}catch(e){}});
+    if(_sdw.length||_sww.length){scheduleBuild();setTimeout(function(){try{updateStripFromLocalCalc();}catch(e){}},400);}
+    window._vqSpacedDoorWalls=[]; window._vqSpacedWinWalls=[];
+  },600);
+  return filled;
+}
+
 async function applyVoiceChunk(chunk, overlay, statusEl, micBtn, onDone) {
   var colorList = Object.keys(window.COLOR_HEX || {}).join(', ') || 'Galvalume, Pure White, County Charcoal, Gloss Black, Matte Black, Barn Red, Forest Green';
 
-  // Ensure prompt builder is initialized
+  // ── STEP 1: Local parser — instant, no API call ───────────────────────
+  var localResult = localVoiceParse(chunk);
+  var localParsed = localResult.parsed;
+  if (localResult.matched.length > 0) {
+    applyParsedFields(localParsed);
+    if (statusEl) { statusEl.style.color='#4ade80'; statusEl.textContent='✓ '+localResult.matched.join(', '); }
+    var logEl=document.getElementById('vqAppliedLog'); if(logEl) logEl.textContent='✓ '+localResult.matched.join(' · ');
+    var rv=document.getElementById('vqReviewBtn'); if(rv){rv.style.opacity='1';rv.style.pointerEvents='auto';}
+  }
+
+  // ── STEP 2: Skip Claude if confidence high enough ─────────────────────
+  if (localResult.confidence >= 0.85) {
+    if (micBtn) micBtn.disabled = false;
+    if (onDone) onDone();
+    return;
+  }
+
+  // ── STEP 3: Send to Claude for remainder (direct API call) ────────────
+  if (statusEl) { statusEl.style.color='#f59e0b'; statusEl.textContent='⚡ Checking with Claude…'; }
   if (!window._buildVoicePromptFn) buildVoicePromptInit();
   var prompt = window._buildVoicePromptFn(chunk, colorList);
 
@@ -5894,127 +6049,11 @@ async function applyVoiceChunk(chunk, overlay, statusEl, micBtn, onDone) {
       }
     }
 
-    // Merge into accumulated state
-    if (!window._vqAccumulated) window._vqAccumulated = {};
-    Object.keys(parsed).forEach(function(k) {
-      if (k !== 'flags') window._vqAccumulated[k] = parsed[k];
-    });
+    // Apply via shared function — merges into _vqAccumulated internally
+    var filled = [];
+    applyParsedFields(parsed, filled, []);
 
-    // Apply silently using applyVoiceQuote logic
-    var filled = [], skipped = [];
-    function tryFill(label, fn) { try { if(fn()!==false) filled.push(label); } catch(e){ skipped.push(label); } }
-
-    if (parsed.custName)    tryFill('Name',    function(){ var e=document.getElementById('st_name');    if(e) e.value=parsed.custName;    return true; });
-    if (parsed.custPhone)   tryFill('Phone',   function(){ var e=document.getElementById('st_phone');   if(e) e.value=parsed.custPhone;   return true; });
-    if (parsed.custEmail)   tryFill('Email',   function(){ var e=document.getElementById('st_email');   if(e) e.value=parsed.custEmail;   return true; });
-    if (parsed.custAddress) tryFill('Address', function(){ var e=document.getElementById('st_address'); if(e){ e.value=parsed.custAddress; scheduleAddressLookup(); } return true; });
-    if (parsed.width  > 0) tryFill('Width',   function(){ setDim('w', parseInt(parsed.width));  return true; });
-    if (parsed.length > 0) tryFill('Length',  function(){ setDim('l', parseInt(parsed.length)); return true; });
-    if (parsed.height > 0) tryFill('Height',  function(){ setDim('h', parseInt(parsed.height)); return true; });
-    var vp=[4,6,8,10];
-    if (parsed.pitch && vp.indexOf(parseInt(parsed.pitch))!==-1) tryFill('Pitch', function(){ Q.pitch=parseInt(parsed.pitch); buildPitchChips(); return true; });
-    if (parsed.truss) tryFill('Truss', function(){ var m={'Wood':'Wood','Steel':'Steel','Stud':'Stud','Cypress':'Cypress','MetalBB':'MetalBB'}; Q.truss=m[parsed.truss]||'Wood'; buildTrussChips(); buildPitchChips(); return true; });
-    if (parsed.soffit !== undefined) tryFill('Soffit', function(){ Q.soffit=!!parsed.soffit; return true; });
-    if (parsed.trussSpacing) tryFill('Truss Spacing', function(){ var e=document.getElementById('st_trussSpacing'); if(e) e.value=String(parsed.trussSpacing); return true; });
-    if (parsed.eavePS) tryFill('Post Spacing', function(){ Q.eavePS=parseInt(parsed.eavePS); Q.postSpacing=parseInt(parsed.eavePS); buildPSChips(); return true; });
-    if (parsed.postsOnTop!==undefined) tryFill('Posts On Top', function(){ var e=document.getElementById('st_postsOnTop'); if(e) e.value=parsed.postsOnTop?'Yes':'No'; return true; });
-    if (parsed.roofMetal) tryFill('Roof Metal', function(){ var e=document.getElementById('st_roofMetal'); if(e) e.value=parsed.roofMetal; return true; });
-    if (parsed.wallMetal) tryFill('Wall Metal', function(){ var e=document.getElementById('st_wallMetal'); if(e) e.value=parsed.wallMetal; return true; });
-
-    function setColor(elId, name) {
-      var el=document.getElementById(elId); if(!el||!name) return false;
-      var nm=name.toLowerCase().replace(/[^a-z0-9]/g,'');
-      for(var i=0;i<el.options.length;i++){ var ot=el.options[i].text.toLowerCase().replace(/[^a-z0-9]/g,''); if(ot.indexOf(nm)!==-1||nm.indexOf(ot)!==-1){el.value=el.options[i].value;el.dispatchEvent(new Event('change'));return true;} }
-      return false;
-    }
-    if (parsed.roofColor) tryFill('Roof Color', function(){ return setColor('st_roofColorCode', parsed.roofColor); });
-    if (parsed.wallColor) tryFill('Wall Color', function(){ return setColor('st_wallColorCode', parsed.wallColor); });
-    if (parsed.trimColor) tryFill('Trim Color', function(){ return setColor('st_trimColorCode', parsed.trimColor); });
-
-    if (parsed.wainscot) tryFill('Wainscot', function(){ var e=document.getElementById('st_wainscot'); if(e){e.value='Yes';try{onWainscotChange();}catch(er){}} return true; });
-    if (parsed.wainscotColor) tryFill('Wainscot Color', function(){ return setColor('st_wainscotColorCode', parsed.wainscotColor); });
-    if (parsed.standingSeam) tryFill('Standing Seam', function(){ var e=document.getElementById('st_standingSeam'); if(e){e.checked=true;try{onStandingSeamChange();}catch(er){}} return true; });
-
-    if (parsed.enclosure) tryFill('Enclosure', function(){
-      var wm={front:'back',back:'front',left:'left',right:'right'};
-      Object.keys(parsed.enclosure).forEach(function(side){ var w=WALLS.find(function(wl){return wl.id===(wm[side]||side);}); if(w) w.encl=parsed.enclosure[side]; });
-      buildWallGrid(); return true;
-    });
-
-    if (parsed.garageDoors && parsed.garageDoors.length) tryFill('Garage Door(s)', function(){
-      var wm={front:'back',back:'front',left:'left',right:'right'}, _sdw=[];
-      parsed.garageDoors.forEach(function(gd){
-        var qty=parseInt(gd.qty)||1, gdWall=wm[gd.wall]||'back';
-        var wo=WALLS.find(function(wl){return wl.id===gdWall;})||{len:Q.w};
-        var centered=!gd.fieldLocated&&gd.placement==='center';
-        var spaced=!gd.fieldLocated&&gd.placement==='spaced';
-        for(var i=0;i<qty;i++) allDoors.push({id:nextDoorId++,type:'garage',icon:'🚪',w:gd.w,h:gd.h,sizeKey:gd.w+'x'+gd.h,size:gd.w+'x'+gd.h,wall:gdWall,insulated:!!gd.insulated,framedOpening:false,fullView:!!gd.fullView,offset:centered?Math.round((wo.len-gd.w)/2*12)/12:0});
-        if(spaced) _sdw.push(gdWall);
-      });
-      renderGarageDoors();
-      if(_sdw.length) setTimeout(function(){ _sdw.forEach(function(w){try{spaceDoorsEvenly(w);}catch(e){}});scheduleBuild();},600);
-      return true;
-    });
-
-    if (parsed.walkDoors && parsed.walkDoors.length) tryFill('Walk Door(s)', function(){
-      var tm={'solid':'WHITE 3/0 PLYCO ALUMINUM FRAME','half-glass':'3/0 PLYCO 1/2 GLASS L.H.','french':'WHITE 6/0 FRENCH ALUM FRAME'};
-      var wm={front:'back',back:'front',left:'left',right:'right'};
-      var placed=parsed.walkDoors.some(function(wd){return wd.fieldLocated===false||wd.placement;});
-      window._walkDoorsFieldLocated=!placed;
-      parsed.walkDoors.forEach(function(wd){
-        var qty=parseInt(wd.qty)||1, dtype=tm[wd.type]||'WHITE 3/0 PLYCO ALUMINUM FRAME';
-        var wdWall=wm[wd.wall]||'back';
-        for(var i=0;i<qty;i++) window._walkDoors.push({id:nextWDId++,type:dtype,wall:wdWall,offset:0,framedOpening:false,doorColor:'White'});
-      });
-      renderWalkDoors(); return true;
-    });
-
-    if (parsed.windows && parsed.windows.length) tryFill('Window(s)', function(){
-      var wm={front:'back',back:'front',left:'left',right:'right'};
-      var placed=parsed.windows.some(function(win){return win.fieldLocated===false||win.placement;});
-      window._windowsFieldLocated=!placed;
-      parsed.windows.forEach(function(win){
-        var qty=parseInt(win.qty)||1, winWall=wm[win.wall]||'back';
-        for(var i=0;i<qty;i++) window._windows.push({id:nextWinId++,type:win.type||'VW34',wall:winWall,sillH:4,offset:0,framedOpening:false,grids:win.grids!==false,frameColor:win.frameColor||'White'});
-      });
-      renderWindows(); return true;
-    });
-
-    var vi=['None','Double Bubble Foil','Double Bubble White','Therma Guard','2 Vinyl Back','3 Vinyl Back','Solar Eclipse'];
-    if (parsed.insulation && vi.indexOf(parsed.insulation)!==-1) tryFill('Insulation', function(){
-      var el=document.getElementById('st_insulation'); if(el){el.value=parsed.insulation;try{onInsulationChange();}catch(e){}}
-      var r=document.getElementById('st_insulRoof'); if(r) r.checked=!!parsed.insulRoof;
-      var w=document.getElementById('st_insulWalls'); if(w) w.checked=!!parsed.insulWalls;
-      return true;
-    });
-    if (parsed.concrete && parsed.concrete!=='None') tryFill('Concrete', function(){
-      var el=document.getElementById('st_mainConcrete'); if(el) el.value=parsed.concrete;
-      if(!window._lastConcreteOpts) window._lastConcreteOpts={main:null,sheds:[]};
-      window._lastConcreteOpts.main={included:true,thickness:parsed.concrete,footers:!!parsed.concreteFooters,psi:parseInt(parsed.concretePSI)||3500,reinforcement:{rebar:!!parsed.concreteRebar,wire:!!parsed.concreteWire},metalLedge:!!parsed.concreteMetalLedge,stamped:!!parsed.concreteStamped};
-      return true;
-    });
-    if (parsed.sheds && parsed.sheds.length) tryFill('Shed(s)', function(){
-      parsed.sheds.forEach(function(sh){
-        if(window._shedConfigs.length>=2) return;
-        var sidx=window._shedConfigs.length, swall=sh.wall||(sidx===0?'left':'right');
-        var isEave=(swall==='left'||swall==='right');
-        var sc={id:nextShedId++,idx:sidx,label:'Side Shed '+(sidx+1),wall:swall,type:'leanto',wrapDir:'cw',wrapLeg:0,w:parseFloat(sh.w)||12,l:parseFloat(sh.l)||(isEave?Q.l:Q.w),origL:parseFloat(sh.l)||(isEave?Q.l:Q.w),encl:sh.encl||'roofonly',enclWalls:['outer','gable1','gable2'],position:'center',offsetFt:0,gablePS:10,gablePitch:4,timberFrame:'metal',ltPitch:1,dropFt:parseFloat(sh.dropFt)||0,frameStyle:'metal',_open:true};
-        window._shedConfigs.push(sc);
-      });
-      renderSheds(); return true;
-    });
-    if (parsed.esd)            tryFill('ESD',            function(){ var e=document.getElementById('st_esd');            if(e) e.checked=true; return true; });
-    if (parsed.postProtectors) tryFill('Post Protectors',function(){ var e=document.getElementById('st_postProtectors'); if(e) e.checked=true; return true; });
-    if (parsed.postWraps)      tryFill('Post Wraps',     function(){ var e=document.getElementById('st_postWraps');      if(e) e.checked=true; return true; });
-    if (parsed.gutters)        tryFill('Gutters',        function(){
-      var e=document.getElementById('st_gutters'); if(e) e.checked=true;
-      if(parsed.gutterType){var gtMap={'Standard':'SGS','Copper Metallic':'SGSCOM','Real Copper':'SGSC','Galvalume':'SGSGA'}; var gt=document.getElementById('st_gutterType'); if(gt) gt.value=gtMap[parsed.gutterType]||'SGS';}
-      return true;
-    });
-    if (parsed.cupolaSize) tryFill('Cupola', function(){ var e=document.getElementById('qgCupolaSize'); if(e){e.value=parsed.cupolaSize;toggleExtra('cupola',true);} if(parsed.cupolaQty){var q=document.getElementById('qgCupolaQty');if(q)q.value=String(parsed.cupolaQty);} return true; });
-    if (parsed.farmTax)        tryFill('Farm Tax',       function(){ var e=document.getElementById('st_farmTax');        if(e) e.checked=true; return true; });
-    if (parsed.materialOnly)   tryFill('Material Only',  function(){ var e=document.getElementById('st_materialKit');   if(e) e.checked=true; return true; });
-    if (parsed.craneFee)       tryFill('Crane Fee',      function(){ var e=document.getElementById('st_craneFee');      if(e) e.checked=true; return true; });
+    _applyFieldsInner(parsed, tryFill);
 
     // Rebuild
     buildWallGrid(); buildTrussChips(); buildPitchChips(); buildOHChips(); buildPSChips();
