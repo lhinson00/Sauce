@@ -5810,21 +5810,41 @@ async function openVoiceReview(transcript, sourceOverlay) {
   var prompt = 'You are interpreting a spoken building quote for a pole barn estimator. Extract specs and return ONLY a JSON object with no markdown.\n\nTRANSCRIPT:\n"' + transcript + '"\n\nJSON fields (omit any not mentioned):\n{\n  "custName": string,\n  "custPhone": string,\n  "custEmail": string,\n  "custAddress": string,\n  "width": number,\n  "length": number,\n  "height": number,\n  "pitch": number (4,6,8,10 only),\n  "truss": "Wood"|"Steel"|"Stud"|"Cypress"|"MetalBB",\n  "soffit": boolean,\n  "gauge": 29|26,\n  "roofMetal": "Tuff-Rib 29ga"|"Tuff-Rib 26ga"|"PBR 26ga"|"Standing Seam 26ga",\n  "wallMetal": "Tuff-Rib 29ga"|"Tuff-Rib 26ga"|"PBR 26ga"|"Board & Batten 26ga",\n  "roofColor": string,\n  "wallColor": string,\n  "trimColor": string,\n  "enclosure": {"front":"enclosed"|"open"|"partial","back":"enclosed"|"open"|"partial","left":"enclosed"|"open"|"partial","right":"enclosed"|"open"|"partial"},\n  "garageDoors": [{"w":number,"h":number,"qty":number,"insulated":boolean,"wall":"front"|"back"|"left"|"right","fullView":boolean}],\n  "walkDoors": [{"type":"solid"|"half-glass"|"french","qty":number,"fieldLocated":boolean}],\n  "windows": [{"type":"VW23"|"VW33"|"VW34"|"VW35"|"VW36","qty":number,"grids":boolean,"frameColor":"White"|"Black","fieldLocated":boolean}],\n  "insulation": "None"|"Double Bubble Foil"|"Double Bubble White"|"Therma Guard"|"2 Vinyl Back"|"3 Vinyl Back"|"Solar Eclipse",\n  "insulRoof": boolean,\n  "insulWalls": boolean,\n  "concrete": "4"|"6"|"None",\n  "esd": boolean,\n  "postProtectors": boolean,\n  "gutters": boolean,\n  "cupola": boolean,\n  "flags": ["anything ambiguous or not captured"]\n}\n\nRules: default gauge 29, default truss Wood, soffit:true means overhang with soffit, front/back gable = wall front/back, field located = fieldLocated:true, color not in list goes to flags. Available colors: ' + colorList;
 
   try {
-    var resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1000, messages: [{ role: 'user', content: prompt }] })
+    // Use raw fetch — GAS redirect chain requires redirect:follow which fetchWithTimeout handles
+    // but mobile Safari/Chrome can fail on cross-origin POST redirects with custom Content-Type.
+    // Sending as no-cors-friendly text/plain which GAS accepts.
+    var payload = JSON.stringify({
+      action:     'parseVoice',
+      token:      (typeof getToken === 'function') ? getToken() : '',
+      transcript: transcript,
+      prompt:     prompt
     });
-    var apiData = await resp.json();
-    var raw = (apiData.content && apiData.content[0] && apiData.content[0].text) || '';
-    raw = raw.replace(/```json|```/g,'').trim();
-    var parsed = JSON.parse(raw);
+    loadTxt.textContent = 'Sending to server…';
+    var fetchResp = await fetch(API_URL, {
+      method:   'POST',
+      headers:  { 'Content-Type': 'text/plain' },
+      body:     payload,
+      redirect: 'follow'
+    });
+    if (!fetchResp.ok) throw new Error('Server error ' + fetchResp.status);
+    var txt = await fetchResp.text();
+    loadTxt.textContent = 'Parsing response…';
+    var data;
+    try { data = JSON.parse(txt); } catch(pe) { throw new Error('Bad response: ' + txt.substring(0,120)); }
+    if (!data.success) throw new Error(data.error || 'GAS returned error');
+    var raw = (data.result || '').replace(/```json|```/g,'').trim();
+    var parsed;
+    try { parsed = JSON.parse(raw); } catch(je) { throw new Error('Claude response not valid JSON: ' + raw.substring(0,120)); }
     showVoiceReviewCard(parsed, transcript, sourceOverlay);
   } catch(e) {
     sourceOverlay.innerHTML = '';
     var errDiv = document.createElement('div');
     errDiv.style.cssText = 'color:#ef4444;text-align:center;padding:40px 20px;font-size:14px;font-family:Outfit,sans-serif;';
-    errDiv.innerHTML = '<div style="font-size:32px;margin-bottom:12px;">&#x26A0;&#xFE0F;</div><div style="font-weight:800;margin-bottom:8px;">Could not interpret transcript</div><div style="color:#888;font-size:12px;margin-bottom:20px;">' + e.message + '</div><button onclick="document.getElementById(&quot;voiceQuoteModal&quot;).remove()" style="padding:10px 24px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:transparent;color:#888;font-size:13px;cursor:pointer;font-family:Outfit,sans-serif;">Close</button>';
+    errDiv.innerHTML = '<div style="font-size:32px;margin-bottom:12px;">&#x26A0;&#xFE0F;</div>'
+      + '<div style="font-weight:800;margin-bottom:8px;">Could not interpret transcript</div>'
+      + '<div style="color:#f87171;font-size:11px;margin-bottom:8px;word-break:break-all;max-width:320px;margin:0 auto 16px;">'
+      + (e.message || 'Unknown error') + '</div>'
+      + '<button onclick="document.getElementById(&quot;voiceQuoteModal&quot;).remove()" style="padding:10px 24px;border-radius:8px;border:1px solid rgba(255,255,255,.2);background:transparent;color:#888;font-size:13px;cursor:pointer;font-family:Outfit,sans-serif;">Close</button>';
     sourceOverlay.appendChild(errDiv);
   }
 }
