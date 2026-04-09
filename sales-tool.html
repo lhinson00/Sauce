@@ -5950,6 +5950,11 @@ async function openVoiceReview(transcript, sourceOverlay) {
     '  "right side", "right eave", "right wall" → wall:"right"',
     '- If multiple doors same size same wall, use qty. Different sizes = separate objects.',
     '- "two 10x10 insulated on the front" → [{w:10,h:10,qty:2,insulated:true,wall:"front"}]',
+    '- PLACEMENT — if spoken, set fieldLocated:false and include placement:',
+    '  "centered", "center it", "in the center", "centered on the wall" → placement:"center"',
+    '  "spaced evenly", "evenly spaced", "equally spaced", "spread out" → placement:"spaced"',
+    '  If no placement mentioned → fieldLocated:true (default), omit placement',
+    '  Example: "one 10x10 centered on the front" → {w:10,h:10,qty:1,wall:"front",fieldLocated:false,placement:"center"}',
     '',
     'WALK DOORS:',
     '- "solid", "solid door", "standard walk door", "plyco" → type:"solid"',
@@ -5957,6 +5962,7 @@ async function openVoiceReview(transcript, sourceOverlay) {
     '- "french door", "french" → type:"french"',
     '- "field located", "field locate", "no placement", "anywhere" → fieldLocated:true',
     '- Default fieldLocated:true unless placement is specified',
+    '- If placement spoken: fieldLocated:false, placement:"center"|"spaced"',
     '',
     'WINDOWS:',
     '- "2x3", "2 by 3", "23 window" → type:"VW23"',
@@ -5965,6 +5971,7 @@ async function openVoiceReview(transcript, sourceOverlay) {
     '- "3x5", "3 by 5", "35 window" → type:"VW35"',
     '- "3x6", "3 by 6", "36 window" → type:"VW36"',
     '- Default type:"VW34" if size not clear',
+    '- "centered", "spaced evenly" → fieldLocated:false, placement:"center"|"spaced"',
     '- "grids", "with grids" → grids:true',
     '- "no grids", "without grids" → grids:false',
     '- "white frame" → frameColor:"White", "black frame" → frameColor:"Black"',
@@ -6097,9 +6104,9 @@ function showVoiceReviewCard(parsed, transcript, overlay) {
   s = section('Building', bldgRows); if (s) scroll.appendChild(s);
 
   var doorRows = [];
-  (parsed.garageDoors||[]).forEach(function(gd){ doorRows.push(['Garage Door', (gd.qty>1?gd.qty+'× ':'')+gd.w+"'×"+gd.h+"'"+(gd.insulated?' Insulated':'')+(gd.wall?' — '+gd.wall:'')+( gd.fullView?' Full View':'')] ); });
-  (parsed.walkDoors||[]).forEach(function(wd){ doorRows.push(['Walk Door', (wd.qty>1?wd.qty+'× ':'')+wd.type+(wd.fieldLocated?' (Field Located)':'')]); });
-  (parsed.windows||[]).forEach(function(win){ doorRows.push(['Window', (win.qty>1?win.qty+'× ':'')+win.type+(win.grids?' w/Grids':' No Grids')+(win.frameColor?' '+win.frameColor:'')+(win.fieldLocated?' (Field Located)':'')]); });
+  (parsed.garageDoors||[]).forEach(function(gd){ var gqty=parseInt(gd.qty)||1; var gpl=gd.placement?(' — '+gd.placement.charAt(0).toUpperCase()+gd.placement.slice(1)):''; doorRows.push(['Garage Door', (gqty>1?gqty+'× ':'')+gd.w+"'×"+gd.h+"'"+(gd.insulated?' Insulated':'')+(gd.wall?' — '+gd.wall:'')+( gd.fullView?' Full View':'')+gpl] ); });
+  (parsed.walkDoors||[]).forEach(function(wd){ var wqty=parseInt(wd.qty)||1; var wpl=wd.placement?(' — '+wd.placement.charAt(0).toUpperCase()+wd.placement.slice(1)):(wd.fieldLocated===false?'':' (Field Located)'); doorRows.push(['Walk Door', (wqty>1?wqty+'× ':'')+wd.type+wpl]); });
+  (parsed.windows||[]).forEach(function(win){ var wqty=parseInt(win.qty)||1; var wipl=win.placement?(' — '+win.placement.charAt(0).toUpperCase()+win.placement.slice(1)):(win.fieldLocated===false?'':' (Field Located)'); doorRows.push(['Window', (wqty>1?wqty+'× ':'')+win.type+(win.grids?' w/Grids':' No Grids')+(win.frameColor?' '+win.frameColor:'')+wipl]); });
   s = section('Doors & Windows', doorRows); if (s) scroll.appendChild(s);
 
   var specRows = [];
@@ -6208,30 +6215,59 @@ function applyVoiceQuote(parsed, overlay) {
       parsed.garageDoors.forEach(function(gd){
         var qty=parseInt(gd.qty)||1, gdWall=wm[gd.wall]||'back';
         var wo=WALLS.find(function(wl){return wl.id===gdWall;})||{len:Q.w};
-        for(var i=0;i<qty;i++) allDoors.push({id:nextDoorId++,type:'garage',icon:'&#x1F6AA;',w:gd.w,h:gd.h,sizeKey:gd.w+'x'+gd.h,size:gd.w+'x'+gd.h,wall:gdWall,insulated:!!gd.insulated,framedOpening:false,fullView:!!gd.fullView,offset:Math.round((wo.len-gd.w)/2*12)/12});
+        var centered = !gd.fieldLocated && gd.placement==='center';
+        var spaced   = !gd.fieldLocated && gd.placement==='spaced';
+        for(var i=0;i<qty;i++) {
+          var off = centered ? Math.round((wo.len-gd.w)/2*12)/12 : 0;
+          allDoors.push({id:nextDoorId++,type:'garage',icon:'&#x1F6AA;',w:gd.w,h:gd.h,sizeKey:gd.w+'x'+gd.h,size:gd.w+'x'+gd.h,wall:gdWall,insulated:!!gd.insulated,framedOpening:false,fullView:!!gd.fullView,offset:off});
+        }
+        // Spaced evenly — call after all doors for this wall are pushed
+        if (spaced) setTimeout(function(){ try{spaceDoorsEvenly(gdWall);}catch(e){} }, 100);
       });
       renderGarageDoors(); return true;
     });
 
     if (parsed.walkDoors && parsed.walkDoors.length) tryFill('Walk Door(s)', function(){
       var tm={'solid':'WHITE 3/0 PLYCO ALUMINUM FRAME','half-glass':'3/0 PLYCO 1/2 GLASS L.H.','french':'WHITE 6/0 FRENCH ALUM FRAME'};
-      var placed=!(parsed.walkDoors[0]&&parsed.walkDoors[0].fieldLocated);
-      window._walkDoorsFieldLocated=!placed;
+      var wm={front:'back',back:'front',left:'left',right:'right'};
+      // If any walk door has explicit placement, switch to placed mode
+      var anyPlaced = parsed.walkDoors.some(function(wd){ return wd.fieldLocated===false || wd.placement; });
+      var placed = anyPlaced;
+      window._walkDoorsFieldLocated = !placed;
       var tgl=document.getElementById('st_wdPlaced'); if(tgl) tgl.checked=placed;
       parsed.walkDoors.forEach(function(wd){
         var qty=parseInt(wd.qty)||1, dtype=tm[wd.type]||'WHITE 3/0 PLYCO ALUMINUM FRAME';
-        for(var i=0;i<qty;i++) window._walkDoors.push({id:nextWDId++,type:dtype,wall:'back',offset:0,framedOpening:false,doorColor:'White'});
+        var wdWall = wm[wd.wall]||'back';
+        var wo = WALLS.find(function(wl){return wl.id===wdWall;})||{len:Q.l};
+        var centered = wd.placement==='center';
+        var spaced   = wd.placement==='spaced';
+        for(var i=0;i<qty;i++) {
+          var off = centered ? Math.round((wo.len-3)/2*12)/12 : 0;
+          window._walkDoors.push({id:nextWDId++,type:dtype,wall:wdWall,offset:off,framedOpening:false,doorColor:'White'});
+        }
+        if (spaced) setTimeout(function(){ try{spaceDoorsEvenly(wdWall);}catch(e){} }, 100);
       });
       renderWalkDoors(); return true;
     });
 
     if (parsed.windows && parsed.windows.length) tryFill('Window(s)', function(){
-      var placed=!(parsed.windows[0]&&parsed.windows[0].fieldLocated);
-      window._windowsFieldLocated=!placed;
+      var wm={front:'back',back:'front',left:'left',right:'right'};
+      var anyPlaced = parsed.windows.some(function(win){ return win.fieldLocated===false || win.placement; });
+      var placed = anyPlaced;
+      window._windowsFieldLocated = !placed;
       var tgl=document.getElementById('st_winPlaced'); if(tgl) tgl.checked=placed;
       parsed.windows.forEach(function(win){
         var qty=parseInt(win.qty)||1;
-        for(var i=0;i<qty;i++) window._windows.push({id:nextWinId++,type:win.type||'VW33',wall:'back',sillH:4,offset:0,framedOpening:false,grids:win.grids!==false,frameColor:win.frameColor||'White'});
+        var winWall = wm[win.wall]||'back';
+        var wo = WALLS.find(function(wl){return wl.id===winWall;})||{len:Q.l};
+        var wDims = (typeof winDims==='function') ? winDims(win.type||'VW34') : {w:3,h:4};
+        var centered = win.placement==='center';
+        var spaced   = win.placement==='spaced';
+        for(var i=0;i<qty;i++) {
+          var off = centered ? Math.round((wo.len - wDims.w)/2*12)/12 : 0;
+          window._windows.push({id:nextWinId++,type:win.type||'VW34',wall:winWall,sillH:4,offset:off,framedOpening:false,grids:win.grids!==false,frameColor:win.frameColor||'White'});
+        }
+        if (spaced) setTimeout(function(){ try{spaceWindowsEvenly(winWall);}catch(e){} }, 100);
       });
       renderWindows(); return true;
     });
