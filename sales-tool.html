@@ -8469,7 +8469,13 @@ function applyVoiceQuote(parsed, overlay) {
                 const mEaveRibSh = new THREE.MeshBasicMaterial({ color: ((Math.max(0, eRR - 40) << 16) | (Math.max(0, eRG - 40) << 8) | Math.max(0, eRB - 40)), side: THREE.DoubleSide, transparent: true, opacity: 0.75 });
 
                 // Collect door openings for cutout logic
-                const eaveDoorRanges = wd.map(d => ({ dL: d.offset || 0, dR: (d.offset || 0) + d.w, dh: Math.min(d.h * Sc, yTop) }));
+                // For framed openings: recenter offset if it seems wrong for this wall length
+                const eaveDoorRanges = wd.map(d => {
+                    let dL = d.offset || 0;
+                    // If door extends beyond wall or offset looks like it was set for a different wall, recenter
+                    if (dL + d.w > wLen + 0.1 || dL < -0.1) dL = Math.max(0, (wLen - d.w) / 2);
+                    return { dL, dR: dL + d.w, dh: Math.min(d.h * Sc, yTop), framed: !!d.framedOpening };
+                });
 
                 let zFt = 0;
                 while (zFt < totalEaveFt - 0.001) {
@@ -8483,9 +8489,16 @@ function applyVoiceQuote(parsed, overlay) {
 
                     // Check if this segment is inside a door opening
                     let doorH = 0;
+                    let isFramedSeg = false;
                     eaveDoorRanges.forEach(dr => {
-                        if (zFt >= dr.dL - 0.01 && zFtEnd <= dr.dR + 0.01) doorH = dr.dh;
+                        if (zFt >= dr.dL - 0.01 && zFtEnd <= dr.dR + 0.01) {
+                            doorH = dr.dh;
+                            if (dr.framed) isFramedSeg = true;
+                        }
                     });
+
+                    // Framed opening — skip this segment entirely, leave hollow
+                    if (isFramedSeg) { zFt = zFtEnd; continue; }
 
                     if (doorH > yBot) {
                         // Draw above door only
@@ -8552,6 +8565,7 @@ function applyVoiceQuote(parsed, overlay) {
             // Here we just draw the structural trim frame around the opening.
             // The opening itself is left hollow — no door panel, no metal fill.
             if (d.framedOpening) {
+                console.log('[3D] Framed opening:', d.wall, d.w+'x'+d.h, 'offset:', d.offset);
                 const mTrimFO = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
                 const tb = 0.022; // header/jamb thickness
                 if (isG) {
@@ -9323,6 +9337,15 @@ function applyVoiceQuote(parsed, overlay) {
                     // sSh2 → attachH is bare main building wall that still needs ribs.
                     _eaveRibClamps.push({ zLo: -_ssl2/2 + _sco2, zHi: _ssl2/2 + _sco2, maxH: Math.max(_attachH2, 0) });
                 });
+                // Build framed opening exclusion zones for this eave wall
+                const _eaveFramedZones = placed
+                    .filter(d => d.wall === eaveId && (d.framedOpening === true || d.framedOpening === 'true'))
+                    .map(d => {
+                        const dL = d.offset || 0;
+                        const zMin = (-Q.l/2 + dL) * Sc;
+                        const zMax = (-Q.l/2 + dL + d.w) * Sc;
+                        return { zMin, zMax, hMax: d.h * Sc };
+                    });
                 for (let z = -sl/2; z <= sl/2; z += ribSpacing) {
                     // Clamp rib top to attachH within enclosed shed span (scene units)
                     let _ribTop = sh;
@@ -9333,6 +9356,9 @@ function applyVoiceQuote(parsed, overlay) {
                         }
                     });
                     if (_ribTop <= _ribBot) continue;
+                    // Skip ribs inside framed openings entirely
+                    const _inFramed = _eaveFramedZones.find(fz => z >= fz.zMin - ribW && z < fz.zMax);
+                    if (_inFramed) continue;
                     grps.walls.add(mkQ([xBase + s*0.003, _ribBot, z, xBase + s*0.003, _ribBot, z + ribW, xBase + s*0.003, _ribTop, z + ribW, xBase + s*0.003, _ribTop, z], mRibHi));
                     grps.walls.add(mkQ([xBase + s*0.003, _ribBot, z + ribW, xBase + s*0.003, _ribBot, z + ribW*2, xBase + s*0.003, _ribTop, z + ribW*2, xBase + s*0.003, _ribTop, z + ribW], mRibSh));
                 }
@@ -9358,7 +9384,7 @@ function applyVoiceQuote(parsed, overlay) {
                 const zBase = s * sl / 2;
                 // Build framed opening exclusion zones for this gable wall
                 const gableFramedZones = placed
-                    .filter(d => d.wall === gableId && d.framedOpening)
+                    .filter(d => d.wall === gableId && (d.framedOpening === true || d.framedOpening === 'true'))
                     .map(d => {
                         const dc = ((-Q.w/2) + (d.offset||0) + d.w/2) * Sc;
                         return { xMin: dc - d.w*Sc/2, xMax: dc + d.w*Sc/2, hMax: d.h * Sc };
@@ -9371,15 +9397,8 @@ function applyVoiceQuote(parsed, overlay) {
                     if (ribTop <= ribBot) continue;
                     // Check if this rib column is inside a framed opening
                     const inZone = gableFramedZones.find(z => x >= z.xMin - ribW && x < z.xMax);
-                    if (inZone) {
-                        // Draw rib only above the opening header
-                        const aboveBot = inZone.hMax;
-                        if (aboveBot < ribTop) {
-                            grps.walls.add(mkQ([x, aboveBot, zBase + s*0.003, x + ribW, aboveBot, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003, x, ribTop, zBase + s*0.003], mRibHi));
-                            grps.walls.add(mkQ([x + ribW, aboveBot, zBase + s*0.003, x + ribW*2, aboveBot, zBase + s*0.003, x + ribW*2, ribTop, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003], mRibSh));
-                        }
-                        continue;
-                    }
+                    // Skip ribs inside framed openings entirely
+                    if (inZone) continue;
                     grps.walls.add(mkQ([x, ribBot, zBase + s*0.003, x + ribW, ribBot, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003, x, ribTop, zBase + s*0.003], mRibHi));
                     grps.walls.add(mkQ([x + ribW, ribBot, zBase + s*0.003, x + ribW*2, ribBot, zBase + s*0.003, x + ribW*2, ribTop, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003], mRibSh));
                 }
