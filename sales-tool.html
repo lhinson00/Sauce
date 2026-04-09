@@ -8407,6 +8407,7 @@ function applyVoiceQuote(parsed, overlay) {
                 wd.forEach(d => {
                     const dL = d.offset || 0, dR = dL + d.w, dh = Math.min(d.h * Sc, yTop);
                     if (dL > x) addWallSeg((-wLen / 2 + x) * Sc, (-wLen / 2 + dL) * Sc, yBot, yTop, mW, true, zGable);
+                    // Draw above-door panel for ALL doors including framed openings
                     if (dh < yTop && dh > yBot) {
                         grps.wallPanels.add(mkQ([(-wLen / 2 + dL) * Sc, dh, zGable, (-wLen / 2 + dR) * Sc, dh, zGable, (-wLen / 2 + dR) * Sc, yTop, zGable, (-wLen / 2 + dL) * Sc, yTop, zGable], mW));
                     }
@@ -8497,8 +8498,22 @@ function applyVoiceQuote(parsed, overlay) {
                         }
                     });
 
-                    // Framed opening — skip this segment entirely, leave hollow
-                    if (isFramedSeg) { zFt = zFtEnd; continue; }
+                    // Framed opening — skip segment below doorH (hollow), draw above normally
+                    if (isFramedSeg) {
+                        if (effectiveYTop > doorH) {
+                            if (hasWainscot && wsH > doorH && effectiveYTop > wsH && wCfg.encl !== 'partial') {
+                                grps.wallPanels.add(mkQ([xP, doorH, z1sc, xP, doorH, z2sc, xP, wsH, z2sc, xP, wsH, z1sc], mWainscot));
+                                grps.wallPanels.add(mkQ([xP, wsH, z1sc, xP, wsH, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], mW));
+                            } else {
+                                grps.wallPanels.add(mkQ([xP, doorH, z1sc, xP, doorH, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], mW));
+                            }
+                            for (let rz = z1sc; rz <= z2sc; rz += eaveRibSp) {
+                                grps.wallPanels.add(mkQ([xP + eaveSide*0.003, doorH, rz, xP + eaveSide*0.003, doorH, rz + eaveRibW, xP + eaveSide*0.003, effectiveYTop, rz + eaveRibW, xP + eaveSide*0.003, effectiveYTop, rz], mEaveRibHi));
+                                grps.wallPanels.add(mkQ([xP + eaveSide*0.003, doorH, rz + eaveRibW, xP + eaveSide*0.003, doorH, rz + eaveRibW*2, xP + eaveSide*0.003, effectiveYTop, rz + eaveRibW*2, xP + eaveSide*0.003, effectiveYTop, rz + eaveRibW], mEaveRibSh));
+                            }
+                        }
+                        zFt = zFtEnd; continue;
+                    }
 
                     if (doorH > yBot) {
                         // Draw above door only
@@ -8569,7 +8584,7 @@ function applyVoiceQuote(parsed, overlay) {
                 const mTrimFO = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
                 const tb = 0.022; // header/jamb thickness
                 if (isG) {
-                    const zo = d.wall === 'front' ? -0.014 : 0.014;
+                    const zo = d.wall === 'front' ? 0.016 : -0.016; // offset in front of wall panel
                     const fz = zP + zo;
                     // Left jamb
                     grps.doors.add(mkQ([center-dw/2,0,fz, center-dw/2+tb,0,fz, center-dw/2+tb,dh,fz, center-dw/2,dh,fz], mTrimFO));
@@ -9356,9 +9371,16 @@ function applyVoiceQuote(parsed, overlay) {
                         }
                     });
                     if (_ribTop <= _ribBot) continue;
-                    // Skip ribs inside framed openings entirely
+                    // Inside framed opening: skip hollow zone, draw above hMax only
                     const _inFramed = _eaveFramedZones.find(fz => z >= fz.zMin - ribW && z < fz.zMax);
-                    if (_inFramed) continue;
+                    if (_inFramed) {
+                        const _ribBotAbove = _inFramed.hMax;
+                        if (_ribBotAbove < _ribTop) {
+                            grps.walls.add(mkQ([xBase + s*0.003, _ribBotAbove, z, xBase + s*0.003, _ribBotAbove, z + ribW, xBase + s*0.003, _ribTop, z + ribW, xBase + s*0.003, _ribTop, z], mRibHi));
+                            grps.walls.add(mkQ([xBase + s*0.003, _ribBotAbove, z + ribW, xBase + s*0.003, _ribBotAbove, z + ribW*2, xBase + s*0.003, _ribTop, z + ribW*2, xBase + s*0.003, _ribTop, z + ribW], mRibSh));
+                        }
+                        continue;
+                    }
                     grps.walls.add(mkQ([xBase + s*0.003, _ribBot, z, xBase + s*0.003, _ribBot, z + ribW, xBase + s*0.003, _ribTop, z + ribW, xBase + s*0.003, _ribTop, z], mRibHi));
                     grps.walls.add(mkQ([xBase + s*0.003, _ribBot, z + ribW, xBase + s*0.003, _ribBot, z + ribW*2, xBase + s*0.003, _ribTop, z + ribW*2, xBase + s*0.003, _ribTop, z + ribW], mRibSh));
                 }
@@ -9397,8 +9419,15 @@ function applyVoiceQuote(parsed, overlay) {
                     if (ribTop <= ribBot) continue;
                     // Check if this rib column is inside a framed opening
                     const inZone = gableFramedZones.find(z => x >= z.xMin - ribW && x < z.xMax);
-                    // Skip ribs inside framed openings entirely
-                    if (inZone) continue;
+                    // Inside opening: draw rib above hMax only, skip the hollow zone
+                    if (inZone) {
+                        const ribBotAbove = inZone.hMax;
+                        if (ribBotAbove < ribTop) {
+                            grps.walls.add(mkQ([x, ribBotAbove, zBase + s*0.003, x + ribW, ribBotAbove, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003, x, ribTop, zBase + s*0.003], mRibHi));
+                            grps.walls.add(mkQ([x + ribW, ribBotAbove, zBase + s*0.003, x + ribW*2, ribBotAbove, zBase + s*0.003, x + ribW*2, ribTop, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003], mRibSh));
+                        }
+                        continue;
+                    }
                     grps.walls.add(mkQ([x, ribBot, zBase + s*0.003, x + ribW, ribBot, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003, x, ribTop, zBase + s*0.003], mRibHi));
                     grps.walls.add(mkQ([x + ribW, ribBot, zBase + s*0.003, x + ribW*2, ribBot, zBase + s*0.003, x + ribW*2, ribTop, zBase + s*0.003, x + ribW, ribTop, zBase + s*0.003], mRibSh));
                 }
