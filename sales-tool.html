@@ -2177,9 +2177,10 @@ function updateStripFromLocalCalc() {
       { prefix: 'ps_',  forcedType: 'woodOH',   labor: laborAll.woodOH||laborAll.single,   label: 'W/ Soffit' },
       { prefix: 'ps2_', forcedType: 'woodNoOH', labor: laborAll.woodNoOH||laborAll.single, label: 'No Soffit' },
       { prefix: 'ps3_', forcedType: 'steel',    labor: laborAll.steel||laborAll.single,    label: 'Steel' },
+      { prefix: 'ps5_', forcedType: 'cypress',  labor: laborAll.cypress||laborAll.woodOH||laborAll.single, label: 'Cypress' },
     ];
-    // Zero out Stud, Cypress, Metal B&B columns — not applicable on open buildings
-    ['ps4_','ps5_','ps6_'].forEach(function(pfx) {
+    // Zero out Stud and Metal B&B columns — not applicable on open buildings
+    ['ps4_','ps6_'].forEach(function(pfx) {
       var p = function(id,v){ var el=document.getElementById(id); if(el){ el.textContent=v; el.classList.remove('pending'); } };
       p(pfx+'material','—'); p(pfx+'labor','—'); p(pfx+'concrete','—');
       p(pfx+'esd','—'); p(pfx+'tax','—'); p(pfx+'shipping','—'); p(pfx+'mft','—');
@@ -14182,16 +14183,18 @@ function applyRouteUI() {
     RGSteel:'Roof & Upper Gables', RGSides:'RG Sides', RGGables:'RG Gables',
     WoodOH:'Wood OH + No OH + Steel', EnclosedSteel:'Steel Truss'
   };
+  // Open or enclosed — always show W/Soffit, No Soffit, Steel columns
+  updatePriceStripLabels('WoodOH', 'WoodNoOH', 'EnclosedSteel');
+  showPriceBlock('ps2_');
+  showPriceBlock('ps3_');
   if (isRG) {
-    updatePriceStripLabels(route.type, null, null);
-    hidePriceBlock('ps2_');
-    hidePriceBlock('ps3_');
+    // Open buildings: no Stud, no Metal B&B (Cypress still applies)
     hidePriceBlock('ps4_');
+    hidePriceBlock('ps6_');
   } else {
-    updatePriceStripLabels('WoodOH', 'WoodNoOH', 'EnclosedSteel');
-    showPriceBlock('ps2_');
-    showPriceBlock('ps3_');
     showPriceBlock('ps4_');
+    showPriceBlock('ps5_');
+    showPriceBlock('ps6_');
   }
 
   // Show/hide truss-type-specific cards
@@ -15165,31 +15168,42 @@ async function updatePriceStrip() {
     var isRG  = isOpenBuildingRoute();
 
     if (isRG) {
-      // ── OPEN BUILDING: single fetch ──────────────────────────
-      updatePriceStripLabels(route.type, null, null);
-      hidePriceBlock('ps2_'); hidePriceBlock('ps3_'); hidePriceBlock('ps4_');
+      // ── OPEN BUILDING: W/Soffit, No Soffit, Steel — same columns as enclosed ──
+      updatePriceStripLabels('WoodOH', 'WoodNoOH', 'EnclosedSteel');
+      showPriceBlock('ps2_'); showPriceBlock('ps3_'); showPriceBlock('ps5_'); hidePriceBlock('ps4_'); hidePriceBlock('ps6_');
       // If address is filled but mileage cache is empty, wait for lookup first
       var _addrVal = (document.getElementById('st_address')||{}).value || '';
       if (_addrVal.length >= 5 && !_cachedMileage) {
         await doAddressLookup();
       }
-      var rgPayload = buildRGPayload(route.type, route);
-      showInputsBar({ RG: rgPayload }); // show inputs immediately on fire
-      var resp = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(rgPayload) }, _fetchTimeout);
-      var data = await safeJson(resp);
-      if (checkTokenResponse(data)) { _calcInFlight=false; _setCalcButtons(false); clearTimeout(_staleGuardTimer); return; }
-      var _rLabel = {RGSteel:'Roof & Upper Gables', RGSides:'RG Sides', RGGables:'RG Gables'}[route.type] || route.type;
-      if (data.success && data.results) {
-        _lastPriceResults = data.results;
-        window._lastPriceOH = data.results;
-        populatePriceBlock('ps_', data.results);
-        setTimeout(adjustShellForBreakdownBar, 50);
-        setCalcBadge('confirmed', '✓ ' + _rLabel);
-        setTimeout(function(){ setCalcBadge('confirmed', _rLabel); }, 2000);
+      var payloadRGOH    = buildPricePayload('WoodOH');
+      var payloadRGNoOH  = buildPricePayload('WoodNoOH');
+      var payloadRGSteel = buildPricePayload('EnclosedSteel');
+      showInputsBar({ WoodOH: payloadRGOH, WoodNoOH: payloadRGNoOH, EnclosedSteel: payloadRGSteel });
+      var delay2 = function(ms) { return new Promise(function(r){ setTimeout(r, ms); }); };
+      var [respRGOH, respRGNoOH, respRGSteel] = await Promise.all([
+        fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadRGOH) }, _fetchTimeout),
+        delay2(300).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadRGNoOH) }, _fetchTimeout); }),
+        delay2(600).then(function(){ return fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'}, body:JSON.stringify(payloadRGSteel) }, _fetchTimeout); })
+      ]);
+      var [dataRGOH, dataRGNoOH, dataRGSteel] = await Promise.all([
+        safeJson(respRGOH), safeJson(respRGNoOH), safeJson(respRGSteel)
+      ]);
+      if (checkTokenResponse(dataRGOH)) { _calcInFlight=false; _setCalcButtons(false); clearTimeout(_staleGuardTimer); return; }
+      var _rgOK = 0;
+      if (dataRGOH.success    && dataRGOH.results)    { _lastPriceResults=dataRGOH.results; window._lastPriceOH=dataRGOH.results;       populatePriceBlock('ps_',  dataRGOH.results);    _rgOK++; } else { setPriceStripError('ps_'); }
+      if (dataRGNoOH.success  && dataRGNoOH.results)  { window._lastPriceNoOH=dataRGNoOH.results;                                        populatePriceBlock('ps2_', dataRGNoOH.results);   _rgOK++; } else { setPriceStripError('ps2_'); }
+      if (dataRGSteel.success && dataRGSteel.results) { window._lastPriceSteel=dataRGSteel.results;                                      populatePriceBlock('ps3_', dataRGSteel.results);   _rgOK++; } else { setPriceStripError('ps3_'); }
+      setTimeout(adjustShellForBreakdownBar, 50);
+      if (_rgOK === 3) {
+        setCalcBadge('confirmed', '✓ W/Soffit · No Soffit · Steel');
+        setTimeout(function(){ setCalcBadge('confirmed', 'W/Soffit · No Soffit · Steel'); }, 2000);
+      } else if (_rgOK > 0) {
+        setCalcBadge('error', '⚠ Partial (' + _rgOK + '/3) — tap Calculate to retry');
       } else {
-        setPriceStripError('ps_');
-        setCalcBadge('error', '✕ Calc Error');
+        setCalcBadge('error', '✕ No results — tap Calculate to retry');
       }
+      if (_rgOK > 0) { var _pdfBtnRG = document.getElementById('quotePdfBtn'); if (_pdfBtnRG) _pdfBtnRG.style.display = ''; }
 
     } else {
       // ── ENCLOSED BUILDING: all 4 calcs always ─────────────────
