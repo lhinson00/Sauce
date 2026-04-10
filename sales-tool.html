@@ -2285,16 +2285,18 @@ function updateStripFromLocalCalc() {
     }
 
     // Store into _lastPrice* so PDF/email can read them
+    // Keys match GAS results format: materialOnly, labor, concrete, esd, shipping, tax, total
     var priceObj = {
-      total:    grand,
-      material: matWithMft,
-      labor:    labor,
-      tax:      tax,
-      concrete: concreteAmt,
-      shipping: shipAmt,
-      esd:      esdAmt,
-      mft:      mft,
-      _source:  'local'
+      total:        grand,
+      materialOnly: matWithMft,
+      material:     matWithMft,
+      labor:        labor,
+      tax:          tax,
+      concrete:     concreteAmt > 0 ? fmtPriceFull(concreteAmt) : '',
+      shipping:     shipAmt > 0 ? fmtPriceFull(shipAmt) : '',
+      esd:          esdAmt > 0 ? fmtPriceFull(esdAmt) : '',
+      mft:          mft,
+      _source:      'local'
     };
     if (v.prefix === 'ps_')  window._lastPriceOH      = priceObj;
     if (v.prefix === 'ps2_') window._lastPriceNoOH    = priceObj;
@@ -11239,7 +11241,7 @@ function buildQuotePDFModal() {
 }
 
 // Returns the quote PDF as a Blob for attachment — same content as the download PDF
-async function generateQuotePdfBlob() {
+async function generateQuotePdfBlob(forcedPriceEntries) {
   var Q = window._Q || {};
   var J = window.jspdf && window.jspdf.jsPDF;
   if (!J) return null;
@@ -11251,11 +11253,13 @@ async function generateQuotePdfBlob() {
     // The cleanest way: re-run generateQuotePDF but return blob instead of sharing/downloading
     // We do this by setting a flag that the output handler checks
     window._pdfBlobCapture = true;
+    window._pdfForcedPriceEntries = forcedPriceEntries || null;
     await generateQuotePDF();
     _blobResult = window._pdfBlobCaptured || null;
   } finally {
     window._pdfBlobCapture = false;
     window._pdfBlobCaptured = null;
+    window._pdfForcedPriceEntries = null;
   }
   return _blobResult;
 }
@@ -11273,13 +11277,14 @@ async function generateQuotePDF() {
     var _cu3d = window.currentUser || {};
     _cfg3d._viewData = {
       pricingResults: {
-        totalOH:      (window._lastPriceOH||{}).total      ? fmtPriceFull((window._lastPriceOH||{}).total)      : '',
-        totalNoOH:    (window._lastPriceNoOH||{}).total    ? fmtPriceFull((window._lastPriceNoOH||{}).total)    : '',
-        totalSteel:   (window._lastPriceSteel||{}).total   ? fmtPriceFull((window._lastPriceSteel||{}).total)   : '',
-        totalStud:    (window._lastPriceStud||{}).total    ? fmtPriceFull((window._lastPriceStud||{}).total)    : '',
-        totalCypress: (window._lastPriceCypress||{}).total ? fmtPriceFull((window._lastPriceCypress||{}).total) : '',
-        totalBB:      (window._lastPriceBB||{}).total      ? fmtPriceFull((window._lastPriceBB||{}).total)      : '',
-        total:        (window._lastPriceOH||{}).total      ? fmtPriceFull((window._lastPriceOH||{}).total)      : ''
+        // When forced price entries exist (email flow), only show selected prices in configLink
+        totalOH:      (function(){ var fp=window._pdfForcedPriceEntries; if(fp) return fp.find(function(x){return x.type==='WoodOH';})?fmtPriceFull((fp.find(function(x){return x.type==='WoodOH';}).results||{}).total||0):''; return (window._lastPriceOH||{}).total?fmtPriceFull((window._lastPriceOH||{}).total):''; })(),
+        totalNoOH:    (function(){ var fp=window._pdfForcedPriceEntries; if(fp) return fp.find(function(x){return x.type==='WoodNoOH';})?fmtPriceFull((fp.find(function(x){return x.type==='WoodNoOH';}).results||{}).total||0):''; return (window._lastPriceNoOH||{}).total?fmtPriceFull((window._lastPriceNoOH||{}).total):''; })(),
+        totalSteel:   (function(){ var fp=window._pdfForcedPriceEntries; if(fp) return fp.find(function(x){return x.type==='EnclosedSteel';})?fmtPriceFull((fp.find(function(x){return x.type==='EnclosedSteel';}).results||{}).total||0):''; return (window._lastPriceSteel||{}).total?fmtPriceFull((window._lastPriceSteel||{}).total):''; })(),
+        totalStud:    (function(){ var fp=window._pdfForcedPriceEntries; if(fp) return fp.find(function(x){return x.type==='StudFramed';})?fmtPriceFull((fp.find(function(x){return x.type==='StudFramed';}).results||{}).total||0):''; return (window._lastPriceStud||{}).total?fmtPriceFull((window._lastPriceStud||{}).total):''; })(),
+        totalCypress: (function(){ var fp=window._pdfForcedPriceEntries; if(fp) return fp.find(function(x){return x.type==='Cypress';})?fmtPriceFull((fp.find(function(x){return x.type==='Cypress';}).results||{}).total||0):''; return (window._lastPriceCypress||{}).total?fmtPriceFull((window._lastPriceCypress||{}).total):''; })(),
+        totalBB:      (function(){ var fp=window._pdfForcedPriceEntries; if(fp) return fp.find(function(x){return x.type==='MetalBB';})?fmtPriceFull((fp.find(function(x){return x.type==='MetalBB';}).results||{}).total||0):''; return (window._lastPriceBB||{}).total?fmtPriceFull((window._lastPriceBB||{}).total):''; })(),
+        total:        (window._pdfForcedPriceEntries&&window._pdfForcedPriceEntries[0]) ? fmtPriceFull((window._pdfForcedPriceEntries[0].results||{}).total||0) : ((window._lastPriceOH||{}).total ? fmtPriceFull((window._lastPriceOH||{}).total) : '')
       },
       salesmanName:    _cu3d.fullName  || _cu3d.username || '',
       salesmanPhone:   _cu3d.phone    || '',
@@ -11321,26 +11326,33 @@ async function generateQuotePDF() {
 
   // Build price entries array — respect checkbox selections, same for open and enclosed
   var priceEntries = [];
-  var chkOH      = document.getElementById('pqChkOH');
-  var chkNoOH    = document.getElementById('pqChkNoOH');
-  var chkSt      = document.getElementById('pqChkSteel');
-  var chkStud    = document.getElementById('pqChkStud');
-  var chkCypress = document.getElementById('pqChkCypress');
-  var chkBB      = document.getElementById('pqChkBB');
-  if (chkOH      && chkOH.checked      && oh.total)    priceEntries.push({ label: 'W/ Soffit',    r: oh });
-  if (chkNoOH    && chkNoOH.checked    && nooh.total)  priceEntries.push({ label: 'No Soffit',    r: nooh });
-  if (chkSt      && chkSt.checked      && steel.total) priceEntries.push({ label: 'Steel Truss',  r: steel });
-  if (chkStud    && chkStud.checked    && stud.total)  priceEntries.push({ label: 'Stud Framed',  r: stud });
-  if (chkCypress && chkCypress.checked && cyp.total)   priceEntries.push({ label: 'Cypress',      r: cyp });
-  if (chkBB      && chkBB.checked      && bb.total)    priceEntries.push({ label: 'Metal B&B',    r: bb });
-  // Fallback: if nothing checked, include whatever has a total
-  if (!priceEntries.length) {
-    if (oh.total)    priceEntries.push({ label: 'W/ Soffit',   r: oh });
-    if (nooh.total)  priceEntries.push({ label: 'No Soffit',   r: nooh });
-    if (steel.total) priceEntries.push({ label: 'Steel Truss', r: steel });
-    if (stud.total)  priceEntries.push({ label: 'Stud Framed', r: stud });
-    if (cyp.total)   priceEntries.push({ label: 'Cypress',     r: cyp });
-    if (bb.total)    priceEntries.push({ label: 'Metal B&B',   r: bb });
+  // When called from email flow, use the email's selectedPrices directly
+  if (window._pdfForcedPriceEntries && window._pdfForcedPriceEntries.length) {
+    priceEntries = window._pdfForcedPriceEntries.map(function(sp) {
+      return { label: sp.label, r: sp.results };
+    });
+  } else {
+    var chkOH      = document.getElementById('pqChkOH');
+    var chkNoOH    = document.getElementById('pqChkNoOH');
+    var chkSt      = document.getElementById('pqChkSteel');
+    var chkStud    = document.getElementById('pqChkStud');
+    var chkCypress = document.getElementById('pqChkCypress');
+    var chkBB      = document.getElementById('pqChkBB');
+    if (chkOH      && chkOH.checked      && oh.total)    priceEntries.push({ label: 'W/ Soffit',    r: oh });
+    if (chkNoOH    && chkNoOH.checked    && nooh.total)  priceEntries.push({ label: 'No Soffit',    r: nooh });
+    if (chkSt      && chkSt.checked      && steel.total) priceEntries.push({ label: 'Steel Truss',  r: steel });
+    if (chkStud    && chkStud.checked    && stud.total)  priceEntries.push({ label: 'Stud Framed',  r: stud });
+    if (chkCypress && chkCypress.checked && cyp.total)   priceEntries.push({ label: 'Cypress',      r: cyp });
+    if (chkBB      && chkBB.checked      && bb.total)    priceEntries.push({ label: 'Metal B&B',    r: bb });
+    // Fallback: if nothing checked, include whatever has a total
+    if (!priceEntries.length) {
+      if (oh.total)    priceEntries.push({ label: 'W/ Soffit',   r: oh });
+      if (nooh.total)  priceEntries.push({ label: 'No Soffit',   r: nooh });
+      if (steel.total) priceEntries.push({ label: 'Steel Truss', r: steel });
+      if (stud.total)  priceEntries.push({ label: 'Stud Framed', r: stud });
+      if (cyp.total)   priceEntries.push({ label: 'Cypress',     r: cyp });
+      if (bb.total)    priceEntries.push({ label: 'Metal B&B',   r: bb });
+    }
   }
 
   // ── Salesman info ──
@@ -13456,7 +13468,7 @@ async function sendSalesQuoteEmail() {
     try {
       var _J = window.jspdf && window.jspdf.jsPDF;
       if (_J && typeof generateQuotePdfBlob === 'function') {
-        var _pdfBlob = await generateQuotePdfBlob();
+        var _pdfBlob = await generateQuotePdfBlob(selectedPrices);
         if (_pdfBlob) {
           _quotePdfB64 = await new Promise(function(res) {
             var reader = new FileReader();
@@ -15130,7 +15142,7 @@ async function updatePriceStrip() {
       _calcInFlight = false;
       _setCalcButtons(false);
       setPriceStripError('ps_'); setPriceStripError('ps2_'); setPriceStripError('ps3_'); setPriceStripError('ps4_');
-      setCalcBadge('error', '✕ Timed out — tap Calculate to retry');
+      setCalcBadge('error', '✕ Timed out — prices will retry automatically');
       console.warn('[Price] Hard unlock fired');
     }
   }, _hardUnlockMs);
@@ -15171,11 +15183,48 @@ async function updatePriceStrip() {
         setCalcBadge('confirmed', '✓ W/Soffit · No Soffit · Steel');
         setTimeout(function(){ setCalcBadge('confirmed', 'W/Soffit · No Soffit · Steel'); }, 2000);
       } else if (_rgOK > 0) {
-        setCalcBadge('error', '⚠ Partial (' + _rgOK + '/3) — tap Calculate to retry');
+        setCalcBadge('error', '⚠ Partial prices (' + _rgOK + '/3) — will retry on next change');
       } else {
-        setCalcBadge('error', '✕ No results — tap Calculate to retry');
+        setCalcBadge('error', '✕ No results — try changing a field to trigger retry');
       }
       if (_rgOK > 0) { var _pdfBtnRG = document.getElementById('quotePdfBtn'); if (_pdfBtnRG) _pdfBtnRG.style.display = ''; }
+
+      // ── After a Load+Recalc on open building, rebuild snapshot so email works
+      if (_rgOK > 0 && window._savedQuoteId && !window._savedSnapshot) {
+        try {
+          var _cuRG = window.currentUser || {};
+          var _ohRG = window._lastPriceOH      || {};
+          var _noRG = window._lastPriceNoOH    || {};
+          var _stRG = window._lastPriceSteel   || {};
+          var _cyRG = window._lastPriceCypress || {};
+          function _snapTotRG(p) { return p.total ? fmtPriceFull(p.total) : ''; }
+          var _prRG = {
+            totalOH:      _snapTotRG(_ohRG),
+            totalNoOH:    _snapTotRG(_noRG),
+            totalSteel:   _snapTotRG(_stRG),
+            totalCypress: _snapTotRG(_cyRG),
+            total:        _snapTotRG(_ohRG) || _snapTotRG(_noRG) || _snapTotRG(_stRG)
+          };
+          var _cfgRG = serializeConfig();
+          _cfgRG._viewData = {
+            pricingResults: _prRG,
+            salesmanName:    _cuRG.fullName || _cuRG.username || '',
+            salesmanPhone:   _cuRG.phone || '',
+            salesmanEmail:   _cuRG.email || '',
+            salesmanCompany: _cuRG.company || ''
+          };
+          var _cfgRGenc = await safeEncodeCompressed(_cfgRG);
+          window._savedSnapshot = {
+            customerName:   (document.getElementById('st_name')||{}).value || '',
+            phone:          (document.getElementById('st_phone')||{}).value || '',
+            email:          (document.getElementById('st_email')||{}).value || '',
+            address:        (document.getElementById('st_address')||{}).value || '',
+            configEncoded:  _cfgRGenc,
+            configLink:     'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + _cfgRGenc,
+            pricingResults: _prRG
+          };
+        } catch(_rgSnapErr) { console.warn('[PostCalc] RG snapshot rebuild failed:', _rgSnapErr.message); }
+      }
 
     } else {
       // ── ENCLOSED BUILDING: all 4 calcs always ─────────────────
@@ -15219,9 +15268,9 @@ async function updatePriceStrip() {
         setCalcBadge('confirmed', '✓ Stud · W/Soffit · No Soffit · Steel');
         setTimeout(function(){ setCalcBadge('confirmed', 'Stud · W/Soffit · No Soffit · Steel'); }, 2000);
       } else if (_encOK > 0) {
-        setCalcBadge('error', '⚠ Partial (' + _encOK + '/4) — tap Calculate to retry');
+        setCalcBadge('error', '⚠ Partial prices (' + _encOK + '/4) — will retry on next change');
       } else {
-        setCalcBadge('error', '✕ No results — tap Calculate to retry');
+        setCalcBadge('error', '✕ No results — try changing a field to trigger retry');
       }
       // Show PDF button as soon as any price comes back — no save required
       if (_encOK > 0) {
@@ -15234,20 +15283,27 @@ async function updatePriceStrip() {
       if (_encOK > 0 && window._savedQuoteId && !window._savedSnapshot) {
         try {
           var _cu  = window.currentUser || {};
-          var _oh2 = window._lastPriceOH   || {};
-          var _no2 = window._lastPriceNoOH  || {};
-          var _st2 = window._lastPriceSteel || {};
-          var _sd2 = window._lastPriceStud  || {};
+          var _oh2 = window._lastPriceOH      || {};
+          var _no2 = window._lastPriceNoOH    || {};
+          var _st2 = window._lastPriceSteel   || {};
+          var _sd2 = window._lastPriceStud    || {};
+          var _cy2 = window._lastPriceCypress || {};
+          var _bb2 = window._lastPriceBB      || {};
           var _Q2  = window._Q || {};
+          function _snapTot(p) { return p.total ? fmtPriceFull(p.total) : ''; }
+          var _pr2 = {
+            totalOH:      _snapTot(_oh2),
+            totalNoOH:    _snapTot(_no2),
+            totalSteel:   _snapTot(_st2),
+            totalStud:    _snapTot(_sd2),
+            totalCypress: _snapTot(_cy2),
+            totalBB:      _snapTot(_bb2),
+            total:        _snapTot(_oh2) || _snapTot(_no2) || _snapTot(_st2)
+          };
+          var _cu  = window.currentUser || {};
           var _cfg2 = serializeConfig();
           _cfg2._viewData = {
-            pricingResults: {
-              totalOH:    _oh2.total  ? fmtPriceFull(_oh2.total)  : '',
-              totalNoOH:  _no2.total  ? fmtPriceFull(_no2.total)  : '',
-              totalSteel: _st2.total  ? fmtPriceFull(_st2.total)  : '',
-              totalStud:  _sd2.total  ? fmtPriceFull(_sd2.total)  : '',
-              total:      _oh2.total  ? fmtPriceFull(_oh2.total)  : (_no2.total ? fmtPriceFull(_no2.total) : '')
-            },
+            pricingResults: _pr2,
             salesmanName:    _cu.fullName    || _cu.username || '',
             salesmanPhone:   _cu.phone       || '',
             salesmanEmail:   _cu.email       || '',
@@ -15262,13 +15318,7 @@ async function updatePriceStrip() {
             address:        (document.getElementById('st_address')||{}).value || '',
             configEncoded:  _cfg2enc,
             configLink:     _shareLink2,
-            pricingResults: {
-              totalOH:    _oh2.total  ? fmtPriceFull(_oh2.total)  : '',
-              totalNoOH:  _no2.total  ? fmtPriceFull(_no2.total)  : '',
-              totalSteel: _st2.total  ? fmtPriceFull(_st2.total)  : '',
-              totalStud:  _sd2.total  ? fmtPriceFull(_sd2.total)  : '',
-              total:      _oh2.total  ? fmtPriceFull(_oh2.total)  : ''
-            }
+            pricingResults: _pr2
           };
           var _emailBtn2 = document.getElementById('emailQuoteBtn');
           if (_emailBtn2) _emailBtn2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none';
@@ -15292,7 +15342,7 @@ async function updatePriceStrip() {
       setCalcBadge('calculating', 'Google is still calculating — please wait…');
     } else {
       setPriceStripError('ps_'); setPriceStripError('ps2_'); setPriceStripError('ps3_'); setPriceStripError('ps4_');
-      setCalcBadge('error', '✕ Error — tap Calculate to retry');
+      setCalcBadge('error', '✕ Pricing error — will retry on next change');
     }
   } finally {
     _calcInFlight = false;
@@ -26375,7 +26425,9 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     Object.keys(map).forEach(function(k) {
       var p = map[k];
       if (p && p.total > 0) {
-        out[k] = { material: p.material||0, labor: p.labor||0, concrete: p.concrete||0, total: p.total||0 };
+        var mat = p.materialOnly || p.material || 0;
+        var conc = parseFloat(String(p.concrete||0).replace(/[^0-9.]/g,'')) || 0;
+        out[k] = { material: mat, labor: p.labor||0, concrete: conc, total: p.total||0 };
       }
     });
     return out;
@@ -26723,9 +26775,20 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     var personalNote = html;
     var cu = window.currentUser || {};
 
+    // selectedPrices: include all option/type combinations so GAS has complete context
+    // The full comparison is in personalNote (HTML) — selectedPrices is used for GAS fallback only
     var selectedPrices = [];
-    Object.keys(slots[0].totals||{}).forEach(function(k) {
-      selectedPrices.push({ type: k, label: TYPE_LABELS2[k]||k, results: slots[0].totals[k] });
+    var _seenTypes = {};
+    slots.forEach(function(slot, si) {
+      Object.keys(slot.totals||{}).forEach(function(k) {
+        if (!_seenTypes[k]) {
+          _seenTypes[k] = true;
+          // Use highest total across slots for fallback display
+          var maxTotal = 0;
+          slots.forEach(function(s) { if ((s.totals[k]||{}).total > maxTotal) maxTotal = (s.totals[k]||{}).total; });
+          selectedPrices.push({ type: k, label: (TYPE_LABELS2[k]||k) + ' (Comparison)', results: slot.totals[k] });
+        }
+      });
     });
 
     if (typeof fetchWithTimeout !== 'function' || typeof API_URL === 'undefined') {
