@@ -6771,7 +6771,9 @@ function buildVoicePromptInit() {
     '- "insulated", "insulated door" → insulated:true',
     '- "non-insulated", "standard" → insulated:false (DEFAULT)',
     '- "full view glass", "full view", "glass door" → fullView:true',
-    '- "framed opening", "framed only", "no door" → framedOpening:true',
+    '- FRAMED OPENING (garage door size, no door panel):',
+    '  "framed opening","framed only","no door","rough opening","open bay","frame it out","just frame it","frame out","structural opening","leave it open","raw opening" → framedOpening:true',
+    '  framedOpening:true means the wall opening is cut to size but no door hardware or panel is installed',
     '- WALL: "front gable","front wall","front" → wall:"front" | "back gable","back wall","rear","back" → wall:"back" | "left side","left eave","left" → wall:"left" | "right side","right eave","right" → wall:"right"',
     '- DOOR COLOR: "black doors","black garage door","doors in black","make them black" → color:"Black"',
     '  "sandstone doors" → color:"Sandstone", "brown doors" → color:"Brown"',
@@ -6811,7 +6813,7 @@ function buildVoicePromptInit() {
     '- "french blinds", "full blinds french" → "6/0 FRENCH FULL BLINDS RH"',
     '- "mahogany", "mahogany glass", "wood glass door" → "CENTRAL WOODWORKS 3/0 MAHOGANY 3/4 GLASS 4-LITE LH"',
     '- "textured fiberglass", "bronze fiberglass" → "TEXTURED FIBERGLASS 4-LITE SDL RH BRONZE"',
-    '- "framed opening walk door", "walk door framed" → framedOpening:true',
+    '- "framed opening walk door","walk door framed","rough opening walk door","frame out the walk door","no walk door just frame it" → framedOpening:true',
     '- WALK DOOR COLOR: "black walk door", "black entry door" → color:"Black"',
     '  "white walk door" → color:"White" (default)',
     '  Add color field to each walk door object',
@@ -6835,7 +6837,7 @@ function buildVoicePromptInit() {
     '- "no grids", "without grids" → grids:false (DEFAULT)',
     '- "black frame" → frameColor:"Black"',
     '- "white frame" → frameColor:"White" (DEFAULT)',
-    '- "framed opening window" → framedOpening:true',
+    '- "framed opening window","rough opening window","frame out the window","window opening no glass" → framedOpening:true',
     '- "field located" → fieldLocated:true (DEFAULT for windows)',
     '- "centered", "spaced evenly" → placement + fieldLocated:false',
     '',
@@ -8268,6 +8270,12 @@ function applyVoiceQuote(parsed, overlay) {
             const isG = (wallId === 'front' || wallId === 'back');
             const wLen = isG ? Q.w : Q.l, zP = wallId === 'front' ? -sl / 2 : wallId === 'back' ? sl / 2 : 0, xP = wallId === 'left' ? -sw / 2 : wallId === 'right' ? sw / 2 : 0;
             const wd = placed.filter(d => d.wall === wallId).sort((a, b) => (a.offset || 0) - (b.offset || 0));
+            // Add framed walk doors and framed windows as virtual door entries for wall cutout
+            const _wdFramed = [
+              ...(window._walkDoorsFieldLocated === false ? (window._walkDoors||[]) : []).filter(d => d.wall===wallId && d.framedOpening).map(d => ({ offset:d.offset||0, w:wdWidth(d.type||''), h:WD_HEIGHT, framedOpening:true })),
+              ...(window._windowsFieldLocated === false ? (window._windows||[]) : []).filter(d => d.wall===wallId && d.framedOpening).map(d => { var dim=winDims(d.type||''); return { offset:d.offset||0, w:dim.w, h:(d.sillH||4)+dim.h, framedOpening:true }; })
+            ];
+            const wdAll = [...wd, ..._wdFramed].sort((a,b) => (a.offset||0)-(b.offset||0));
             // For partial walls: metal drops from top down. wH = bottom edge of metal, panels go wH→sh
             const partialDrop = wCfg.encl === 'partial' ? (wCfg.partialH || Math.min(4, Q.h)) * Sc : 0;
             const wH = wCfg.encl === 'partial' ? sh - partialDrop : sh;
@@ -8334,14 +8342,18 @@ function applyVoiceQuote(parsed, overlay) {
                     const gTriBot = (wCfg && wCfg.encl === 'open') ? sh : (wCfg && wCfg.encl === 'partial') ? wH : 0;
                     const gPanelW = 0.075; // match ribSpacing
                     // Build framed opening zones for this gable wall
-                    const gableFOZones = wd
-                        .filter(d => (d.framedOpening === true || d.framedOpening === 'true') && d.w > 0 && d.h > 0)
-                        .map(d => {
-                            const dc = ((-Q.w/2) + (d.offset||0) + d.w/2) * Sc;
-                            const xMin = dc - d.w*Sc/2, xMax = dc + d.w*Sc/2, hMax = d.h * Sc;
-                            if (isNaN(xMin) || isNaN(xMax) || isNaN(hMax)) return null;
-                            return { xMin, xMax, hMax };
-                        }).filter(Boolean);
+                    // Include framed walk doors and windows in gable FO zones
+                    const _gableFOSrc = [
+                      ...wd.filter(d => (d.framedOpening===true||d.framedOpening==='true') && d.w>0 && d.h>0),
+                      ...(window._walkDoorsFieldLocated===false?(window._walkDoors||[]):[]).filter(d=>d.wall===gableId&&d.framedOpening).map(d=>({offset:d.offset||0,w:wdWidth(d.type||''),h:WD_HEIGHT,framedOpening:true})),
+                      ...(window._windowsFieldLocated===false?(window._windows||[]):[]).filter(d=>d.wall===gableId&&d.framedOpening).map(d=>{var dim=winDims(d.type||'');return{offset:d.offset||0,w:dim.w,h:(d.sillH||4)+dim.h,framedOpening:true};})
+                    ];
+                    const gableFOZones = _gableFOSrc.map(d => {
+                        const dc = ((-Q.w/2) + (d.offset||0) + d.w/2) * Sc;
+                        const xMin = dc - d.w*Sc/2, xMax = dc + d.w*Sc/2, hMax = d.h * Sc;
+                        if (isNaN(xMin) || isNaN(xMax) || isNaN(hMax)) return null;
+                        return { xMin, xMax, hMax };
+                    }).filter(Boolean);
                     for (let gx = -sw/2; gx < sw/2; gx += gPanelW) {
                         const gxR = Math.min(gx + gPanelW, sw/2);
                         // Height at each vertical strip edge — same formula as rib loop
@@ -8428,7 +8440,7 @@ function applyVoiceQuote(parsed, overlay) {
             const zGable = zP + (wallId === 'front' ? .005 : -.005); // same offset as gable triangle
             if (isG) {
                 let x = 0;
-                wd.forEach(d => {
+                wdAll.forEach(d => {
                     const dL = d.offset || 0, dR = dL + d.w, dh = Math.min(d.h * Sc, yTop);
                     if (dL > x) addWallSeg((-wLen / 2 + x) * Sc, (-wLen / 2 + dL) * Sc, yBot, yTop, mW, true, zGable);
                     // Draw above-door panel for ALL doors including framed openings
@@ -8495,7 +8507,7 @@ function applyVoiceQuote(parsed, overlay) {
 
                 // Collect door openings for cutout logic
                 // For framed openings: recenter offset if it seems wrong for this wall length
-                const eaveDoorRanges = wd.map(d => {
+                const eaveDoorRanges = wdAll.map(d => {
                     let dL = d.offset || 0;
                     // If door extends beyond wall or offset looks like it was set for a different wall, recenter
                     if (dL + d.w > wLen + 0.1 || dL < -0.1) dL = Math.max(0, (wLen - d.w) / 2);
@@ -8948,6 +8960,25 @@ function applyVoiceQuote(parsed, overlay) {
             const center = ((-wLen / 2) + (wd.offset || 0) + ww / 2) * Sc;
             const zP = wd.wall === 'front' ? -sl / 2 : wd.wall === 'back' ? sl / 2 : 0;
             const xP = wd.wall === 'left' ? -sw / 2 : wd.wall === 'right' ? sw / 2 : 0;
+            // Framed opening — wall cutout handled by buildWS; just draw trim frame
+            if (wd.framedOpening) {
+                const mTrimWD = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
+                const tb = 0.022;
+                if (isG) {
+                    const zo = wd.wall==='front' ? 0.016 : -0.016, fz = zP+zo;
+                    grps.doors.add(mkQ([center-dw/2,0,fz,center-dw/2+tb,0,fz,center-dw/2+tb,dh,fz,center-dw/2,dh,fz],mTrimWD));
+                    grps.doors.add(mkQ([center+dw/2-tb,0,fz,center+dw/2,0,fz,center+dw/2,dh,fz,center+dw/2-tb,dh,fz],mTrimWD));
+                    grps.doors.add(mkQ([center-dw/2,dh-tb,fz,center+dw/2,dh-tb,fz,center+dw/2,dh,fz,center-dw/2,dh,fz],mTrimWD));
+                    grps.doors.add(mkQ([center-dw/2,0,fz,center+dw/2,0,fz,center+dw/2,tb*.5,fz,center-dw/2,tb*.5,fz],mTrimWD));
+                } else {
+                    const xo = wd.wall==='left' ? -0.016 : 0.016, xf = xP+xo;
+                    grps.doors.add(mkQ([xf,0,center-dw/2,xf,0,center-dw/2+tb,xf,dh,center-dw/2+tb,xf,dh,center-dw/2],mTrimWD));
+                    grps.doors.add(mkQ([xf,0,center+dw/2-tb,xf,0,center+dw/2,xf,dh,center+dw/2,xf,dh,center+dw/2-tb],mTrimWD));
+                    grps.doors.add(mkQ([xf,dh-tb,center-dw/2,xf,dh-tb,center+dw/2,xf,dh,center+dw/2,xf,dh,center-dw/2],mTrimWD));
+                    grps.doors.add(mkQ([xf,0,center-dw/2,xf,0,center+dw/2,xf,tb*.5,center+dw/2,xf,tb*.5,center-dw/2],mTrimWD));
+                }
+                return;
+            }
 
             if (wd.type === 'dutch') {
                 // Dutch door: two stacked halves, each with X-brace — matches barn door style
@@ -9141,6 +9172,25 @@ function applyVoiceQuote(parsed, overlay) {
             const center = ((-wLen / 2) + (wi.offset || 0) + dims.w / 2) * Sc;
             const zP = wi.wall === 'front' ? -sl / 2 : wi.wall === 'back' ? sl / 2 : 0;
             const xP = wi.wall === 'left' ? -sw / 2 : wi.wall === 'right' ? sw / 2 : 0;
+            // Framed opening — draw trim outline only, no glass or frame
+            if (wi.framedOpening) {
+                const mTrimWI = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
+                const tb = 0.018, totalH = sillY + wh;
+                if (isG) {
+                    const zo = wi.wall==='front' ? 0.016 : -0.016, fz = zP+zo;
+                    grps.doors.add(mkQ([center-ww/2,sillY,fz,center-ww/2+tb,sillY,fz,center-ww/2+tb,totalH,fz,center-ww/2,totalH,fz],mTrimWI));
+                    grps.doors.add(mkQ([center+ww/2-tb,sillY,fz,center+ww/2,sillY,fz,center+ww/2,totalH,fz,center+ww/2-tb,totalH,fz],mTrimWI));
+                    grps.doors.add(mkQ([center-ww/2,totalH-tb,fz,center+ww/2,totalH-tb,fz,center+ww/2,totalH,fz,center-ww/2,totalH,fz],mTrimWI));
+                    grps.doors.add(mkQ([center-ww/2,sillY,fz,center+ww/2,sillY,fz,center+ww/2,sillY+tb,fz,center-ww/2,sillY+tb,fz],mTrimWI));
+                } else {
+                    const xo = wi.wall==='left' ? -0.016 : 0.016, xf = xP+xo;
+                    grps.doors.add(mkQ([xf,sillY,center-ww/2,xf,sillY,center-ww/2+tb,xf,totalH,center-ww/2+tb,xf,totalH,center-ww/2],mTrimWI));
+                    grps.doors.add(mkQ([xf,sillY,center+ww/2-tb,xf,sillY,center+ww/2,xf,totalH,center+ww/2,xf,totalH,center+ww/2-tb],mTrimWI));
+                    grps.doors.add(mkQ([xf,totalH-tb,center-ww/2,xf,totalH-tb,center+ww/2,xf,totalH,center+ww/2,xf,totalH,center-ww/2],mTrimWI));
+                    grps.doors.add(mkQ([xf,sillY,center-ww/2,xf,sillY,center+ww/2,xf,sillY+tb,center+ww/2,xf,sillY+tb,center-ww/2],mTrimWI));
+                }
+                return;
+            }
             if (isG) {
                 const zo = wi.wall === 'front' ? -0.016 : 0.016;
                 // Frame — color driven by wi.frameColor
@@ -9377,16 +9427,19 @@ function applyVoiceQuote(parsed, overlay) {
                     _eaveRibClamps.push({ zLo: -_ssl2/2 + _sco2, zHi: _ssl2/2 + _sco2, maxH: Math.max(_attachH2, 0) });
                 });
                 // Build framed opening exclusion zones for this eave wall
-                const _eaveFramedZones = placed
-                    .filter(d => d.wall === eaveId && (d.framedOpening === true || d.framedOpening === 'true') && d.w > 0 && d.h > 0)
-                    .map(d => {
-                        const dL = d.offset || 0;
-                        const zMin = (-Q.l/2 + dL) * Sc;
-                        const zMax = (-Q.l/2 + dL + d.w) * Sc;
-                        const hMax = d.h * Sc;
-                        if (isNaN(zMin) || isNaN(zMax) || isNaN(hMax)) return null;
-                        return { zMin, zMax, hMax };
-                    }).filter(Boolean);
+                const _eaveFOSrc = [
+                  ...placed.filter(d => d.wall===eaveId && (d.framedOpening===true||d.framedOpening==='true') && d.w>0 && d.h>0),
+                  ...(window._walkDoorsFieldLocated===false?(window._walkDoors||[]):[]).filter(d=>d.wall===eaveId&&d.framedOpening).map(d=>({offset:d.offset||0,w:wdWidth(d.type||''),h:WD_HEIGHT,framedOpening:true})),
+                  ...(window._windowsFieldLocated===false?(window._windows||[]):[]).filter(d=>d.wall===eaveId&&d.framedOpening).map(d=>{var dim=winDims(d.type||'');return{offset:d.offset||0,w:dim.w,h:(d.sillH||4)+dim.h,framedOpening:true};})
+                ];
+                const _eaveFramedZones = _eaveFOSrc.map(d => {
+                    const dL = d.offset || 0;
+                    const zMin = (-Q.l/2 + dL) * Sc;
+                    const zMax = (-Q.l/2 + dL + d.w) * Sc;
+                    const hMax = d.h * Sc;
+                    if (isNaN(zMin) || isNaN(zMax) || isNaN(hMax)) return null;
+                    return { zMin, zMax, hMax };
+                }).filter(Boolean);
                 for (let z = -sl/2; z <= sl/2; z += ribSpacing) {
                     // Clamp rib top to attachH within enclosed shed span (scene units)
                     let _ribTop = sh;
