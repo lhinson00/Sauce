@@ -6773,10 +6773,19 @@ function buildVoicePromptInit() {
     '- "full view glass", "full view", "glass door" → fullView:true',
     '- "framed opening", "framed only", "no door" → framedOpening:true',
     '- WALL: "front gable","front wall","front" → wall:"front" | "back gable","back wall","rear","back" → wall:"back" | "left side","left eave","left" → wall:"left" | "right side","right eave","right" → wall:"right"',
-    '- "centered" → placement:"center", fieldLocated:false',
-    '- "spaced evenly", "evenly spaced" → placement:"spaced", fieldLocated:false',
-    '- No placement mentioned → fieldLocated:true',
-    '- Multiple same-size same-wall doors → use qty',
+    '- DOOR COLOR: "black doors","black garage door","doors in black","make them black" → color:"Black"',
+    '  "sandstone doors" → color:"Sandstone", "brown doors" → color:"Brown"',
+    '  "white doors" → color:"White" — omit color field entirely if white or not mentioned',
+    '  color applies to ALL doors in that group unless specified per-door',
+    '- MULTIPLE DIFFERENT SIZES: each distinct size = separate object in array',
+    '  "two 10x10 and one 12x12" → [{w:10,h:10,qty:2,...},{w:12,h:12,qty:1,...}]',
+    '- PLACEMENT / SPACING DEFAULTS (apply even when not explicitly stated):',
+    '  Single door on a wall (qty=1) → placement:"center"',
+    '  Multiple doors on a wall (qty≥2 total) → placement:"spaced"',
+    '  "centered","in the center","center it","one centered" → placement:"center"',
+    '  "spaced evenly","evenly spaced","space them out","space evenly","equally spaced","spread them out","spread evenly" → placement:"spaced"',
+    '  "field located","customer to locate","TBD","owner to locate" → fieldLocated:true, omit placement',
+    '  ALWAYS include placement — never omit it',
     '',
     'GARAGE DOOR OPENERS:',
     '- "jackshaft opener", "jackshaft" → gdOpener:"Jackshaft"',
@@ -6894,8 +6903,10 @@ function buildVoicePromptInit() {
     '- "still" likely means "steel" — use Steel',
     '- "soft it" likely means "soffit" — use soffit:true',
     '- Multiple sheds: second shed goes to opposite wall by default',
-    '- INCREMENTAL CHANGES: handle change/update language naturally:',
+    '- INCREMENTAL CHANGES: handle change/update/fix/correct language naturally:',
     '  "change the roof to barn red" → {"roofColor":"Barn Red"}',
+    '  "fix the height to 14" → {"height":14}',
+    '  "correct the width, it should be 40" → {"width":40}',
     '  "make the walls pure white" → {"wallColor":"Pure White"}',
     '  "add a cupola" → {"cupolaSize":"24","cupolaQty":1}',
     '  "switch to standing seam" → {"roofMetal":"Standing Seam 26ga","standingSeam":true}',
@@ -8324,11 +8335,13 @@ function applyVoiceQuote(parsed, overlay) {
                     const gPanelW = 0.075; // match ribSpacing
                     // Build framed opening zones for this gable wall
                     const gableFOZones = wd
-                        .filter(d => d.framedOpening === true || d.framedOpening === 'true')
+                        .filter(d => (d.framedOpening === true || d.framedOpening === 'true') && d.w > 0 && d.h > 0)
                         .map(d => {
                             const dc = ((-Q.w/2) + (d.offset||0) + d.w/2) * Sc;
-                            return { xMin: dc - d.w*Sc/2, xMax: dc + d.w*Sc/2, hMax: d.h * Sc };
-                        });
+                            const xMin = dc - d.w*Sc/2, xMax = dc + d.w*Sc/2, hMax = d.h * Sc;
+                            if (isNaN(xMin) || isNaN(xMax) || isNaN(hMax)) return null;
+                            return { xMin, xMax, hMax };
+                        }).filter(Boolean);
                     for (let gx = -sw/2; gx < sw/2; gx += gPanelW) {
                         const gxR = Math.min(gx + gPanelW, sw/2);
                         // Height at each vertical strip edge — same formula as rib loop
@@ -8337,7 +8350,8 @@ function applyVoiceQuote(parsed, overlay) {
                         if (topL <= gTriBot && topR <= gTriBot) continue;
                         // Clamp bottom up to opening height if this strip falls inside a framed opening
                         const foZone = gableFOZones.find(fz => gx >= fz.xMin - gPanelW && gx < fz.xMax);
-                        const effectiveBot = foZone ? Math.max(gTriBot, foZone.hMax) : gTriBot;
+                        const effectiveBot = (foZone && !isNaN(foZone.hMax)) ? Math.max(gTriBot, foZone.hMax) : gTriBot;
+                        if (isNaN(effectiveBot)) continue;
                         const botL = Math.min(effectiveBot, topL);
                         const botR = Math.min(effectiveBot, topR);
                         // Wainscot split on enclosed gable — draw wainscot strip up to wsH, then wall above
@@ -9364,13 +9378,15 @@ function applyVoiceQuote(parsed, overlay) {
                 });
                 // Build framed opening exclusion zones for this eave wall
                 const _eaveFramedZones = placed
-                    .filter(d => d.wall === eaveId && (d.framedOpening === true || d.framedOpening === 'true'))
+                    .filter(d => d.wall === eaveId && (d.framedOpening === true || d.framedOpening === 'true') && d.w > 0 && d.h > 0)
                     .map(d => {
                         const dL = d.offset || 0;
                         const zMin = (-Q.l/2 + dL) * Sc;
                         const zMax = (-Q.l/2 + dL + d.w) * Sc;
-                        return { zMin, zMax, hMax: d.h * Sc };
-                    });
+                        const hMax = d.h * Sc;
+                        if (isNaN(zMin) || isNaN(zMax) || isNaN(hMax)) return null;
+                        return { zMin, zMax, hMax };
+                    }).filter(Boolean);
                 for (let z = -sl/2; z <= sl/2; z += ribSpacing) {
                     // Clamp rib top to attachH within enclosed shed span (scene units)
                     let _ribTop = sh;
@@ -9416,11 +9432,13 @@ function applyVoiceQuote(parsed, overlay) {
                 const zBase = s * sl / 2;
                 // Build framed opening exclusion zones for this gable wall
                 const gableFramedZones = placed
-                    .filter(d => d.wall === gableId && (d.framedOpening === true || d.framedOpening === 'true'))
+                    .filter(d => d.wall === gableId && (d.framedOpening === true || d.framedOpening === 'true') && d.w > 0 && d.h > 0)
                     .map(d => {
                         const dc = ((-Q.w/2) + (d.offset||0) + d.w/2) * Sc;
-                        return { xMin: dc - d.w*Sc/2, xMax: dc + d.w*Sc/2, hMax: d.h * Sc };
-                    });
+                        const xMin = dc - d.w*Sc/2, xMax = dc + d.w*Sc/2, hMax = d.h * Sc;
+                        if (isNaN(xMin) || isNaN(xMax) || isNaN(hMax)) return null;
+                        return { xMin, xMax, hMax };
+                    }).filter(Boolean);
                 for (let x = -sw/2 + ribSpacing; x < sw/2; x += ribSpacing) {
                     const gableH = sh + (Q.w/2 - Math.abs(x/Sc)) * (Q.pitch/12) * Sc;
                     const rH = Math.min(gableH, sr);
@@ -11001,7 +11019,10 @@ function applyVoiceQuote(parsed, overlay) {
       <div style="font-family:'Outfit',sans-serif;font-size:17px;font-weight:800;color:#FF8200;">📂 Saved Quotes</div>
       <button onclick="closeLoadDesignModal()" style="background:none;border:none;color:#888888;font-size:18px;cursor:pointer;">✕</button>
     </div>
-    <input id="loadDesignSearch" type="text" placeholder="Search by name, phone, or quote ID..." oninput="filterLoadDesigns(this.value)" style="width:100%;box-sizing:border-box;padding:8px 12px;background:#2e2e2e;border:1px solid #5e5e5e;border-radius:8px;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;margin-bottom:12px;outline:none;">
+    <div style="display:flex;gap:8px;margin-bottom:12px;">
+      <input id="loadDesignSearch" type="text" placeholder="Search name, phone, city, quote ID..." oninput="filterLoadDesigns(this.value)" style="flex:1;box-sizing:border-box;padding:8px 12px;background:#2e2e2e;border:1px solid #5e5e5e;border-radius:8px;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;outline:none;">
+      <button onclick="searchAllHistory()" style="padding:8px 14px;background:rgba(255,130,0,.15);color:#FF8200;border:1px solid rgba(255,130,0,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">🔍 All History</button>
+    </div>
     <div id="savedDesignList" style="display:flex;flex-direction:column;gap:8px;">
       <div style="color:#888888;font-size:13px;text-align:center;padding:20px;">Loading...</div>
     </div>
@@ -12355,6 +12376,49 @@ async function deleteQuote(qid) {
   }
 }
 
+async function searchAllHistory() {
+  var term = ((document.getElementById('loadDesignSearch')||{}).value||'').trim();
+  var list = document.getElementById('savedDesignList');
+  if (!list) return;
+  if (!term) {
+    list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">Enter a name, phone, or quote ID to search all history</div>';
+    return;
+  }
+  list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">🔍 Searching all history for <strong style="color:#f0f3f7;">' + term + '</strong>…</div>';
+  try {
+    var resp = await fetchWithTimeout(API_URL, {
+      method: 'POST', headers: {'Content-Type':'text/plain'},
+      body: JSON.stringify({
+        action: 'searchQuotes',
+        query: term.toLowerCase(),
+        username: (window.currentUser||{}).username || '',
+        token: getToken()
+      })
+    }, 30000);
+    var data = await safeJson(resp);
+    if (!data.success) {
+      list.innerHTML = '<div style="color:#ef4444;font-size:13px;text-align:center;padding:20px;">GAS error: ' + (data.error||'Unknown error') + '<br><small style="color:#888;">The searchQuotes action may not be deployed yet</small></div>';
+      return;
+    }
+    var results = data.quotes || [];
+    if (!results.length) {
+      list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">'
+        + 'No quotes found for <strong style="color:#f0f3f7;">' + term + '</strong>'
+        + '<div style="font-size:11px;margin-top:6px;color:#666;">Try a different name, phone number, city, or quote ID</div></div>';
+      return;
+    }
+    // Merge into _savedDesigns so load works correctly
+    results.forEach(function(r) {
+      var exists = (window._savedDesigns||[]).find(function(x){ return x.quoteId===r.quoteId; });
+      if (!exists) { if (!window._savedDesigns) window._savedDesigns=[]; window._savedDesigns.push(r); }
+    });
+    list.innerHTML = '<div style="font-size:10px;color:#FF8200;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:6px 4px 8px;text-align:center;">Full History — ' + results.length + ' result' + (results.length!==1?'s':'') + ' for "' + term + '"</div>';
+    _renderDesignList(results, list, true);
+  } catch(err) {
+    list.innerHTML = '<div style="color:#ef4444;font-size:13px;text-align:center;padding:20px;">Search error: ' + err.message + '</div>';
+  }
+}
+
 function filterLoadDesigns(q) {
   var all = window._savedDesigns || [];
   var term = (q||'').toLowerCase().trim();
@@ -12384,41 +12448,10 @@ function filterLoadDesigns(q) {
     return;
   }
 
-  // Show searching indicator
+  // Show searching indicator then delegate to searchAllHistory
   list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">🔍 Searching all history…</div>';
-
   clearTimeout(window._searchHistoryTimer);
-  window._searchHistoryTimer = setTimeout(async function() {
-    try {
-      var resp = await fetchWithTimeout(API_URL, {
-        method: 'POST', headers: {'Content-Type':'text/plain'},
-        body: JSON.stringify({
-          action: 'searchQuotes',
-          query: term,
-          username: (window.currentUser||{}).username || '',
-          token: getToken()
-        })
-      }, 30000);
-      var data = await safeJson(resp);
-      var results = data.quotes || [];
-      if (!results.length) {
-        list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">'
-          + 'No quotes found for <strong style="color:#f0f3f7;">' + term + '</strong>'
-          + '<div style="font-size:11px;margin-top:6px;color:#666;">Try name, phone number, city, or quote ID</div></div>';
-        return;
-      }
-      // Merge into _savedDesigns so load works correctly
-      results.forEach(function(r) {
-        var exists = (window._savedDesigns||[]).find(function(x){ return x.quoteId===r.quoteId; });
-        if (!exists) window._savedDesigns.push(r);
-      });
-      list.innerHTML = '<div style="font-size:10px;color:#FF8200;font-weight:700;letter-spacing:1px;text-transform:uppercase;'
-        + 'padding:6px 4px 8px;text-align:center;">Full History — ' + results.length + ' result' + (results.length!==1?'s':'') + '</div>';
-      _renderDesignList(results, list, true);
-    } catch(err) {
-      list.innerHTML = '<div style="color:#ef4444;font-size:13px;text-align:center;padding:20px;">Search error: ' + err.message + '</div>';
-    }
-  }, 500);
+  window._searchHistoryTimer = setTimeout(function() { searchAllHistory(); }, 500);
 }
 
 function _renderDesignList(quotes, list, append) {
@@ -14783,7 +14816,7 @@ function detectCalcRoute() {
   var anySideEncl       = !sL || !sR;
   var allEnclosed       = !gF && !gB && !sL && !sR;
 
-  console.log('[Route] gF='+gF+' gB='+gB+' sL='+sL+' sR='+sR);
+  // console.log('[Route] gF='+gF+' gB='+gB+' sL='+sL+' sR='+sR);
 
   // ── 1. All enclosed → Wood/Steel/StudFrame ──────────────────────
   if (!gF && !gB && !sL && !sR)
