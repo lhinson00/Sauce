@@ -26873,7 +26873,9 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     setTimeout(function() {
       var idx   = CMP.slots.length;
       var label = 'Option ' + String.fromCharCode(65 + idx);
-      CMP.slots.push({ label: label, dims: dims(), totals: readTotals(), features: readFeatures() });
+      var _slotCfg = null;
+      try { _slotCfg = serializeConfig(); } catch(e) {}
+      CMP.slots.push({ label: label, dims: dims(), totals: readTotals(), features: readFeatures(), cfg: _slotCfg });
       updateBtn();
       toast('Saved as ' + label, 'ok');
       var m = safeModal();
@@ -26938,12 +26940,16 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
 
     function fmtN(n) { return (n && n > 0) ? '$' + Math.round(n).toLocaleString('en-US') : '\u2014'; }
 
-    var allTypes = [];
+    // Only include types the salesman has selected (CMP.activeTypes)
+    var _allAvail = [];
     slots.forEach(function(s) {
       Object.keys(s.totals||{}).forEach(function(k) {
-        if (allTypes.indexOf(k) < 0) allTypes.push(k);
+        if (_allAvail.indexOf(k) < 0) _allAvail.push(k);
       });
     });
+    var allTypes = (CMP.activeTypes && CMP.activeTypes.length)
+      ? _allAvail.filter(function(k){ return CMP.activeTypes.indexOf(k) >= 0; })
+      : _allAvail;
 
     // ── Build comparison as clean side-by-side HTML ─────────────────────────
     var slotColors = ['#1a5276','#145a32','#6e2f8a'];
@@ -27106,18 +27112,17 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     var personalNote = html;
     var cu = window.currentUser || {};
 
-    // selectedPrices: include all option/type combinations so GAS has complete context
-    // The full comparison is in personalNote (HTML) — selectedPrices is used for GAS fallback only
+    // selectedPrices: only active types, one entry per slot per type
     var selectedPrices = [];
-    var _seenTypes = {};
     slots.forEach(function(slot, si) {
-      Object.keys(slot.totals||{}).forEach(function(k) {
-        if (!_seenTypes[k]) {
-          _seenTypes[k] = true;
-          // Use highest total across slots for fallback display
-          var maxTotal = 0;
-          slots.forEach(function(s) { if ((s.totals[k]||{}).total > maxTotal) maxTotal = (s.totals[k]||{}).total; });
-          selectedPrices.push({ type: k, label: (TYPE_LABELS2[k]||k) + ' (Comparison)', results: slot.totals[k] });
+      allTypes.forEach(function(k) {
+        var t = (slot.totals||{})[k];
+        if (t && t.total) {
+          selectedPrices.push({
+            type: k,
+            label: 'Option ' + String.fromCharCode(65+si) + ' — ' + (TYPE_LABELS2[k]||k),
+            results: t
+          });
         }
       });
     });
@@ -27129,32 +27134,83 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     }
 
     // doSend — called after we have a valid snapshotId
-    function doSend(snapshotId) {
-      fetchWithTimeout(API_URL, {
-        method:  'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({
-          action:         'sendQuoteEmail',
-          token:          (typeof getToken === 'function') ? getToken() : '',
-          snapshotId:     snapshotId,
-          salesmanEmail:  cu.email || '',
-          customerEmail:  customerEmail,
-          personalNote:   personalNote,
-          username:       (window.currentUser||{}).username || '',
-          selectedPrices: selectedPrices
-        })
-      })
-      .then(function(data) {
-        // fetchWithTimeout resolves with already-parsed JSON — no .json() call needed
+    async function doSend(snapshotId) {
+      // Build per-slot 3D view links
+      var _cu = window.currentUser || {};
+      var slotLinks = [];
+      for (var _si = 0; _si < slots.length; _si++) {
+        var _slot = slots[_si];
+        var _link = '';
+        try {
+          if (_slot.cfg) {
+            var _sCfg = JSON.parse(JSON.stringify(_slot.cfg));
+            // Inject filtered totals for this slot's active types
+            var _sTotals = {};
+            allTypes.forEach(function(k) {
+              var t = (_slot.totals||{})[k];
+              if (t && t.total) {
+                if (k==='woodOH')    _sTotals.totalOH      = fmtPriceFull(t.total);
+                if (k==='woodNoOH') _sTotals.totalNoOH    = fmtPriceFull(t.total);
+                if (k==='steel')    _sTotals.totalSteel   = fmtPriceFull(t.total);
+                if (k==='stud')     _sTotals.totalStud    = fmtPriceFull(t.total);
+                if (k==='cypress')  _sTotals.totalCypress = fmtPriceFull(t.total);
+                if (k==='metalBB')  _sTotals.totalBB      = fmtPriceFull(t.total);
+              }
+            });
+            _sTotals.total = allTypes.length ? fmtPriceFull(((_slot.totals||{})[allTypes[0]]||{}).total||0) : '';
+            _sCfg._viewData = {
+              pricingResults: _sTotals,
+              salesmanName:    _cu.fullName || _cu.username || '',
+              salesmanPhone:   _cu.phone   || '',
+              salesmanEmail:   _cu.email   || '',
+              salesmanCompany: _cu.company || ''
+            };
+            var _enc = await safeEncodeCompressed(_sCfg);
+            _link = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + _enc;
+          }
+        } catch(linkErr) { console.warn('[CMP] link build failed slot '+_si, linkErr); }
+        slotLinks.push(_link);
+      }
+
+      // Append per-slot view links to HTML
+      var _linksHtml = '<div style="margin-top:16px;padding:14px 16px;background:#f8f9fa;border-radius:6px;border:1px solid #e0e0e0;">'
+        + '<div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#888;margin-bottom:10px;">View 3D Configurations</div>';
+      var _slotColors2 = ['#1a5276','#145a32','#6e2f8a'];
+      slots.forEach(function(s, i) {
+        if (slotLinks[i]) {
+          _linksHtml += '<div style="margin-bottom:8px;">'
+            + '<a href="' + slotLinks[i] + '" style="display:inline-block;padding:7px 14px;background:' + _slotColors2[i] + ';color:#fff;text-decoration:none;border-radius:4px;font-size:12px;font-weight:700;">'
+            + '&#9654; View Option ' + String.fromCharCode(65+i) + ' — ' + esc(s.label||'') + '</a>'
+            + '</div>';
+        }
+      });
+      _linksHtml += '</div>';
+      var noteWithLinks = personalNote.replace('</div>', _linksHtml + '</div>');
+
+      try {
+        var data = await fetchWithTimeout(API_URL, {
+          method:  'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({
+            action:         'sendQuoteEmail',
+            token:          (typeof getToken === 'function') ? getToken() : '',
+            snapshotId:     snapshotId,
+            salesmanEmail:  cu.email || '',
+            customerEmail:  customerEmail,
+            personalNote:   noteWithLinks,
+            configLink:     slotLinks[0] || '',
+            username:       (window.currentUser||{}).username || '',
+            selectedPrices: selectedPrices
+          })
+        });
         if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send Comparison'; }
         if (!data.success) throw new Error(data.error || 'Send failed');
         toast('Comparison sent to ' + customerEmail, 'ok');
         if (emailEl) emailEl.value = '';
-      })
-      .catch(function(err) {
+      } catch(err) {
         if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Send Comparison'; }
         alert('Error sending: ' + err.message);
-      });
+      }
     }
 
     // If a quote has already been saved this session, use its ID directly
