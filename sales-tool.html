@@ -10,6 +10,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800;900&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>if(window.pdfjsLib)pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
 :root{
@@ -3606,42 +3608,48 @@ async function importCompetitorPDF(input) {
   btn.disabled = true;
 
   try {
-    // Read PDF as base64 for Claude API
-    var b64 = await new Promise(function(res, rej) {
-      var reader = new FileReader();
-      reader.onload = function(e) { res(e.target.result.split(',')[1]); };
-      reader.onerror = rej;
-      reader.readAsDataURL(file);
-    });
+    // Extract text from PDF client-side using PDF.js — send text not base64
+    // This avoids sending a huge binary payload to GAS/Claude
+    btn.textContent = '⏳ Reading PDF...';
+    var pdfText = '';
+    if (window.pdfjsLib) {
+      var arrayBuf = await new Promise(function(res, rej) {
+        var reader = new FileReader();
+        reader.onload = function(e) { res(e.target.result); };
+        reader.onerror = rej;
+        reader.readAsArrayBuffer(file);
+      });
+      var pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
+      for (var _pg = 1; _pg <= pdf.numPages; _pg++) {
+        var page = await pdf.getPage(_pg);
+        var tc = await page.getTextContent();
+        pdfText += tc.items.map(function(i){ return i.str; }).join(' ') + '\n';
+      }
+    }
+    if (!pdfText.trim()) throw new Error('Could not extract text from PDF. Make sure it is a text-based PDF, not a scanned image.');
 
-    // Route through GAS to avoid CORS — GAS calls Claude server-side
-    // Retry up to 3 times with backoff on overload errors
+    btn.textContent = '⏳ Parsing...';
+
+    // Send extracted text to GAS — much smaller payload than base64 PDF
     var data = null;
     var lastErr = '';
     for (var _attempt = 0; _attempt < 3; _attempt++) {
       if (_attempt > 0) {
         btn.textContent = '⏳ Retrying (' + _attempt + '/2)...';
-        await new Promise(function(r){ setTimeout(r, _attempt * 2000); });
+        await new Promise(function(r){ setTimeout(r, _attempt * 3000); });
       }
       var resp = await fetchWithTimeout(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ action: 'parsePdf', token: getToken(), pdfBase64: b64 })
-      }, 60000);
+        body: JSON.stringify({ action: 'parsePdfText', token: getToken(), pdfText: pdfText.slice(0, 8000) })
+      }, 45000);
       data = await safeJson(resp);
       if (data.success) break;
-      lastErr = data.error || 'GAS parsePdf failed';
-      // Only retry on overload errors
+      lastErr = data.error || 'Parse failed';
       if (lastErr.toLowerCase().indexOf('overload') === -1 &&
-          lastErr.toLowerCase().indexOf('529') === -1 &&
-          lastErr.toLowerCase().indexOf('rate') === -1) break;
+          lastErr.toLowerCase().indexOf('529') === -1) break;
     }
-    if (!data || !data.success) {
-      var msg = lastErr.toLowerCase().indexOf('overload') !== -1
-        ? 'Claude API is busy — please try again in a few seconds.'
-        : lastErr;
-      throw new Error(msg);
-    }
+    if (!data || !data.success) throw new Error(lastErr || 'Parse failed');
     var raw = data.result || '';
     console.log('[Import] Claude returned:', raw);
     // Strip any markdown fences
