@@ -16721,18 +16721,70 @@ window.SauceMaterials.calcSteelShedTrusses = function(Q, WALLS, shedCfgs) {
   var spacing = eaveWallSS ? (eaveWallSS.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
   var groups  = {};
 
+  var hipResults = []; // hip rafter items collected per wrap shed
+
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
     var sku = skuMap[sc.w];
-    if (!sku) return; // width not available in steel SS trusses
+    if (!sku) return;
 
-    var isEave  = (sc.wall === 'left' || sc.wall === 'right');
-    var wLen    = isEave ? Q.l : Q.w;
-    var qty     = Math.floor(wLen / spacing) + 1;
+    var isEave = (sc.wall === 'left' || sc.wall === 'right');
+
+    // ── Primary leg ──────────────────────────────────────────────
+    var primaryLen = sc.l;
+    var qty = Math.floor(primaryLen / spacing) + 1;
     groups[sku] = (groups[sku] || 0) + qty;
+
+    // ── Wrap secondary leg ────────────────────────────────────────
+    if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0) {
+      var secQty = Math.floor(sc.wrapLeg / spacing) + 1;
+      groups[sku] = (groups[sku] || 0) + secQty;
+    }
+
+    // ── Hip corner — rafter framed ────────────────────────────────
+    // Hip requires: 2x12 common rafters, a hip rafter (diagonal = w * sqrt(2)),
+    // and an LVL ridge beam the length of the hip run (= sc.w).
+    // Rafter length along the hip = sc.w (shed width) at 2/12 pitch ≈ same as shed width.
+    // Common rafters: one per foot of hip run each side = ceil(sc.w / 2) * 2 each side × 2 sides
+    // Hip rafter: 1 diagonal board = ceil(sc.w * 1.414 / 2) × 2' boards → nearest even length
+    // LVL ridge: 1 board sc.w long
+    if (sc.type === 'wrap' && sc.wrapLeg > 0) {
+      var hipShedW = sc.w; // 20' in this case
+      // Common rafter qty: 1 per 2ft of hip run, both sides
+      var hipCommonQty = Math.ceil(hipShedW / 2) * 2;
+      // Hip rafter diagonal length (ft) — at 2/12 pitch, run = sc.w, diagonal ≈ sc.w × √(1 + (2/12)²)
+      var hipRafterFt = Math.ceil(hipShedW * Math.sqrt(1 + Math.pow(2/12, 2)) + 2); // +2ft for seat cut
+      // Best board length for hip rafter (12, 14, 16, 18, 20)
+      var hipBoardLen = [12,14,16,18,20,24].find(function(l){ return l >= hipRafterFt; }) || 24;
+      // LVL ridge length = sc.w
+      var lvlBoardLen = [10,12,14,16,18,20,24].find(function(l){ return l >= hipShedW; }) || hipShedW;
+
+      hipResults.push({
+        category:    'Yard',
+        description: 'Hip Corner — Common Rafters (2x12)',
+        sku:         'SYP212' + hipBoardLen,
+        quantity:    hipCommonQty,
+        detail:      'Hip corner  |  ' + hipShedW + "' shed width  |  2x12 × " + hipBoardLen + "'"
+      });
+      hipResults.push({
+        category:    'Yard',
+        description: 'Hip Corner — Hip Rafter (2x12)',
+        sku:         'SYP212' + hipBoardLen,
+        quantity:    1,
+        detail:      'Hip rafter diagonal  |  ' + hipBoardLen + "' board"
+      });
+      hipResults.push({
+        category:    'Yard',
+        description: 'Hip Corner — LVL Ridge Beam',
+        sku:         'CLVL1178',
+        quantity:    1,
+        boardLen:    lvlBoardLen,
+        detail:      'LVL 11 7/8  |  ' + lvlBoardLen + "' board  |  qty 1  |  priced per linear ft"
+      });
+    }
   });
 
-  return Object.keys(groups).sort().map(function(sku) {
+  var trussItems = Object.keys(groups).sort().map(function(sku) {
     return {
       category:    'Yard',
       description: 'Steel Side Shed Trusses',
@@ -16741,6 +16793,8 @@ window.SauceMaterials.calcSteelShedTrusses = function(Q, WALLS, shedCfgs) {
       detail:      spacing + "' spacing  |  structural posts only"
     };
   });
+
+  return trussItems.concat(hipResults);
 };
 
 // ── ITEM 13: STEEL TRUSS ROOF PURLINS ───────────────────────────────────────
@@ -16843,6 +16897,8 @@ window.SauceMaterials.calcSteelShedPurlins = function(Q, shedCfgs) {
     if (!sc.wall || !sc.w || !sc.l) return;
     var cups = ssCupsMap[sc.w];
     if (!cups) return;
+
+    // Primary leg
     var boards = fillLength(sc.l, spacing);
     Object.keys(boards).forEach(function(len) {
       var runs     = boards[len];
@@ -16850,6 +16906,17 @@ window.SauceMaterials.calcSteelShedPurlins = function(Q, shedCfgs) {
       var sku      = 'SYP26' + len;
       groups[sku]  = (groups[sku] || 0) + quantity;
     });
+
+    // Secondary wrap leg
+    if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0) {
+      var boards2 = fillLength(sc.wrapLeg, spacing);
+      Object.keys(boards2).forEach(function(len) {
+        var runs2     = boards2[len];
+        var quantity2 = Math.ceil(runs2 * cups);
+        var sku2      = 'SYP26' + len;
+        groups[sku2]  = (groups[sku2] || 0) + quantity2;
+      });
+    }
   });
 
   return Object.keys(groups).sort().map(function(sku) {
@@ -18358,7 +18425,18 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
         sc.type !== 'gable') {
       ssAdder = 10/12;
     }
-    addPanel(ssLen + ssAdder, Math.ceil(sc.l / 3), 'shed');
+
+    if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0) {
+      // Wrap shed: two separate panel runs
+      // Eave side (outer): primary leg + hip run (= sc.w) — e.g. 60 + 20 = 80'
+      var eaveSideLen = sc.l + sc.w;
+      // Gable end side (inner/back): secondary leg + hip run (= sc.w) — e.g. 40 + 20 = 60'
+      var gableEndLen = sc.wrapLeg + sc.w;
+      addPanel(ssLen + ssAdder, Math.ceil(eaveSideLen / 3), 'shed');
+      addPanel(ssLen + ssAdder, Math.ceil(gableEndLen / 3), 'shed');
+    } else {
+      addPanel(ssLen + ssAdder, Math.ceil(sc.l / 3), 'shed');
+    }
   });
 
   var results = [];
@@ -18927,6 +19005,13 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
 
     if (openLen <= 0) return;
     totalQty += Math.ceil(openLen / 3);
+
+    // Wrap shed: secondary leg + hip run also need skirt
+    if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0 &&
+        (sc.encl === 'roofonly' || sc.encl === 'open')) {
+      totalQty += Math.ceil(sc.wrapLeg / 3); // secondary leg
+      totalQty += Math.ceil(sc.w / 3);       // hip run
+    }
   });
 
   if (totalQty === 0) return [];
@@ -19096,6 +19181,13 @@ window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, wind
     var jcBoardLen = (ps === 12 || ps === 24) ? 12 : 10;
     // Under skirt + ledger: shed length ÷ boardLen × 2 runs, +1 per run safety
     add(ps, (Math.ceil(sc.l / jcBoardLen) + 1) * 2);
+
+    // Wrap shed: secondary leg + hip run also need skirt J-channel (2 runs each)
+    if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0 &&
+        (sc.encl === 'roofonly' || sc.encl === 'open')) {
+      add(ps, (Math.ceil(sc.wrapLeg / jcBoardLen) + 1) * 2); // secondary leg
+      add(ps, (Math.ceil(sc.w / jcBoardLen) + 1) * 2);       // hip run
+    }
 
     // Open/roofonly lean-to: under upper gable metal — shed width ÷ boardLen, +1
     if (sc.encl === 'roofonly' || sc.encl === 'open') {
@@ -19458,7 +19550,14 @@ window.SauceMaterials.calcRETTrim = function(Q, WALLS, shedCfgs) {
     // Open/roofonly lean-to — skirt line (skip if vent gap is on for that wall)
     if (sc.encl === 'roofonly' || sc.encl === 'open') {
       if (Q.ventGap && wallEncl(sc.wall) === 'open') return;
-      addRun(sc.l + ohFt * 2, ps);
+      if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0) {
+        // Wrap: three skirt runs — primary leg + secondary leg + hip run (= sc.w)
+        addRun(sc.l + ohFt * 2, ps);
+        addRun(sc.wrapLeg + ohFt * 2, ps);
+        addRun(sc.w + ohFt * 2, ps);
+      } else {
+        addRun(sc.l + ohFt * 2, ps);
+      }
       return;
     }
   });
@@ -19982,7 +20081,11 @@ window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
     }
 
     var ssTopChord = getShedTopChord(sc.w);
-    if (ssTopChord) addBoards(nextEven(ssTopChord), 2);
+    if (ssTopChord) {
+      // Wrap shed has 4 open gable rake ends (2 per leg), not just 2
+      var rakeMult = ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0) ? 4 : 2;
+      addBoards(nextEven(ssTopChord), rakeMult);
+    }
   });
 
   return Object.keys(groups).sort(function(a, b) {
