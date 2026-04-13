@@ -19004,13 +19004,16 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
     }
 
     if (openLen <= 0) return;
-    totalQty += Math.ceil(openLen / 3);
 
-    // Wrap shed: secondary leg + hip run also need skirt
+    // Wrap shed: two runs each including the hip connection (sc.w)
+    // Eave side: primary leg + hip = sc.l + sc.w
+    // Gable end side: secondary leg + hip = sc.wrapLeg + sc.w
     if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0 &&
         (sc.encl === 'roofonly' || sc.encl === 'open')) {
-      totalQty += Math.ceil(sc.wrapLeg / 3); // secondary leg
-      totalQty += Math.ceil(sc.w / 3);       // hip run
+      totalQty += Math.ceil((sc.l + sc.w) / 3);         // eave side: primary + hip
+      totalQty += Math.ceil((sc.wrapLeg + sc.w) / 3);   // gable end: secondary + hip
+    } else {
+      totalQty += Math.ceil(openLen / 3);
     }
   });
 
@@ -25666,22 +25669,19 @@ window.SauceLabor.calcInsulationAdder = function() {
 window.SauceLabor.calcSideSheds = function(shedCfgs) {
   var lines = [];
 
-  (shedCfgs||[]).forEach(function(sc, idx) {
-    if (!sc.w || !sc.l) return;
-    var shedSqFt = sc.w * sc.l;
+  function shedLaborEntry(sc, idx, legLen, legSuffix) {
     var typeLabel = sc.type === 'gable' ? 'Gable Extension' : 'Side Shed';
-    var label = typeLabel + ' ' + (idx + 1) + ' (' + sc.w + "' × " + sc.l + "')";
-
-    // Flat rate — boundary always goes to higher tier
+    var label = typeLabel + ' ' + (idx + 1) + legSuffix + ' (' + sc.w + "' × " + legLen + "')";
+    var sqft = sc.w * legLen;
     var shedRate, shedTierLabel;
-    if (shedSqFt < 300) {
-      shedRate = 1200; shedTierLabel = shedSqFt + ' sqft → flat $1,200';
-    } else if (shedSqFt < 600) {
-      shedRate = 1500; shedTierLabel = shedSqFt + ' sqft → flat $1,500';
-    } else if (shedSqFt < 1200) {
-      shedRate = 1800; shedTierLabel = shedSqFt + ' sqft → flat $1,800';
+    if (sqft < 300) {
+      shedRate = 1200; shedTierLabel = sqft + ' sqft → flat $1,200';
+    } else if (sqft < 600) {
+      shedRate = 1500; shedTierLabel = sqft + ' sqft → flat $1,500';
+    } else if (sqft < 1200) {
+      shedRate = 1800; shedTierLabel = sqft + ' sqft → flat $1,800';
     } else {
-      shedRate = shedSqFt * 1.50; shedTierLabel = shedSqFt + ' sqft @ $1.50/sqft';
+      shedRate = sqft * 1.50; shedTierLabel = sqft + ' sqft @ $1.50/sqft';
     }
     lines.push({ label: label + '  |  ' + shedTierLabel, amount: shedRate });
 
@@ -25697,6 +25697,21 @@ window.SauceLabor.calcSideSheds = function(shedCfgs) {
         }
         lines.push({ label: label + ' enclosed wall (' + wallId + ')  |  ' + len + ' LF @ $8.00', amount: len * 8 });
       });
+    }
+  }
+
+  (shedCfgs||[]).forEach(function(sc, idx) {
+    if (!sc.w || !sc.l) return;
+    var isWrap = (sc.type === 'wrap' || sc.type === 'wrap3') && (sc.wrapLeg > 0);
+
+    if (isWrap) {
+      // Split into two separate labor entries, each including the hip (sc.w)
+      // Eave side: primary leg + hip
+      shedLaborEntry(sc, idx, sc.l + sc.w, ' (eave side)');
+      // Gable end side: secondary leg + hip
+      shedLaborEntry(sc, idx, sc.wrapLeg + sc.w, ' (gable end)');
+    } else {
+      shedLaborEntry(sc, idx, sc.l, '');
     }
   });
 
