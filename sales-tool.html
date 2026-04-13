@@ -3615,18 +3615,33 @@ async function importCompetitorPDF(input) {
     });
 
     // Route through GAS to avoid CORS — GAS calls Claude server-side
-    var resp = await fetchWithTimeout(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({
-        action: 'parsePdf',
-        token: getToken(),
-        pdfBase64: b64
-      })
-    });
-
-    var data = await safeJson(resp);
-    if (!data.success) throw new Error(data.error || 'GAS parsePdf failed');
+    // Retry up to 3 times with backoff on overload errors
+    var data = null;
+    var lastErr = '';
+    for (var _attempt = 0; _attempt < 3; _attempt++) {
+      if (_attempt > 0) {
+        btn.textContent = '⏳ Retrying (' + _attempt + '/2)...';
+        await new Promise(function(r){ setTimeout(r, _attempt * 2000); });
+      }
+      var resp = await fetchWithTimeout(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ action: 'parsePdf', token: getToken(), pdfBase64: b64 })
+      }, 60000);
+      data = await safeJson(resp);
+      if (data.success) break;
+      lastErr = data.error || 'GAS parsePdf failed';
+      // Only retry on overload errors
+      if (lastErr.toLowerCase().indexOf('overload') === -1 &&
+          lastErr.toLowerCase().indexOf('529') === -1 &&
+          lastErr.toLowerCase().indexOf('rate') === -1) break;
+    }
+    if (!data || !data.success) {
+      var msg = lastErr.toLowerCase().indexOf('overload') !== -1
+        ? 'Claude API is busy — please try again in a few seconds.'
+        : lastErr;
+      throw new Error(msg);
+    }
     var raw = data.result || '';
     console.log('[Import] Claude returned:', raw);
     // Strip any markdown fences
