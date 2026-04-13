@@ -3630,30 +3630,52 @@ async function importCompetitorPDF(input) {
 
     btn.textContent = '⏳ Parsing...';
 
-    // Send extracted text to GAS — much smaller payload than base64 PDF
-    var data = null;
-    var lastErr = '';
-    for (var _attempt = 0; _attempt < 3; _attempt++) {
-      if (_attempt > 0) {
-        btn.textContent = '⏳ Retrying (' + _attempt + '/2)...';
-        await new Promise(function(r){ setTimeout(r, _attempt * 3000); });
+    // Call Claude API directly from browser — no GAS needed
+    var _importPrompt = 'Extract building quote info from this text and return ONLY valid JSON. Use exactly these keys:\n' +
+      '{\n' +
+      '  "custName": "",\n  "custPhone": "",\n  "custEmail": "",\n  "custAddress": "",\n  "custCity": "",\n' +
+      '  "width": 0, "length": 0, "height": 0, "pitch": 0,\n' +
+      '  "truss": "Wood", "eavePS": 0, "gablePS": 0,\n' +
+      '  "soffit": false, "wainscot": false,\n' +
+      '  "insulation": "", "insulRoof": false, "insulWalls": false,\n' +
+      '  "concrete": "None", "gauge": 29,\n' +
+      '  "roofColor": "", "wallColor": "", "trimColor": "", "wainscotColor": "",\n' +
+      '  "garageDoors": [{"w": 0, "h": 0, "qty": 1, "wall": "front", "insulated": false}],\n' +
+      '  "walkDoors": [{"sku": "", "qty": 1, "wall": "front"}],\n' +
+      '  "windows": [{"qty": 1, "wall": "right"}],\n' +
+      '  "sheds": [{"wall": "left", "w": 0, "l": 0, "concrete": false, "enclosed": false}]\n' +
+      '}\n\n' +
+      'RULES:\n' +
+      '1. WALL MAPPING (competitor→ours): Their A=our front, Their B=our left, Their C=our back, Their D=our right.\n' +
+      '2. GARAGE DOORS: GD108=w:10 h:8, GD1010=w:10 h:10, GD1212=w:12 h:12. qty from "Quantity of Garage Door (GDxxx): N". insulated=true if SKU ends IN or says INSULATED. wall=front unless stated.\n' +
+      '3. WALK DOORS: ANY PLY SKU is a walk door (PLY9930, PLY9940, PLY1/2LITERH, etc). Include the exact SKU in the sku field. qty from "Quantity of Walk-in Aluminum Doors (PLYxxx): N". wall=front unless stated.\n' +
+      '4. WINDOWS: qty from "Quantity of Windows (VWxx): N". wall=right unless stated.\n' +
+      '5. SHEDS: SHED A=front, SHED B=left, SHED C=back, SHED D=right. w=Depth (smaller), l=Width (larger). enclosed=true if shed has wall panels in materials list. concrete=true if "Concrete: YES".\n' +
+      '6. PITCH: numerator only from X/12. Valid: 4,6,8,10.\n' +
+      '7. CONCRETE: "4 in" or "6 in" → "4" or "6". None → "None".\n' +
+      '8. INSULATION: "3\" Vinyl Back"→"3 Vinyl Back", "2\" Vinyl Back"→"2 Vinyl Back", "Double Bubble"→"Double Bubble Foil". insulRoof=true if Roof Only or Full Building. insulWalls=true only if Full Building.\n' +
+      '9. Return ONLY the JSON object. No markdown. No explanation.\n\nPDF TEXT:\n' + pdfText.slice(0, 8000);
+
+    var _apiResp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: _importPrompt }]
+      })
+    });
+    if (!_apiResp.ok) {
+      var _errBody = await _apiResp.json().catch(function(){ return {}; });
+      var _errMsg = (_errBody.error && _errBody.error.message) || ('HTTP ' + _apiResp.status);
+      if (_apiResp.status === 529 || (_errMsg.toLowerCase().indexOf('overload') !== -1)) {
+        throw new Error('Claude API is busy — please try again in a few seconds.');
       }
-      var resp = await fetchWithTimeout(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ action: 'parsePdfText', token: getToken(), pdfText: pdfText.slice(0, 8000) })
-      }, 45000);
-      data = await safeJson(resp);
-      if (data.success) break;
-      lastErr = data.error || 'Parse failed';
-      if (lastErr.toLowerCase().indexOf('overload') === -1 &&
-          lastErr.toLowerCase().indexOf('529') === -1) break;
+      throw new Error(_errMsg);
     }
-    if (!data || !data.success) throw new Error(lastErr || 'Parse failed');
-    var raw = data.result || '';
+    var _apiData = await _apiResp.json();
+    var raw = (_apiData.content || []).map(function(b){ return b.text || ''; }).join('').replace(/```json|```/g,'').trim();
     console.log('[Import] Claude returned:', raw);
-    // Strip any markdown fences
-    raw = raw.replace(/```json|```/g,'').trim();
     var parsed = JSON.parse(raw);
 
     // Apply to tool
@@ -3838,15 +3860,35 @@ async function importCompetitorPDF(input) {
       tryFill('Walk Door(s)', function(){
         // Their A=our front, Their B=our left, Their C=our back, Their D=our right
         var wallMap = { 'front':'front', 'back':'back', 'left':'left', 'right':'right' };
+        // Map competitor PLY SKUs to our door type strings
+        var skuToType = {
+          'PLY9930W': 'WHITE 3/0 PLYCO ALUMINUM FRAME',
+          'PLY9930B': 'BLACK 3/0 PLYCO ALUMINUM FRAME',
+          'PLY9930':  'WHITE 3/0 PLYCO ALUMINUM FRAME',
+          'PLY9940':  'WHITE PLYCO 99 4/0 ALUM FRAME',
+          'PLY9940W': 'WHITE PLYCO 99 4/0 ALUM FRAME',
+          'PLY1/2LITERH': '3/0 PLYCO 1/2 GLASS L.H.',
+          'PLY1/2LITELHB':'BLACK 3/0 -1/2 GLASS PLYCO LH',
+          'PLY1/29LRH':   '3/0 9-LITE PLYCO RH',
+          'PLY1/29LLHB':  'BLACK 3/0 9-LITE PLYCO LH'
+        };
         parsed.walkDoors.forEach(function(wd) {
           var qty = parseInt(wd.qty) || 1;
           var wall = wallMap[wd.wall] || 'front';
+          var sku = (wd.sku || '').toUpperCase().replace(/\s/g,'');
+          var dtype = skuToType[sku] || WALK_DOOR_TYPES[0];
+          // Also check color hint
+          if (!skuToType[sku] && wd.color && wd.color.toLowerCase().indexOf('black') !== -1) dtype = 'BLACK 3/0 PLYCO ALUMINUM FRAME';
+          var wallObj = WALLS.find(function(wl){ return wl.id === wall; }) || { len: Q.l };
+          var wallLen = wallObj.len || Q.l;
           for (var i=0; i<qty; i++) {
-            window._walkDoors = window._walkDoors || [];
+            var dw = wdWidth(dtype);
+            var spacing = (wallLen - qty * dw) / (qty + 1);
+            var offset = Math.round((spacing + i * (dw + spacing)) * 12) / 12;
             window._walkDoors.push({
-              id: nextDoorId++, type: 'walk',
-              wall: wall,
-              framedOpening: false
+              id: nextWDId++, type: dtype,
+              wall: wall, offset: offset,
+              framedOpening: false, doorColor: 'White'
             });
           }
         });
