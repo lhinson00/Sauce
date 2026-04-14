@@ -12599,6 +12599,66 @@ async function openLoadDesignModal(){
     var curSearch = (document.getElementById('loadDesignSearch')||{}).value||'';
     if (curSearch) { filterLoadDesigns(curSearch); return; }
     _renderDesignList(quotes, list);
+    // Decode configEncoded for each quote in background to enrich display data
+    quotes.forEach(function(d) {
+      if (!d.configEncoded || d._cfgDecoded) return;
+      var _p = (typeof safeDecodeAsync === 'function')
+        ? safeDecodeAsync(d.configEncoded).catch(function(){ try { return safeDecode(d.configEncoded); } catch(e){ return null; } })
+        : Promise.resolve(null);
+      _p.then(function(cfg) {
+        if (!cfg) return;
+        d._cfgDecoded = true;
+        var sf  = cfg.salesFields || {};
+        var Q2  = cfg.Q           || {};
+        var cols = cfg.colors     || {};
+        var ff  = d.formFields    || {};
+        // Colors
+        if (!ff.roofColor  ) ff.roofColor   = sf.roofColor   || cols.roof   || '';
+        if (!ff.wallColor  ) ff.wallColor   = sf.wallColor   || cols.wall   || '';
+        if (!ff.trimColor  ) ff.trimColor   = sf.trimColor   || cols.trim   || '';
+        if (!ff.wainscotColor) ff.wainscotColor = sf.wainscotColor || cols.wainscot || '';
+        // Metal
+        if (!ff.roofMetal  ) ff.roofMetal   = sf.roofMetal   || '';
+        if (!ff.wallMetal  ) ff.wallMetal   = sf.wallMetal   || '';
+        // Dimensions/structure
+        if (!ff.roofPitch  ) ff.roofPitch   = sf.pitch612 ? '6' : (String(Q2.pitch||''));
+        if (!ff.truss      ) ff.truss       = Q2.truss        || '';
+        if (!ff.mbPostSize ) ff.mbPostSize  = sf.mbPostSize   || '';
+        if (!ff.eavePostSpacing) ff.eavePostSpacing = sf.eavePS || '';
+        if (!ff.trussSpacing)    ff.trussSpacing    = sf.trussSpacing || '';
+        // Options
+        if (!ff.insulation ) ff.insulation  = sf.insulation  || '';
+        if (!ff.insulationRoof)  ff.insulationRoof  = sf.insulRoof  ? 'Yes' : '';
+        if (!ff.insulationWalls) ff.insulationWalls = sf.insulWalls ? 'Yes' : '';
+        if (!ff.concrete   ) ff.concrete    = sf.mainConcrete !== 'None' ? (sf.mainConcrete||'') : '';
+        if (!ff.wainscot   ) ff.wainscot    = sf.wainscot    || '';
+        if (!ff.barjoist   ) ff.barjoist    = sf.barjoist    ? 'Yes' : '';
+        if (!ff.postWraps  ) ff.postWraps   = sf.postWraps   ? 'Yes' : '';
+        if (!ff.gutters    ) ff.gutters     = sf.gutters     ? 'Yes' : '';
+        // Doors/windows/sheds from cfg arrays
+        var doors = cfg.doors  || [];
+        var wds   = cfg.walkDoors || [];
+        var wins  = cfg.windows   || [];
+        var sheds = cfg.sheds     || [];
+        var gdIdx = 1;
+        doors.filter(function(x){return x.type==='garage';}).forEach(function(gd){
+          if (!ff['garageDoor'+gdIdx+'Type']) ff['garageDoor'+gdIdx+'Type'] = gd.w+'x'+gd.h+(gd.insulated?'IN':'');
+          gdIdx++;
+        });
+        wds.forEach(function(wd,i){ if(!ff['walkDoor'+(i+1)+'Type']) ff['walkDoor'+(i+1)+'Type'] = wd.type||'3/0'; });
+        wins.forEach(function(w,i){ if(!ff['window'+(i+1)+'Type'])   ff['window'+(i+1)+'Type']   = w.type||'VW33'; });
+        if (sheds[0] && !ff.ssWidth)  { ff.ssWidth  = String(sheds[0].w||''); ff.ssLength  = String(sheds[0].l||''); }
+        if (sheds[1] && !ff.ss2Width) { ff.ss2Width = String(sheds[1].w||''); ff.ss2Length = String(sheds[1].l||''); }
+        d.formFields = ff;
+        // Re-render list with enriched data
+        var _list = document.getElementById('savedDesignList');
+        if (_list && document.getElementById('loadDesignModal').style.display !== 'none') {
+          var _cs = (document.getElementById('loadDesignSearch')||{}).value||'';
+          if (_cs) filterLoadDesigns(_cs);
+          else _renderDesignList(window._savedDesigns, _list);
+        }
+      }).catch(function(){});
+    });
   } catch(err){
     list.innerHTML = '<div style="color:#ef4444;font-size:13px;text-align:center;padding:20px;">Error: '+err.message+'</div>';
   }
@@ -12834,7 +12894,7 @@ function _renderDesignList(quotes, list, append) {
 
     function pill(label, val, color) {
       if (!val) return '';
-      return '<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:rgba(255,255,255,.06);color:'+(color||'#aaa')+';margin:2px 2px 0 0;">'+esc(label)+': '+esc(val)+'</span>';
+      return '<span style="display:inline-block;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:700;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.08);color:'+(color||'#ccc')+';margin:2px 2px 0 0;">'+esc(label)+': <span style="color:#fff;font-weight:800;">'+esc(val)+'</span></span>';
     }
     function pricePill(label, val, color) {
       if (!val) return '';
@@ -12843,8 +12903,8 @@ function _renderDesignList(quotes, list, append) {
     function section(label, pills) {
       var p = pills.filter(Boolean).join('');
       if (!p) return '';
-      return '<div style="margin-top:6px;">'
-        +'<span style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#555;margin-right:6px;">'+label+'</span>'
+      return '<div style="margin-top:7px;">'
+        +'<span style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#FF8200;margin-right:6px;opacity:.7;">'+label+'</span>'
         + p + '</div>';
     }
 
@@ -12895,14 +12955,15 @@ function _renderDesignList(quotes, list, append) {
       tax$  ? pill('Tax',       tax$,  '#aaa') : ''
     ].filter(Boolean).join('');
 
-    var card = '<div style="background:#242424;border:1px solid #3a3a3a;border-radius:8px;padding:11px 13px;margin-bottom:6px;">';
+    var _isFirst = true; // will be set per card below
+    var card = '<div style="background:#242424;border:1px solid #3a3a3a;border-radius:0 0 8px 8px;padding:11px 13px;margin-bottom:0;border-top:1px solid #FF8200;">';
 
     // Header row: date + status + quote ID
-    card += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px;">';
-    card += '<div style="display:flex;align-items:center;gap:6px;">';
-    card += '<span style="font-size:10px;color:#555;">'+esc(date)+'</span>';
-    if (ageTxt) card += '<span style="font-size:9px;color:#444;">'+esc(ageTxt)+'</span>';
-    if (qid) card += '<span style="font-size:9px;color:#3a4d65;">'+esc(qid)+'</span>';
+    card += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;gap:8px;">';
+    card += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">';
+    card += '<span style="font-size:11px;color:#aaa;font-weight:600;">'+esc(date)+'</span>';
+    if (ageTxt) card += '<span style="font-size:10px;background:rgba(255,130,0,.12);color:#FF8200;padding:1px 6px;border-radius:4px;font-weight:700;">'+esc(ageTxt)+'</span>';
+    if (qid) card += '<span style="font-size:10px;color:#5a7a9a;font-weight:600;">'+esc(qid)+'</span>';
     card += '</div>';
     // Status selector
     card += '<select data-status-qid="'+esc(qid)+'" style="font-size:10px;font-weight:700;color:'+sColor+';background:#1a1a1a;border:1px solid '+sColor+';border-radius:4px;padding:2px 6px;cursor:pointer;font-family:Outfit,sans-serif;">';
@@ -12945,16 +13006,19 @@ function _renderDesignList(quotes, list, append) {
     // Sort newest first
     grp.sort(function(a,b){ return new Date(b.date||0) - new Date(a.date||0); });
     var multi = grp.length > 1;
-    html += '<div style="margin-bottom:12px;">';
+    html += '<div style="margin-bottom:16px;">';
     // Customer header
-    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">';
-    html += '<div style="font-size:13px;font-weight:800;color:#f0f3f7;">'+esc(name)+'</div>';
-    if (multi) html += '<div style="font-size:10px;background:rgba(255,130,0,.15);color:#FF8200;border-radius:10px;padding:1px 8px;font-weight:700;">'+grp.length+' quotes</div>';
-    // Contact info from first entry
     var d0 = grp[0];
-    if (d0.phone) html += '<div style="font-size:10px;color:#666;">'+esc(d0.phone)+'</div>';
-    if (d0.email) html += '<div style="font-size:10px;color:#666;">'+esc(d0.email)+'</div>';
-    if (d0.city)  html += '<div style="font-size:10px;color:#666;">'+esc(d0.city)+'</div>';
+    html += '<div style="padding:8px 10px;background:#1e1e1e;border-radius:8px 8px 0 0;border:1px solid #3a3a3a;border-bottom:none;margin-bottom:0;">';
+    html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">';
+    html += '<div style="font-size:15px;font-weight:800;color:#ffffff;letter-spacing:.2px;">'+esc(name)+'</div>';
+    if (multi) html += '<div style="font-size:10px;background:rgba(255,130,0,.2);color:#FF8200;border-radius:10px;padding:2px 9px;font-weight:800;border:1px solid rgba(255,130,0,.3);">'+grp.length+' quotes</div>';
+    html += '</div>';
+    html += '<div style="display:flex;gap:14px;margin-top:4px;flex-wrap:wrap;">';
+    if (d0.phone) html += '<div style="font-size:11px;color:#b0b0b0;font-weight:600;">📞 '+esc(d0.phone)+'</div>';
+    if (d0.email) html += '<div style="font-size:11px;color:#b0b0b0;font-weight:600;">✉ '+esc(d0.email)+'</div>';
+    if (d0.city)  html += '<div style="font-size:11px;color:#b0b0b0;font-weight:600;">📍 '+esc(d0.city)+'</div>';
+    html += '</div>';
     html += '</div>';
     grp.forEach(function(d){ html += buildCard(d); });
     html += '</div>';
