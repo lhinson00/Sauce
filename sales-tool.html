@@ -11281,7 +11281,7 @@ function applyVoiceQuote(parsed, overlay) {
 <!-- Load Quote Modal (lain only) -->
 
 <div id="loadDesignModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center;">
-  <div style="background:#4B4B4B;border:1px solid #5e5e5e;border-radius:14px;padding:24px;width:90%;max-width:520px;max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.4);">
+  <div style="background:#4B4B4B;border:1px solid #5e5e5e;border-radius:14px;padding:24px;width:96%;max-width:780px;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.4);">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
       <div style="font-family:'Outfit',sans-serif;font-size:17px;font-weight:800;color:#FF8200;">📂 Saved Quotes</div>
       <button onclick="closeLoadDesignModal()" style="background:none;border:none;color:#888888;font-size:18px;cursor:pointer;">✕</button>
@@ -12738,38 +12738,245 @@ function filterLoadDesigns(q) {
 }
 
 function _renderDesignList(quotes, list, append) {
-  var html = quotes.map(function(d) {
-    var label = d.name || d.label || 'Unnamed';
-    var sub   = d.specs || '';
-    var date  = d.date || '';
-    var qid   = d.quoteId || d.designId || '';
-    var ridx  = d.rowIndex || 0;
-    var ageBadge = '';
-    if (date) {
-      var months = Math.floor((Date.now() - new Date(date).getTime()) / (1000*60*60*24*30));
-      if (months >= 3) ageBadge = '<span style="font-size:9px;background:rgba(255,130,0,.15);color:#FF8200;border-radius:3px;'
-        + 'padding:1px 5px;margin-left:6px;font-weight:700;">' + months + 'mo ago</span>';
-    }
-    return '<div style="background:#2e2e2e;border:1px solid #5e5e5e;border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:8px;">'
-      + '<div style="flex:1;min-width:0;">'
-      + '<div style="font-weight:700;color:#f0f3f7;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + label + ageBadge + '</div>'
-      + '<div style="font-size:11px;color:#888888;margin-top:2px;">' + sub + '</div>'
-      + '<div style="font-size:10px;color:#3a4d65;margin-top:3px;">' + date + (qid?' &nbsp;·&nbsp; '+qid:'') + '</div>'
-      + '</div>'
-      + '<button data-load-qid="' + qid + '" data-load-ridx="' + ridx + '" style="padding:6px 14px;background:rgba(255,130,0,.12);color:#FF8200;border:1px solid rgba(255,130,0,.25);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Load</button>'
-      + '<button data-del-qid="' + qid + '" style="padding:6px 10px;background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.25);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">🗑</button>'
-      + '</div>';
-  }).join('');
-  if (append) {
-    list.innerHTML += html;
-  } else {
-    list.innerHTML = html;
+  function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function fmt$(v) {
+    var n = parseFloat(String(v||'0').replace(/[^0-9.]/g,''))||0;
+    return n > 0 ? '$'+Math.round(n).toLocaleString('en-US') : '';
   }
+
+  // Group by customer name
+  var groups = {};
+  var groupOrder = [];
+  quotes.forEach(function(d) {
+    var key = (d.name || d.label || d.customerName || 'Unnamed').trim();
+    if (!groups[key]) { groups[key] = []; groupOrder.push(key); }
+    groups[key].push(d);
+  });
+
+  var statusColors = { draft:'#888', sent:'#3b82f6', active:'#FF8200', sold:'#22c55e', lost:'#ef4444' };
+  var statusLabels = { draft:'Draft', sent:'Sent', active:'Active', sold:'Sold', lost:'Lost' };
+
+  function buildCard(d) {
+    var qid  = d.quoteId || d.designId || '';
+    var ridx = d.rowIndex || 0;
+    var date = d.date || '';
+    var ff   = d.formFields || {};
+    var pr   = d.pricingResults || {};
+    var status = d.status || 'draft';
+    var sColor = statusColors[status] || '#888';
+    var sLabel = statusLabels[status] || status;
+
+    // Age badge
+    var ageTxt = '';
+    if (date) {
+      var days = Math.floor((Date.now() - new Date(date).getTime()) / 86400000);
+      ageTxt = days < 1 ? 'Today' : days === 1 ? '1 day ago' : days < 30 ? days+'d ago' : days < 365 ? Math.floor(days/30)+'mo ago' : Math.floor(days/365)+'yr ago';
+    }
+
+    // Dimensions + structure
+    var w = ff.width||'', l = ff.length||'', h = ff.height||'';
+    var dims = (w&&l&&h) ? w+"'×"+l+"'×"+h+"'" : (d.specs||'').split('|')[0].trim();
+    var pitch = ff.roofPitch || ff.pitch || '';
+    var truss = ff.truss || '';
+    var postSz = ff.mbPostSize || '';
+    var postSp = ff.eavePS || '';
+    var trussSpacing = ff.trussSpacing || '';
+
+    // Metal
+    var roofMetal = ff.roofMetal || '';
+    var wallMetal = ff.wallMetal || '';
+    var roofColor = ff.roofColor || ff.roofColorName || '';
+    var wallColor = ff.wallColor || ff.wallColorName || '';
+    var trimColor = ff.trimColor || ff.trimColorName || '';
+    var wainscotColor = ff.wainscotColor || '';
+
+    // Options
+    var insulation = ff.insulation || '';
+    var insulRoof  = ff.insulRoof;
+    var insulWalls = ff.insulWalls;
+    var insulCov   = insulation && insulation !== 'None'
+      ? (insulRoof && insulWalls ? 'Full' : insulRoof ? 'Roof' : insulWalls ? 'Walls' : insulation)
+      : '';
+    var concrete   = ff.mainConcrete && ff.mainConcrete !== 'None' ? ff.mainConcrete+'" slab' : '';
+    var wainscot   = ff.wainscot === 'Yes' ? 'Yes' : '';
+    var barjoist   = ff.barjoist ? 'Yes' : '';
+    var postWraps  = ff.postWraps ? 'Yes' : '';
+    var oh         = ff.oh || ff.overhang || '';
+    var soffit     = ff.soffit || (ff.oh > 0 && ff.soffit) ? 'Yes' : '';
+
+    // Doors / windows / sheds from specs string or formFields
+    var gdCount  = ff.garageDoors  || '';
+    var wdCount  = ff.walkDoors    || '';
+    var winCount = ff.windows      || '';
+    var shedStr  = ff.sheds        || '';
+    // Fall back to parsing specs string
+    if (!gdCount && d.specs) { var m=d.specs.match(/(\d+)\s*OHD/i); if(m) gdCount=m[1]; }
+    if (!wdCount && d.specs) { var m=d.specs.match(/(\d+)\s*WD/i);  if(m) wdCount=m[1]; }
+    if (!shedStr && d.specs) { var m=d.specs.match(/(\d+)\s*shed/i);if(m) shedStr=m[1]+' shed'; }
+
+    // Pricing
+    var totOH    = fmt$(pr.totalOH    || pr.totalCombined || pr.total);
+    var totNoOH  = fmt$(pr.totalNoOH);
+    var totSteel = fmt$(pr.totalSteel);
+    var totStud  = fmt$(pr.totalStud);
+    var totCyp   = fmt$(pr.totalCypress);
+    var totBB    = fmt$(pr.totalBB);
+    var mat      = fmt$(pr.materialOnly || pr.materials);
+    var labor    = fmt$(pr.labor);
+    var conc$    = fmt$(pr.concrete);
+    var tax$     = fmt$(pr.tax);
+    var ship$    = fmt$(pr.shipping || pr.delivery);
+
+    function pill(label, val, color) {
+      if (!val) return '';
+      return '<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700;background:rgba(255,255,255,.06);color:'+(color||'#aaa')+';margin:2px 2px 0 0;">'+esc(label)+': '+esc(val)+'</span>';
+    }
+    function pricePill(label, val, color) {
+      if (!val) return '';
+      return '<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:800;background:rgba(255,130,0,.1);color:'+(color||'#FF8200')+';margin:2px 2px 0 0;">'+esc(label)+' '+val+'</span>';
+    }
+    function section(label, pills) {
+      var p = pills.filter(Boolean).join('');
+      if (!p) return '';
+      return '<div style="margin-top:6px;">'
+        +'<span style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#555;margin-right:6px;">'+label+'</span>'
+        + p + '</div>';
+    }
+
+    var structurePills = [
+      pill('Size', dims, '#f0f3f7'),
+      pitch ? pill('Pitch', pitch+'/12', '#ccc') : '',
+      truss ? pill('Truss', truss, '#ccc') : '',
+      trussSpacing ? pill('Truss Spacing', trussSpacing+"'oc", '#999') : '',
+      postSz ? pill('Posts', postSz, '#999') : '',
+      postSp ? pill('Post Spacing', postSp+"'oc", '#999') : ''
+    ];
+    var metalPills = [
+      roofMetal ? pill('Roof Metal', roofMetal, '#aaa') : '',
+      wallMetal ? pill('Wall Metal', wallMetal, '#aaa') : '',
+      roofColor ? pill('Roof', roofColor, '#ccc') : '',
+      wallColor ? pill('Wall', wallColor, '#ccc') : '',
+      trimColor ? pill('Trim', trimColor, '#ccc') : '',
+      wainscotColor ? pill('Wainscot', wainscotColor, '#ccc') : ''
+    ];
+    var optionPills = [
+      insulCov ? pill('Insulation', insulCov, '#86efac') : '',
+      concrete  ? pill('Concrete', concrete, '#86efac') : '',
+      wainscot  ? pill('Wainscot', 'Yes', '#86efac') : '',
+      barjoist  ? pill('Bar Joist', 'Yes', '#fbbf24') : '',
+      postWraps ? pill('Post Wraps', 'Yes', '#fbbf24') : ''
+    ];
+    var openingPills = [
+      gdCount  ? pill('Garage Doors', gdCount, '#93c5fd') : '',
+      wdCount  ? pill('Walk Doors', wdCount, '#93c5fd') : '',
+      winCount ? pill('Windows', winCount, '#93c5fd') : '',
+      shedStr  ? pill('Sheds', shedStr, '#93c5fd') : ''
+    ];
+
+    // Pricing rows — show all types that have data
+    var pricingLines = [
+      totOH    ? pricePill('W/ Soffit',   totOH,    '#FF8200') : '',
+      totNoOH  ? pricePill('No Soffit',   totNoOH,  '#FF8200') : '',
+      totSteel ? pricePill('Steel',       totSteel, '#FF8200') : '',
+      totStud  ? pricePill('Stud Frame',  totStud,  '#FF8200') : '',
+      totCyp   ? pricePill('Cypress',     totCyp,   '#86efac') : '',
+      totBB    ? pricePill('Metal B&B',   totBB,    '#fbbf24') : ''
+    ].filter(Boolean).join('');
+    var breakdownLines = [
+      mat   ? pill('Materials', mat,   '#aaa') : '',
+      labor ? pill('Labor',     labor, '#aaa') : '',
+      conc$ ? pill('Concrete',  conc$, '#aaa') : '',
+      ship$ ? pill('Delivery',  ship$, '#aaa') : '',
+      tax$  ? pill('Tax',       tax$,  '#aaa') : ''
+    ].filter(Boolean).join('');
+
+    var card = '<div style="background:#242424;border:1px solid #3a3a3a;border-radius:8px;padding:11px 13px;margin-bottom:6px;">';
+
+    // Header row: date + status + quote ID
+    card += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px;">';
+    card += '<div style="display:flex;align-items:center;gap:6px;">';
+    card += '<span style="font-size:10px;color:#555;">'+esc(date)+'</span>';
+    if (ageTxt) card += '<span style="font-size:9px;color:#444;">'+esc(ageTxt)+'</span>';
+    if (qid) card += '<span style="font-size:9px;color:#3a4d65;">'+esc(qid)+'</span>';
+    card += '</div>';
+    // Status selector
+    card += '<select data-status-qid="'+esc(qid)+'" style="font-size:10px;font-weight:700;color:'+sColor+';background:#1a1a1a;border:1px solid '+sColor+';border-radius:4px;padding:2px 6px;cursor:pointer;font-family:Outfit,sans-serif;">';
+    ['draft','sent','active','sold','lost'].forEach(function(s) {
+      card += '<option value="'+s+'"'+(s===status?' selected':'')+' style="color:'+statusColors[s]+';">'+statusLabels[s]+'</option>';
+    });
+    card += '</select>';
+    card += '</div>';
+
+    // Detail sections
+    card += section('Structure', structurePills);
+    card += section('Metal & Colors', metalPills);
+    card += section('Options', optionPills);
+    card += section('Openings', openingPills);
+
+    // Pricing
+    if (pricingLines) {
+      card += '<div style="margin-top:7px;padding-top:7px;border-top:1px solid #333;">';
+      card += '<span style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#555;margin-right:6px;">Totals</span>';
+      card += pricingLines;
+      card += '</div>';
+    }
+    if (breakdownLines) {
+      card += '<div style="margin-top:4px;">'+breakdownLines+'</div>';
+    }
+
+    // Action buttons
+    card += '<div style="display:flex;gap:6px;margin-top:9px;">';
+    card += '<button data-load-qid="'+esc(qid)+'" data-load-ridx="'+ridx+'" style="flex:1;padding:6px 0;background:linear-gradient(135deg,rgba(255,130,0,.18),rgba(255,130,0,.08));color:#FF8200;border:1px solid rgba(255,130,0,.3);border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">⬆ Load</button>';
+    card += '<button data-del-qid="'+esc(qid)+'" style="padding:6px 12px;background:rgba(239,68,68,.08);color:#ef4444;border:1px solid rgba(239,68,68,.2);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">🗑</button>';
+    card += '</div>';
+    card += '</div>';
+    return card;
+  }
+
+  // Build grouped HTML
+  var html = '';
+  groupOrder.forEach(function(name) {
+    var grp = groups[name];
+    // Sort newest first
+    grp.sort(function(a,b){ return new Date(b.date||0) - new Date(a.date||0); });
+    var multi = grp.length > 1;
+    html += '<div style="margin-bottom:12px;">';
+    // Customer header
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">';
+    html += '<div style="font-size:13px;font-weight:800;color:#f0f3f7;">'+esc(name)+'</div>';
+    if (multi) html += '<div style="font-size:10px;background:rgba(255,130,0,.15);color:#FF8200;border-radius:10px;padding:1px 8px;font-weight:700;">'+grp.length+' quotes</div>';
+    // Contact info from first entry
+    var d0 = grp[0];
+    if (d0.phone) html += '<div style="font-size:10px;color:#666;">'+esc(d0.phone)+'</div>';
+    if (d0.email) html += '<div style="font-size:10px;color:#666;">'+esc(d0.email)+'</div>';
+    if (d0.city)  html += '<div style="font-size:10px;color:#666;">'+esc(d0.city)+'</div>';
+    html += '</div>';
+    grp.forEach(function(d){ html += buildCard(d); });
+    html += '</div>';
+  });
+
+  if (append) { list.innerHTML += html; } else { list.innerHTML = html; }
+
   list.onclick = function(e) {
     var delBtn = e.target.closest('[data-del-qid]');
     if (delBtn) { deleteQuote(delBtn.getAttribute('data-del-qid')); return; }
-    var btn = e.target.closest('[data-load-qid]');
-    if (btn) loadSavedDesignByRef(btn.getAttribute('data-load-qid'), parseInt(btn.getAttribute('data-load-ridx')||'0'));
+    var loadBtn = e.target.closest('[data-load-qid]');
+    if (loadBtn) { loadSavedDesignByRef(loadBtn.getAttribute('data-load-qid'), parseInt(loadBtn.getAttribute('data-load-ridx')||'0')); return; }
+  };
+  list.onchange = function(e) {
+    var sel = e.target.closest('[data-status-qid]');
+    if (sel) {
+      var qid = sel.getAttribute('data-status-qid');
+      var newStatus = sel.value;
+      // Update local cache
+      (window._savedDesigns||[]).forEach(function(d){ if((d.quoteId||d.designId)===qid) d.status=newStatus; });
+      sel.style.color = { draft:'#888', sent:'#3b82f6', active:'#FF8200', sold:'#22c55e', lost:'#ef4444' }[newStatus]||'#888';
+      sel.style.borderColor = sel.style.color;
+      // Persist to GAS
+      fetchWithTimeout(API_URL,{method:'POST',headers:{'Content-Type':'text/plain'},
+        body:JSON.stringify({action:'updateQuoteStatus',quoteId:qid,status:newStatus,token:getToken(),username:(window.currentUser||{}).username||''})
+      },15000).catch(function(e){console.warn('[Status]',e);});
+    }
   };
 }
 
