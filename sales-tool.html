@@ -2072,7 +2072,7 @@ function updateStripFromLocalCalc() {
   var sqft     = Q.w * Q.l;
   if (window._shedOnlyMode) {
     // Use combined shed sqft for concrete
-    sqft = (window._shedConfigs||[]).reduce(function(s, sc){ return s + (sc.w||0)*(sc.l||0); }, 0);
+    sqft = (window._shedConfigs||[]).reduce(function(s, sc){ return s + shedConcreteSqft(sc, Q); }, 0);
   }
 
   var allEnclosed = WALLS.length > 0 && WALLS.every(function(w){ return w.encl === 'enclosed' || w.encl === 'partial'; });
@@ -2113,7 +2113,7 @@ function updateStripFromLocalCalc() {
       if (co.sheds) co.sheds.forEach(function(sOpts, i) {
         if (!sOpts || !sOpts.included) return;
         var sc = shedCfgs[i];
-        if (sc && sc.w && sc.l) { concreteAmt += window.SauceConcrete.calculate(county, sc.w * sc.l, sOpts).finalCost; concreteIncluded = true; }
+        if (sc && sc.w && sc.l) { concreteAmt += window.SauceConcrete.calculate(county, shedConcreteSqft(sc, Q), sOpts).finalCost; concreteIncluded = true; }
       });
       (co.aprons||[co.apron]).filter(Boolean).forEach(function(a){ if(a&&a.included&&a.sqft){ concreteAmt += window.SauceConcrete.calculate(county, a.sqft, a).finalCost; concreteIncluded = true; } });
       if (concreteIncluded && concreteAmt > 0) concreteAmt = Math.max(concreteAmt, 3500);
@@ -2135,7 +2135,7 @@ function updateStripFromLocalCalc() {
       if (coStud.sheds) coStud.sheds.forEach(function(sOpts, i) {
         if (!sOpts || !sOpts.included) return;
         var sc = shedCfgs[i];
-        if (sc && sc.w && sc.l) { concreteAmtStud += window.SauceConcrete.calculate(county, sc.w * sc.l, sOpts).finalCost; studIncluded = true; }
+        if (sc && sc.w && sc.l) { concreteAmtStud += window.SauceConcrete.calculate(county, shedConcreteSqft(sc, Q), sOpts).finalCost; studIncluded = true; }
       });
       (coStud.aprons||[coStud.apron]).filter(Boolean).forEach(function(a){ if(a&&a.included&&a.sqft){ concreteAmtStud += window.SauceConcrete.calculate(county, a.sqft, a).finalCost; studIncluded = true; } });
       if (studIncluded && concreteAmtStud > 0) concreteAmtStud = Math.max(concreteAmtStud, 3500);
@@ -2156,7 +2156,7 @@ function updateStripFromLocalCalc() {
   var esdAmt = 0;
   if (esdChecked && window.SauceESD) {
     var _sqft = (Q.w||0) * (Q.l||0);
-    var _shedSqft = (shedCfgs||[]).reduce(function(s,sc){ return s + (sc.w||0)*(sc.l||0); }, 0);
+    var _shedSqft = (shedCfgs||[]).reduce(function(s,sc){ return s + shedConcreteSqft(sc, Q); }, 0);
     esdAmt = (_sqft + _shedSqft) * 0.45 + 750;
   }
 
@@ -4215,6 +4215,29 @@ function setShedWindow(shedId, idx, prop, val) {
   else if (prop === 'framedOpening') val = (val === true || val === 'true');
   sc.windows[idx][prop] = val;
   renderSheds(); scheduleBuild();
+}
+
+
+// Returns the true concrete footprint (sqft) for any shed type
+function shedConcreteSqft(sc, Q) {
+  if (!sc || !sc.w || !sc.l) return 0;
+  var w = sc.w, l = sc.l;
+  if (sc.type === 'wrap3') {
+    // 3-sided: eave leg + both gable legs spanning full building width
+    // For eave-attached wrap3: gable legs span Q.w each
+    var isEave = (sc.wall === 'left' || sc.wall === 'right');
+    var gableSpan = isEave ? (Q ? Q.w : 0) : (Q ? Q.l : 0);
+    // Total = eave strip (w×l) + two gable strips (w×gableSpan) - two corner overlaps (w×w)
+    return w * l + 2 * (w * gableSpan) - 2 * (w * w);
+  } else if (sc.type === 'wrap') {
+    // 2-sided: eave leg + one gable leg
+    var wrapLeg = sc.wrapLeg || 0;
+    if (!wrapLeg) return w * l;
+    // Total = eave strip (w×l) + gable strip (w×wrapLeg) - corner overlap (w×w)
+    return w * l + w * wrapLeg - w * w;
+  }
+  // leanto — simple rectangle
+  return w * l;
 }
 
 function renderSheds(){
@@ -13019,12 +13042,13 @@ function _renderDesignList(quotes, list, append) {
     var _isFirst = true; // will be set per card below
     var card = '<div style="background:#242424;border:1px solid #3a3a3a;border-radius:0 0 8px 8px;padding:11px 13px;margin-bottom:0;border-top:1px solid #FF8200;">';
 
-    // Header row: date + status + quote ID
+    // Header row: date + status + quote ID + salesman
     card += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;gap:8px;">';
     card += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">';
     card += '<span style="font-size:11px;color:#aaa;font-weight:600;">'+esc(date)+'</span>';
     if (ageTxt) card += '<span style="font-size:10px;background:rgba(255,130,0,.12);color:#FF8200;padding:1px 6px;border-radius:4px;font-weight:700;">'+esc(ageTxt)+'</span>';
     if (qid) card += '<span style="font-size:10px;color:#5a7a9a;font-weight:600;">'+esc(qid)+'</span>';
+    if (d.salesman) card += '<span style="font-size:10px;color:#FF8200;font-weight:700;">👤 '+esc(d.salesman)+'</span>';
     card += '</div>';
     // Status selector
     card += '<select data-status-qid="'+esc(qid)+'" style="font-size:10px;font-weight:700;color:'+sColor+';background:#1a1a1a;border:1px solid '+sColor+';border-radius:4px;padding:2px 6px;cursor:pointer;font-family:Outfit,sans-serif;">';
@@ -13080,7 +13104,7 @@ function _renderDesignList(quotes, list, append) {
     if (d0.phone)    html += '<div style="font-size:11px;color:#b0b0b0;font-weight:600;">📞 '+esc(d0.phone)+'</div>';
     if (d0.email)    html += '<div style="font-size:11px;color:#b0b0b0;font-weight:600;">✉ '+esc(d0.email)+'</div>';
     if (d0.city)     html += '<div style="font-size:11px;color:#b0b0b0;font-weight:600;">📍 '+esc(d0.city)+'</div>';
-    if (d0.salesman) html += '<div style="font-size:11px;color:#FF8200;font-weight:700;">👤 '+esc(d0.salesman)+'</div>';
+
     html += '</div>';
     html += '</div>';
     grp.forEach(function(d){ html += buildCard(d); });
@@ -25290,8 +25314,9 @@ window.openConcreteModal = function(forcedType) {
   var shedUIs = [];
   shedCfgs.forEach(function(sc, idx) {
     if (!sc.w || !sc.l) return;
-    var shedSqft = sc.w * sc.l;
-    var label = 'Side Shed ' + (idx+1) + ' (' + sc.w + "' × " + sc.l + "')";
+    var shedSqft = shedConcreteSqft(sc, Q);
+    var _shedDimsLabel = sc.type==='wrap3' ? sc.w+"'×"+sc.l+"' + gables" : sc.type==='wrap' ? sc.w+"'×"+sc.l+"' + leg" : sc.w+"'×"+sc.l+"'";
+    var label = 'Side Shed ' + (idx+1) + ' (' + _shedDimsLabel + ' = ' + Math.round(shedSqft) + ' sqft)';
     var shedSaved = saved.sheds && saved.sheds[idx] ? saved.sheds[idx] : null;
     var shedUI = buildOptsUI(label, shedSqft, shedSaved, recalc);
     shedUI._idx = idx;
@@ -26503,7 +26528,7 @@ window.SauceESD = {
       var applies = window.SauceESD.COUNTIES.indexOf(key) !== -1;
       if (!applies) return { amount: 0, applies: false };
     }
-    var shedSqft = (shedCfgs||[]).reduce(function(s, sc){ return s + (sc.w||0)*(sc.l||0); }, 0);
+    var shedSqft = (shedCfgs||[]).reduce(function(s, sc){ return s + shedConcreteSqft(sc, Q); }, 0);
     var totalSqft = mainSqft + shedSqft;
     var amount = (totalSqft * 0.45) + 750;
     return {
