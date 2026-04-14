@@ -4223,12 +4223,16 @@ function shedConcreteSqft(sc, Q) {
   if (!sc || !sc.w || !sc.l) return 0;
   var w = sc.w, l = sc.l;
   if (sc.type === 'wrap3') {
-    // 3-sided wrap: two primary legs (w×l each) + one cross leg (w×buildingFace)
-    // No corner deductions — gable leg spans only the building face, corners are in the eave legs
-    // Example: 30x40 bldg, 10' wrap eave-attached = 2×(10×40) + 10×30 = 1100 sqft
+    // EAVE-ATTACHED (left/right): two eave legs (w×l) + gable leg (w×Q.w)
+    //   30x40, 10' = 2×(10×40) + 10×30 = 1,100 sqft
+    // GABLE-ATTACHED (front/back): gable leg (w×l=w×Q.w) + two eave legs w×(Q.l+w)
+    //   30x40, 10' = 10×30 + 2×(10×50) = 1,300 sqft
     var isEave = (sc.wall === 'left' || sc.wall === 'right');
-    var buildingFace = isEave ? (Q ? Q.w : 0) : (Q ? Q.l : 0);
-    return 2 * (w * l) + w * buildingFace;
+    if (isEave) {
+      return 2 * (w * l) + w * (Q ? Q.w : 0);
+    } else {
+      return w * l + 2 * (w * ((Q ? Q.l : 0) + w));
+    }
   } else if (sc.type === 'wrap') {
     // 2-sided wrap: one eave leg (w×l) + one gable leg (w×wrapLeg)
     // No corner deduction — gable leg starts at the building corner
@@ -11976,10 +11980,16 @@ async function generateQuotePDF() {
       var sWL = { left:'Left', right:'Right', front:'Front', back:'Back' };
       var eS  = { enclosed:'Enclosed', open:'Open', roofonly:'Roof Only', partial:'Partial' };
       sheds2.forEach(function(sc) {
-        var _isWrapPDF = (sc.type==='wrap'||sc.type==='wrap3') && sc.wrapLeg > 0;
-        var _dimPDF = _isWrapPDF
-          ? (sc.w||'?') + "' × " + (sc.l||'?') + "' + " + sc.wrapLeg + "' wrap  (" + (sc.l + sc.w) + "' eave / " + (sc.wrapLeg + sc.w) + "' gable)"
-          : (sc.w||'?') + "' × " + (sc.l||'?') + "'";
+        var _dimPDF;
+        if (sc.type === 'wrap3') {
+          var _isEave3P = (sc.wall==='left'||sc.wall==='right');
+          var _face3P   = _isEave3P ? Q2.w : Q2.l;
+          _dimPDF = sc.w+"' × "+sc.l+"' × 2 eaves + "+sc.w+"' × "+_face3P+"' gable end";
+        } else if (sc.type === 'wrap' && sc.wrapLeg > 0) {
+          _dimPDF = (sc.w||'?')+"' × "+(sc.l||'?')+"' + "+sc.wrapLeg+"' wrap  ("+(sc.l+sc.w)+"' eave / "+(sc.wrapLeg+sc.w)+"' gable)";
+        } else {
+          _dimPDF = (sc.w||'?')+"' × "+(sc.l||'?')+"'";
+        }
         var sl = (sTL[sc.type]||sc.type||'Shed') + ' — ' + (sWL[sc.wall||'left']) + '  ' + _dimPDF;
         var sd = eS[sc.encl]||sc.encl||'';
         if (sc.dropFt && parseFloat(sc.dropFt)>0) sd += '  |  '+sc.dropFt+"' drop";
@@ -13850,10 +13860,16 @@ function buildSpecText() {
     var shedWallLabels = { left:'Left Side', right:'Right Side', front:'Front', back:'Back' };
     var enclShort      = { enclosed:'Enclosed', open:'Open', roofonly:'Roof Only', partial:'Partial' };
     sheds.forEach(function(sc) {
-      var _isWrapEM = (sc.type==='wrap'||sc.type==='wrap3') && sc.wrapLeg > 0;
-      var _dimEM = _isWrapEM
-        ? (sc.w||'?') + "' x " + (sc.l||'?') + "' + " + sc.wrapLeg + "' wrap  (" + (sc.l + sc.w) + "' eave / " + (sc.wrapLeg + sc.w) + "' gable)"
-        : (sc.w||'?') + "' x " + (sc.l||'?') + "'";
+      var _dimEM;
+      if (sc.type === 'wrap3') {
+        var _isEave3E = (sc.wall==='left'||sc.wall==='right');
+        var _face3E   = _isEave3E ? Q2.w : Q2.l;
+        _dimEM = sc.w+"' × "+sc.l+"' × 2 eaves + "+sc.w+"' × "+_face3E+"' gable end";
+      } else if (sc.type === 'wrap' && sc.wrapLeg > 0) {
+        _dimEM = (sc.w||'?')+"' x "+(sc.l||'?')+"' + "+sc.wrapLeg+"' wrap  ("+(sc.l+sc.w)+"' eave / "+(sc.wrapLeg+sc.w)+"' gable)";
+      } else {
+        _dimEM = (sc.w||'?')+"' x "+(sc.l||'?')+"'";
+      }
       var slabel = (shedTypeLabels[sc.type]||sc.type||'Shed') + ' — ' + (shedWallLabels[sc.wall||'left']) + '  ' + _dimEM;
       var sdetail = enclShort[sc.encl] || sc.encl || '';
       if (sc.dropFt && parseFloat(sc.dropFt) > 0) sdetail += '  |  ' + sc.dropFt + "' drop";
@@ -17357,20 +17373,27 @@ window.SauceMaterials.calcSteelShedTrusses = function(Q, WALLS, shedCfgs) {
     var qty = Math.floor(primaryLen / spacing) + 1;
     groups[sku] = (groups[sku] || 0) + qty;
 
-    // ── Wrap secondary leg ────────────────────────────────────────
-    if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0) {
+    // ── Wrap secondary/tertiary legs ─────────────────────────────────────────────
+    if (sc.type === 'wrap3') {
+      var isEave3T = (sc.wall === 'left' || sc.wall === 'right');
+      if (isEave3T) {
+        // Second eave leg (sc.l) + gable leg (Q.w)
+        groups[sku] = (groups[sku] || 0) + (Math.floor(sc.l / spacing) + 1);
+        var face3T = Q ? Q.w : 0;
+        if (face3T > 0) groups[sku] = (groups[sku] || 0) + (Math.floor(face3T / spacing) + 1);
+      } else {
+        // Two eave legs each = Q.l + sc.w (primary gable already added above)
+        var eaveLen3T = (Q ? Q.l : 0) + sc.w;
+        groups[sku] = (groups[sku] || 0) + (Math.floor(eaveLen3T / spacing) + 1);
+        groups[sku] = (groups[sku] || 0) + (Math.floor(eaveLen3T / spacing) + 1);
+      }
+    } else if (sc.type === 'wrap' && sc.wrapLeg > 0) {
       var secQty = Math.floor(sc.wrapLeg / spacing) + 1;
       groups[sku] = (groups[sku] || 0) + secQty;
     }
 
-    // ── Hip corner — rafter framed ────────────────────────────────
-    // Hip requires: 2x12 common rafters, a hip rafter (diagonal = w * sqrt(2)),
-    // and an LVL ridge beam the length of the hip run (= sc.w).
-    // Rafter length along the hip = sc.w (shed width) at 2/12 pitch ≈ same as shed width.
-    // Common rafters: one per foot of hip run each side = ceil(sc.w / 2) * 2 each side × 2 sides
-    // Hip rafter: 1 diagonal board = ceil(sc.w * 1.414 / 2) × 2' boards → nearest even length
-    // LVL ridge: 1 board sc.w long
-    if (sc.type === 'wrap' && sc.wrapLeg > 0) {
+    // ── Hip corner framing (wrap2 and wrap3) ─────────────────────────────────
+    if ((sc.type === 'wrap' && sc.wrapLeg > 0) || sc.type === 'wrap3') {
       var hipShedW = sc.w; // 20' in this case
       // Common rafter qty: 1 per 2ft of hip run, both sides
       var hipCommonQty = Math.ceil(hipShedW / 2) * 2;
@@ -17381,27 +17404,28 @@ window.SauceMaterials.calcSteelShedTrusses = function(Q, WALLS, shedCfgs) {
       // LVL ridge length = sc.w
       var lvlBoardLen = [10,12,14,16,18,20,24].find(function(l){ return l >= hipShedW; }) || hipShedW;
 
+      var hipCount = (sc.type === 'wrap3') ? 2 : 1; // wrap3 has 2 hip corners
       hipResults.push({
         category:    'Yard',
         description: 'Hip Corner — Common Rafters (2x12)',
         sku:         'SYP212' + hipBoardLen,
-        quantity:    hipCommonQty,
-        detail:      'Hip corner  |  ' + hipShedW + "' shed width  |  2x12 × " + hipBoardLen + "'"
+        quantity:    hipCommonQty * hipCount,
+        detail:      'Hip corner × ' + hipCount + '  |  ' + hipShedW + "' shed width  |  2x12 × " + hipBoardLen + "'"
       });
       hipResults.push({
         category:    'Yard',
         description: 'Hip Corner — Hip Rafter (2x12)',
         sku:         'SYP212' + hipBoardLen,
-        quantity:    1,
-        detail:      'Hip rafter diagonal  |  ' + hipBoardLen + "' board"
+        quantity:    hipCount,
+        detail:      'Hip rafter diagonal × ' + hipCount + '  |  ' + hipBoardLen + "' board"
       });
       hipResults.push({
         category:    'Yard',
         description: 'Hip Corner — LVL Ridge Beam',
         sku:         'CLVL1178',
-        quantity:    1,
+        quantity:    hipCount,
         boardLen:    lvlBoardLen,
-        detail:      'LVL 11 7/8  |  ' + lvlBoardLen + "' board  |  qty 1  |  priced per linear ft"
+        detail:      'LVL 11 7/8  |  ' + lvlBoardLen + "' board  |  qty " + hipCount + '  |  priced per linear ft'
       });
     }
   });
@@ -17529,14 +17553,39 @@ window.SauceMaterials.calcSteelShedPurlins = function(Q, shedCfgs) {
       groups[sku]  = (groups[sku] || 0) + quantity;
     });
 
-    // Secondary wrap leg
-    if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0) {
+    // Additional wrap legs
+    if (sc.type === 'wrap3') {
+      var isEave3s = (sc.wall === 'left' || sc.wall === 'right');
+      if (isEave3s) {
+        // Second eave leg (sc.l) + gable end (Q.w)
+        var bEave2 = fillLength(sc.l, spacing);
+        Object.keys(bEave2).forEach(function(len) {
+          groups['SYP26'+len] = (groups['SYP26'+len]||0) + Math.ceil(bEave2[len] * cups);
+        });
+        var face3s = (window._Q||{}).w || 0;
+        if (face3s > 0) {
+          var bGable = fillLength(face3s, spacing);
+          Object.keys(bGable).forEach(function(len) {
+            groups['SYP26'+len] = (groups['SYP26'+len]||0) + Math.ceil(bGable[len] * cups);
+          });
+        }
+      } else {
+        // Two eave legs each = Q.l + sc.w (primary gable already added)
+        var eaveLen3s = ((window._Q||{}).l || 0) + sc.w;
+        var bEaveL = fillLength(eaveLen3s, spacing);
+        var bEaveR = fillLength(eaveLen3s, spacing);
+        Object.keys(bEaveL).forEach(function(len) {
+          groups['SYP26'+len] = (groups['SYP26'+len]||0) + Math.ceil(bEaveL[len] * cups);
+        });
+        Object.keys(bEaveR).forEach(function(len) {
+          groups['SYP26'+len] = (groups['SYP26'+len]||0) + Math.ceil(bEaveR[len] * cups);
+        });
+      }
+    } else if (sc.type === 'wrap' && sc.wrapLeg > 0) {
       var boards2 = fillLength(sc.wrapLeg, spacing);
       Object.keys(boards2).forEach(function(len) {
-        var runs2     = boards2[len];
-        var quantity2 = Math.ceil(runs2 * cups);
-        var sku2      = 'SYP26' + len;
-        groups[sku2]  = (groups[sku2] || 0) + quantity2;
+        var sku2 = 'SYP26' + len;
+        groups[sku2] = (groups[sku2]||0) + Math.ceil(boards2[len] * cups);
       });
     }
   });
@@ -17683,15 +17732,38 @@ window.SauceMaterials.calcWoodShedPurlins = function(Q, shedCfgs) {
 
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
     var count = ssPurlinsPerRun[sc.w];
     if (!count) return;
-    var boards = fillLength(sc.l);
-    Object.keys(boards).forEach(function(len) {
-      var runs     = boards[len];
-      var quantity = Math.ceil(runs * count);
-      var _syp = window.SauceMaterials.syp24(len, quantity);
-      groups[_syp.sku] = (groups[_syp.sku] || 0) + _syp.quantity;
-    });
+
+    function addPurlinRun(runLen) {
+      var boards = fillLength(runLen);
+      Object.keys(boards).forEach(function(len) {
+        var runs     = boards[len];
+        var quantity = Math.ceil(runs * count);
+        var _syp = window.SauceMaterials.syp24(len, quantity);
+        groups[_syp.sku] = (groups[_syp.sku] || 0) + _syp.quantity;
+      });
+    }
+
+    if (sc.type === 'wrap3') {
+      var _Q3noh = window._Q || {};
+      var isEave3noh = (sc.wall === 'left' || sc.wall === 'right');
+      if (isEave3noh) {
+        addPurlinRun(sc.l);            // left eave
+        addPurlinRun(sc.l);            // right eave
+        addPurlinRun(_Q3noh.w || 0);  // gable end
+      } else {
+        addPurlinRun(sc.l);                         // gable end
+        addPurlinRun((_Q3noh.l || 0) + sc.w);      // left eave
+        addPurlinRun((_Q3noh.l || 0) + sc.w);      // right eave
+      }
+    } else if (sc.type === 'wrap' && sc.wrapLeg > 0) {
+      addPurlinRun(sc.l);
+      addPurlinRun(sc.wrapLeg);
+    } else {
+      addPurlinRun(sc.l);
+    }
   });
 
   return Object.keys(groups).sort().map(function(sku) {
@@ -17850,27 +17922,47 @@ window.SauceMaterials.calcWoodOHShedPurlins = function(Q, shedCfgs) {
 
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
-    if (sc.type === 'gable') return; // gable extensions handled separately below
+    if (sc.type === 'gable') return;
 
     var count = ssPurlinsPerRun[sc.w];
     if (!count) return;
 
-    var remaining  = sc.l - covered;
-    var runBoards  = {};
-    runBoards[endBoard] = 2;
-    if (remaining > 0) {
-      var fill = fillRemaining(remaining, trussSpacing);
-      Object.keys(fill).forEach(function(len) {
-        runBoards[len] = (runBoards[len]||0) + fill[len];
+    function addOHPurlinRun(runLen) {
+      var remaining = runLen - covered;
+      var runBoards = {};
+      runBoards[endBoard] = 2;
+      if (remaining > 0) {
+        var fill = fillRemaining(remaining, trussSpacing);
+        Object.keys(fill).forEach(function(len) {
+          runBoards[len] = (runBoards[len]||0) + fill[len];
+        });
+      }
+      Object.keys(runBoards).forEach(function(len) {
+        var runs     = runBoards[len];
+        var quantity = Math.ceil(runs * count);
+        var _syp = window.SauceMaterials.syp24(len, quantity);
+        groups[_syp.sku] = (groups[_syp.sku]||0) + _syp.quantity;
       });
     }
 
-    Object.keys(runBoards).forEach(function(len) {
-      var runs     = runBoards[len];
-      var quantity = Math.ceil(runs * count);
-      var _syp = window.SauceMaterials.syp24(len, quantity);
-      groups[_syp.sku] = (groups[_syp.sku]||0) + _syp.quantity;
-    });
+    if (sc.type === 'wrap3') {
+      var _Q3oh2 = window._Q || {};
+      var isEave3oh2 = (sc.wall === 'left' || sc.wall === 'right');
+      if (isEave3oh2) {
+        addOHPurlinRun(sc.l);            // left eave
+        addOHPurlinRun(sc.l);            // right eave
+        addOHPurlinRun(_Q3oh2.w || 0);  // gable end
+      } else {
+        addOHPurlinRun(sc.l);                         // gable end
+        addOHPurlinRun((_Q3oh2.l || 0) + sc.w);      // left eave
+        addOHPurlinRun((_Q3oh2.l || 0) + sc.w);      // right eave
+      }
+    } else if (sc.type === 'wrap' && sc.wrapLeg > 0) {
+      addOHPurlinRun(sc.l);
+      addOHPurlinRun(sc.wrapLeg);
+    } else {
+      addOHPurlinRun(sc.l);
+    }
   });
 
   // Gable extensions — use main building purlin chart (gable roof, not single slope)
@@ -19048,14 +19140,21 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
       ssAdder = 10/12;
     }
 
-    if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0) {
-      // Wrap shed: two separate panel runs
-      // Eave side (outer): primary leg + hip run (= sc.w) — e.g. 60 + 20 = 80'
-      var eaveSideLen = sc.l + sc.w;
-      // Gable end side (inner/back): secondary leg + hip run (= sc.w) — e.g. 40 + 20 = 60'
-      var gableEndLen = sc.wrapLeg + sc.w;
-      addPanel(ssLen + ssAdder, Math.ceil(eaveSideLen / 3), 'shed');
-      addPanel(ssLen + ssAdder, Math.ceil(gableEndLen / 3), 'shed');
+    if (sc.type === 'wrap3') {
+      var isEave3rm = (sc.wall === 'left' || sc.wall === 'right');
+      if (isEave3rm) {
+        addPanel(ssLen + ssAdder, Math.ceil((sc.l + sc.w) / 3), 'shed'); // left eave + hip
+        addPanel(ssLen + ssAdder, Math.ceil((sc.l + sc.w) / 3), 'shed'); // right eave + hip
+        addPanel(ssLen + ssAdder, Math.ceil(Q.w / 3), 'shed');            // gable end
+      } else {
+        addPanel(ssLen + ssAdder, Math.ceil(sc.l / 3), 'shed');              // gable end
+        addPanel(ssLen + ssAdder, Math.ceil((Q.l + sc.w) / 3), 'shed');     // left eave
+        addPanel(ssLen + ssAdder, Math.ceil((Q.l + sc.w) / 3), 'shed');     // right eave
+      }
+    } else if (sc.type === 'wrap' && sc.wrapLeg > 0) {
+      // 2-sided: eave leg + hip, gable leg + hip
+      addPanel(ssLen + ssAdder, Math.ceil((sc.l      + sc.w) / 3), 'shed');
+      addPanel(ssLen + ssAdder, Math.ceil((sc.wrapLeg + sc.w) / 3), 'shed');
     } else {
       addPanel(ssLen + ssAdder, Math.ceil(sc.l / 3), 'shed');
     }
@@ -19636,7 +19735,20 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
     // Wrap shed: two runs each including the hip connection (sc.w)
     // Eave side: primary leg + hip = sc.l + sc.w
     // Gable end side: secondary leg + hip = sc.wrapLeg + sc.w
-    if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0 &&
+    if (sc.type === 'wrap3' && (sc.encl === 'roofonly' || sc.encl === 'open')) {
+      var _isEave3Sk = (sc.wall === 'left' || sc.wall === 'right');
+      if (_isEave3Sk) {
+        // Eave-attached: two eave runs (sc.l+hip) + gable run (Q.w)
+        totalQty += Math.ceil((sc.l + sc.w) / 3);   // left eave + hip
+        totalQty += Math.ceil((sc.l + sc.w) / 3);   // right eave + hip
+        totalQty += Math.ceil((Q.w || 0) / 3);       // gable end
+      } else {
+        // Gable-attached: gable run (sc.l) + two eave runs (Q.l+sc.w each)
+        totalQty += Math.ceil(sc.l / 3);                            // gable end
+        totalQty += Math.ceil(((Q.l || 0) + sc.w) / 3);            // left eave
+        totalQty += Math.ceil(((Q.l || 0) + sc.w) / 3);            // right eave
+      }
+    } else if (sc.type === 'wrap' && sc.wrapLeg > 0 &&
         (sc.encl === 'roofonly' || sc.encl === 'open')) {
       totalQty += Math.ceil((sc.l + sc.w) / 3);         // eave side: primary + hip
       totalQty += Math.ceil((sc.wrapLeg + sc.w) / 3);   // gable end: secondary + hip
@@ -19814,7 +19926,23 @@ window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, wind
     add(ps, (Math.ceil(sc.l / jcBoardLen) + 1) * 2);
 
     // Wrap shed: secondary leg + hip run also need skirt J-channel (2 runs each)
-    if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0 &&
+    if (sc.type === 'wrap3' && (sc.encl === 'roofonly' || sc.encl === 'open')) {
+      var _isEave3JC = (sc.wall === 'left' || sc.wall === 'right');
+      if (_isEave3JC) {
+        // Second eave leg + gable leg + two hip runs
+        add(ps, (Math.ceil(sc.l / jcBoardLen) + 1) * 2);                     // second eave
+        add(ps, (Math.ceil((Q.w||0) / jcBoardLen) + 1) * 2);                 // gable end
+        add(ps, (Math.ceil(sc.w / jcBoardLen) + 1) * 2);                     // hip 1
+        add(ps, (Math.ceil(sc.w / jcBoardLen) + 1) * 2);                     // hip 2
+      } else {
+        // Two eave legs (Q.l+sc.w) + two hip runs (primary gable already added)
+        var _eaveJC = (Q.l || 0) + sc.w;
+        add(ps, (Math.ceil(_eaveJC / jcBoardLen) + 1) * 2);                  // left eave
+        add(ps, (Math.ceil(_eaveJC / jcBoardLen) + 1) * 2);                  // right eave
+        add(ps, (Math.ceil(sc.w / jcBoardLen) + 1) * 2);                     // hip 1
+        add(ps, (Math.ceil(sc.w / jcBoardLen) + 1) * 2);                     // hip 2
+      }
+    } else if (sc.type === 'wrap' && sc.wrapLeg > 0 &&
         (sc.encl === 'roofonly' || sc.encl === 'open')) {
       add(ps, (Math.ceil(sc.wrapLeg / jcBoardLen) + 1) * 2); // secondary leg
       add(ps, (Math.ceil(sc.w / jcBoardLen) + 1) * 2);       // hip run
@@ -20181,8 +20309,25 @@ window.SauceMaterials.calcRETTrim = function(Q, WALLS, shedCfgs) {
     // Open/roofonly lean-to — skirt line (skip if vent gap is on for that wall)
     if (sc.encl === 'roofonly' || sc.encl === 'open') {
       if (Q.ventGap && wallEncl(sc.wall) === 'open') return;
-      if ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0) {
-        // Wrap: three skirt runs — primary leg + secondary leg + hip run (= sc.w)
+      if (sc.type === 'wrap3') {
+        var _isEave3R = (sc.wall === 'left' || sc.wall === 'right');
+        if (_isEave3R) {
+          // Eave-attached: two eave legs + gable leg + two hips
+          addRun(sc.l + ohFt * 2, ps);                          // left eave
+          addRun(sc.l + ohFt * 2, ps);                          // right eave
+          if (Q.w) addRun(Q.w + ohFt * 2, ps);                  // gable end
+          addRun(sc.w + ohFt * 2, ps);                          // hip 1
+          addRun(sc.w + ohFt * 2, ps);                          // hip 2
+        } else {
+          // Gable-attached: gable leg + two eave legs (Q.l+sc.w) + two hips
+          addRun(sc.l + ohFt * 2, ps);                          // gable end
+          var _eaveRET = (Q.l || 0) + sc.w;
+          addRun(_eaveRET + ohFt * 2, ps);                      // left eave
+          addRun(_eaveRET + ohFt * 2, ps);                      // right eave
+          addRun(sc.w + ohFt * 2, ps);                          // hip 1
+          addRun(sc.w + ohFt * 2, ps);                          // hip 2
+        }
+      } else if (sc.type === 'wrap' && sc.wrapLeg > 0) {
         addRun(sc.l + ohFt * 2, ps);
         addRun(sc.wrapLeg + ohFt * 2, ps);
         addRun(sc.w + ohFt * 2, ps);
@@ -20714,7 +20859,7 @@ window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
     var ssTopChord = getShedTopChord(sc.w);
     if (ssTopChord) {
       // Wrap shed has 4 open gable rake ends (2 per leg), not just 2
-      var rakeMult = ((sc.type === 'wrap' || sc.type === 'wrap3') && sc.wrapLeg > 0) ? 4 : 2;
+      var rakeMult = sc.type === 'wrap3' ? 6 : ((sc.type === 'wrap' && sc.wrapLeg > 0) ? 4 : 2);
       addBoards(nextEven(ssTopChord), rakeMult);
     }
   });
@@ -25325,7 +25470,11 @@ window.openConcreteModal = function(forcedType) {
   shedCfgs.forEach(function(sc, idx) {
     if (!sc.w || !sc.l) return;
     var shedSqft = shedConcreteSqft(sc, Q);
-    var _shedDimsLabel = sc.type==='wrap3' ? sc.w+"'×"+sc.l+"' + gables" : sc.type==='wrap' ? sc.w+"'×"+sc.l+"' + leg" : sc.w+"'×"+sc.l+"'";
+    var _isEave3CL = (sc.wall==='left'||sc.wall==='right');
+    var _face3CL = _isEave3CL ? Q.w : Q.l;
+    var _shedDimsLabel = sc.type==='wrap3'
+      ? sc.w+"'×"+sc.l+"'×2 + "+sc.w+"'×"+_face3CL+"' = "+Math.round(shedConcreteSqft(sc,Q))+" sqft"
+      : sc.type==='wrap' ? sc.w+"'×"+sc.l+"' + leg" : sc.w+"'×"+sc.l+"'";
     var label = 'Side Shed ' + (idx+1) + ' (' + _shedDimsLabel + ' = ' + Math.round(shedSqft) + ' sqft)';
     var shedSaved = saved.sheds && saved.sheds[idx] ? saved.sheds[idx] : null;
     var shedUI = buildOptsUI(label, shedSqft, shedSaved, recalc);
@@ -26335,13 +26484,19 @@ window.SauceLabor.calcSideSheds = function(shedCfgs) {
     if (!sc.w || !sc.l) return;
 
     if (sc.type === 'wrap3') {
-      // 3-sided: two eave legs (sc.l each) + one gable leg (building face width)
-      // Matches shedConcreteSqft geometry — no corner deductions
-      var isEave = (sc.wall === 'left' || sc.wall === 'right');
-      var buildingFace = isEave ? (_SL_Q.w || 0) : (_SL_Q.l || 0);
-      shedLaborEntry(sc, idx, sc.l, ' (left eave)');
-      shedLaborEntry(sc, idx, sc.l, ' (right eave)');
-      shedLaborEntry(sc, idx, buildingFace, ' (gable end)');
+      var isEave3L = (sc.wall === 'left' || sc.wall === 'right');
+      if (isEave3L) {
+        // Eave-attached: two eave legs (sc.l) + one gable leg (Q.w) = 1,100 on 30x40
+        shedLaborEntry(sc, idx, sc.l,          ' (left eave)');
+        shedLaborEntry(sc, idx, sc.l,          ' (right eave)');
+        shedLaborEntry(sc, idx, _SL_Q.w || 0, ' (gable end)');
+      } else {
+        // Gable-attached: gable leg (sc.l) + two eave legs (Q.l+w each) = 1,300 on 30x40
+        var eaveLen3L = (_SL_Q.l || 0) + sc.w;
+        shedLaborEntry(sc, idx, sc.l,      ' (gable end)');
+        shedLaborEntry(sc, idx, eaveLen3L, ' (left eave)');
+        shedLaborEntry(sc, idx, eaveLen3L, ' (right eave)');
+      }
     } else if (sc.type === 'wrap' && sc.wrapLeg > 0) {
       // 2-sided: eave leg + one gable leg, each including hip
       shedLaborEntry(sc, idx, sc.l + sc.w, ' (eave side)');
