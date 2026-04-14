@@ -2250,7 +2250,7 @@ function updateStripFromLocalCalc() {
     var pitch612AdderAmt = 0;
     if (v.forcedType === 'steel' && !!(document.getElementById('st_pitch612')||{}).checked) {
       var p612Sqft = (Q.w||0) * (Q.l||0);
-      (shedCfgs||[]).forEach(function(sc){ if (sc.w && sc.l) p612Sqft += sc.w * sc.l; });
+      (shedCfgs||[]).forEach(function(sc){ if (sc.w && sc.l) p612Sqft += shedConcreteSqft(sc, Q); });
       pitch612AdderAmt = p612Sqft * 0.25;
     }
     // Cable Bracing labor — $400/set, steel truss only
@@ -4223,16 +4223,18 @@ function shedConcreteSqft(sc, Q) {
   if (!sc || !sc.w || !sc.l) return 0;
   var w = sc.w, l = sc.l;
   if (sc.type === 'wrap3') {
-    // 3-sided wrap: two eave legs (each w×l) + one gable leg (w×buildingFace) - two corners (w×w each)
-    // Example: 30x40 bldg, 10' wrap = 2×(10×40) + 10×30 - 2×(10×10) = 900 sqft
+    // 3-sided wrap: two primary legs (w×l each) + one cross leg (w×buildingFace)
+    // No corner deductions — gable leg spans only the building face, corners are in the eave legs
+    // Example: 30x40 bldg, 10' wrap eave-attached = 2×(10×40) + 10×30 = 1100 sqft
     var isEave = (sc.wall === 'left' || sc.wall === 'right');
     var buildingFace = isEave ? (Q ? Q.w : 0) : (Q ? Q.l : 0);
-    return 2 * (w * l) + w * buildingFace - 2 * (w * w);
+    return 2 * (w * l) + w * buildingFace;
   } else if (sc.type === 'wrap') {
-    // 2-sided wrap: one eave leg (w×l) + one gable leg (w×wrapLeg) - one corner (w×w)
+    // 2-sided wrap: one eave leg (w×l) + one gable leg (w×wrapLeg)
+    // No corner deduction — gable leg starts at the building corner
     var wrapLeg = sc.wrapLeg || 0;
     if (!wrapLeg) return w * l;
-    return w * l + w * wrapLeg - w * w;
+    return w * l + w * wrapLeg;
   }
   // leanto — simple rectangle
   return w * l;
@@ -26188,7 +26190,7 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
   var pitch612On = !!(document.getElementById('st_pitch612')||{}).checked;
   if (pitch612On) {
     var pitch612Sqft = (Q.w||0) * (Q.l||0);
-    (window._shedConfigs||[]).forEach(function(sc){ if (sc.w && sc.l) pitch612Sqft += sc.w * sc.l; });
+    (window._shedConfigs||[]).forEach(function(sc){ if (sc.w && sc.l) pitch612Sqft += shedConcreteSqft(sc, window._Q||{}); });
     if (pitch612Sqft > 0) lines.push({ label: '6/12 Pitch  |  ' + pitch612Sqft + ' sqft @ $0.25', amount: pitch612Sqft * 0.25 });
   }
 
@@ -26327,15 +26329,22 @@ window.SauceLabor.calcSideSheds = function(shedCfgs) {
     }
   }
 
+  var _SL_Q = window._Q || {};
+
   (shedCfgs||[]).forEach(function(sc, idx) {
     if (!sc.w || !sc.l) return;
-    var isWrap = (sc.type === 'wrap' || sc.type === 'wrap3') && (sc.wrapLeg > 0);
 
-    if (isWrap) {
-      // Split into two separate labor entries, each including the hip (sc.w)
-      // Eave side: primary leg + hip
+    if (sc.type === 'wrap3') {
+      // 3-sided: two eave legs (sc.l each) + one gable leg (building face width)
+      // Matches shedConcreteSqft geometry — no corner deductions
+      var isEave = (sc.wall === 'left' || sc.wall === 'right');
+      var buildingFace = isEave ? (_SL_Q.w || 0) : (_SL_Q.l || 0);
+      shedLaborEntry(sc, idx, sc.l, ' (left eave)');
+      shedLaborEntry(sc, idx, sc.l, ' (right eave)');
+      shedLaborEntry(sc, idx, buildingFace, ' (gable end)');
+    } else if (sc.type === 'wrap' && sc.wrapLeg > 0) {
+      // 2-sided: eave leg + one gable leg, each including hip
       shedLaborEntry(sc, idx, sc.l + sc.w, ' (eave side)');
-      // Gable end side: secondary leg + hip
       shedLaborEntry(sc, idx, sc.wrapLeg + sc.w, ' (gable end)');
     } else {
       shedLaborEntry(sc, idx, sc.l, '');
@@ -27039,7 +27048,7 @@ window.exportMaterialCSV = function(buildType, labelStr) {
         (shedCfgs || []).forEach(function(sc, i) {
           var sOpts = co.sheds && co.sheds[i];
           if (sOpts && sOpts.included && sc.w && sc.l) {
-            concTotal += SC.calculate(county, sc.w * sc.l, sOpts).finalCost;
+            concTotal += SC.calculate(county, shedConcreteSqft(sc, window._Q||{}), sOpts).finalCost;
           }
         });
         (co.aprons||[co.apron]).filter(Boolean).forEach(function(a){ if(a&&a.included&&a.sqft){ concTotal += SC.calculate(county, a.sqft, a).finalCost; } });
