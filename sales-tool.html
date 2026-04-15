@@ -17086,6 +17086,12 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
       addFraming(sc.w, sc.l, sc.finishedCeiling);
       // Secondary leg (wrapLeg)
       if (sc.wrapLeg > 0) addFraming(sc.w, sc.wrapLeg, sc.finishedCeiling);
+      // Hip corner common rafters — same SKU as straight rafters, 1 hip corner
+      if (sc.wrapLeg > 0) {
+        var hipCommons = Math.ceil(sc.w / 2) * 2;
+        var rSkuHip = rafterMap[sc.w];
+        if (rSkuHip) rafterGroups[rSkuHip] = (rafterGroups[rSkuHip] || 0) + hipCommons;
+      }
       return;
     }
 
@@ -17101,6 +17107,10 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
         addFraming(sc.w, Q.l + sc.w,        sc.finishedCeiling); // left eave + one hip
         addFraming(sc.w, Q.l + sc.w,        sc.finishedCeiling); // right eave + one hip
       }
+      // Hip corner common rafters — same SKU as straight rafters, 2 hip corners on wrap3
+      var hipCommons3 = Math.ceil(sc.w / 2) * 2 * 2; // 2 corners
+      var rSkuHip3 = rafterMap[sc.w];
+      if (rSkuHip3) rafterGroups[rSkuHip3] = (rafterGroups[rSkuHip3] || 0) + hipCommons3;
       return;
     }
   });
@@ -17409,8 +17419,6 @@ window.SauceMaterials.calcSteelShedTrusses = function(Q, WALLS, shedCfgs) {
     // ── Hip corner framing (wrap2 and wrap3) ─────────────────────────────────
     if ((sc.type === 'wrap' && sc.wrapLeg > 0) || sc.type === 'wrap3') {
       var hipShedW = sc.w; // 20' in this case
-      // Common rafter qty: 1 per 2ft of hip run, both sides
-      var hipCommonQty = Math.ceil(hipShedW / 2) * 2;
       // Hip rafter diagonal length (ft) — at 2/12 pitch, run = sc.w, diagonal ≈ sc.w × √(1 + (2/12)²)
       var hipRafterFt = Math.ceil(hipShedW * Math.sqrt(1 + Math.pow(2/12, 2)) + 2); // +2ft for seat cut
       // Best board length for hip rafter (12, 14, 16, 18, 20)
@@ -17419,13 +17427,6 @@ window.SauceMaterials.calcSteelShedTrusses = function(Q, WALLS, shedCfgs) {
       var lvlBoardLen = [10,12,14,16,18,20,24].find(function(l){ return l >= hipShedW; }) || hipShedW;
 
       var hipCount = (sc.type === 'wrap3') ? 2 : 1; // wrap3 has 2 hip corners
-      hipResults.push({
-        category:    'Yard',
-        description: 'Hip Corner — Common Rafters (2x12)',
-        sku:         'SYP212' + hipBoardLen,
-        quantity:    hipCommonQty * hipCount,
-        detail:      'Hip corner × ' + hipCount + '  |  ' + hipShedW + "' shed width  |  2x12 × " + hipBoardLen + "'"
-      });
       hipResults.push({
         category:    'Yard',
         description: 'Hip Corner — Hip Rafter (2x12)',
@@ -17677,18 +17678,6 @@ window.SauceMaterials.calcWoodPurlins = function(Q) {
 
   // Board length driven by truss spacing
   var trussSpacing = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
-  var spacingToBoard = { 2:20, 4:12, 5:20 };
-
-  function fillLength(totalLen) {
-    var preferred = spacingToBoard[trussSpacing];
-    if (preferred && totalLen % preferred === 0) { var r={}; r[preferred]=totalLen/preferred; return r; }
-    if (totalLen % 20 === 0) { return { 20: totalLen / 20 }; }
-    if (totalLen % 12 === 0) { return { 12: totalLen / 12 }; }
-    var boards = {}, remaining = totalLen;
-    if (remaining >= 20) { boards[20] = Math.floor(remaining / 20); remaining = remaining % 20; }
-    if (remaining > 0.01) { boards[10] = (boards[10]||0) + Math.ceil(remaining / 10); }
-    return boards;
-  }
 
   var widthMap = purlinsPerRun[Q.w];
   if (!widthMap) return [];
@@ -17733,15 +17722,26 @@ window.SauceMaterials.calcWoodShedPurlins = function(Q, shedCfgs) {
   };
 
   var trussSpacing = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
-  var spacingToBoard = { 2:20, 4:12, 5:20 };
 
-  function fillLength(totalLen) {
-    var preferred = spacingToBoard[trussSpacing];
-    if (preferred && totalLen % preferred === 0) { var r={}; r[preferred]=totalLen/preferred; return r; }
+  // Side shed purlins span between shed posts — board length driven by post spacing, not truss spacing
+  function shedPostPS(wallId) {
+    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  }
+  function preferredShedBoard(ps) {
+    // 8 → 16, 10 → 20, 12 → 20, 16 → 16, 20 → 20, 24 → 24
+    if (ps <= 10)  return ps * 2;
+    if (ps === 12) return 20;
+    return ps; // 16, 20, 24
+  }
+
+  function fillLength(totalLen, ps) {
+    var preferred = preferredShedBoard(ps || 10);
+    if (totalLen % preferred === 0) { var r={}; r[preferred]=totalLen/preferred; return r; }
     if (totalLen % 20 === 0) { return { 20: totalLen / 20 }; }
-    if (totalLen % 12 === 0) { return { 12: totalLen / 12 }; }
+    if (totalLen % preferred === 0) { var r={}; r[preferred]=totalLen/preferred; return r; }
     var boards = {}, remaining = totalLen;
-    if (remaining >= 20) { boards[20] = Math.floor(remaining / 20); remaining = remaining % 20; }
+    if (remaining >= preferred) { boards[preferred] = Math.floor(remaining / preferred); remaining = remaining % preferred; }
     if (remaining > 0.01) { boards[10] = (boards[10]||0) + Math.ceil(remaining / 10); }
     return boards;
   }
@@ -17767,8 +17767,9 @@ window.SauceMaterials.calcWoodShedPurlins = function(Q, shedCfgs) {
     var count = ssPurlinsPerRun[sc.w];
     if (!count) return;
 
+    var shedPS = shedPostPS(sc.wall);
     function addPurlinRun(runLen) {
-      var boards = fillLength(runLen);
+      var boards = fillLength(runLen, shedPS);
       Object.keys(boards).forEach(function(len) {
         var runs     = boards[len];
         var quantity = Math.ceil(runs * count);
@@ -17973,10 +17974,22 @@ window.SauceMaterials.calcWoodOHShedPurlins = function(Q, shedCfgs) {
     var count = ssPurlinsPerRun[sc.w];
     if (!count) return;
 
+    // Side shed purlins use post spacing for board length, not truss spacing
+    var shedPS_oh = (function() {
+      var w = (WALLS||[]).find(function(w){ return w.id === sc.wall; });
+      return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+    })();
+    var shedBoard = (function(ps) {
+      if (ps <= 10)  return ps * 2;
+      if (ps === 12) return 20;
+      return ps; // 16, 20, 24
+    })(shedPS_oh);
+
     function addOHPurlinRun(runLen) {
-      var remaining = runLen - covered;
       var runBoards = {};
-      runBoards[endBoard] = 2;
+      var remaining = runLen;
+      if (remaining >= shedBoard) { runBoards[shedBoard] = Math.floor(remaining / shedBoard); remaining = remaining % shedBoard; }
+      if (remaining > 0.01) { runBoards[10] = (runBoards[10]||0) + Math.ceil(remaining / 10); }
       if (remaining > 0) {
         var fill = fillRemaining(remaining, trussSpacing);
         Object.keys(fill).forEach(function(len) {
@@ -21934,6 +21947,13 @@ window.SauceMaterials.calcJoistHangers = function(Q, shedCfgs) {
     }
 
     var count = Math.floor(sc.l / 2) + 2;
+    // Hip corner commons: same count as calcShedFraming
+    if (sc.type === 'wrap' && sc.wrapLeg > 0) {
+      count += Math.ceil(sc.w / 2) * 2;                // 1 hip corner
+      count += Math.floor(sc.wrapLeg / 2) + 2;         // secondary leg
+    } else if (sc.type === 'wrap3') {
+      count += Math.ceil(sc.w / 2) * 2 * 2;            // 2 hip corners
+    }
     groups[sku] = (groups[sku] || 0) + count;
   });
 
@@ -21973,7 +21993,15 @@ window.SauceMaterials.calcHurricaneBrackets = function(Q, shedCfgs) {
     }
     if (sc.wall !== 'left' && sc.wall !== 'right') return;
 
-    qty += Math.floor(sc.l / 2) + 2;
+    var shedRafters = Math.floor(sc.l / 2) + 2;
+    // Hip corner commons: same count as calcShedFraming
+    if (sc.type === 'wrap' && sc.wrapLeg > 0) {
+      shedRafters += Math.ceil(sc.w / 2) * 2;          // 1 hip corner
+      shedRafters += Math.floor(sc.wrapLeg / 2) + 2;   // secondary leg
+    } else if (sc.type === 'wrap3') {
+      shedRafters += Math.ceil(sc.w / 2) * 2 * 2;      // 2 hip corners
+    }
+    qty += shedRafters;
   });
 
   if (!qty) return [];
