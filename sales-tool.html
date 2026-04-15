@@ -16250,18 +16250,17 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
     }
 
     if (sc.type === 'gable') {
-      // Gable extension posts at eave height
-      // 2 corner posts at outer gable end + interior posts along each side at gablePS spacing
-      // e.g. 20' ext, 10' spacing: floor(20/10)+1 = 3 per side, minus 1 shared corner = 2 interior
-      // Total = 2 corners + (floor(sc.l/gablePS) - 1) * 2 interior = 4 for 20'/10'
-      var gLen    = Math.ceil((Q.h + ground) / 2) * 2;
-      var gPS     = sc.gablePS || 10;
-      var bays    = Math.max(1, Math.floor(sc.l / gPS));
-      var corners = 2;                   // outer gable end corners
-      var interior = (bays - 1) * 2;    // interior posts along each eave (both sides)
-      var totalGablePosts = corners + interior;
+      var gLen     = Math.ceil((Q.h + ground) / 2) * 2;
       var wallCapG = sc.wall.charAt(0).toUpperCase() + sc.wall.slice(1);
-      allPosts.push({ sku: skuBase + gLen, postLen: gLen, quantity: totalGablePosts, label: 'Gable Extension Posts — ' + wallCapG });
+      if (isGableEaveAttached(sc)) {
+        var gPS      = sc.gablePS || 10;
+        var bays     = Math.max(1, Math.floor(sc.l / gPS));
+        var interior = (bays - 1) * 2;
+        allPosts.push({ sku: skuBase + gLen, postLen: gLen, quantity: 2 + interior, label: 'Gable Extension Posts — ' + wallCapG });
+      } else {
+        // Gable-attached: free span — 2 outer corner posts only
+        allPosts.push({ sku: skuBase + gLen, postLen: gLen, quantity: 2, label: 'Gable Extension Posts — ' + wallCapG });
+      }
       return;
     }
 
@@ -16747,7 +16746,14 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
       });
     }
 
-    if (sc.type === 'gable') { addShedPieces(sc.l, 4); return; }
+    if (sc.type === 'gable') {
+      if (isGableEaveAttached(sc)) {
+        addShedPieces(sc.l, 4);
+      } else {
+        addShedPieces(20, 2); // 1×20' per side — builders cut inside + outside pieces
+      }
+      return;
+    }
     if (sc.type === 'leanto') { addShedPieces(sc.l, 2); return; }
     if (sc.type === 'wrap' || sc.type === 'wrap3') {
       addShedPieces(sc.l, 2);
@@ -16921,37 +16927,33 @@ window.SauceMaterials.calcWoodTrusses = function(Q, shedCfgs) {
     });
   }
 
-  // Gable extension trusses — 20' wide trusses spanning the extension width
-  // Qty = ceil(extension length / truss spacing) + 1, per extension
+  // Gable extension trusses
   (shedCfgs||[]).forEach(function(sc) {
     if (sc.type !== 'gable') return;
     if (!sc.w || !sc.l) return;
-    var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
-    if (!isEaveWall) return;
-    var extW        = sc.w;  // extension depth = truss span (e.g. 20')
-    var extL        = sc.l;  // extension length along eave wall (e.g. 20')
-    var extGableSKU = gableMap[extW]   || ('EXT-WIDTH-' + extW + "'-SKU-NOT-FOUND");
-    var extRegSKU   = regularMap[extW] || ('EXT-WIDTH-' + extW + "'-SKU-NOT-FOUND");
-    var extRegQty   = Math.floor(extL / spacing); // e.g. 20'/5' = 4 regular
-    var extGableQty = 1;                           // 1 gable truss at the open gable end
-    // Regular trusses
-    if (extRegQty > 0) {
-      results.push({
-        category:    'Yard',
-        description: 'Gable Extension Trusses',
-        sku:         extRegSKU,
-        quantity:    extRegQty,
-        detail:      extW + "' span  |  " + extRegQty + ' @ ' + spacing + "' spacing  |  " + (hasOH ? '12" overhang' : 'no overhang')
-      });
+    if (isGableEaveAttached(sc)) {
+      // Eave-attached: trusses span sc.w, run along sc.l
+      var extGableSKU = gableMap[sc.w]   || ('EXT-WIDTH-' + sc.w + "'-SKU-NOT-FOUND");
+      var extRegSKU   = regularMap[sc.w] || ('EXT-WIDTH-' + sc.w + "'-SKU-NOT-FOUND");
+      var extRegQty   = Math.floor(sc.l / spacing);
+      if (extRegQty > 0) {
+        results.push({ category:'Yard', description:'Gable Extension Trusses', sku:extRegSKU, quantity:extRegQty,
+          detail: sc.w + "' span  |  " + extRegQty + ' @ ' + spacing + "' spacing" });
+      }
+      results.push({ category:'Yard', description:'Gable Extension — Gable Truss', sku:extGableSKU, quantity:1,
+        detail: sc.w + "' span  |  gable end" });
+    } else {
+      // Gable-attached: trusses same width as main building, run along sc.l
+      var extGableSKUG = gableMap[w]   || ('EXT-WIDTH-' + w + "'-SKU-NOT-FOUND");
+      var extRegSKUG   = regularMap[w] || ('EXT-WIDTH-' + w + "'-SKU-NOT-FOUND");
+      var extRegQtyG   = Math.floor(sc.l / spacing);
+      if (extRegQtyG > 0) {
+        results.push({ category:'Yard', description:'Gable Extension Trusses', sku:extRegSKUG, quantity:extRegQtyG,
+          detail: w + "' span  |  " + extRegQtyG + ' @ ' + spacing + "' spacing  |  continues main roof" });
+      }
+      results.push({ category:'Yard', description:'Gable Extension — Gable Truss', sku:extGableSKUG, quantity:1,
+        detail: w + "' span  |  outer gable end" });
     }
-    // Gable truss at open end
-    results.push({
-      category:    'Yard',
-      description: 'Gable Extension — Gable Truss',
-      sku:         extGableSKU,
-      quantity:    extGableQty,
-      detail:      extW + "' span  |  gable end  |  " + (hasOH ? '12" overhang' : 'no overhang')
-    });
   });
 
   return results;
@@ -17152,7 +17154,7 @@ window.SauceMaterials.calcGableExtRoofFraming = function(Q, shedCfgs) {
   (shedCfgs || []).forEach(function(sc) {
     if (sc.type !== 'gable') return;
     if (!sc.w || !sc.l) return;
-    if (!(sc.wall==='left'||sc.wall==='right')) return;
+    if (!isGableEaveAttached(sc)) return; // gable-attached continues main roof — no ridge/valley
 
     var runLen = sc.l + 2; // ridge and valley boards are 2' longer than extension length
 
@@ -19132,19 +19134,18 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
   (shedCfgs||[]).forEach(function(sc) {
     if (!sc.w || !sc.l) return;
 
-    // Gable extension — uses wood truss chart for panel length
     if (sc.type === 'gable') {
-      var extMetalLen = getMetalLen(sc.w, Q.truss, Q.oh, Q.pitch);
-      if (extMetalLen) {
-        var ohFtG = Q.oh > 0 ? 1 : 0;
-        var isEaveWall = (sc.wall==='left'||sc.wall==='right');
-        // Eave wall: panels cross over main building → add half main building width
-        // Gable end: panels only span extension depth, no crossing
-        var runPerSide = isEaveWall
-          ? sc.l + ohFtG + (Q.w / 2)   // e.g. 20 + 1 + 12 = 33'
-          : sc.l + ohFtG;               // e.g. 20 + 1 = 21'
-        var gablePanels = Math.ceil(runPerSide / 3) * 2;
-        addPanel(extMetalLen, gablePanels, 'ext');
+      if (isGableEaveAttached(sc)) {
+        // Eave-attached: own ridge, panels cross over half main building
+        var extMetalLen = getMetalLen(sc.w, Q.truss, Q.oh, Q.pitch);
+        if (extMetalLen) {
+          var ohFtG = Q.oh > 0 ? 1 : 0;
+          addPanel(extMetalLen, Math.ceil((sc.l + ohFtG + Q.w/2) / 3) * 2, 'ext');
+        }
+      } else {
+        // Gable-attached: continues main roof — same panel length, ceil(sc.l/3)×2 panels
+        var mainMetalLen = getMetalLen(Q.w, Q.truss, Q.oh, Q.pitch);
+        if (mainMetalLen) addPanel(mainMetalLen, Math.ceil(sc.l / 3) * 2, 'ext');
       }
       return;
     }
@@ -21899,14 +21900,12 @@ window.SauceMaterials.calcHurricaneBrackets = function(Q, shedCfgs) {
 
   (shedCfgs||[]).forEach(function(sc) {
     if (!sc.w || !sc.l) return;
-    if (sc.wall !== 'left' && sc.wall !== 'right') return;
-
     if (sc.type === 'gable') {
-      // Gable extension: (floor(sc.l / spacing) + 1) trusses × 2 clips each
-      var extTrusses = Math.floor(sc.l / spacing) + 1;
-      qty += extTrusses * 2;
+      // Both eave and gable-attached: (floor(sc.l/spacing)+1) trusses × 2 clips
+      qty += (Math.floor(sc.l / spacing) + 1) * 2;
       return;
     }
+    if (sc.wall !== 'left' && sc.wall !== 'right') return;
 
     qty += Math.floor(sc.l / 2) + 2;
   });
