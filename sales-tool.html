@@ -23011,21 +23011,21 @@ async function generateChecklist() {
   }
 
   // ── READ FROM LIVE MODULE-LEVEL STATE ──────────────────────────────────
-  // IMPORTANT: Read from module-level globals (Q, allDoors, WALLS) which are updated
-  // immediately by restoreConfig(). window._Q / window._allDoors are only set later
-  // when triggerBuild fires — using them would show stale data from the previous quote.
-  var Q      = (typeof Q !== 'undefined' ? Q : null) || window._Q || {};
+  // Do NOT declare a local 'Q' — that would shadow the module-level Q which restoreConfig
+  // mutates immediately via Object.assign. window._Q / window._allDoors are only updated
+  // later when triggerBuild fires, so they lag behind and show the previous quote.
+  // Use window._ckQ as a transparent alias to avoid any local shadowing.
+  window._ckQ = Q;  // Q here refers to the module-level var, always current after restoreConfig
   // serializeConfig() reads live DOM elements which are correctly restored by restoreConfig()
   var sf     = (typeof serializeConfig === 'function' ? serializeConfig() : {}).salesFields || {};
   var cu     = window.currentUser || {};
   var county = window._cachedCounty || '';
 
-  // Garage doors — read from module-level allDoors (updated by restoreConfig, not triggerBuild)
-  var _liveDoors = (typeof allDoors !== 'undefined' ? allDoors : window._allDoors) || [];
-  var gDoors = _liveDoors.filter(function(d){ return d.type==='garage' && !d.framedOpening; });
+  // Garage doors — module-level allDoors is mutated by restoreConfig immediately
+  var gDoors = allDoors.filter(function(d){ return d.type==='garage' && !d.framedOpening; });
 
   // Walk doors — classified by type string (no .material property on these objects)
-  var wDoors = (typeof window._walkDoors !== 'undefined' ? window._walkDoors : []) || [];
+  var wDoors = window._walkDoors || [];
   var woodWDs  = wDoors.filter(function(d){
     var t = (d.type||'').toUpperCase();
     return t.indexOf('WOOD') !== -1 || t.indexOf('MAHOGANY') !== -1 ||
@@ -23071,13 +23071,13 @@ async function generateChecklist() {
   var is26g = (sf.roofMetal || '').indexOf('26') !== -1 || (sf.roofMetal || '').indexOf('Standing') !== -1 || (sf.roofMetal || '').indexOf('Board') !== -1;
   var isStandingSeam = !!(sf.standingSeam);
 
-  // Truss — read from Q.truss (restored by restoreConfig), fall back to cfgTruss chip state
-  var _trussType = Q.truss || window.cfgTruss || 'Wood';
+  // Truss — read from window._ckQ.truss (restored by restoreConfig), fall back to cfgTruss chip state
+  var _trussType = window._ckQ.truss || window.cfgTruss || 'Wood';
   var isWood  = _trussType !== 'Steel';
   var isSteel = _trussType === 'Steel';
 
   // Overhang
-  var oh = Q.oh || 0;
+  var oh = window._ckQ.oh || 0;
 
   // Post size split
   // Post size — always eave wall (left, fallback to right, fallback to legacy mbPostSize)
@@ -23086,8 +23086,8 @@ async function generateChecklist() {
   var postParts = _eavePostVal.split('x');
   var postW = postParts[0] || '6';
   var postH = postParts[1] || '6';
-  // Post spacing — always eave (Q.eavePS is the authoritative eave spacing)
-  var _eavePS = Q.eavePS || (document.getElementById('st_eavePS')||{}).value || Q.postSpacing || 10;
+  // Post spacing — always eave (window._ckQ.eavePS is the authoritative eave spacing)
+  var _eavePS = window._ckQ.eavePS || (document.getElementById('st_eavePS')||{}).value || window._ckQ.postSpacing || 10;
 
   // Insulation mapping
   var insType = sf.insulation || 'None';
@@ -23197,7 +23197,7 @@ async function generateChecklist() {
   }
 
   // Gable extension
-  var gableExt = Q.gableExt || sf.gableExt || '';
+  var gableExt = window._ckQ.gableExt || sf.gableExt || '';
   var gableExtParts = typeof gableExt === 'string' ? gableExt.split('x') : ['',''];
 
   // Porch
@@ -23241,7 +23241,7 @@ async function generateChecklist() {
 
   try {
     // ── DEBUG: log all key values so any mismatch is visible in console ──
-    console.log('[Checklist] Q.truss='+_trussType+' isWood='+isWood+' isConc='+isConc+' concThick='+concThick+' wDoors='+wDoors.length+' woodWDs='+woodWDs.length+' alumWDs='+alumWDs.length+' gDoors='+gDoors.length+' sheds='+sheds.length+' _lastConcreteOpts='+JSON.stringify(window._lastConcreteOpts && window._lastConcreteOpts.main));
+    console.log('[Checklist] window._ckQ.truss='+_trussType+' isWood='+isWood+' isConc='+isConc+' concThick='+concThick+' wDoors='+wDoors.length+' woodWDs='+woodWDs.length+' alumWDs='+alumWDs.length+' gDoors='+gDoors.length+' sheds='+sheds.length+' _lastConcreteOpts='+JSON.stringify(window._lastConcreteOpts && window._lastConcreteOpts.main));
     var pdfBytes = Uint8Array.from(atob(window._CHECKLIST_PDF_B64), function(c){ return c.charCodeAt(0); });
     var pdfDoc   = await PDFLib.PDFDocument.load(pdfBytes, { ignoreEncryption: true });
     var form     = pdfDoc.getForm();
@@ -23259,10 +23259,10 @@ async function generateChecklist() {
     txt(form, 'county',      county);
 
     // ── SIZE OF BUILDING ─────────────────────────────────────────────
-    txt(form, 'bldg_w',      Q.w || '');
-    txt(form, 'bldg_l',      Q.l || '');
-    txt(form, 'bldg_h',      Q.h || '');
-    chk(form, 'size_cb',     !!(Q.w && Q.l && Q.h));
+    txt(form, 'bldg_w',      window._ckQ.w || '');
+    txt(form, 'bldg_l',      window._ckQ.l || '');
+    txt(form, 'bldg_h',      window._ckQ.h || '');
+    chk(form, 'size_cb',     !!(window._ckQ.w && window._ckQ.l && window._ckQ.h));
     txt(form, 'bldg_type',   frameLabel);
     txt(form, 'post_size_w', postW);
     txt(form, 'post_size_h', postH);
@@ -23320,7 +23320,7 @@ async function generateChecklist() {
     chk(form, 'truss_cb',    true);
     chk(form, 'truss_wood',  isWood);
     chk(form, 'truss_steel', isSteel);
-    txt(form, 'pitch',       String(Q.pitch || 4));
+    txt(form, 'pitch',       String(window._ckQ.pitch || 4));
 
     // Overhang
     chk(form, 'oh_none', oh === 0);
@@ -23330,12 +23330,12 @@ async function generateChecklist() {
     chk(form, 'oh_18',   oh === 18);
 
     // Soffit
-    var hasSoffit = isWood && !!Q.soffit && Q.oh > 0;  // soffit only on wood truss with overhang
+    var hasSoffit = isWood && !!window._ckQ.soffit && window._ckQ.oh > 0;  // soffit only on wood truss with overhang
     chk(form, 'soffit_yes', hasSoffit);
     chk(form, 'soffit_no',  !hasSoffit);
 
     // Hay barn vent gap — check if enabled
-    var hasVent = !!(Q.ventGap) || !!(document.getElementById('sf_haybarn')||{}).checked;
+    var hasVent = !!(window._ckQ.ventGap) || !!(document.getElementById('sf_haybarn')||{}).checked;
     chk(form, 'vent_yes', hasVent);
     chk(form, 'vent_no',  !hasVent);
 
@@ -23498,7 +23498,7 @@ async function generateChecklist() {
     if (_wainscotVal === 'Yes' || _wainscotVal === 'Wainscot') _upgradeNotes.push('Wainscot');
     if (_rockWainscot) _upgradeNotes.push('Stone Wainscot');
     // OSB wall sheathing — only relevant on stud frame; sf.osbWalls is '7/16' or '5/8' when active
-    var _isStudFrame = Q.frameType === 'stud';
+    var _isStudFrame = window._ckQ.frameType === 'stud';
     var _osbWallsVal = (document.getElementById('sf_osbWalls')||{}).value || sf.osbWalls || '';
     if (_isStudFrame && _osbWallsVal && _osbWallsVal !== 'None') {
       _upgradeNotes.push('OSB Wall Sheathing (' + _osbWallsVal + '")');
@@ -23557,7 +23557,7 @@ window.SauceMaterials.calcGutters = function(Q, shedCfgs) {
   var matType  = (document.getElementById('st_gutterType')||{}).value || 'SGS';
   var hasGuard = !!(document.getElementById('st_gutterGuard')||{}).checked;
   var miles    = window._cachedMileage || 0;
-  var ohFt     = (Q.oh || 0) / 12; // overhang in feet
+  var ohFt     = (window._ckQ.oh || 0) / 12; // overhang in feet
 
   // Rates per LF
   var rates = { SGS: 9.50, SGSCOM: 12.50, SGSC: 21.00, SGSGA: 15.50 };
@@ -23569,9 +23569,9 @@ window.SauceMaterials.calcGutters = function(Q, shedCfgs) {
   // Main building: both eave sides (left + right)
   var gutterRuns = []; // [{label, gutterLF, eaveRunLF}]
 
-  var mainEaveLF = Q.l + ohFt;
-  gutterRuns.push({ label: 'Main left eave',  gutterLF: mainEaveLF, eaveRunLF: Q.l });
-  gutterRuns.push({ label: 'Main right eave', gutterLF: mainEaveLF, eaveRunLF: Q.l });
+  var mainEaveLF = window._ckQ.l + ohFt;
+  gutterRuns.push({ label: 'Main left eave',  gutterLF: mainEaveLF, eaveRunLF: window._ckQ.l });
+  gutterRuns.push({ label: 'Main right eave', gutterLF: mainEaveLF, eaveRunLF: window._ckQ.l });
 
   // Dropped lean-to sheds only (dropFt > 0, eave walls, not gable type)
   (shedCfgs || []).forEach(function(sc) {
@@ -23593,7 +23593,7 @@ window.SauceMaterials.calcGutters = function(Q, shedCfgs) {
     var dsQty = 2 + Math.floor(r.eaveRunLF / 40); // 2 corners + 1 per 40ft interval beyond start
     totalDSQty += dsQty;
   });
-  var dsLFEach  = Q.h + 6;
+  var dsLFEach  = window._ckQ.h + 6;
   var totalDSLF = totalDSQty * dsLFEach;
 
   // Combined gutter + downspout LF for pricing
