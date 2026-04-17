@@ -7691,13 +7691,33 @@ function applyVoiceQuote(parsed, overlay) {
         info.push('DPR: ' + window.devicePixelRatio);
         info.push('THREE.js: ' + (typeof THREE !== 'undefined' ? 'LOADED' : 'MISSING'));
         
-        // Test WebGL immediately
+        // Test WebGL immediately with more detail
         try {
             var canvas = document.createElement('canvas');
             var gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-            info.push('WebGL: ' + (gl ? 'SUPPORTED' : 'FAILED'));
             if (gl) {
-                info.push('Renderer: ' + (gl.getParameter(gl.RENDERER) || 'Unknown'));
+                info.push('WebGL: SUPPORTED');
+                info.push('Vendor: ' + gl.getParameter(gl.VENDOR));
+                info.push('Renderer: ' + gl.getParameter(gl.RENDERER));
+                info.push('Version: ' + gl.getParameter(gl.VERSION));
+                
+                // Test if context can actually render
+                var buffer = gl.createBuffer();
+                if (buffer) {
+                    info.push('Buffer: OK');
+                    gl.deleteBuffer(buffer);
+                } else {
+                    info.push('Buffer: FAILED');
+                }
+                
+                // Check context status
+                if (gl.isContextLost && gl.isContextLost()) {
+                    info.push('Status: CONTEXT LOST');
+                } else {
+                    info.push('Status: ACTIVE');
+                }
+            } else {
+                info.push('WebGL: FAILED');
             }
         } catch (e) {
             info.push('WebGL: ERROR - ' + e.message);
@@ -8034,7 +8054,53 @@ function applyVoiceQuote(parsed, overlay) {
             c.appendChild(rrx.domElement);
             console.log('[3D] Renderer added to DOM');
             
-            // 11. Fallback: Detect if 3D canvas stays black/empty
+            // 10. Append to container with context loss detection
+            c.appendChild(rrx.domElement);
+            console.log('[3D] Renderer added to DOM');
+            
+            // 11. Add WebGL context loss detection
+            rrx.domElement.addEventListener('webglcontextlost', function(event) {
+                console.error('[3D] WebGL context lost!');
+                event.preventDefault();
+                show3DError('3D graphics context was lost. This is common on mobile devices with limited memory. Please try refreshing the page.');
+            });
+            
+            rrx.domElement.addEventListener('webglcontextrestored', function() {
+                console.log('[3D] WebGL context restored');
+            });
+            
+            // 12. Force immediate render test
+            setTimeout(function() {
+                try {
+                    // Try to force a render to see if WebGL is actually working
+                    rrx.render(scene, cam);
+                    console.log('[3D] Force render test completed');
+                    
+                    // Check if render actually produced content
+                    var gl = rrx.getContext();
+                    if (gl.isContextLost && gl.isContextLost()) {
+                        console.error('[3D] WebGL context is lost after render attempt');
+                        show3DError('3D graphics lost connection. Mobile device may have insufficient memory. Try closing other apps and refreshing.');
+                        return;
+                    }
+                    
+                    // Test if we can read pixels (another way to detect context issues)
+                    var pixels = new Uint8Array(4);
+                    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+                    console.log('[3D] Pixel read test - RGBA:', pixels[0], pixels[1], pixels[2], pixels[3]);
+                    
+                    // If all pixels are 0,0,0,0 then nothing rendered
+                    if (pixels[0] === 0 && pixels[1] === 0 && pixels[2] === 0 && pixels[3] === 0) {
+                        console.warn('[3D] Render test shows black pixels - 3D may not be working');
+                    }
+                    
+                } catch (renderError) {
+                    console.error('[3D] Force render failed:', renderError);
+                    show3DError('3D graphics rendering failed: ' + renderError.message + '. This device may not support hardware-accelerated graphics.');
+                }
+            }, 100);
+            
+            // 13. Fallback: Check for content after animation starts
             setTimeout(function() {
                 try {
                     // Check if the canvas has any content rendered
@@ -8064,17 +8130,18 @@ function applyVoiceQuote(parsed, overlay) {
                         
                         if (!hasContent) {
                             console.warn('[3D] Canvas appears empty after 3 seconds, showing fallback message');
-                            show3DError('3D model failed to load properly on this device. This may be due to graphics limitations or browser restrictions on mobile devices.');
+                            show3DError('3D model is not displaying on this device. This is common on mobile browsers due to graphics limitations. For best results, view on a desktop computer.');
                         } else {
                             console.log('[3D] Canvas has content, 3D rendering working');
                         }
                     } catch (securityError) {
                         // Canvas security error - might indicate WebGL context issues
                         console.warn('[3D] Canvas security error (possible WebGL context issue):', securityError);
-                        show3DError('3D graphics access restricted on this device. Please try refreshing the page or using a different browser.');
+                        show3DError('Unable to verify 3D graphics on this device. Mobile browsers often have graphics restrictions. Try refreshing or view on desktop.');
                     }
                 } catch (fallbackError) {
                     console.warn('[3D] Fallback detection error:', fallbackError);
+                    show3DError('3D graphics system error on this device. Please try viewing on a desktop computer for the best experience.');
                 }
             }, 3000); // Wait 3 seconds for 3D to render
 
