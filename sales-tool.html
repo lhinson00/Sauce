@@ -23390,59 +23390,155 @@ async function generateChecklist() {
     var form     = pdfDoc.getForm();
     console.log('[Checklist] Form extracted, field count:', form.getFields().length);
 
-    // ── COMPREHENSIVE FORM CLEARING ─────────────────────────────────────
-    console.log('[Checklist] Clearing all form fields to ensure clean slate...');
+    // ── COMPREHENSIVE CLEAR ALL FIELDS RULE ─────────────────────────────
+    console.log('[Checklist] CLEARING ALL FIELDS - Complete slate cleaning...');
+    
     try {
       var allFields = form.getFields();
-      var clearCount = 0;
+      var clearResults = {
+        textFields: 0,
+        checkBoxes: 0, 
+        dropdowns: 0,
+        radioButtons: 0,
+        signatures: 0,
+        unknown: 0,
+        errors: 0
+      };
       
+      // Iterate through EVERY field in the PDF and clear it completely
       allFields.forEach(function(field) {
         try {
           var fieldName = field.getName();
+          var fieldType = field.constructor.name;
           
-          // Clear text fields
-          if (field.constructor.name === 'PDFTextField') {
+          console.log('[Clear] Processing:', fieldName, 'Type:', fieldType);
+          
+          // TEXT FIELDS - Set to empty string
+          if (fieldType === 'PDFTextField') {
             field.setText('');
-            clearCount++;
+            clearResults.textFields++;
           }
           
-          // Clear checkboxes
-          else if (field.constructor.name === 'PDFCheckBox') {
+          // CHECKBOXES - Uncheck and force raw PDF clearing
+          else if (fieldType === 'PDFCheckBox') {
             field.uncheck();
-            // Also ensure raw PDF values are cleared
+            // Force raw PDF dictionary clearing for stubborn checkboxes
             try {
               var acroField = field.acroField;
               if (acroField && acroField.dict) {
-                acroField.dict.set(window.PDFLib.PDFName.of('V'), window.PDFLib.PDFName.of('Off'));
-                acroField.dict.set(window.PDFLib.PDFName.of('AS'), window.PDFLib.PDFName.of('Off'));
+                var PDFName = window.PDFLib.PDFName;
+                acroField.dict.set(PDFName.of('V'), PDFName.of('Off'));
+                acroField.dict.set(PDFName.of('AS'), PDFName.of('Off'));
+                // Also clear any appearance state
+                if (acroField.dict.has(PDFName.of('AP'))) {
+                  var apDict = acroField.dict.get(PDFName.of('AP'));
+                  if (apDict && apDict.dict && apDict.dict.has(PDFName.of('N'))) {
+                    var nDict = apDict.dict.get(PDFName.of('N'));
+                    if (nDict && nDict.dict) {
+                      // Remove any "Yes" appearance states
+                      if (nDict.dict.has(PDFName.of('Yes'))) nDict.dict.delete(PDFName.of('Yes'));
+                    }
+                  }
+                }
               }
-            } catch(e) {}
-            clearCount++;
+            } catch(rawError) {
+              console.log('[Clear] Raw checkbox clearing failed for:', fieldName);
+            }
+            clearResults.checkBoxes++;
           }
           
-          // Clear dropdowns/choice fields
-          else if (field.constructor.name === 'PDFDropdown') {
+          // DROPDOWN/CHOICE FIELDS - Clear selection
+          else if (fieldType === 'PDFDropdown' || fieldType === 'PDFOptionList') {
             try {
               field.clear();
-              clearCount++;
-            } catch(e) {
-              // If clear() fails, try to set empty value
+            } catch(e1) {
+              // Try alternative clearing methods
               try {
                 field.select('');
+              } catch(e2) {
+                try {
+                  field.select([]);
+                } catch(e3) {
+                  // Force raw clearing
+                  try {
+                    var acroField = field.acroField;
+                    if (acroField && acroField.dict) {
+                      acroField.dict.delete(window.PDFLib.PDFName.of('V'));
+                    }
+                  } catch(e4) {}
+                }
+              }
+            }
+            clearResults.dropdowns++;
+          }
+          
+          // RADIO BUTTON GROUPS - Clear selection
+          else if (fieldType === 'PDFRadioGroup') {
+            try {
+              field.clear();
+            } catch(e) {
+              // Force raw clearing for radio buttons
+              try {
+                var acroField = field.acroField;
+                if (acroField && acroField.dict) {
+                  acroField.dict.set(window.PDFLib.PDFName.of('V'), window.PDFLib.PDFName.of('Off'));
+                }
               } catch(e2) {}
             }
+            clearResults.radioButtons++;
+          }
+          
+          // SIGNATURE FIELDS - Clear if possible
+          else if (fieldType === 'PDFSignature') {
+            try {
+              // Signature clearing is usually not possible, but try
+              var acroField = field.acroField;
+              if (acroField && acroField.dict) {
+                acroField.dict.delete(window.PDFLib.PDFName.of('V'));
+              }
+            } catch(e) {}
+            clearResults.signatures++;
+          }
+          
+          // UNKNOWN FIELD TYPES - Try generic clearing
+          else {
+            console.log('[Clear] Unknown field type:', fieldType, 'for field:', fieldName);
+            try {
+              // Try common clearing methods
+              if (typeof field.clear === 'function') field.clear();
+              else if (typeof field.setText === 'function') field.setText('');
+              else if (typeof field.uncheck === 'function') field.uncheck();
+            } catch(e) {}
+            clearResults.unknown++;
           }
           
         } catch(fieldError) {
-          console.log('[Checklist] Could not clear field:', field.getName(), 'Error:', fieldError.message);
+          console.error('[Clear] Failed to clear field:', field.getName(), 'Error:', fieldError.message);
+          clearResults.errors++;
         }
       });
       
-      console.log('[Checklist] Successfully cleared', clearCount, 'form fields out of', allFields.length, 'total fields');
+      console.log('[Checklist] CLEAR ALL COMPLETE:');
+      console.log('  Text Fields Cleared:', clearResults.textFields);
+      console.log('  Checkboxes Cleared:', clearResults.checkBoxes);
+      console.log('  Dropdowns Cleared:', clearResults.dropdowns);
+      console.log('  Radio Groups Cleared:', clearResults.radioButtons);
+      console.log('  Signatures Cleared:', clearResults.signatures);
+      console.log('  Unknown Types Cleared:', clearResults.unknown);
+      console.log('  Errors:', clearResults.errors);
+      console.log('  TOTAL FIELDS PROCESSED:', 
+        clearResults.textFields + clearResults.checkBoxes + clearResults.dropdowns + 
+        clearResults.radioButtons + clearResults.signatures + clearResults.unknown);
       
-    } catch(clearError) {
-      console.error('[Checklist] Error during form clearing:', clearError.message);
-      console.log('[Checklist] Continuing with field population despite clearing error...');
+      if (clearResults.errors === 0) {
+        console.log('[Checklist] ✓ ALL FIELDS SUCCESSFULLY CLEARED - Clean slate ready');
+      } else {
+        console.warn('[Checklist] ⚠ Some clearing errors occurred, but proceeding...');
+      }
+      
+    } catch(clearAllError) {
+      console.error('[Checklist] CLEAR ALL failed:', clearAllError.message);
+      console.log('[Checklist] Proceeding with data population despite clear error...');
     }
 
     // Check if critical variables are defined
@@ -23494,9 +23590,15 @@ async function generateChecklist() {
 
     // ── GARAGE DOORS ─────────────────────────────────────────────────
     // doorColor defaults to 'White' if never explicitly set (chip UI default)
-    var gdColor = gDoors[0] ? (gDoors[0].doorColor || gDoors[0].color || 'White') : '';
-    txt(form, 'gd_color', gdColor);
-    chk(form, 'gd_cb', gDoors.length > 0);
+    if (gDoors.length > 0) {
+      var gdColor = gDoors[0] ? (gDoors[0].doorColor || gDoors[0].color || 'White') : 'White';
+      txt(form, 'gd_color', gdColor);
+      chk(form, 'gd_cb', true);
+    } else {
+      // No garage doors - explicitly clear color field
+      try { form.getTextField('gd_color').setText(''); } catch(e) {}
+      chk(form, 'gd_cb', false);
+    }
 
     var gdGroups = {};
     gDoors.forEach(function(d) {
@@ -23550,7 +23652,12 @@ async function generateChecklist() {
     var hasOpener = sf.gdOpener !== 'None' && openerQty > 0;
     chk(form, 'gd_opener_yes', hasOpener);
     chk(form, 'gd_opener_no',  !hasOpener);
-    if (hasOpener) txt(form, 'gd_opener_qty', String(openerQty));
+    if (hasOpener) {
+      txt(form, 'gd_opener_qty', String(openerQty));
+    } else {
+      // No openers - clear quantity field
+      try { form.getTextField('gd_opener_qty').setText(''); } catch(e) {}
+    }
 
     // ── TRUSS / ROOF ─────────────────────────────────────────────────
     chk(form, 'truss_cb',    true);
@@ -23731,8 +23838,20 @@ async function generateChecklist() {
     txt(form, 'clr_roof',     roofColor);
     txt(form, 'clr_walls',    wallColor);
     txt(form, 'clr_trim',     trimColor);
-    txt(form, 'clr_soffit',   soffitColor);
-    if (hasWainscot) txt(form, 'clr_wainscot', wainscotColor);
+    
+    // Only set soffit color if there's actually a soffit
+    if (hasSoffit) {
+      txt(form, 'clr_soffit', soffitColor);
+    } else {
+      try { form.getTextField('clr_soffit').setText(''); } catch(e) {}
+    }
+    
+    // Only set wainscot color if there's actually wainscot
+    if (hasWainscot) {
+      txt(form, 'clr_wainscot', wainscotColor);
+    } else {
+      try { form.getTextField('clr_wainscot').setText(''); } catch(e) {}
+    }
 
     // ── WEATHERVANE ───────────────────────────────────────────────────
     var wvOn   = !!(document.getElementById('exWV')||document.getElementById('cust_wv')||{}).checked;
