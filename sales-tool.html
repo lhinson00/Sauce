@@ -7686,6 +7686,64 @@ function applyVoiceQuote(parsed, overlay) {
         }
     }
     
+    function isMobileDeviceWithLimitations() {
+        // Detect mobile devices that commonly have 3D rendering issues
+        var ua = navigator.userAgent.toLowerCase();
+        var isMobile = /iphone|ipad|ipod|android|blackberry|windows phone|webos|mobile/i.test(ua);
+        
+        // Check for older iOS versions or devices with known WebGL issues
+        if (isMobile) {
+            // iOS Safari often has WebGL context limits
+            var isIOS = /iphone|ipad|ipod/i.test(ua);
+            if (isIOS) {
+                // Extract iOS version
+                var match = ua.match(/os (\d+)_/);
+                if (match && parseInt(match[1]) < 12) {
+                    return true; // iOS < 12 has many WebGL issues
+                }
+            }
+            
+            // Android devices with limited GPU memory
+            var isAndroid = /android/i.test(ua);
+            if (isAndroid) {
+                // Check for older Android versions
+                var androidMatch = ua.match(/android (\d+)/);
+                if (androidMatch && parseInt(androidMatch[1]) < 8) {
+                    return true; // Android < 8 often has WebGL issues
+                }
+            }
+        }
+        
+        return false;
+    }
+    
+    function testWebGLContext() {
+        // More thorough WebGL capability test
+        try {
+            var canvas = document.createElement('canvas');
+            var gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+            
+            if (!gl) return false;
+            
+            // Test basic WebGL operations
+            var shader = gl.createShader(gl.VERTEX_SHADER);
+            if (!shader) return false;
+            
+            // Test if we can create basic resources
+            var buffer = gl.createBuffer();
+            if (!buffer) return false;
+            
+            // Clean up
+            gl.deleteShader(shader);
+            gl.deleteBuffer(buffer);
+            
+            return true;
+        } catch (e) {
+            console.error('[3D] WebGL context test failed:', e);
+            return false;
+        }
+    }
+    
     function show3DError(message) {
         console.error('[3D] Error:', message);
         const container = document.getElementById('qgRV');
@@ -7746,6 +7804,31 @@ function applyVoiceQuote(parsed, overlay) {
         
         console.log('[3D] Starting build3DReplay...');
         
+        // 0. IMMEDIATE iOS/Mobile Check - many mobile browsers have WebGL issues
+        var userAgent = navigator.userAgent.toLowerCase();
+        var isIPhone = /iphone/i.test(userAgent);
+        var isIOSSafari = /safari/i.test(userAgent) && /mobile/i.test(userAgent);
+        var isOlderIOS = false;
+        
+        if (isIPhone || isIOSSafari) {
+            // Extract iOS version if possible
+            var iosMatch = userAgent.match(/os (\d+)_/);
+            if (iosMatch) {
+                var iosVersion = parseInt(iosMatch[1]);
+                console.log('[3D] Detected iOS version:', iosVersion);
+                if (iosVersion < 14) {
+                    isOlderIOS = true;
+                }
+            }
+            
+            // iOS Safari often has WebGL context limitations, especially in mobile view
+            if (window.innerWidth < 800 || isOlderIOS) {
+                console.warn('[3D] iOS mobile browser detected - showing compatibility message');
+                show3DError('3D models have limited support on mobile Safari. For the best experience, please view this on a desktop computer or try using Chrome instead of Safari.');
+                return;
+            }
+        }
+        
         // 1. Check if THREE.js is loaded
         if (typeof THREE === 'undefined' || window._threeJSFailed) {
             console.error('[3D] THREE.js not loaded or failed to load!');
@@ -7777,10 +7860,19 @@ function applyVoiceQuote(parsed, overlay) {
         
         console.log('[3D] Container dimensions:', containerRect.width, 'x', containerRect.height);
         
-        // 4. Check WebGL support
-        if (!isWebGLSupported()) {
-            console.error('[3D] WebGL not supported!');
-            show3DError('Your browser does not support WebGL, which is required for the 3D model. Please try using a modern browser like Chrome, Firefox, or Safari.');
+        // 4. Enhanced mobile and WebGL compatibility check
+        var isMobileLimited = isMobileDeviceWithLimitations();
+        var webglWorks = isWebGLSupported() && testWebGLContext();
+        
+        if (isMobileLimited || !webglWorks) {
+            console.error('[3D] Device limitations detected - Mobile Limited:', isMobileLimited, 'WebGL Works:', webglWorks);
+            var errorMsg = 'This device has limited 3D graphics support. ';
+            if (isMobileLimited) {
+                errorMsg += 'For the best experience, try viewing on a desktop computer or newer mobile device.';
+            } else {
+                errorMsg += 'Please try using a modern browser like Chrome, Firefox, or Safari.';
+            }
+            show3DError(errorMsg);
             return;
         }
         
@@ -7866,9 +7958,53 @@ function applyVoiceQuote(parsed, overlay) {
             rrx.shadowMap.enabled = true;
             rrx.domElement.style.display = 'block';
             
-            // 10. Append to container
+            // 10. Append to container with fallback detection
             c.appendChild(rrx.domElement);
             console.log('[3D] Renderer added to DOM');
+            
+            // 11. Fallback: Detect if 3D canvas stays black/empty
+            setTimeout(function() {
+                try {
+                    // Check if the canvas has any content rendered
+                    var canvas = rrx.domElement;
+                    var ctx = canvas.getContext('2d');
+                    
+                    // Create a small test canvas to check for content
+                    var testCanvas = document.createElement('canvas');
+                    testCanvas.width = 100;
+                    testCanvas.height = 100;
+                    var testCtx = testCanvas.getContext('2d');
+                    
+                    // Try to read a small portion of the main canvas
+                    try {
+                        testCtx.drawImage(canvas, 0, 0, 100, 100);
+                        var imageData = testCtx.getImageData(0, 0, 100, 100);
+                        var data = imageData.data;
+                        
+                        // Check if all pixels are black/transparent (indicating no rendering)
+                        var hasContent = false;
+                        for (var i = 0; i < data.length; i += 4) {
+                            if (data[i] > 10 || data[i+1] > 10 || data[i+2] > 10) {
+                                hasContent = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!hasContent) {
+                            console.warn('[3D] Canvas appears empty after 3 seconds, showing fallback message');
+                            show3DError('3D model failed to load properly on this device. This may be due to graphics limitations or browser restrictions on mobile devices.');
+                        } else {
+                            console.log('[3D] Canvas has content, 3D rendering working');
+                        }
+                    } catch (securityError) {
+                        // Canvas security error - might indicate WebGL context issues
+                        console.warn('[3D] Canvas security error (possible WebGL context issue):', securityError);
+                        show3DError('3D graphics access restricted on this device. Please try refreshing the page or using a different browser.');
+                    }
+                } catch (fallbackError) {
+                    console.warn('[3D] Fallback detection error:', fallbackError);
+                }
+            }, 3000); // Wait 3 seconds for 3D to render
 
             scene.add(new THREE.AmbientLight(0xccddee, 0.8));
             const sun = new THREE.DirectionalLight(0xffeedd, 0.9); sun.position.set(10, 18, 8); sun.castShadow = true; scene.add(sun);
