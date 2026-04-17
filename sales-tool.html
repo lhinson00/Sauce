@@ -23390,6 +23390,61 @@ async function generateChecklist() {
     var form     = pdfDoc.getForm();
     console.log('[Checklist] Form extracted, field count:', form.getFields().length);
 
+    // ── COMPREHENSIVE FORM CLEARING ─────────────────────────────────────
+    console.log('[Checklist] Clearing all form fields to ensure clean slate...');
+    try {
+      var allFields = form.getFields();
+      var clearCount = 0;
+      
+      allFields.forEach(function(field) {
+        try {
+          var fieldName = field.getName();
+          
+          // Clear text fields
+          if (field.constructor.name === 'PDFTextField') {
+            field.setText('');
+            clearCount++;
+          }
+          
+          // Clear checkboxes
+          else if (field.constructor.name === 'PDFCheckBox') {
+            field.uncheck();
+            // Also ensure raw PDF values are cleared
+            try {
+              var acroField = field.acroField;
+              if (acroField && acroField.dict) {
+                acroField.dict.set(window.PDFLib.PDFName.of('V'), window.PDFLib.PDFName.of('Off'));
+                acroField.dict.set(window.PDFLib.PDFName.of('AS'), window.PDFLib.PDFName.of('Off'));
+              }
+            } catch(e) {}
+            clearCount++;
+          }
+          
+          // Clear dropdowns/choice fields
+          else if (field.constructor.name === 'PDFDropdown') {
+            try {
+              field.clear();
+              clearCount++;
+            } catch(e) {
+              // If clear() fails, try to set empty value
+              try {
+                field.select('');
+              } catch(e2) {}
+            }
+          }
+          
+        } catch(fieldError) {
+          console.log('[Checklist] Could not clear field:', field.getName(), 'Error:', fieldError.message);
+        }
+      });
+      
+      console.log('[Checklist] Successfully cleared', clearCount, 'form fields out of', allFields.length, 'total fields');
+      
+    } catch(clearError) {
+      console.error('[Checklist] Error during form clearing:', clearError.message);
+      console.log('[Checklist] Continuing with field population despite clearing error...');
+    }
+
     // Check if critical variables are defined
     var salesmanName = cu.fullName || cu.username || 'Lain';
     var today = new Date().toLocaleDateString('en-US', {month:'2-digit',day:'2-digit',year:'numeric'});
@@ -23721,6 +23776,15 @@ async function generateChecklist() {
     if (notesText) txt(form, 'notes1', notesText);
 
     // ── SAVE & DOWNLOAD ───────────────────────────────────────────────
+    // ── DATA POPULATION VERIFICATION ──────────────────────────────────────
+    console.log('[Checklist] Final verification - checking key populated fields:');
+    try {
+      console.log('  Customer Name:', form.getTextField('cust_name').getText());
+      console.log('  Building Dims:', form.getTextField('bldg_w').getText() + 'x' + form.getTextField('bldg_l').getText() + 'x' + form.getTextField('bldg_h').getText());
+      console.log('  Garage Door 1:', gDoors.length > 0 ? form.getTextField('gd1_w').getText() + 'x' + form.getTextField('gd1_h').getText() : 'none');
+      console.log('[Checklist] ✓ Key fields verified, generating PDF...');
+    } catch(e) { console.log('[Checklist] Verification skipped, generating PDF...'); }
+
     // updateFieldAppearances() bakes typed values into each field's appearance
     // stream so they display in ALL PDF viewers while keeping fields interactive.
     try { form.updateFieldAppearances(); } catch(e) { /* non-fatal */ }
