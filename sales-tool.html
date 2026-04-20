@@ -17192,8 +17192,47 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
         var interior = (bays - 1) * 2;
         allPosts.push({ sku: skuBase + gLen, postLen: gLen, quantity: 2 + interior, label: 'Gable Extension Posts — ' + wallCapG });
       } else {
-        // Gable-attached: free span — 2 outer corner posts only
-        allPosts.push({ sku: skuBase + gLen, postLen: gLen, quantity: 2, label: 'Gable Extension Posts — ' + wallCapG });
+        // Gable-attached gable extension — the extension continues the main building's roof.
+        // Posts needed: (a) 2 outer corners on the far gable end, AND
+        //               (b) along each new side eave wall of the extension, at each truss location
+        //                   (matches main building eave post spacing). These carry main-building-
+        //                   width trusses, so use MAIN BUILDING eave post size + length (Q.h+ground),
+        //                   NOT the shed post size/formula.
+        // Spacing comes from the main building's eave wall (left preferred, fall back to right).
+        var _mainPS = (function(){
+          var _lw = (WALLS||[]).find(function(w){return w.id==='left';});
+          var _rw = (WALLS||[]).find(function(w){return w.id==='right';});
+          return (_lw && _lw.postSpacing) || (_rw && _rw.postSpacing) || Q.postSpacing || 10;
+        })();
+        // Mini-helper: eave post size (prefer left eave wall override, fall back to mbPostSize).
+        var _SM = window.SauceMaterials;
+        var _mainEaveSize = (typeof _SM.wallPostSizeFor === 'function')
+          ? _SM.wallPostSizeFor('left', sf)
+          : (sf && sf.mbPostSize) || '6x6';
+        // Post length uses main-building formula: Q.h on top, Q.h+4 in-ground.
+        // Use shed's effective ground (respects both globalOnTop and per-shed mono slab).
+        var _mainEaveLen  = (ground === 0) ? Q.h : Q.h + 4;
+        _mainEaveLen      = window.SauceMaterials.enforceMinPostLen(_mainEaveSize, _mainEaveLen);
+        var _mainEaveSku  = (map[_mainEaveSize] || 'PT66') + _mainEaveLen;
+
+        // (a) Outer gable corners — 2 posts using the shed post formula (matches existing behavior)
+        allPosts.push({ sku: skuBase + gLen, postLen: gLen, quantity: 2, label: 'Gable Extension Posts — ' + wallCapG + ' (outer corners)' });
+
+        // (b) Side eave wall posts — only add for Steel truss at this time (wood path stays unchanged).
+        // At 10' spacing on a 30' extension: 3 posts per side (at 10', 20', 30' from main building).
+        // qty per side = floor(sc.w / spacing). Both sides combined.
+        if (Q.truss === 'Steel') {
+          var _sidePerSide = Math.max(0, Math.floor(sc.w / _mainPS));
+          var _sideTotal   = _sidePerSide * 2;
+          if (_sideTotal > 0) {
+            allPosts.push({
+              sku: _mainEaveSku,
+              postLen: _mainEaveLen,
+              quantity: _sideTotal,
+              label: 'Gable Extension Side Eave Posts — ' + wallCapG
+            });
+          }
+        }
       }
       return;
     }
@@ -17352,6 +17391,15 @@ window.SauceMaterials.calcSackcrete = function(Q, WALLS, allDoors, shedCfgs, sf)
     var count = 0;
     if (sc.type === 'gable') {
       count = 2;
+      // Steel gable-attached gable ext: add side eave wall posts (must mirror calcShedPosts)
+      if (Q.truss === 'Steel' && (sc.wall === 'front' || sc.wall === 'back')) {
+        var _mPS_sc = (function(){
+          var _l = (WALLS||[]).find(function(w){return w.id==='left';});
+          var _r = (WALLS||[]).find(function(w){return w.id==='right';});
+          return (_l && _l.postSpacing) || (_r && _r.postSpacing) || Q.postSpacing || 10;
+        })();
+        count += Math.max(0, Math.floor(sc.w / _mPS_sc)) * 2;
+      }
     } else if (sc.type === 'leanto') {
       count = Math.max(1, Math.floor(sc.l / ps)) + 1;
     } else if (sc.type === 'wrap') {
@@ -17453,6 +17501,15 @@ window.SauceMaterials.calcFootingPads = function(Q, WALLS, allDoors, shedCfgs, s
     var count = 0;
     if (sc.type === 'gable') {
       count = 2;
+      // Steel gable-attached gable ext: add side eave wall posts (must mirror calcShedPosts)
+      if (Q.truss === 'Steel' && (sc.wall === 'front' || sc.wall === 'back')) {
+        var _mPS_fp = (function(){
+          var _l = (WALLS||[]).find(function(w){return w.id==='left';});
+          var _r = (WALLS||[]).find(function(w){return w.id==='right';});
+          return (_l && _l.postSpacing) || (_r && _r.postSpacing) || Q.postSpacing || 10;
+        })();
+        count += Math.max(0, Math.floor(sc.w / _mPS_fp)) * 2;
+      }
     } else if (sc.type === 'leanto') {
       count = Math.max(1, Math.floor(sc.l / ps)) + 1;
     } else if (sc.type === 'wrap') {
@@ -18321,6 +18378,44 @@ window.SauceMaterials.calcSteelShedTrusses = function(Q, WALLS, shedCfgs) {
 
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
+
+    // ── Gable extension special-case ─────────────────────────────────────────
+    // A gable extension continues the main building's roof/ridge. Its trusses
+    // are the same WIDTH as the main building (not the extension's projection).
+    // Truss count = floor(extension_depth / spacing)  —  NO "+1" because the
+    // main building's end-gable truss at the attach line is the shared one.
+    // SKU source: the MAIN BUILDING's steel truss SKU map (TSGT...), not the
+    // shed SKU map (TSST...) — these trusses match the main building.
+    if (sc.type === 'gable') {
+      // Mirror main building TSGT map from calcSteelTrusses
+      var mainTrussSkuMap = {
+        10:'TSGT10', 12:'TSGT12', 14:'TSGT14', 16:'TSGT1666', 18:'TSGT1866',
+        20:'TSGT2066', 22:'TSGT22', 24:'TSGT2466', 25:'TSGT25', 26:'TSGT26',
+        28:'TSGT2866', 30:'TSGT3066KBNO-O', 32:'TSGT3266KB', 34:'TSGT34',
+        36:'TSGT3666KB', 38:'TSGT3866KB', 40:'TSGT401266KBNO-O', 42:'TSGT42',
+        44:'TSGT44', 46:'TSGT46', 48:'TSGT481266KB', 50:'TSGT501088KB',
+        52:'TSGT52', 54:'TSGT54', 56:'TSGT56', 60:'TSGT601088KB',
+        70:'TSGT70', 75:'TSGT75', 80:'TSGT80', 85:'TSGT85', 100:'TSGT100'
+      };
+      if (isGableGableAttached(sc)) {
+        // Gable-attached: width = Q.w, depth = sc.w
+        var mainSku = mainTrussSkuMap[Q.w];
+        if (mainSku) {
+          var nTrussGA = Math.max(0, Math.floor(sc.w / spacing));
+          if (nTrussGA > 0) groups[mainSku] = (groups[mainSku] || 0) + nTrussGA;
+        }
+      } else {
+        // Eave-attached gable ext: separate ridge, trusses span sc.w, run along sc.l
+        // Still uses main-style trusses because extension is enclosed the same way
+        var extSku = mainTrussSkuMap[sc.w];
+        if (extSku) {
+          var nTrussEA = Math.floor(sc.l / spacing) + 1;
+          if (nTrussEA > 0) groups[extSku] = (groups[extSku] || 0) + nTrussEA;
+        }
+      }
+      return; // skip lean-to/wrap logic
+    }
+
     var sku = skuMap[sc.w];
     if (!sku) return;
 
@@ -18489,8 +18584,38 @@ window.SauceMaterials.calcSteelShedPurlins = function(Q, shedCfgs) {
 
   var groups = {};
 
+  // Main building cup map (mirrors calcSteelPurlins) — used for gable extensions
+  // because they continue the main building's roof at the same width.
+  var mainCupsMap = {
+    10:11, 12:13, 14:14, 16:15, 18:15, 20:16, 22:18, 24:19, 25:21,
+    26:21, 28:23, 30:23, 32:25, 34:25, 36:27, 38:29, 40:29, 42:29,
+    44:32, 46:32, 48:34, 50:34, 52:36, 54:38, 56:39, 60:41, 70:47,
+    75:50, 80:50, 85:57, 100:72
+  };
+
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
+
+    // ── Gable extension: purlins extend the main building's roof purlins ────
+    // Gable-attached: cup count based on main building width (Q.w), length = sc.w
+    //                 (extension depth; purlins run parallel to main ridge).
+    // Eave-attached:  cup count based on extension width (sc.w) because the
+    //                 extension has its own separate roof plane, length = sc.l.
+    if (sc.type === 'gable') {
+      var isGableGAttached = (sc.wall === 'front' || sc.wall === 'back');
+      var gCups = isGableGAttached ? mainCupsMap[Q.w] : mainCupsMap[sc.w];
+      if (!gCups) return;
+      var gLen  = isGableGAttached ? sc.w : sc.l;
+      var gBoards = fillLength(gLen, spacing);
+      Object.keys(gBoards).forEach(function(len) {
+        var runs     = gBoards[len];
+        var quantity = Math.ceil(runs * gCups);
+        var sku      = 'SYP26' + len;
+        groups[sku]  = (groups[sku] || 0) + quantity;
+      });
+      return; // skip lean-to / wrap logic below
+    }
+
     var cups = ssCupsMap[sc.w];
     if (!cups) return;
 
@@ -20530,15 +20655,38 @@ window.SauceMaterials.calcOpenGableMetal = function(Q, WALLS, shedCfgs) {
     });
   }
 
-  // Gable extensions on eave walls
+  // Gable extensions on eave walls (existing handling)
   // Wood truss: stepped triangle same as main building gable metal (pitch-based increment)
   // Steel truss: use existing knee-brace sequence
   (shedCfgs||[]).forEach(function(sc) {
     if (sc.type !== 'gable') return;
     if (!sc.w) return;
     var isEaveWall = (sc.wall==='left'||sc.wall==='right');
-    if (!isEaveWall) return;
 
+    // ── GABLE-ATTACHED gable extension (front/back) ──
+    // Outer gable end of the extension needs partial upper gable metal.
+    // Steel: same 5'6" → 4' → 5' → 6' ... sequence as a main open gable wall.
+    //        Width basis = Q.w (the outer gable end equals the main building width).
+    //        Qty per piece = 2 (one gable end × 2 sides).
+    if (!isEaveWall) {
+      if (Q.truss === 'Steel') {
+        var gaSeq = buildSequence(Q.w);
+        gaSeq.forEach(function(lenFt) {
+          results.push({
+            category:    'Side Shed Gable Metal',
+            description: 'Gable Extension Upper Gable Metal',
+            sku:         skuPrefix,
+            quantity:    2,
+            metalLength: fmtFtInExact(lenFt),
+            detail:      displayType + "  |  " + Q.w + "' outer gable  |  steel sequence (5'6\" first)"
+          });
+        });
+      }
+      // Wood gable-attached handled elsewhere (wood trusses provide the gable)
+      return;
+    }
+
+    // ── EAVE-ATTACHED gable extension (existing behavior) ──
     // One gable end is open (outer), other ties into main building roof — only 1 end needs metal
     // qty = 2 (one gable end × 2 sides). Sequence starts at 3', then +1' per piece based on pitch.
     var extPieces = Math.ceil((sc.w / 2) / 3);
@@ -22932,7 +23080,18 @@ window.SauceMaterials.calcLagBolts = function(Q, WALLS, shedCfgs, allDoors, sf) 
     var attachWall = (WALLS||[]).find(function(w){return w.id===sc.wall;});
     var ps = attachWall ? (attachWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
     var count = 0;
-    if (sc.type === 'gable') count = 2;
+    if (sc.type === 'gable') {
+      count = 2;
+      // Steel gable-attached gable ext: add side eave wall posts (must mirror calcShedPosts)
+      if (Q.truss === 'Steel' && (sc.wall === 'front' || sc.wall === 'back')) {
+        var _mPS_lag = (function(){
+          var _l = (WALLS||[]).find(function(w){return w.id==='left';});
+          var _r = (WALLS||[]).find(function(w){return w.id==='right';});
+          return (_l && _l.postSpacing) || (_r && _r.postSpacing) || Q.postSpacing || 10;
+        })();
+        count += Math.max(0, Math.floor(sc.w / _mPS_lag)) * 2;
+      }
+    }
     else count = Math.max(1, Math.floor(sc.l / ps)) + 1;
     total += count;
   });
