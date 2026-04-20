@@ -523,11 +523,11 @@ body.view-mode .vp-container {
 /* ═══ MOBILE CUSTOMER VIEW 3D FIX - OVERRIDE BASE RULES ═══ */
 @media(max-width:700px){
   body.view-mode .right-pane {
-    height: calc(100vh - 90px) !important;  /* Reduced from 120px since mobile status bar is now hidden */
+    height: calc(100vh - var(--vc-h, 90px)) !important;
     min-height: 300px !important;           /* Ensure usable height */
     order: -1;
     flex-shrink: 0;
-    margin-top: 90px !important;            /* Reduced from 120px */
+    margin-top: var(--vc-h, 90px) !important;
   }
   
   body.view-mode .vp-container {
@@ -554,8 +554,8 @@ body.view-mode .vp-container {
 /* ═══ EXTRA SPACING FOR VERY SMALL SCREENS (iPhone) ═══ */
 @media(max-width:600px){
   body.view-mode .right-pane {
-    height: calc(100vh - 120px) !important; /* Extra space for stacked layout */
-    margin-top: 120px !important;           /* More space for vertical stacking */
+    height: calc(100vh - var(--vc-h, 120px)) !important;
+    margin-top: var(--vc-h, 120px) !important;
     order: -1;
     flex-shrink: 0;
   }
@@ -567,6 +567,14 @@ body.view-mode .vp-container {
 }
 body.view-mode #viewCustomerCard {
   display: block !important;
+}
+/* View-mode: dynamically-set card height exposed as --vc-h, defaults cover the single-row case */
+body.view-mode {
+  --vc-h: 70px;
+}
+body.view-mode .vp-container {
+  height: calc(100vh - var(--vc-h, 70px)) !important;
+  margin-top: var(--vc-h, 70px) !important;
 }
 #viewCustomerCard {
   display: none;
@@ -614,6 +622,58 @@ body.view-mode #viewCustomerCard {
   border-top: 1px solid rgba(255,255,255,.06);
   flex-wrap: wrap;
   align-items: flex-start;
+}
+/* Default (desktop): collapsible group always open, toggle button hidden.
+   Dimensions show as three separate pills; mobile compact pill is hidden. */
+#viewCustomerCard #vcCollapsible { display: block; }
+#viewCustomerCard #vcToggleBtn { display: none; }
+#viewCustomerCard .vc-specs-desktop { display: flex; gap: 20px; flex-wrap: wrap; }
+#viewCustomerCard .vc-specs-mobile  { display: none; flex-direction: column; gap: 1px; }
+#viewCustomerCard .vc-mobile-only   { display: none; }
+#viewCustomerCard .vc-desktop-only  { display: block; }
+
+/* Mobile (≤700px): collapsible group hidden by default, toggle button visible.
+   Dimensions shown as a single compact "Size: 24' × 50' × 20'" pill. */
+@media(max-width:700px){
+  #viewCustomerCard .vc-specs-desktop { display: none; }
+  #viewCustomerCard .vc-specs-mobile  { display: flex; }
+  #viewCustomerCard .vc-divider-desktop { display: none; }
+  #viewCustomerCard .vc-desktop-only { display: none; }
+  #viewCustomerCard .vc-mobile-only  { display: block; padding: 10px 20px; border-top: 1px solid rgba(255,255,255,.06); }
+
+  #viewCustomerCard #vcCollapsible {
+    display: none;
+  }
+  #viewCustomerCard.vc-expanded #vcCollapsible {
+    display: block;
+  }
+  #viewCustomerCard #vcToggleBtn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    margin-top: 6px;
+    background: rgba(255,130,0,.10);
+    border: 1px solid rgba(255,130,0,.25);
+    border-radius: 6px;
+    color: #FF8200;
+    font-family: 'Outfit', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    cursor: pointer;
+    outline: none;
+  }
+  #viewCustomerCard #vcToggleBtn:active {
+    background: rgba(255,130,0,.18);
+  }
+  #viewCustomerCard #vcToggleIcon {
+    font-size: 9px;
+    line-height: 1;
+  }
 }
 #viewCustomerCard .vc-op-group {
   display: flex;
@@ -1185,10 +1245,19 @@ body.customer-mode #custColorChartLink { display: block !important; }
         <select id="vcTrimSel" onchange="vcSetColor('trim',this.value)" style="font-size:10px;font-family:'Outfit',sans-serif;background:#3a3a3a;color:#f0f3f7;border:1px solid rgba(255,130,0,.3);border-radius:5px;padding:3px 6px;cursor:pointer;"></select>
       </div>
     </div>
-    <div class="vc-divider"></div>
-    <div class="vc-salesman" id="vcSalesman"></div>
+    <div class="vc-divider vc-divider-desktop"></div>
+    <div class="vc-salesman vc-desktop-only" id="vcSalesmanDesktop"></div>
   </div>
-  <div class="vc-openings-bar" id="vcOpeningsBar"></div>
+  <!-- Mobile toggle button — hidden on desktop -->
+  <button id="vcToggleBtn" type="button" onclick="vcToggleCollapsible()" aria-expanded="false">
+    <span id="vcToggleLbl">Building Details</span>
+    <span id="vcToggleIcon">▼</span>
+  </button>
+  <!-- Collapsible group: always open on desktop, toggleable on mobile. Openings first, salesman last. -->
+  <div id="vcCollapsible">
+    <div class="vc-openings-bar" id="vcOpeningsBar"></div>
+    <div class="vc-salesman vc-mobile-only" id="vcSalesmanMobile"></div>
+  </div>
 </div>
 
   <!-- ═══ LEFT PANEL ═══ -->
@@ -14916,10 +14985,18 @@ function populateViewCard(snapshot) {
 
   var specsEl = document.getElementById('vcSpecs');
   if (specsEl) {
+    // Desktop: three separate pills. Mobile: one compact pill (shown via CSS swap).
+    var combined = [w ? w+"'" : '', l ? l+"'" : '', h ? h+"'" : ''].filter(Boolean).join(' \u00D7 ');
     specsEl.innerHTML =
-      spec('Width',  w ? w+"'" : '') +
-      spec('Length', l ? l+"'" : '') +
-      spec('Height', h ? h+"'" : '');
+      '<div class="vc-specs-desktop">' +
+        spec('Width',  w ? w+"'" : '') +
+        spec('Length', l ? l+"'" : '') +
+        spec('Height', h ? h+"'" : '') +
+      '</div>' +
+      '<div class="vc-specs-mobile">' +
+        '<div class="vc-spec-lbl">Size</div>' +
+        '<div class="vc-spec-val">' + (combined || '') + '</div>' +
+      '</div>';
   }
 
   // Prices — show whichever have values
@@ -15032,18 +15109,54 @@ function populateViewCard(snapshot) {
     opEl.innerHTML = sections.join('');
   }
 
-  // Salesman
-  var smEl = document.getElementById('vcSalesman');
-  if (smEl) {
-    smEl.innerHTML =
-      (sm       ? '<div class="vc-salesman-name">'+sm+'</div>' : '') +
-      (smCompany? '<div class="vc-salesman-contact" style="color:rgba(255,255,255,.4);font-size:9px;">'+smCompany+'</div>' : '') +
-      (smPhone  ? '<div class="vc-salesman-contact">'+smPhone+'</div>' : '') +
-      (smEmail  ? '<div class="vc-salesman-contact">'+smEmail+'</div>' : '');
-  }
+  // Salesman — populate both desktop and mobile copies (only one is shown via CSS)
+  var smHtml =
+    (sm       ? '<div class="vc-salesman-name">'+sm+'</div>' : '') +
+    (smCompany? '<div class="vc-salesman-contact" style="color:rgba(255,255,255,.4);font-size:9px;">'+smCompany+'</div>' : '') +
+    (smPhone  ? '<div class="vc-salesman-contact">'+smPhone+'</div>' : '') +
+    (smEmail  ? '<div class="vc-salesman-contact">'+smEmail+'</div>' : '');
+  var smElD = document.getElementById('vcSalesmanDesktop');
+  if (smElD) smElD.innerHTML = smHtml;
+  var smElM = document.getElementById('vcSalesmanMobile');
+  if (smElM) smElM.innerHTML = smHtml;
+  var smEl = smElD; // legacy — kept for any downstream refs
   // Populate color pickers with current selections
   setTimeout(vcInitColorPickers, 100);
+  // Measure real card height after DOM paints and push down 3D canvas accordingly
+  setTimeout(adjustViewCardLayout, 50);
+  setTimeout(adjustViewCardLayout, 300);
 }
+
+// Measure the customer view card and expose its real height as --vc-h so the
+// 3D canvas (right-pane / vp-container) stays fully visible regardless of how
+// many rows the card renders (top row + openings bar + any future rows).
+function adjustViewCardLayout() {
+  if (!document.body.classList.contains('view-mode')) return;
+  var card = document.getElementById('viewCustomerCard');
+  if (!card) return;
+  var h = card.offsetHeight || 0;
+  if (h > 0) document.body.style.setProperty('--vc-h', h + 'px');
+}
+// Toggle the collapsible details section on mobile. No-op visually on desktop
+// (where it's always visible via CSS), but still flips the aria/label state.
+function vcToggleCollapsible() {
+  var card = document.getElementById('viewCustomerCard');
+  var btn  = document.getElementById('vcToggleBtn');
+  var lbl  = document.getElementById('vcToggleLbl');
+  var ico  = document.getElementById('vcToggleIcon');
+  if (!card || !btn) return;
+  var isOpen = card.classList.toggle('vc-expanded');
+  btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  if (lbl) lbl.textContent = isOpen ? 'Hide Details' : 'Building Details';
+  if (ico) ico.textContent = isOpen ? '\u25B2' : '\u25BC';
+  // After the height changes, re-measure so 3D canvas re-seats
+  setTimeout(adjustViewCardLayout, 50);
+  setTimeout(adjustViewCardLayout, 350); // catch CSS transition end
+}
+// Keep the offset correct on resize, orientation change, and after fonts load
+window.addEventListener('resize', adjustViewCardLayout);
+window.addEventListener('orientationchange', function(){ setTimeout(adjustViewCardLayout, 150); });
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(adjustViewCardLayout);
 
 // ── VIEW MODE COLOR PICKER ──────────────────────────────────────
 function vcInitColorPickers() {
