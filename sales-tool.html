@@ -12027,6 +12027,42 @@ async function generateQuotePDF() {
   var pitch = Q.pitch || 4;
   var truss = Q.truss || 'Wood';
   var dims  = bw + "' x " + bl + "' x " + bh + "'";
+
+  // ── Side-shed-only mode: relabel the entire quote as a shed quote ──
+  var isShedOnly = !!window._shedOnlyMode;
+  var shedCfgsPDF = window._shedConfigs || [];
+  var quotedSheds = shedCfgsPDF.filter(function(sc){ return sc && sc.w && sc.l; });
+  // One-liner per shed: 12'x60'x10' Left Shed
+  function shedOneLiner(sc) {
+    var sideCap = (sc.wall||'').charAt(0).toUpperCase() + (sc.wall||'').slice(1);
+    var typeCap = sc.type === 'gable' ? 'Gable Extension'
+                : sc.type === 'wrap'  ? 'Wrap Shed'
+                : sc.type === 'wrap3' ? '3-Sided Wrap'
+                : 'Side Shed';
+    var sh = Math.max(0, (Q.h||0) - (sc.dropFt||0));
+    return sc.w + "' x " + sc.l + "' x " + sh + "' " + sideCap + ' ' + typeCap;
+  }
+  var quoteKind = isShedOnly ? 'Side Shed Quote' : 'Building Quote';
+  var quoteNoun = isShedOnly ? 'side shed addition' : 'building';
+  var shedDimsShort = '';
+  var shedDimsLong  = '';
+  if (isShedOnly && quotedSheds.length) {
+    if (quotedSheds.length === 1) {
+      var sc0 = quotedSheds[0];
+      var sh0 = Math.max(0, (Q.h||0) - (sc0.dropFt||0));
+      shedDimsShort = sc0.w + "' x " + sc0.l + "' x " + sh0 + "'";
+      shedDimsLong  = shedOneLiner(sc0) + '  (attached to ' + dims + ' main building)';
+    } else {
+      shedDimsShort = quotedSheds.length + ' Side Sheds';
+      shedDimsLong  = quotedSheds.length + ' side sheds on ' + dims + ' main building';
+    }
+  }
+  // Strings used everywhere dims/title normally appear:
+  var dimsDisplay       = isShedOnly && shedDimsShort ? shedDimsShort : dims;
+  var dimsDisplayLong   = isShedOnly && shedDimsLong  ? shedDimsLong  : dims;
+  var fileDimsToken     = isShedOnly && shedDimsShort
+                            ? ('SideShed_' + shedDimsShort.replace(/'/g,'').replace(/\s/g,''))
+                            : dims.replace(/'/g,'').replace(/\s/g,'');
   var roofCol  = selRoof  || '';
   var wallCol  = selWall  || '';
   var trimCol  = selTrim  || '';
@@ -12102,15 +12138,22 @@ async function generateQuotePDF() {
 
   // Title
   doc.setFont('helvetica','bold'); doc.setFontSize(22);
-  setTxt(col.white); doc.text('Building Quote', PW/2, 38, {align:'center'});
+  setTxt(col.white); doc.text(quoteKind, PW/2, 38, {align:'center'});
 
   // Quote ID + date
   doc.setFont('helvetica','normal'); doc.setFontSize(9);
   setTxt(col.gold);
   doc.text(quoteId + '  \u00B7  ' + dateStr, PW/2, 52, {align:'center'});
 
-  // Dimension pills
-  var dimLabels = [["WIDTH", bw+"'"], ["LENGTH", bl+"'"], ["HEIGHT", bh+"'"]];
+  // Dimension pills — show shed dims if shed-only single shed, else main building
+  var pillW_ft = bw, pillL_ft = bl, pillH_ft = bh;
+  if (isShedOnly && quotedSheds.length === 1) {
+    var _sc = quotedSheds[0];
+    pillW_ft = _sc.w;
+    pillL_ft = _sc.l;
+    pillH_ft = Math.max(0, (Q.h||0) - (_sc.dropFt||0));
+  }
+  var dimLabels = [["WIDTH", pillW_ft+"'"], ["LENGTH", pillL_ft+"'"], ["HEIGHT", pillH_ft+"'"]];
   var pillW = 90, pillGap = 14, pillStartX = PW/2 - (pillW*3 + pillGap*2)/2;
   for (var di=0; di<3; di++) {
     var px = pillStartX + di*(pillW+pillGap);
@@ -12118,6 +12161,17 @@ async function generateQuotePDF() {
     doc.text(dimLabels[di][1], px + pillW/2, 84, {align:'center'});
     setTxt('#888888'); doc.setFont('helvetica','normal'); doc.setFontSize(7);
     doc.text(dimLabels[di][0], px + pillW/2, 96, {align:'center'});
+  }
+
+  // Shed-only badge in header corner
+  if (isShedOnly) {
+    doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    var _badge = 'SIDE SHED ONLY';
+    var _bw = doc.getTextWidth(_badge) + 14;
+    setFill(col.gold);
+    doc.roundedRect(PW - MG - _bw, 14, _bw, 14, 4, 4, 'F');
+    setTxt(col.navy);
+    doc.text(_badge, PW - MG - _bw/2, 24, {align:'center'});
   }
 
   // ── CUSTOMER strip ──
@@ -12143,9 +12197,15 @@ async function generateQuotePDF() {
   doc.setFont('helvetica','normal'); doc.setFontSize(11); setTxt(col.text);
   doc.text('Hi ' + firstName + ',', MG, y); y += 16;
   doc.setFontSize(10);
-  doc.text('Thanks for giving us the opportunity to quote your building. Here\u2019s your', MG, y);
-  y += 13;
-  doc.text('customized estimate for a ' + dims + ' building.', MG, y);
+  if (isShedOnly) {
+    doc.text('Thanks for giving us the opportunity to quote your side shed addition.', MG, y);
+    y += 13;
+    doc.text('Here\u2019s your customized estimate for: ' + dimsDisplayLong + '.', MG, y);
+  } else {
+    doc.text('Thanks for giving us the opportunity to quote your building. Here\u2019s your', MG, y);
+    y += 13;
+    doc.text('customized estimate for a ' + dims + ' building.', MG, y);
+  }
   y += 22;
 
   // ── BUILDING DETAILS section ──
@@ -12170,7 +12230,13 @@ async function generateQuotePDF() {
 
   y = sectionLabel('Building Details', y);
   var specs = [];
-  specs.push(['Dimensions',      dims]);
+  specs.push(['Dimensions',      dimsDisplay]);
+  if (isShedOnly && quotedSheds.length === 1) {
+    specs.push(['Attached To',   dims + ' Main Building']);
+  } else if (isShedOnly && quotedSheds.length > 1) {
+    specs.push(['Shed Count',    quotedSheds.length + ' side sheds']);
+    specs.push(['Main Building', dims + ' (not included in quote)']);
+  }
   specs.push(['Roof Pitch',      pitch+'/12']);
   specs.push(['Truss Type',      truss]);
   if (roofCol)  specs.push(['Roof Color',    roofCol]);
@@ -12358,11 +12424,11 @@ async function generateQuotePDF() {
     setFill(col.darkGold); doc.rect(0, 68, PW, 4, 'F');
 
     doc.setFont('helvetica','bold'); doc.setFontSize(20); setTxt(col.white);
-    doc.text('Building Specifications', PW/2, 32, {align:'center'});
+    doc.text(isShedOnly ? 'Side Shed Specifications' : 'Building Specifications', PW/2, 32, {align:'center'});
     doc.setFont('helvetica','normal'); doc.setFontSize(9); setTxt(col.gold);
     doc.text('Please review the details below and contact us with any questions.', PW/2, 48, {align:'center'});
     doc.setFont('helvetica','normal'); doc.setFontSize(8); setTxt('#888888');
-    doc.text(custName + '   ·   ' + dims + '   ·   Quote ' + (window._savedQuoteId||''), PW/2, 62, {align:'center'});
+    doc.text(custName + '   \u00B7   ' + dimsDisplay + (isShedOnly ? ' (Side Shed)' : '') + '   \u00B7   Quote ' + (window._savedQuoteId||''), PW/2, 62, {align:'center'});
 
     // ── CUSTOMER strip — matches page 1 ───────────────────
     setFill('#f0ede6'); doc.rect(0, 72, PW, 32, 'F');
@@ -12414,9 +12480,19 @@ async function generateQuotePDF() {
     }
 
     // ── 1. BUILDING OVERVIEW ──────────────────────────────
-    specSection('Building Overview');
+    specSection(isShedOnly ? 'Side Shed Overview' : 'Building Overview');
     rowIdx2 = 0;
-    specRow2('Dimensions', (Q2.w||'?') + "' Wide  ×  " + (Q2.l||'?') + "' Long  ×  " + (Q2.h||'?') + "' Tall");
+    if (isShedOnly && quotedSheds.length === 1) {
+      var _scS = quotedSheds[0];
+      var _shS = Math.max(0, (Q2.h||0) - (_scS.dropFt||0));
+      specRow2('Dimensions', _scS.w + "' Wide  \u00D7  " + _scS.l + "' Long  \u00D7  " + _shS + "' Tall");
+      specRow2('Attached To', (Q2.w||'?') + "' \u00D7 " + (Q2.l||'?') + "' \u00D7 " + (Q2.h||'?') + "' Main Building");
+    } else if (isShedOnly && quotedSheds.length > 1) {
+      specRow2('Quoted', quotedSheds.length + ' side sheds');
+      specRow2('Main Building', (Q2.w||'?') + "' \u00D7 " + (Q2.l||'?') + "' \u00D7 " + (Q2.h||'?') + "' (not included)");
+    } else {
+      specRow2('Dimensions', (Q2.w||'?') + "' Wide  \u00D7  " + (Q2.l||'?') + "' Long  \u00D7  " + (Q2.h||'?') + "' Tall");
+    }
     specRow2('Roof Pitch', (Q2.pitch||4) + '/12');
     specRow2('Truss Type', isSteel ? 'Steel Truss' : 'Wood Truss');
     if (!isSteel) {
@@ -12653,7 +12729,7 @@ async function generateQuotePDF() {
 
   // ── OUTPUT — mobile-aware ──
   var blob = doc.output('blob');
-  var fileName = (custName.replace(/\s+/g,'_') + '_' + dims.replace(/'/g,'').replace(/\s/g,'') + '_quote.pdf');
+  var fileName = (custName.replace(/\s+/g,'_') + '_' + fileDimsToken + '_quote.pdf');
 
   // If called from generateQuotePdfBlob — capture and return, don't download
   if (window._pdfBlobCapture) {
@@ -12670,7 +12746,7 @@ async function generateQuotePDF() {
       var shareFile = new File([blob], fileName, { type: 'application/pdf' });
       if (navigator.canShare && navigator.canShare({ files: [shareFile] })) {
         await navigator.share({
-          title: 'Building Quote — ' + dims,
+          title: quoteKind + ' \u2014 ' + dimsDisplay,
           text: 'Quote from ' + salesName,
           files: [shareFile]
         });
@@ -14053,6 +14129,10 @@ async function saveSalesQuote() {
       pricingResults: pricingResults,
       configEncoded:  await safeEncodeCompressed(_cfg),
       configLink:     shareLink,
+      shedOnly:       !!window._shedOnlyMode,
+      quotedSheds:    (window._shedConfigs||[]).filter(function(sc){return sc&&sc.w&&sc.l;}).map(function(sc){
+                        return { wall: sc.wall||'', type: sc.type||'leanto', w: sc.w||0, l: sc.l||0, dropFt: sc.dropFt||0 };
+                      }),
       timestamp:      new Date().toISOString()
     };
 
@@ -14144,7 +14224,7 @@ function openEmailQuoteModal() {
   var lbl = document.getElementById('eqQuoteIdLabel');
   if (sEl) sEl.value = (window.currentUser || {}).email || '';
   if (cEl) cEl.value = (document.getElementById('st_email')||{}).value || '';
-  if (lbl) lbl.textContent = 'Quote ID: ' + window._savedQuoteId;
+  if (lbl) lbl.textContent = 'Quote ID: ' + window._savedQuoteId + (window._shedOnlyMode ? '  \u2022  SIDE SHED ONLY' : '');
 
   // Populate price selector — works for open and enclosed buildings
   var wrap    = document.getElementById('eqPriceSelectWrap');
@@ -14626,7 +14706,7 @@ async function sendSalesQuoteEmail() {
         selectedPrices: selectedPrices,
         attachNewCustomer: !!(document.getElementById('eqAttachNewCustomer') && document.getElementById('eqAttachNewCustomer').checked),
         pdfBase64:     _quotePdfB64 || '',
-        pdfFileName:   ((document.getElementById('st_name')||{}).value||'Customer').replace(/\s+/g,'_') + '_Quote.pdf'
+        pdfFileName:   ((document.getElementById('st_name')||{}).value||'Customer').replace(/\s+/g,'_') + (window._shedOnlyMode ? '_SideShed_Quote.pdf' : '_Quote.pdf')
       })
     });
     var data = await safeJson(resp);
