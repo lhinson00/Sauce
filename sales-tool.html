@@ -4657,7 +4657,7 @@ function renderSheds(){
           +'</select></div></div>'
           +'<div style="padding:8px 10px;margin-bottom:7px;background:rgba(255,130,0,.08);border-left:3px solid #FF8200;border-radius:4px;font-size:10px;color:#555;line-height:1.45;">'
           +'<b>Full Wrap-Around:</b> Covered porch rings the entire building at uniform depth. Width = porch depth on all 4 sides. Attach-wall and length are determined by the main building.'
-          +'<br><br><b style="color:#c27000;">⚠ Preview state:</b> concrete footprint, quote labels, and spec sheet are accurate. 3D rendering and material calculations will be completed in the next phase.'
+          +'<br><br><b style="color:#c27000;">⚠ Preview state:</b> 3D rendering, concrete footprint, and spec sheet are accurate. Material calculations (posts, trim, panels) will be completed in the next phase — don\'t quote off this yet.'
           +'</div>';
       }
     }
@@ -8533,6 +8533,18 @@ function applyVoiceQuote(parsed, overlay) {
 
             if (!(concreteOn && conAreas['shed_'+sc.id])) return; // no concrete — grass shows
 
+            // wrap4 gets its own dedicated slab ring and skips the "primary wall" slab code.
+            if (sc.type === 'wrap4') {
+                var _w4fullZ = sl + 2*ssw + .02;
+                // LEFT and RIGHT span full outer corner-to-corner length
+                addSlab(new THREE.BoxGeometry(ssw+.02, .04, _w4fullZ), -sw/2 - ssw/2, .02, 0);
+                addSlab(new THREE.BoxGeometry(ssw+.02, .04, _w4fullZ),  sw/2 + ssw/2, .02, 0);
+                // FRONT and BACK fill the gap between the left/right slabs
+                addSlab(new THREE.BoxGeometry(sw+.02, .04, ssw+.02), 0, .02, -sl/2 - ssw/2);
+                addSlab(new THREE.BoxGeometry(sw+.02, .04, ssw+.02), 0, .02,  sl/2 + ssw/2);
+                return; // done with wrap4 slab
+            }
+
             let geo = new THREE.BoxGeometry(ssw + .02, .04, slabL + .02);
             let px = 0, pz = 0;
             if (sc.wall === 'left')       { px = -sw/2 - ssw/2; pz = slabOff; }
@@ -8628,6 +8640,15 @@ function applyVoiceQuote(parsed, overlay) {
         // Build set of main building corner positions hidden behind shed gable end caps
         const _shedCoveredCorners = new Set();
         (Q.sheds || []).forEach(sc => {
+            if (sc.type === 'wrap4') {
+                // Full wrap-around covers all four building corners
+                [-sw/2, sw/2].forEach(function(xE){
+                    [-sl/2, sl/2].forEach(function(zE){
+                        _shedCoveredCorners.add(Math.round(xE*1000) + ',' + Math.round(zE*1000));
+                    });
+                });
+                return;
+            }
             if (sc.type !== 'leanto' && sc.type !== 'wrap' && sc.type !== 'wrap3') return;
             const isEave = sc.wall === 'left' || sc.wall === 'right';
             const mainWallLen = isEave ? Q.l : Q.w;
@@ -8913,6 +8934,33 @@ function applyVoiceQuote(parsed, overlay) {
                         if (_isMono) addBracket(x2, zPos, grps.posts, slabH);
                     }
                 }
+            } else if (sc.type === 'wrap4') {
+                // Full wrap-around posts: 4 outer rows + 4 corner posts.
+                // Long sides (parallel to building length Q.l) use w4PSlong
+                // Short sides (parallel to building width Q.w) use w4PSshort
+                const _w4PSlong  = sc.w4PSlong  || 10;
+                const _w4PSshort = sc.w4PSshort || 10;
+                const _oXL = -sw/2 - ssw;
+                const _oXR =  sw/2 + ssw;
+                const _oZF = -sl/2 - ssw;
+                const _oZB =  sl/2 + ssw;
+                // LEFT outer row — posts along Z, span = Q.l
+                addPostLineAligned(_oXL, 0, true, Q.l, _w4PSlong, undefined, 0);
+                // RIGHT outer row
+                addPostLineAligned(_oXR, 0, true, Q.l, _w4PSlong, undefined, 0);
+                // FRONT outer row — posts along X, span = Q.w
+                addPostLineAligned(0, _oZF, false, Q.w, _w4PSshort, undefined, 0);
+                // BACK outer row
+                addPostLineAligned(0, _oZB, false, Q.w, _w4PSshort, undefined, 0);
+                // Four outer corner posts (explicitly placed — row ends may land at the same spots,
+                // which is harmless visually since coords match)
+                const _w4hPostH = _isMono ? Math.max(0.01, shedSh - slabH) : shedSh;
+                [[_oXL,_oZF],[_oXR,_oZF],[_oXL,_oZB],[_oXR,_oZB]].forEach(function(c){
+                    const cp = new THREE.Mesh(new THREE.BoxGeometry(ps, _w4hPostH, ps), mP);
+                    cp.position.set(c[0], shedPostBase + _w4hPostH/2, c[1]);
+                    cp.castShadow = true; grps.posts.add(cp);
+                    if (_isMono) addBracket(c[0], c[1], grps.posts, slabH);
+                });
             } else if (sc.type === 'wrap' || sc.type === 'wrap3') {
                 // Wrap: posts along primary leg + secondary leg(s) + corner post(s) at hip
                 if (sc.wall === 'left' || sc.wall === 'right') {
@@ -10703,7 +10751,65 @@ function applyVoiceQuote(parsed, overlay) {
                 }
             }
 
-            if (sc.type === 'leanto') {
+            if (sc.type === 'wrap4') {
+                // ── FULL WRAP-AROUND (wrap4) ──
+                // Four hip roof planes ring the building at uniform depth (ssw),
+                // meeting at four hip corners. Each leg spans its parallel
+                // building dimension plus 2·oh (overhangs overlap adjacent legs),
+                // and addHipCorner fills the triangular outer-corner patch.
+                var _w4oh = oh;
+                var _w4shedRoofHex = pc(roofColorName);
+
+                // LEFT leg (outer X negative, runs along Z)
+                (function(){
+                    var oX = -sw/2 - ssw - _w4oh, aX = -sw/2;
+                    var _zMin = -sl/2 - _w4oh, _zMax = sl/2 + _w4oh;
+                    grps.shed.add(mkQ([oX, outerH-.01, _zMax,  aX, attachH-.01, _zMax,
+                                       aX, attachH-.01, _zMin, oX, outerH-.01, _zMin], mSh));
+                    addShedRoofRibs('left', oX, aX, null, null, outerH, attachH, sl, 0, _w4oh, _w4oh, _w4shedRoofHex, grps.shed);
+                    grps.shed.add(mkL([new THREE.Vector3(oX, outerH, _zMin), new THREE.Vector3(oX, outerH, _zMax)], mHip));
+                })();
+                // RIGHT leg
+                (function(){
+                    var oX = sw/2 + ssw + _w4oh, aX = sw/2;
+                    var _zMin = -sl/2 - _w4oh, _zMax = sl/2 + _w4oh;
+                    grps.shed.add(mkQ([oX, outerH-.01, _zMin, aX, attachH-.01, _zMin,
+                                       aX, attachH-.01, _zMax, oX, outerH-.01, _zMax], mSh));
+                    addShedRoofRibs('right', oX, aX, null, null, outerH, attachH, sl, 0, _w4oh, _w4oh, _w4shedRoofHex, grps.shed);
+                    grps.shed.add(mkL([new THREE.Vector3(oX, outerH, _zMin), new THREE.Vector3(oX, outerH, _zMax)], mHip));
+                })();
+                // FRONT leg (outer Z negative, runs along X)
+                (function(){
+                    var oZ = -sl/2 - ssw - _w4oh, aZ = -sl/2;
+                    var _xMin = -sw/2 - _w4oh, _xMax = sw/2 + _w4oh;
+                    grps.shed.add(mkQ([_xMax, outerH-.01, oZ, _xMax, attachH-.01, aZ,
+                                       _xMin, attachH-.01, aZ, _xMin, outerH-.01, oZ], mSh));
+                    addShedRoofRibs('front', null, null, oZ, aZ, outerH, attachH, sw, 0, _w4oh, _w4oh, _w4shedRoofHex, grps.shed);
+                    grps.shed.add(mkL([new THREE.Vector3(_xMin, outerH, oZ), new THREE.Vector3(_xMax, outerH, oZ)], mHip));
+                })();
+                // BACK leg
+                (function(){
+                    var oZ = sl/2 + ssw + _w4oh, aZ = sl/2;
+                    var _xMin = -sw/2 - _w4oh, _xMax = sw/2 + _w4oh;
+                    grps.shed.add(mkQ([_xMin, outerH-.01, oZ, _xMin, attachH-.01, aZ,
+                                       _xMax, attachH-.01, aZ, _xMax, outerH-.01, oZ], mSh));
+                    addShedRoofRibs('back', null, null, oZ, aZ, outerH, attachH, sw, 0, _w4oh, _w4oh, _w4shedRoofHex, grps.shed);
+                    grps.shed.add(mkL([new THREE.Vector3(_xMin, outerH, oZ), new THREE.Vector3(_xMax, outerH, oZ)], mHip));
+                })();
+
+                // Four hip corners — triangular roof patches at each building corner.
+                // Defined inline here since addHipCorner is declared later in the wrap/wrap3 branch scope.
+                function _w4HipCorner(bX, bZ, oX, oZ) {
+                    grps.shed.add(mkQ([bX, attachH-.01, bZ, oX, outerH-.01, bZ,
+                                       oX, outerH-.01, oZ, bX, outerH-.01, oZ], mSh));
+                    var _mHR = new THREE.LineBasicMaterial({color: pc(trimColorName)});
+                    grps.shed.add(mkL([new THREE.Vector3(bX, attachH, bZ), new THREE.Vector3(oX, outerH, oZ)], _mHR));
+                }
+                _w4HipCorner(-sw/2, -sl/2, -sw/2 - ssw - _w4oh, -sl/2 - ssw - _w4oh); // FL
+                _w4HipCorner( sw/2, -sl/2,  sw/2 + ssw + _w4oh, -sl/2 - ssw - _w4oh); // FR
+                _w4HipCorner(-sw/2,  sl/2, -sw/2 - ssw - _w4oh,  sl/2 + ssw + _w4oh); // BL
+                _w4HipCorner( sw/2,  sl/2,  sw/2 + ssw + _w4oh,  sl/2 + ssw + _w4oh); // BR
+            } else if (sc.type === 'leanto') {
                 addLeanto(sc.wall, ssw, ssl);
             } else if (sc.type === 'wrap' || sc.type === 'wrap3') {
                 var isEave = (sc.wall === 'left' || sc.wall === 'right');
@@ -11130,7 +11236,56 @@ function applyVoiceQuote(parsed, overlay) {
             }
             // === OUTER EAVE HEADER — always visible (roofonly, partial, enclosed) ===
             // 2' metal band under roof edge on outer eave face. Top=sSh, bottom=sSh-2'.
-            if (sc.type === 'leanto' || sc.type === 'wrap' || sc.type === 'wrap3') {
+            if (sc.type === 'wrap4') {
+                const _hWallHex = pc(wallColorName);
+                const _hR=(_hWallHex>>16)&0xff, _hG=(_hWallHex>>8)&0xff, _hB=_hWallHex&0xff;
+                const _hMW = new THREE.MeshBasicMaterial({color:_hWallHex, side:THREE.DoubleSide});
+                const _hRHi = new THREE.MeshBasicMaterial({color:((Math.min(255,_hR+55)<<16)|(Math.min(255,_hG+55)<<8)|Math.min(255,_hB+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
+                const _hRSh = new THREE.MeshBasicMaterial({color:((Math.max(0,_hR-40)<<16)|(Math.max(0,_hG-40)<<8)|Math.max(0,_hB-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
+                const _hRSp = 0.075, _hRW = 0.006;
+                const hTop = sSh, hBot = Math.max(sSh - 2*Sc, 0);
+                // Four outer-edge fascia bands — one per side, each spans corner-to-corner outer dim
+                // LEFT
+                (function(){
+                    const _hX = -sw/2 - ssw - 0.028;
+                    const _z1 = -sl/2 - ssw, _z2 = sl/2 + ssw;
+                    grps.wallPanels.add(mkQ([_hX, hBot, _z1, _hX, hTop, _z1, _hX, hTop, _z2, _hX, hBot, _z2], _hMW));
+                    for (let z = _z1; z <= _z2; z += _hRSp) {
+                        grps.wallPanels.add(mkQ([_hX-0.003, hBot, z, _hX-0.003, hBot, z+_hRW, _hX-0.003, hTop, z+_hRW, _hX-0.003, hTop, z], _hRHi));
+                        grps.wallPanels.add(mkQ([_hX-0.003, hBot, z+_hRW, _hX-0.003, hBot, z+_hRW*2, _hX-0.003, hTop, z+_hRW*2, _hX-0.003, hTop, z+_hRW], _hRSh));
+                    }
+                })();
+                // RIGHT
+                (function(){
+                    const _hX = sw/2 + ssw + 0.028;
+                    const _z1 = -sl/2 - ssw, _z2 = sl/2 + ssw;
+                    grps.wallPanels.add(mkQ([_hX, hBot, _z1, _hX, hTop, _z1, _hX, hTop, _z2, _hX, hBot, _z2], _hMW));
+                    for (let z = _z1; z <= _z2; z += _hRSp) {
+                        grps.wallPanels.add(mkQ([_hX+0.003, hBot, z, _hX+0.003, hBot, z+_hRW, _hX+0.003, hTop, z+_hRW, _hX+0.003, hTop, z], _hRHi));
+                        grps.wallPanels.add(mkQ([_hX+0.003, hBot, z+_hRW, _hX+0.003, hBot, z+_hRW*2, _hX+0.003, hTop, z+_hRW*2, _hX+0.003, hTop, z+_hRW], _hRSh));
+                    }
+                })();
+                // FRONT
+                (function(){
+                    const _hZ = -sl/2 - ssw - 0.028;
+                    const _x1 = -sw/2 - ssw, _x2 = sw/2 + ssw;
+                    grps.wallPanels.add(mkQ([_x1, hBot, _hZ, _x1, hTop, _hZ, _x2, hTop, _hZ, _x2, hBot, _hZ], _hMW));
+                    for (let x = _x1; x <= _x2; x += _hRSp) {
+                        grps.wallPanels.add(mkQ([x, hBot, _hZ-0.003, x+_hRW, hBot, _hZ-0.003, x+_hRW, hTop, _hZ-0.003, x, hTop, _hZ-0.003], _hRHi));
+                        grps.wallPanels.add(mkQ([x+_hRW, hBot, _hZ-0.003, x+_hRW*2, hBot, _hZ-0.003, x+_hRW*2, hTop, _hZ-0.003, x+_hRW, hTop, _hZ-0.003], _hRSh));
+                    }
+                })();
+                // BACK
+                (function(){
+                    const _hZ = sl/2 + ssw + 0.028;
+                    const _x1 = -sw/2 - ssw, _x2 = sw/2 + ssw;
+                    grps.wallPanels.add(mkQ([_x1, hBot, _hZ, _x1, hTop, _hZ, _x2, hTop, _hZ, _x2, hBot, _hZ], _hMW));
+                    for (let x = _x1; x <= _x2; x += _hRSp) {
+                        grps.wallPanels.add(mkQ([x, hBot, _hZ+0.003, x+_hRW, hBot, _hZ+0.003, x+_hRW, hTop, _hZ+0.003, x, hTop, _hZ+0.003], _hRHi));
+                        grps.wallPanels.add(mkQ([x+_hRW, hBot, _hZ+0.003, x+_hRW*2, hBot, _hZ+0.003, x+_hRW*2, hTop, _hZ+0.003, x+_hRW, hTop, _hZ+0.003], _hRSh));
+                    }
+                })();
+            } else if (sc.type === 'leanto' || sc.type === 'wrap' || sc.type === 'wrap3') {
                 const _hWallHex = pc(wallColorName);
                 const _hR=(_hWallHex>>16)&0xff, _hG=(_hWallHex>>8)&0xff, _hB=_hWallHex&0xff;
                 const _hMW = new THREE.MeshBasicMaterial({color:_hWallHex, side:THREE.DoubleSide});
