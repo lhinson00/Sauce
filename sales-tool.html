@@ -15137,6 +15137,55 @@ function adjustViewCardLayout() {
   var h = card.offsetHeight || 0;
   if (h > 0) document.body.style.setProperty('--vc-h', h + 'px');
 }
+
+// Watch the view card for ANY size change (content loads, font swaps, responsive
+// wrapping, colors populating, openings bar appearing, etc.) and update --vc-h
+// the instant the height changes. This is what keeps the 3D render from being
+// hidden behind the card on mobile when the card grows taller than the fallback
+// (90px/120px) defaults. Runs only in view mode.
+(function() {
+  function startViewCardObserver() {
+    if (!document.body.classList.contains('view-mode')) return;
+    var card = document.getElementById('viewCustomerCard');
+    if (!card) {
+      // Card may not be in DOM yet — try again shortly
+      setTimeout(startViewCardObserver, 100);
+      return;
+    }
+    // Initial measure so --vc-h is set before first paint of view mode
+    adjustViewCardLayout();
+    if (typeof ResizeObserver !== 'undefined') {
+      try {
+        var ro = new ResizeObserver(function(entries) {
+          // Throttle with rAF to coalesce bursts of changes
+          if (ro._pending) return;
+          ro._pending = true;
+          requestAnimationFrame(function() {
+            ro._pending = false;
+            adjustViewCardLayout();
+          });
+        });
+        ro.observe(card);
+        window._vcResizeObserver = ro;
+      } catch(e) { /* ignore — fall through to timer fallback */ }
+    }
+    // Belt-and-suspenders: also re-measure on a short interval for the first
+    // few seconds after view mode loads. Covers cases where the card's height
+    // depends on async content (webfonts, images, late script execution) that
+    // ResizeObserver may miss if the change is between paints.
+    var start = Date.now();
+    var bsInterval = setInterval(function() {
+      adjustViewCardLayout();
+      if (Date.now() - start > 5000) clearInterval(bsInterval);
+    }, 250);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startViewCardObserver);
+  } else {
+    startViewCardObserver();
+  }
+})();
 // Toggle the collapsible details section on mobile. No-op visually on desktop
 // (where it's always visible via CSS), but still flips the aria/label state.
 function vcToggleCollapsible() {
