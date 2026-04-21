@@ -4705,8 +4705,8 @@ function renderSheds(){
       +'<div class="shed-type-chips">'+posChips+'</div>'
       +customOffRow+'</div>'
       +extraOptions
-      // Finished ceiling toggle — leanto/wrap sheds on eave walls only
-      +(isLeanto && (sc.wall==='left'||sc.wall==='right') ? (
+      // Finished ceiling toggle — leanto/wrap sheds on eave walls only; wrap4 always
+      +((isLeanto && (sc.wall==='left'||sc.wall==='right')) || sc.type==='wrap4' ? (
         '<div class="toggle-row" style="margin-bottom:6px;padding:6px 0;">'        +'<div class="toggle-info"><div class="toggle-lbl">Finished Ceiling</div><div class="toggle-sub">Ceiling joists + liner panels</div></div>'        +'<label class="tog"><input type="checkbox" id="shedCeil_'+sc.id+'" '+(sc.finishedCeiling?'checked':'')+' onchange="setShedProp('+sc.id+',\'finishedCeiling\',this.checked);scheduleBuild();updateStripFromLocalCalc()"><span class="tog-track"></span></label>'        +'</div>'      ) : '')
       +(function(){
         if (sc.encl !== 'enclosed' && sc.encl !== 'partial') return '';
@@ -17490,16 +17490,16 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
       // Row counts — each row: floor(span/ps) + 1 posts
       var longRowPosts  = lineCount(Q.l, w4PSlong);  // left or right outer row
       var shortRowPosts = lineCount(Q.w, w4PSshort); // front or back outer row
-      add(longRowPosts,  'Full Wrap Porch Posts — Left Outer');
-      add(longRowPosts,  'Full Wrap Porch Posts — Right Outer');
-      add(shortRowPosts, 'Full Wrap Porch Posts — Front Outer');
-      add(shortRowPosts, 'Full Wrap Porch Posts — Back Outer');
+      add(longRowPosts,  'Shed Posts');
+      add(longRowPosts,  'Shed Posts');
+      add(shortRowPosts, 'Shed Posts');
+      add(shortRowPosts, 'Shed Posts');
       // 4 explicit outer-corner posts
-      add(4, 'Full Wrap Porch Corner Posts');
+      add(4, 'Shed Posts');
       // Corner-void posts — 4 corners × 2 edges each × (cornerBays-1) posts per edge
       var cornerBays4 = Math.max(1, Math.floor(sc.w / attachPS));
       var voids4 = Math.max(0, (cornerBays4 - 1) * 8); // 4 corners × 2 edges
-      if (voids4 > 0) add(voids4, 'Full Wrap Corner-Void Posts');
+      if (voids4 > 0) add(voids4, 'Shed Posts');
       return;
     }
 
@@ -17537,25 +17537,6 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
       }
       // 2 hip corner posts
       add(2);
-      return;
-    }
-
-    if (sc.type === 'wrap4') {
-      // Full wrap-around: 4 outer post rows + 4 outer corner posts.
-      // Long sides (parallel to Q.l) use w4PSlong; short sides (parallel to Q.w) use w4PSshort.
-      var w4PSlong  = parseFloat(sc.w4PSlong)  || 10;
-      var w4PSshort = parseFloat(sc.w4PSshort) || 10;
-      // LEFT + RIGHT rows — lineCount already includes end posts at each building corner.
-      // Since those end posts double as the outer corner posts of the perpendicular rows,
-      // we count the long-side rows in full and then ONLY the INTERIOR posts of the short-side rows.
-      allPosts.push({ sku: sku, postLen: postLen, quantity: lineCount(Q.l, w4PSlong), label: 'Full Wrap-Around Posts — Left Side'  });
-      allPosts.push({ sku: sku, postLen: postLen, quantity: lineCount(Q.l, w4PSlong), label: 'Full Wrap-Around Posts — Right Side' });
-      // FRONT + BACK rows — interior posts only (end corners are shared with the L/R rows above).
-      // lineCount returns N+1 posts for N bays; the 2 end posts ARE the corner posts of L/R rows.
-      var frontInterior = Math.max(0, lineCount(Q.w, w4PSshort) - 2);
-      var backInterior  = Math.max(0, lineCount(Q.w, w4PSshort) - 2);
-      if (frontInterior > 0) allPosts.push({ sku: sku, postLen: postLen, quantity: frontInterior, label: 'Full Wrap-Around Posts — Front Side' });
-      if (backInterior  > 0) allPosts.push({ sku: sku, postLen: postLen, quantity: backInterior,  label: 'Full Wrap-Around Posts — Back Side' });
       return;
     }
   });
@@ -18044,6 +18025,38 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
       return;
     }
     if (sc.type === 'leanto') { addShedPieces(sc.l, 2); return; }
+    if (sc.type === 'wrap4') {
+      // Full wrap-around: 4 sides, each hip-tip to hip-tip.
+      // Board length chosen by post spacing: 8'→10', 10'→20', 12'→12'.
+      // Never LVL. Count = boards to cover (bays × 2 sides of posts) at chosen board length.
+      var _w4PSlong  = parseFloat(sc.w4PSlong)  || 10;
+      var _w4PSshort = parseFloat(sc.w4PSshort) || 10;
+      function _w4BoardLen(ps) {
+        if (ps <= 8)  return 10; // 8' spacing: use 10' boards, accept waste
+        if (ps <= 10) return 20; // 10' spacing: use 20' boards (covers 2 bays, or cut in half)
+        return 12;               // 12' spacing: use 12' boards (covers 1 bay)
+      }
+      function _w4BoardsPerSide(totalLen, ps) {
+        var bays = totalLen / ps;
+        var baySides = bays * 2; // inside + outside of posts
+        var boardLen = _w4BoardLen(ps);
+        var baysPerBoard = Math.max(1, Math.floor(boardLen / ps));
+        return { boardLen: boardLen, qty: Math.ceil(baySides / baysPerBoard) };
+      }
+      function _w4Add(totalLen, ps) {
+        var b = _w4BoardsPerSide(totalLen, ps);
+        var key = 'SYP212' + b.boardLen;
+        shedGroups[key] = shedGroups[key] || { len: b.boardLen, qty: 0, isLVL: false };
+        shedGroups[key].qty += b.qty;
+      }
+      var _eaveLenH = Q.l + 2 * sc.w;
+      var _gableLenH = Q.w + 2 * sc.w;
+      _w4Add(_eaveLenH,  _w4PSlong);   // Left
+      _w4Add(_eaveLenH,  _w4PSlong);   // Right
+      _w4Add(_gableLenH, _w4PSshort);  // Front
+      _w4Add(_gableLenH, _w4PSshort);  // Back
+      return;
+    }
     if (sc.type === 'wrap' || sc.type === 'wrap3') {
       addShedPieces(sc.l, 2);
       if (sc.type === 'wrap3') {
@@ -18313,7 +18326,13 @@ window.SauceMaterials.calcSteelTrusses = function(Q) {
 // SKU determined by shed width.
 
 window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
-  if (Q.truss !== 'Wood') return [];
+  // Wood truss builds: fire normally for all shed types.
+  // Steel truss builds: only fire for wrap4 (for the 4 hip-corner rafters).
+  var _isSteel = Q.truss !== 'Wood';
+  if (_isSteel) {
+    var _hasWrap4 = (shedCfgs || []).some(function(sc){ return sc.type === 'wrap4' && sc.w && sc.l; });
+    if (!_hasWrap4) return [];
+  }
 
   var rafterMap = {
     6:  'SYP2610',
@@ -18359,7 +18378,39 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
     if (!sc.wall || !sc.w || !sc.l) return;
     if (sc.type === 'gable') return; // gable uses wood trusses for clear span
 
+    // Steel-truss builds: only process wrap4 (for hip rafters); other shed types
+    // have their straight rafters handled by steel trusses elsewhere.
+    if (_isSteel && sc.type !== 'wrap4') return;
+
     var isEave = (sc.wall === 'left' || sc.wall === 'right');
+
+    if (sc.type === 'wrap4') {
+      var _eaveLenR  = Q.l + 2 * sc.w;
+      var _gableLenR = Q.w + 2 * sc.w;
+
+      // Straight sides — wood truss only (steel uses trusses for these)
+      if (!_isSteel) {
+        addFraming(sc.w, _eaveLenR,  sc.finishedCeiling); // Left eave side
+        addFraming(sc.w, _eaveLenR,  sc.finishedCeiling); // Right eave side
+        addFraming(sc.w, _gableLenR, sc.finishedCeiling); // Front gable side
+        addFraming(sc.w, _gableLenR, sc.finishedCeiling); // Back gable side
+      }
+
+      // Hip corner commons — always, for BOTH wood and steel truss builds.
+      // Same SKU as regular rafters; waste accepted.
+      var _hipCount4 = Math.floor(sc.w / 2) + 2;
+      var _rSkuHip4  = rafterMap[sc.w];
+      if (_rSkuHip4) rafterGroups[_rSkuHip4] = (rafterGroups[_rSkuHip4] || 0) + _hipCount4 * 4;
+
+      // Hip corner ceiling joists (if finished ceiling)
+      if (sc.finishedCeiling) {
+        var _jSkuHip4 = joistMap[sc.w];
+        if (_jSkuHip4) joistGroups[_jSkuHip4] = (joistGroups[_jSkuHip4] || 0) + _hipCount4 * 4;
+        var _jhSkuHip4 = 'JH2' + sc.w;
+        joistHangerGroups[_jhSkuHip4] = (joistHangerGroups[_jhSkuHip4] || 0) + _hipCount4 * 4 * 2;
+      }
+      return;
+    }
 
     if (sc.type === 'leanto') {
       addFraming(sc.w, sc.l, sc.finishedCeiling);
@@ -18559,23 +18610,58 @@ window.SauceMaterials.calcShedLedgers = function(Q, WALLS, shedCfgs) {
 
   var nailerGroups = {};
 
+  // Add a nailer on a specific wall, using that wall's post spacing.
+  function addNailer(wallId) {
+    var attachWall = (WALLS || []).find(function(w) { return w.id === wallId; });
+    var ps   = attachWall ? (attachWall.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+    var isEave = (wallId === 'left' || wallId === 'right');
+    var wLen = isEave ? Q.l : Q.w;
+    var nailerBoards = fillStructural(wLen, ps);
+    Object.keys(nailerBoards).forEach(function(len) {
+      var sku = 'SYP212' + len;
+      nailerGroups[sku] = (nailerGroups[sku] || 0) + nailerBoards[len];
+    });
+  }
+
+  // Determine the list of walls that have shed roof attached for this shed.
+  function attachedWallsFor(sc) {
+    if (sc.type === 'leanto') return [sc.wall];
+    if (sc.type === 'wrap4')  return ['left', 'right', 'front', 'back'];
+    if (sc.type === 'wrap3') {
+      var isEaveW3 = (sc.wall === 'left' || sc.wall === 'right');
+      return isEaveW3
+        ? [sc.wall, 'front', 'back']   // eave-attached: primary eave + both gables
+        : [sc.wall, 'left',  'right']; // gable-attached: primary gable + both eaves
+    }
+    if (sc.type === 'wrap') {
+      var walls = [sc.wall];
+      if (sc.wrapLeg > 0) {
+        var isEaveW2 = (sc.wall === 'left' || sc.wall === 'right');
+        var secWallId = isEaveW2
+          ? (sc.wrapDir === 'cw' ? 'front' : 'back')
+          : (sc.wrapDir === 'cw' ? 'left'  : 'right');
+        walls.push(secWallId);
+      }
+      return walls;
+    }
+    return [];
+  }
+
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
     if (sc.type === 'gable') return;
-    addLedger(sc.w, sc.wall);
 
-    // Ledger nailer — only when shed has a drop attachment
-    if (sc.dropFt > 0) {
-      var attachWall = (WALLS || []).find(function(w) { return w.id === sc.wall; });
-      var ps   = attachWall ? (attachWall.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
-      var isEave = (sc.wall === 'left' || sc.wall === 'right');
-      var wLen = isEave ? Q.l : Q.w;
-      var nailerBoards = fillStructural(wLen, ps);
-      Object.keys(nailerBoards).forEach(function(len) {
-        var sku = 'SYP212' + len;
-        nailerGroups[sku] = (nailerGroups[sku] || 0) + nailerBoards[len];
-      });
-    }
+    var walls = attachedWallsFor(sc);
+    walls.forEach(function(wallId) {
+      // Ledger — always, on every attached wall
+      addLedger(sc.w, wallId);
+
+      // Nailer — gable walls always; eave walls only when dropped
+      var isGableWall = (wallId === 'front' || wallId === 'back');
+      if (isGableWall || (sc.dropFt > 0)) {
+        addNailer(wallId);
+      }
+    });
   });
 
   var results = [];
@@ -18586,7 +18672,7 @@ window.SauceMaterials.calcShedLedgers = function(Q, WALLS, shedCfgs) {
       description: 'Shed Ledger',
       sku:         sku,
       quantity:    groups[sku],
-      detail:      'One per shed wall attachment  |  structural spacing only'
+      detail:      'One per attached wall  |  structural spacing only'
     });
   });
 
@@ -18596,7 +18682,7 @@ window.SauceMaterials.calcShedLedgers = function(Q, WALLS, shedCfgs) {
       description: 'Ledger Nailer',
       sku:         sku,
       quantity:    nailerGroups[sku],
-      detail:      '2x12  |  stepped down shed attachment'
+      detail:      '2x12  |  gable walls always, eave walls when stepped down'
     });
   });
 
@@ -18931,13 +19017,14 @@ window.SauceMaterials.calcSteelShedPurlins = function(Q, shedCfgs) {
 
     // ── Wrap4: purlins on all 4 roof planes (skip primary-leg logic below) ──
     if (sc.type === 'wrap4') {
-      // L + R roof planes run along Q.l
-      var _bLR = fillLength(Q.l, spacing);
+      // Each side runs hip-tip to hip-tip (building dim + 2*sc.w for the two hip extensions).
+      // L + R roof planes
+      var _bLR = fillLength(Q.l + 2 * sc.w, spacing);
       Object.keys(_bLR).forEach(function(len) {
         groups['SYP26'+len] = (groups['SYP26'+len]||0) + 2 * Math.ceil(_bLR[len] * cups);
       });
-      // F + B roof planes run along Q.w
-      var _bFB = fillLength(Q.w, spacing);
+      // F + B roof planes
+      var _bFB = fillLength(Q.w + 2 * sc.w, spacing);
       Object.keys(_bFB).forEach(function(len) {
         groups['SYP26'+len] = (groups['SYP26'+len]||0) + 2 * Math.ceil(_bFB[len] * cups);
       });
@@ -19175,7 +19262,14 @@ window.SauceMaterials.calcWoodShedPurlins = function(Q, shedCfgs) {
       });
     }
 
-    if (sc.type === 'wrap3') {
+    if (sc.type === 'wrap4') {
+      // Full wrap-around: all 4 sides, each hip-tip to hip-tip.
+      var _Q4noh = window._Q || {};
+      addPurlinRun((_Q4noh.l || 0) + 2 * sc.w); // Left eave
+      addPurlinRun((_Q4noh.l || 0) + 2 * sc.w); // Right eave
+      addPurlinRun((_Q4noh.w || 0) + 2 * sc.w); // Front gable
+      addPurlinRun((_Q4noh.w || 0) + 2 * sc.w); // Back gable
+    } else if (sc.type === 'wrap3') {
       var _Q3noh = window._Q || {};
       var isEave3noh = (sc.wall === 'left' || sc.wall === 'right');
       if (isEave3noh) {
@@ -19401,7 +19495,14 @@ window.SauceMaterials.calcWoodOHShedPurlins = function(Q, shedCfgs) {
       });
     }
 
-    if (sc.type === 'wrap3') {
+    if (sc.type === 'wrap4') {
+      // Full wrap-around: all 4 sides, each hip-tip to hip-tip.
+      var _Q4oh = window._Q || {};
+      addOHPurlinRun((_Q4oh.l || 0) + 2 * sc.w); // Left eave
+      addOHPurlinRun((_Q4oh.l || 0) + 2 * sc.w); // Right eave
+      addOHPurlinRun((_Q4oh.w || 0) + 2 * sc.w); // Front gable
+      addOHPurlinRun((_Q4oh.w || 0) + 2 * sc.w); // Back gable
+    } else if (sc.type === 'wrap3') {
       var _Q3oh2 = window._Q || {};
       var isEave3oh2 = (sc.wall === 'left' || sc.wall === 'right');
       if (isEave3oh2) {
