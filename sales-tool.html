@@ -4365,7 +4365,7 @@ function refreshOpenings(){
 // SHEDS
 // ═══════════════════════════════════════════════════════
 var nextShedId = 1;
-var SHED_TYPES = [{val:'leanto',label:'Lean-to'},{val:'gable',label:'Gable Extension'},{val:'wrap',label:'Wrap 2-Sided'},{val:'wrap3',label:'Wrap 3-Sided'}];
+var SHED_TYPES = [{val:'leanto',label:'Lean-to'},{val:'gable',label:'Gable Extension'},{val:'wrap',label:'Wrap 2-Sided'},{val:'wrap3',label:'Wrap 3-Sided'},{val:'wrap4',label:'Full Wrap-Around'}];
 var SHED_ENCL = [{val:'roofonly',label:'Roof Only'},{val:'enclosed',label:'Enclosed'},{val:'open',label:'Open Sides'}];
 
 function addShed(){
@@ -4401,7 +4401,14 @@ function setShedProp(id,prop,val){
     sc.enclFt=sc.l; // reset enclFt to full length on wall change
   }
   if(prop==='l'){ if(sc.enclFt==null||sc.enclFt>=sc.l) sc.enclFt=sc.l; }
-  if(prop==='type'){ sc.encl='roofonly'; sc.enclWalls=['outer','gable1','gable2']; }
+  if(prop==='type'){
+    sc.encl='roofonly'; sc.enclWalls=['outer','gable1','gable2'];
+    // wrap4: initialize post-spacing defaults if not set
+    if(val==='wrap4'){
+      if(sc.w4PSlong==null)  sc.w4PSlong = 10;
+      if(sc.w4PSshort==null) sc.w4PSshort = 10;
+    }
+  }
   if(prop==='encl' && val==='enclosed'){ sc.enclWalls=['outer','gable1','gable2']; sc.enclFt=sc.l; sc.enclFrom='start'; }
   renderSheds(); scheduleBuild();
 }
@@ -4518,7 +4525,14 @@ function setShedWindow(shedId, idx, prop, val) {
 function shedConcreteSqft(sc, Q) {
   if (!sc || !sc.w || !sc.l) return 0;
   var w = sc.w, l = sc.l;
-  if (sc.type === 'wrap3') {
+  if (sc.type === 'wrap4') {
+    // FULL WRAP-AROUND: porch rings the entire building at uniform depth w.
+    // Footprint = outer rect − building rect = (Q.w + 2w)·(Q.l + 2w) − Q.w·Q.l
+    //           = 2·w·Q.w + 2·w·Q.l + 4·w²
+    // Example: 30x40 building with 10' wrap = 2·10·30 + 2·10·40 + 4·100 = 1,800 sqft
+    var _Qw = Q ? Q.w : 0, _Ql = Q ? Q.l : 0;
+    return 2 * w * _Qw + 2 * w * _Ql + 4 * w * w;
+  } else if (sc.type === 'wrap3') {
     // EAVE-ATTACHED (left/right): two eave legs (w×l) + gable leg (w×Q.w)
     //   30x40, 10' = 2×(10×40) + 10×30 = 1,100 sqft
     // GABLE-ATTACHED (front/back): gable leg (w×l=w×Q.w) + two eave legs w×(Q.l+w)
@@ -4546,9 +4560,9 @@ function renderSheds(){
   if(addBtn) addBtn.style.display = window._shedConfigs.length >= 2 ? 'none' : '';
   window._shedConfigs.forEach(function(sc){
     var div=document.createElement('div'); div.className='shed-card';
-    var isLeanto=(sc.type==='leanto'||sc.type==='wrap'||sc.type==='wrap3');
+    var isLeanto=(sc.type==='leanto'||sc.type==='wrap'||sc.type==='wrap3'||sc.type==='wrap4');
     var isGable=(sc.type==='gable');
-    var isWrap=(sc.type==='wrap'||sc.type==='wrap3');
+    var isWrap=(sc.type==='wrap'||sc.type==='wrap3'||sc.type==='wrap4');
 
     var wallOpts=['back','front','left','right'].map(function(wid){
       var wl=WALLS.find(function(w){return w.id===wid;});
@@ -4624,9 +4638,27 @@ function renderSheds(){
           +'<div><div class="shed-label">Wrap Leg (ft)</div>'
           +'<input class="shed-inp" type="number" value="'+(sc.wrapLeg||0)+'" min="0" step="5" onchange="setShedProp('+sc.id+',\'wrapLeg\',this.value)"></div>'
           +'</div>';
-      } else {
+      } else if(sc.type==='wrap3'){
         extraOptions+='<div class="shed-row"><div><div class="shed-label">Wrap Leg (ft)</div>'
           +'<input class="shed-inp" type="number" value="'+(sc.wrapLeg||0)+'" min="0" step="5" onchange="setShedProp('+sc.id+',\'wrapLeg\',this.value)"></div></div>';
+      } else if(sc.type==='wrap4'){
+        // Full wrap-around: porch rings the entire building at uniform depth (width field).
+        // Two post-spacing controls: long (eave-parallel) and short (gable-parallel) sides.
+        var _w4PSlong = sc.w4PSlong || 10;
+        var _w4PSshort = sc.w4PSshort || 10;
+        extraOptions+='<div class="shed-row">'
+          +'<div><div class="shed-label">Post Spacing — Long Sides</div>'
+          +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'w4PSlong\',this.value)">'
+          +[8,10,12].map(function(p){return '<option value="'+p+'"'+(_w4PSlong==p?' selected':'')+'>'+p+"'</option>";}).join('')
+          +'</select></div>'
+          +'<div><div class="shed-label">Post Spacing — Short Sides</div>'
+          +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'w4PSshort\',this.value)">'
+          +[8,10,12].map(function(p){return '<option value="'+p+'"'+(_w4PSshort==p?' selected':'')+'>'+p+"'</option>";}).join('')
+          +'</select></div></div>'
+          +'<div style="padding:8px 10px;margin-bottom:7px;background:rgba(255,130,0,.08);border-left:3px solid #FF8200;border-radius:4px;font-size:10px;color:#555;line-height:1.45;">'
+          +'<b>Full Wrap-Around:</b> Covered porch rings the entire building at uniform depth. Width = porch depth on all 4 sides. Attach-wall and length are determined by the main building.'
+          +'<br><br><b style="color:#c27000;">⚠ Preview state:</b> concrete footprint, quote labels, and spec sheet are accurate. 3D rendering and material calculations will be completed in the next phase.'
+          +'</div>';
       }
     }
     if(isGable){
@@ -12221,8 +12253,14 @@ async function generateQuotePDF() {
     var typeCap = sc.type === 'gable' ? 'Gable Extension'
                 : sc.type === 'wrap'  ? 'Wrap Shed'
                 : sc.type === 'wrap3' ? '3-Sided Wrap'
+                : sc.type === 'wrap4' ? 'Full Wrap-Around Porch'
                 : 'Side Shed';
     var sh = Math.max(0, (Q.h||0) - (sc.dropFt||0));
+    // wrap4: displays as depth × perimeter (e.g., "10' deep × 140' perimeter × 12' tall Full Wrap-Around Porch")
+    if (sc.type === 'wrap4') {
+      var perim = 2 * ((Q.w||0) + (Q.l||0)) + 8 * (sc.w||0);
+      return sc.w + "' deep x " + perim + "' perimeter x " + sh + "' " + typeCap;
+    }
     return sc.w + "' x " + sc.l + "' x " + sh + "' " + sideCap + ' ' + typeCap;
   }
   var quoteKind = isShedOnly ? 'Side Shed Quote' : 'Building Quote';
@@ -12729,12 +12767,15 @@ async function generateQuotePDF() {
     if (sheds2.length) {
       specSection('Side Structures');
       rowIdx2 = 0;
-      var sTL = { leanto:'Lean-to', gable:'Gable Extension', wrap:'Wrap', wrap3:'3-Side Wrap' };
+      var sTL = { leanto:'Lean-to', gable:'Gable Extension', wrap:'Wrap', wrap3:'3-Side Wrap', wrap4:'Full Wrap-Around' };
       var sWL = { left:'Left', right:'Right', front:'Front', back:'Back' };
       var eS  = { enclosed:'Enclosed', open:'Open', roofonly:'Roof Only', partial:'Partial' };
       sheds2.forEach(function(sc) {
         var _dimPDF;
-        if (sc.type === 'wrap3') {
+        if (sc.type === 'wrap4') {
+          var _perim4 = 2 * ((Q2.w||0) + (Q2.l||0)) + 8 * (sc.w||0);
+          _dimPDF = sc.w+"' deep × "+_perim4+"' perimeter  (rings entire building)";
+        } else if (sc.type === 'wrap3') {
           var _isEave3P = (sc.wall==='left'||sc.wall==='right');
           var _face3P   = _isEave3P ? Q2.w : Q2.l;
           _dimPDF = sc.w+"' × "+sc.l+"' × 2 eaves + "+sc.w+"' × "+_face3P+"' gable end";
@@ -12743,7 +12784,13 @@ async function generateQuotePDF() {
         } else {
           _dimPDF = (sc.w||'?')+"' × "+(sc.l||'?')+"'";
         }
-        var sl = (sTL[sc.type]||sc.type||'Shed') + ' — ' + (sWL[sc.wall||'left']) + '  ' + _dimPDF;
+        var sl;
+        if (sc.type === 'wrap4') {
+          // wrap4 rings the whole building — omit the "wall" attachment since it covers all four
+          sl = (sTL[sc.type]||sc.type||'Shed') + '  ' + _dimPDF;
+        } else {
+          sl = (sTL[sc.type]||sc.type||'Shed') + ' — ' + (sWL[sc.wall||'left']) + '  ' + _dimPDF;
+        }
         var sd = eS[sc.encl]||sc.encl||'';
         if (sc.dropFt && parseFloat(sc.dropFt)>0) sd += '  |  '+sc.dropFt+"' drop";
         if (sc.finishedCeiling) sd += '  |  Finished Ceiling';
@@ -13032,7 +13079,7 @@ function generatePostLayout() {
             var isE=(sc.wall==='left'||sc.wall==='right'),mainIn=(isE?bl:bw)*12;
             off=sc.wrapDir==='cw'?0:mainIn-sLI;
         }
-        var lbl=(sc.type==='gable'?'Gable Ext':sc.type==='wrap3'?'Wrap 3-Side':sc.type==='wrap'?'Wrap 2-Side':'Lean-to')+' '+sc.w+"'x"+sc.l+"'"+(sc.type==='wrap'&&sc.wrapLeg>0?'+'+sc.wrapLeg+"'":'');
+        var lbl=(sc.type==='gable'?'Gable Ext':sc.type==='wrap4'?'Full Wrap':sc.type==='wrap3'?'Wrap 3-Side':sc.type==='wrap'?'Wrap 2-Side':'Lean-to')+' '+sc.w+"'x"+sc.l+"'"+(sc.type==='wrap'&&sc.wrapLeg>0?'+'+sc.wrapLeg+"'":'');
         if(sc.type==='leanto'){var nB=Math.max(1,Math.floor(sc.l/aPS));
             if(sc.wall==='left'){allRects.push({x:off,y:bwIn,w:sLI,h:sWI,lbl:lbl});for(var i=0;i<=nB;i++)allPts.push({x:off+i*sLI/nB,y:bwIn+sWI,jamb:false});}
             else if(sc.wall==='right'){allRects.push({x:off,y:-sWI,w:sLI,h:sWI,lbl:lbl});for(var i=0;i<=nB;i++)allPts.push({x:off+i*sLI/nB,y:-sWI,jamb:false});}
@@ -14225,7 +14272,11 @@ async function saveSalesQuote() {
       (function(){
         var sc = sheds[0];
         var isEave = (sc.wall === 'left' || sc.wall === 'right');
-        if (sc.type === 'wrap3') {
+        if (sc.type === 'wrap4') {
+          // Full wrap-around outer perimeter = 2·(Q.w + Q.l) + 8·w (corners project outward by w each)
+          var w4per = 2 * ((Q.w||0) + (Q.l||0)) + 8 * (sc.w||0);
+          formFields.enclosedSideShedLinearFt = String(Math.round(w4per * 10) / 10);
+        } else if (sc.type === 'wrap3') {
           var gableSpan = isEave ? (Q.w + sc.w) : (Q.l + sc.w);
           var gf3 = isEave ? Q.w : Q.l; formFields.enclosedSideShedLinearFt = String(Math.round((sc.l + gf3 * 2 + sc.w * 2) * 10) / 10);
         } else if (sc.type === 'wrap') {
@@ -14617,12 +14668,15 @@ function buildSpecText() {
   var sheds = window._shedConfigs || [];
   if (sheds.length) {
     h('4. Side Structures');
-    var shedTypeLabels = { leanto:'Lean-to', gable:'Gable Extension', wrap:'Wrap', wrap3:'3-Side Wrap' };
+    var shedTypeLabels = { leanto:'Lean-to', gable:'Gable Extension', wrap:'Wrap', wrap3:'3-Side Wrap', wrap4:'Full Wrap-Around' };
     var shedWallLabels = { left:'Left Side', right:'Right Side', front:'Front', back:'Back' };
     var enclShort      = { enclosed:'Enclosed', open:'Open', roofonly:'Roof Only', partial:'Partial' };
     sheds.forEach(function(sc) {
       var _dimEM;
-      if (sc.type === 'wrap3') {
+      if (sc.type === 'wrap4') {
+        var _perim4E = 2 * ((Q2.w||0) + (Q2.l||0)) + 8 * (sc.w||0);
+        _dimEM = sc.w+"' deep × "+_perim4E+"' perimeter  (rings entire building)";
+      } else if (sc.type === 'wrap3') {
         var _isEave3E = (sc.wall==='left'||sc.wall==='right');
         var _face3E   = _isEave3E ? Q2.w : Q2.l;
         _dimEM = sc.w+"' × "+sc.l+"' × 2 eaves + "+sc.w+"' × "+_face3E+"' gable end";
@@ -14631,7 +14685,13 @@ function buildSpecText() {
       } else {
         _dimEM = (sc.w||'?')+"' x "+(sc.l||'?')+"'";
       }
-      var slabel = (shedTypeLabels[sc.type]||sc.type||'Shed') + ' — ' + (shedWallLabels[sc.wall||'left']) + '  ' + _dimEM;
+      var slabel;
+      if (sc.type === 'wrap4') {
+        // wrap4 rings the whole building — omit wall-attachment
+        slabel = (shedTypeLabels[sc.type]||sc.type||'Shed') + '  ' + _dimEM;
+      } else {
+        slabel = (shedTypeLabels[sc.type]||sc.type||'Shed') + ' — ' + (shedWallLabels[sc.wall||'left']) + '  ' + _dimEM;
+      }
       var sdetail = enclShort[sc.encl] || sc.encl || '';
       if (sc.dropFt && parseFloat(sc.dropFt) > 0) sdetail += '  |  ' + sc.dropFt + "' drop";
       if (sc.finishedCeiling) sdetail += '  |  Finished Ceiling';
@@ -16026,6 +16086,11 @@ function checkTokenResponse(data) {
 function shedPerimeterLength(sc) {
   if (!sc) return 0;
   var isEave = (sc.wall === 'left' || sc.wall === 'right');
+  if (sc.type === 'wrap4') {
+    // Full wrap-around outer perimeter. 4 legs + 4 corner-projection extensions of w each.
+    // = 2·(Q.w + Q.l) + 8·w
+    return Math.round((2 * ((Q.w||0) + (Q.l||0)) + 8 * (sc.w||0)) * 10) / 10;
+  }
   if (sc.type === 'wrap3') {
     var gableface3 = isEave ? Q.w : Q.l;
     return Math.round((sc.l + gableface3 * 2 + sc.w * 2) * 10) / 10;
@@ -27116,9 +27181,17 @@ window.openConcreteModal = function(forcedType) {
     var shedSqft = shedConcreteSqft(sc, Q);
     var _isEave3CL = (sc.wall==='left'||sc.wall==='right');
     var _face3CL = _isEave3CL ? Q.w : Q.l;
-    var _shedDimsLabel = sc.type==='wrap3'
-      ? sc.w+"'×"+sc.l+"'×2 + "+sc.w+"'×"+_face3CL+"' = "+Math.round(shedConcreteSqft(sc,Q))+" sqft"
-      : sc.type==='wrap' ? sc.w+"'×"+sc.l+"' + leg" : sc.w+"'×"+sc.l+"'";
+    var _shedDimsLabel;
+    if (sc.type==='wrap4') {
+      var _perim4CL = 2 * ((Q.w||0) + (Q.l||0)) + 8 * (sc.w||0);
+      _shedDimsLabel = sc.w+"' deep × "+_perim4CL+"' perimeter";
+    } else if (sc.type==='wrap3') {
+      _shedDimsLabel = sc.w+"'×"+sc.l+"'×2 + "+sc.w+"'×"+_face3CL+"'";
+    } else if (sc.type==='wrap') {
+      _shedDimsLabel = sc.w+"'×"+sc.l+"' + leg";
+    } else {
+      _shedDimsLabel = sc.w+"'×"+sc.l+"'";
+    }
     var label = 'Side Shed ' + (idx+1) + ' (' + _shedDimsLabel + ' = ' + Math.round(shedSqft) + ' sqft)';
     var shedSaved = saved.sheds && saved.sheds[idx] ? saved.sheds[idx] : null;
     var shedUI = buildOptsUI(label, shedSqft, shedSaved, recalc);
