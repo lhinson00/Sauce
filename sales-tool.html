@@ -2848,10 +2848,21 @@ function buildRoofStyleChips() {
       var ssFields = document.getElementById('singleSlopeFields');
       if (ssFields) ssFields.style.display = (v === 'single') ? '' : 'none';
       if (v === 'single') {
-        // Force steel truss for single slope
+        // Force steel truss
         cfgTruss = 'Steel'; Q.truss = 'Steel';
         buildTrussChips(); buildPitchChips(); buildOHChips();
         updateSSInfoBar();
+        // Auto-configure walls for snoot building:
+        //   'back' gable end = OPEN (the front open drive-in face)
+        //   'front' gable end = ENCLOSED (the back closed wall)
+        //   'left' eave wall = OPEN (the open long side — snoot face)
+        //   'right' eave wall = ENCLOSED (the enclosed long side)
+        WALLS.forEach(function(w) {
+          if (w.id === 'back')  { w.encl = 'open'; }
+          else if (w.id === 'left') { w.encl = 'open'; }
+          else { w.encl = 'enclosed'; }
+        });
+        buildWallGrid();
       }
       scheduleBuild();
       try { updateStripFromLocalCalc(); } catch(e) {}
@@ -9411,17 +9422,9 @@ function applyVoiceQuote(parsed, overlay) {
                     }).filter(Boolean);
                     for (let gx = -sw/2; gx < sw/2; gx += gPanelW) {
                         const gxR = Math.min(gx + gPanelW, sw/2);
-                        // Height at each vertical strip edge
-                        let topL, topR;
-                        if (isSingleSlope) {
-                            // Single slope: linear grade from sh (right/low) to ssHi (left/high)
-                            const ssHi3d = (Q.hiH || 18) * Sc;
-                            topL = sh + (gx  + sw/2) / sw * (ssHi3d - sh);
-                            topR = sh + (gxR + sw/2) / sw * (ssHi3d - sh);
-                        } else {
-                            topL = Math.min(sh + (Q.w/2 - Math.abs(gx/Sc))  * (Q.pitch/12) * Sc, sr);
-                            topR = Math.min(sh + (Q.w/2 - Math.abs(gxR/Sc)) * (Q.pitch/12) * Sc, sr);
-                        }
+                        // Height at each vertical strip edge — standard gable formula
+                        const topL = Math.min(sh + (Q.w/2 - Math.abs(gx/Sc))  * (Q.pitch/12) * Sc, sr);
+                        const topR = Math.min(sh + (Q.w/2 - Math.abs(gxR/Sc)) * (Q.pitch/12) * Sc, sr);
                         if (topL <= gTriBot && topR <= gTriBot) continue;
                         // Clamp bottom up to opening height if this strip falls inside a framed opening
                         const foZone = gableFOZones.find(fz => gx >= fz.xMin - gPanelW && gx < fz.xMax);
@@ -10308,53 +10311,12 @@ function applyVoiceQuote(parsed, overlay) {
             }
         });
 
-        // Roof — gable (two planes) or single slope (one plane)
-        if (isSingleSlope) {
-            // Single slope: left eave (X = -sw/2) is HIGH, right eave (X = +sw/2) is LOW
-            // hiH = front/high eave height, Q.h = back/low eave height
-            var ssHi = (Q.hiH || 18) * Sc;   // high eave (left side in 3D = front face)
-            var ssLo = sh;                     // low eave  (right side in 3D = back face)
-            // Single roof plane: quad from low-right to high-left
-            grps.roof.add(mkQ([
-                -sw/2 - ohE, ssHi - .01, -sl/2 - ohG,
-                -sw/2 - ohE, ssHi - .01,  sl/2 + ohG,
-                 sw/2 + ohE, ssLo - .01,  sl/2 + ohG,
-                 sw/2 + ohE, ssLo - .01, -sl/2 - ohG
-            ], mR));
-            // Roof panel ribs (running along Z) for visual texture
-            var ribHex = (typeof pc === 'function') ? pc(roofColorName) : 0x333333;
-            var rR2 = ((ribHex>>16)&0xff), rG2 = ((ribHex>>8)&0xff), rB2 = (ribHex&0xff);
-            var hiColR = ((Math.min(255,rR2+55)<<16)|(Math.min(255,rG2+55)<<8)|Math.min(255,rB2+55));
-            var shColR = ((Math.max(0,rR2-40)<<16)|(Math.max(0,rG2-40)<<8)|Math.max(0,rB2-40));
-            var mRibHi2 = new THREE.MeshBasicMaterial({color:hiColR,side:THREE.DoubleSide,transparent:true,opacity:0.9});
-            var mRibSh2 = new THREE.MeshBasicMaterial({color:shColR,side:THREE.DoubleSide,transparent:true,opacity:0.75});
-            var rSp2 = 0.075, rW2 = 0.006;
-            var sSlope = (ssHi - ssLo) / (sw + 2*ohE); // rise per unit run
-            for (var xr = -sw/2-ohE; xr <= sw/2+ohE; xr += rSp2) {
-                var yAtX = ssHi - sSlope * (xr + sw/2 + ohE);
-                for (var zr = -sl/2-ohG; zr <= sl/2+ohG; zr += rSp2*4) {
-                    // Rib strip along Z at this X
-                    grps.roof.add(mkQ([xr, yAtX+.002, zr, xr+rW2, yAtX+.002, zr, xr+rW2, yAtX+.002, Math.min(zr+rSp2*3,sl/2+ohG), xr, yAtX+.002, Math.min(zr+rSp2*3,sl/2+ohG)], mRibHi2));
-                }
-            }
-            // Eave trim fascia at high eave (left) and low eave (right)
-            var mFasciaSSL = new THREE.MeshBasicMaterial({ color: pc(trimColorName), transparent:true, opacity:0.7, side:THREE.DoubleSide });
-            grps.walls.add(mkQ([-sw/2-ohE, ssHi-0.015, -sl/2-ohG, -sw/2-ohE, ssHi, -sl/2-ohG, -sw/2-ohE, ssHi, sl/2+ohG, -sw/2-ohE, ssHi-0.015, sl/2+ohG], mFasciaSSL));
-            grps.walls.add(mkQ([ sw/2+ohE, ssLo-0.015, -sl/2-ohG,  sw/2+ohE, ssLo, -sl/2-ohG,  sw/2+ohE, ssLo, sl/2+ohG,  sw/2+ohE, ssLo-0.015, sl/2+ohG], mFasciaSSL));
-            // Gable end triangles (trapezoidal fill — high eave tri on front/back gable ends)
-            // Front gable end (Z = -sl/2): rectangle from loH to hiH across width
-            var mGblSS = new THREE.MeshBasicMaterial({ color: pc(wallColorName), side:THREE.DoubleSide });
-            if (!frontOpen) {
-                grps.wallPanels.add(mkQ([-sw/2, sh, -sl/2-ohG, -sw/2-ohE, ssHi, -sl/2-ohG, sw/2+ohE, ssLo, -sl/2-ohG, sw/2, sh, -sl/2-ohG], mGblSS));
-            }
-            if (!backOpen) {
-                grps.wallPanels.add(mkQ([-sw/2, sh, sl/2+ohG, sw/2, sh, sl/2+ohG, sw/2+ohE, ssLo, sl/2+ohG, -sw/2-ohE, ssHi, sl/2+ohG], mGblSS));
-            }
-        } else {
+        // Roof — gable (two planes) or single slope (uses lean-to geometry)
+        if (!isSingleSlope) {
         // Standard gable roof — two panels meeting at ridge
         grps.roof.add(mkQ([-sw / 2 - ohE, sh - .01, -sl / 2 - ohG, 0, sr, -sl / 2 - ohG, 0, sr, sl / 2 + ohG, -sw / 2 - ohE, sh - .01, sl / 2 + ohG], mR));
         grps.roof.add(mkQ([sw / 2 + ohE, sh - .01, sl / 2 + ohG, 0, sr, sl / 2 + ohG, 0, sr, -sl / 2 - ohG, sw / 2 + ohE, sh - .01, -sl / 2 - ohG], mR));
-        } // end gable/single slope roof
+        } // end gable roof — single slope roof rendered via addLeanto() below
         if (Q.soffit && Q.oh > 0) {
             const fasciaH = 0.025;
             const fasciaM = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
@@ -10631,13 +10593,7 @@ function applyVoiceQuote(parsed, overlay) {
                 if (!gableWcfg || gableWcfg.encl !== 'open') return; // only for fully open gables
                 const zBase = s * sl / 2;
                 for (let x = -sw/2 + ribSpacing; x < sw/2; x += ribSpacing) {
-                    let gableH;
-                    if (isSingleSlope) {
-                        const ssHi3d = (Q.hiH || 18) * Sc;
-                        gableH = sh + (x + sw/2) / sw * (ssHi3d - sh);
-                    } else {
-                        gableH = sh + (Q.w/2 - Math.abs(x/Sc)) * (Q.pitch/12) * Sc;
-                    }
+                    const gableH = sh + (Q.w/2 - Math.abs(x/Sc)) * (Q.pitch/12) * Sc;
                     const ribTop = Math.min(gableH, sr);
                     const ribBot = sh; // upper triangle starts at eave height
                     if (ribTop <= ribBot) continue;
@@ -12269,12 +12225,132 @@ function applyVoiceQuote(parsed, overlay) {
                 }
             }
         });
-        // Show all immediately for live configurator
-        Object.values(grps).forEach(g => { g.visible = true; });
 
-        // Camera orbit
-        let th = window._camTh !== undefined ? window._camTh : Math.PI * .22;
-        let ph = window._camPh !== undefined ? window._camPh : Math.PI * .14;
+        // ═══ SINGLE SLOPE STANDALONE BUILDING ════════════════════════════════
+        // Mirrors an attached lean-to exactly, but centered as a standalone building.
+        // High/open eave = left wall (X = -sw/2). Low/closed eave = right wall (X = +sw/2).
+        // Uses addShedRoofRibs() — same helper as all lean-to sheds.
+        if (isSingleSlope) {
+            var ssHiH = (Q.hiH || 18) * Sc;  // high eave Y (open/tall/left side)
+            var ssLoH = sh;                    // low eave Y  (enclosed/short/right side)
+            var ssOh  = ohE;                   // overhang
+
+            var _aX  = -sw / 2;           // high eave X (open face, posts here)
+            var _oX  =  sw / 2 + ssOh;    // low eave X  (enclosed, outer edge with OH)
+            var _z1  = -sl / 2 - ssOh;    // front Z with OH
+            var _z2  =  sl / 2 + ssOh;    // back  Z with OH
+            var _z1i = -sl / 2;            // front Z without OH
+            var _z2i =  sl / 2;            // back  Z without OH
+
+            // ROOF — same quad as lean-to attached to right wall, re-centered
+            grps.shed.add(mkQ([_aX, ssHiH-.01, _z2, _aX, ssHiH-.01, _z1,
+                                _oX, ssLoH-.01, _z1, _oX, ssLoH-.01, _z2], mSh));
+            // Roof ribs via existing helper
+            addShedRoofRibs('right', _oX, _aX, null, null, ssLoH, ssHiH, Q.l, 0, ssOh, ssOh, pc(roofColorName), grps.shed);
+            // Eave trim lines
+            grps.shed.add(mkL([new THREE.Vector3(_aX, ssHiH, _z1), new THREE.Vector3(_aX, ssHiH, _z2)], mHip));
+            grps.shed.add(mkL([new THREE.Vector3(_oX, ssLoH, _z1), new THREE.Vector3(_oX, ssLoH, _z2)], mHip));
+            grps.shed.add(mkL([new THREE.Vector3(_aX, ssHiH, _z1), new THREE.Vector3(_oX, ssLoH, _z1)], mHip));
+            grps.shed.add(mkL([new THREE.Vector3(_aX, ssHiH, _z2), new THREE.Vector3(_oX, ssLoH, _z2)], mHip));
+
+            // WALLS
+            var _mSSWall = new THREE.MeshBasicMaterial({ color: pc(wallColorName), side: THREE.DoubleSide });
+            var _mSSWainscot = hasWainscot ? new THREE.MeshBasicMaterial({ color: pc(wainscotColorName), side: THREE.DoubleSide }) : _mSSWall;
+            var _ssWalls = wallCfgs || [];
+            var _ssRightCfg = _ssWalls.find(function(w){ return w.id==='right'; });
+            var _ssFrontCfg = _ssWalls.find(function(w){ return w.id==='front'; });
+            var _ssBackCfg  = _ssWalls.find(function(w){ return w.id==='back'; });
+
+            // Right eave wall (low/enclosed side) — rectangular at ssLoH
+            if (!_ssRightCfg || _ssRightCfg.encl !== 'open') {
+                var _rX = sw / 2;
+                var _wsH = hasWainscot ? Math.min(4*Sc, ssLoH) : 0;
+                if (hasWainscot && _wsH > 0) {
+                    grps.wallPanels.add(mkQ([_rX,0,_z1i, _rX,_wsH,_z1i, _rX,_wsH,_z2i, _rX,0,_z2i], _mSSWainscot));
+                    grps.wallPanels.add(mkQ([_rX,_wsH,_z1i, _rX,ssLoH,_z1i, _rX,ssLoH,_z2i, _rX,_wsH,_z2i], _mSSWall));
+                } else {
+                    grps.wallPanels.add(mkQ([_rX,0,_z1i, _rX,ssLoH,_z1i, _rX,ssLoH,_z2i, _rX,0,_z2i], _mSSWall));
+                }
+            }
+
+            // Gable end walls (front/back) — trapezoidal, grade ssHiH at left to ssLoH at right
+            [{ cfg: _ssFrontCfg, z: _z1i }, { cfg: _ssBackCfg, z: _z2i }].forEach(function(ge) {
+                if (ge.cfg && ge.cfg.encl === 'open') return;
+                var _gz = ge.z, _gPw = 0.075;
+                for (var _gx = _aX; _gx < sw/2; _gx += _gPw) {
+                    var _gxR = Math.min(_gx + _gPw, sw/2);
+                    var _gtL = ssHiH + (_gx  - _aX) / sw * (ssLoH - ssHiH);
+                    var _gtR = ssHiH + (_gxR - _aX) / sw * (ssLoH - ssHiH);
+                    var _wsG = hasWainscot ? Math.min(4*Sc, Math.min(_gtL,_gtR)) : 0;
+                    if (hasWainscot && _wsG > 0) {
+                        grps.wallPanels.add(mkQ([_gx,0,_gz, _gxR,0,_gz, _gxR,_wsG,_gz, _gx,_wsG,_gz], _mSSWainscot));
+                        grps.wallPanels.add(mkQ([_gx,_wsG,_gz, _gxR,_wsG,_gz, _gxR,_gtR,_gz, _gx,_gtL,_gz], _mSSWall));
+                    } else {
+                        grps.wallPanels.add(mkQ([_gx,0,_gz, _gxR,0,_gz, _gxR,_gtR,_gz, _gx,_gtL,_gz], _mSSWall));
+                    }
+                }
+            });
+
+            // POSTS — spaced per eave post spacing setting
+            var _ssPS = (Q.eavePS || Q.postSpacing || 10) * Sc;
+            for (var _zp = _z1i; _zp <= _z2i + 0.001; _zp += _ssPS) {
+                var _zpC = Math.min(_zp, _z2i);
+                // High eave posts (left/open face) — tall, wood colored
+                var _pHi = new THREE.Mesh(new THREE.BoxGeometry(ps, ssHiH, ps), mPopen);
+                _pHi.position.set(_aX, ssHiH/2, _zpC); _pHi.castShadow = true;
+                grps.mainPosts.add(_pHi);
+                // Low eave posts (right/enclosed) — short, subtle
+                if (!_ssRightCfg || _ssRightCfg.encl !== 'open') {
+                    var _pLo = new THREE.Mesh(new THREE.BoxGeometry(ps, ssLoH, ps), mPencl);
+                    _pLo.position.set(sw/2, ssLoH/2, _zpC); _pLo.castShadow = true;
+                    grps.mainPosts.add(_pLo);
+                }
+            }
+
+            // SNOOT on HIGH/OPEN EAVE (left side, extends outward past _aX)
+            var _snFt = Math.round((Q.oh||18)/12) || 4;
+            _snFt = _snFt<=2?2:_snFt<=4?4:6;
+            var _snW  = _snFt * Sc;
+            var _snX  = _aX - _snW;
+
+            // Snoot roof (flat at high eave height)
+            var _mSnRoof = new THREE.MeshBasicMaterial({ color: pc(roofColorName), side: THREE.DoubleSide });
+            grps.shed.add(mkQ([_snX,ssHiH-.008,_z2, _aX,ssHiH-.008,_z2,
+                                _aX,ssHiH-.008,_z1, _snX,ssHiH-.008,_z1], _mSnRoof));
+            // Snoot eave lines
+            grps.shed.add(mkL([new THREE.Vector3(_snX,ssHiH,_z1),new THREE.Vector3(_snX,ssHiH,_z2)], mHip));
+            grps.shed.add(mkL([new THREE.Vector3(_snX,ssHiH,_z1),new THREE.Vector3(_aX,ssHiH,_z1)], mHip));
+            grps.shed.add(mkL([new THREE.Vector3(_snX,ssHiH,_z2),new THREE.Vector3(_aX,ssHiH,_z2)], mHip));
+
+            // Snoot steel truss lines at each post position
+            var _mSnTruss = new THREE.LineBasicMaterial({ color: 0x1a1a1a, transparent: true, opacity: 0.75 });
+            for (var _zst = _z1i; _zst <= _z2i + 0.001; _zst += _ssPS) {
+                var _zstC = Math.min(_zst, _z2i);
+                var _drop = _snW * 0.2;
+                // Top chord
+                grps.shed.add(mkL([new THREE.Vector3(_snX,ssHiH,_zstC), new THREE.Vector3(_aX,ssHiH,_zstC)], _mSnTruss));
+                // Bottom chord (sloped — truss depth)
+                grps.shed.add(mkL([new THREE.Vector3(_snX,ssHiH-_drop,_zstC), new THREE.Vector3(_aX,ssHiH,_zstC)], _mSnTruss));
+                // Vertical at outer end
+                grps.shed.add(mkL([new THREE.Vector3(_snX,ssHiH,_zstC), new THREE.Vector3(_snX,ssHiH-_drop,_zstC)], _mSnTruss));
+                // Web diagonals
+                var _mid = (_snX + _aX) / 2;
+                grps.shed.add(mkL([new THREE.Vector3(_mid,ssHiH,_zstC), new THREE.Vector3(_snX,ssHiH-_drop,_zstC)], _mSnTruss));
+            }
+        }
+        // ═══ END SINGLE SLOPE STANDALONE ══════════════════════════════════════
+        Object.values(grps).forEach(g => { g.visible = true; });
+        // Single slope: main building geometry (roof, main walls) not used — hide those groups
+        if (isSingleSlope) {
+            grps.roof.visible = false;
+            grps.walls.visible = false;
+            grps.wallPanels.visible = false;
+            grps.dims.visible = false;  // dims designed for gable building
+        }
+
+        // Camera orbit — for single slope, angle to show open eave + slope clearly
+        let th = window._camTh !== undefined ? window._camTh : (isSingleSlope ? Math.PI * -.05 : Math.PI * .22);
+        let ph = window._camPh !== undefined ? window._camPh : (isSingleSlope ? Math.PI * .18  : Math.PI * .14);
         let di = window._camDi !== undefined ? window._camDi : 12;
         let dr = false, pm = { x: 0, y: 0 };
         function setC() { cam.position.set(di * Math.sin(th) * Math.cos(ph), di * Math.sin(ph) + 2, di * Math.cos(th) * Math.cos(ph)); cam.lookAt(0, sh * .4, 0); }
