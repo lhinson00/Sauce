@@ -17621,18 +17621,14 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
     var hiSku = (map[postSize] || 'PT66') + hiLen;
     var loSku = (map[postSize] || 'PT66') + loLen;
     var eaveSpacing = (function(){ var w=(window._WALLS||[]).find(function(x){return x.id==='left';}); return w?(w.postSpacing||Q.postSpacing||10):(Q.postSpacing||10); })();
-    // High eave: eave line posts + corner posts shared with gable ends
-    // Pattern: floor(L/spacing) + 1 line posts + 1 extra (gable corner shared)
+    // Both eave walls: floor(L/spacing) + 1 posts (includes both corner posts)
     var hiLineCount = Math.floor(Q.l / eaveSpacing) + 1;
-    var hiCornerExtra = 1; // one gable-end corner post at high eave height
-    var hiCount = hiLineCount + hiCornerExtra;
-    // Low eave: line posts only (corners counted in high set for open-front building)
-    // PDF: 4 = floor(40/10) = 4 (no +1, corners excluded)
-    var loCount = Math.floor(Q.l / eaveSpacing);
+    var hiCount = hiLineCount;
+    var loCount = Math.floor(Q.l / eaveSpacing) + 1;
     var bjReduction = SM.getBarjoistPostReduction ? SM.getBarjoistPostReduction(Q) : 0;
     loCount = Math.max(0, loCount - bjReduction);
     return [
-      { category:'Yard', description:'Eave Posts -- Front/High Eave', sku:hiSku, quantity:hiCount, detail:'High eave @ ' + hiH + "'  |  " + postSize + ' x ' + hiLen + "ft  |  " + hiLineCount + " line + " + hiCornerExtra + " corner" },
+      { category:'Yard', description:'Eave Posts -- Front/High Eave', sku:hiSku, quantity:hiCount, detail:'High eave @ ' + hiH + "'  |  " + postSize + ' x ' + hiLen + "ft  |  " + hiCount + " posts" },
       { category:'Yard', description:'Eave Posts -- Back/Low Eave',   sku:loSku, quantity:loCount, detail:'Low eave @ ' + loH  + "'  |  " + postSize + ' x ' + loLen + "ft  |  " + loCount + " posts" + (bjReduction>0?' | '+bjReduction+' reduced by bar joist':'') }
     ];
   }
@@ -17698,8 +17694,14 @@ window.SauceMaterials.calcGablePosts = function(Q, WALLS, allDoors, sf) {
     var skuBase  = map[postSize] || 'PT66';
     var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
     posts.filter(function(p) { return !p.corner; }).forEach(function(p) {
-      var distFromCorner = Math.min(p.ft, Q.w - p.ft);
-      var totalH  = Q.h + (distFromCorner * Q.pitch / 12) + ground;
+      var totalH;
+      if (Q.roofStyle === 'single') {
+        // Single slope: all gable posts are at high eave height + burial
+        totalH = Q.h + ground;
+      } else {
+        var distFromCorner = Math.min(p.ft, Q.w - p.ft);
+        totalH  = Q.h + (distFromCorner * Q.pitch / 12) + ground;
+      }
       var postLen = Math.ceil(totalH / 2) * 2;
       postLen = SM.enforceMinPostLen(postSize, postLen);
       var sku     = skuBase + postLen;
@@ -21020,10 +21022,13 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
     var frontSeatFt = 0.917;
     var panelLen = slant + backOHSlant + frontSeatFt;
     panelLen = Math.ceil(panelLen * 12) / 12; // round up to nearest foot-inch
-    var numPanels = Math.floor(Q.l / 3); // PDF: 40/3=13.33 -> 13 panels
+    var numPanels = Math.floor(Q.l / 3); // main panels: floor(L/3)
+    // Snoot count matches truss count = floor(L / postSpacing)
+    var _ssEavePS = (function(){ var w=(window._WALLS||[]).find(function(x){return x.id==='left';}); return w?(w.postSpacing||Q.postSpacing||10):(Q.postSpacing||10); })();
+    var numSnoots = Math.floor(Q.l / _ssEavePS);
     // Snoot panels separate: cover snoot truss depth + 1' overlap
     var snootClamp = (function(){ var s=Math.round((Q.oh||18)/12)||4; return s<=2?2:s<=4?4:6; })();
-    var snootPanelFt = snootClamp + 1; // PDF: TSSNT4 -> 5' panel
+    var snootPanelFt = snootClamp + 1; // TSSNT4 -> 5' panel
     return [
       {
         category:    'Roof Metal',
@@ -21037,9 +21042,9 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
         category:    'Roof Metal',
         description: 'Snoot Overhang Panels (Single Slope)',
         sku:         skuPrefix,
-        quantity:    numPanels,
+        quantity:    numSnoots,
         metalLength: snootPanelFt + "'",
-        detail:      metalType + "  |  3' wide  |  " + snootClamp + "' snoot + 1' overlap"
+        detail:      metalType + "  |  3' wide  |  " + snootClamp + "' snoot + 1' overlap  |  " + numSnoots + " snoot trusses"
       }
     ];
   }
@@ -21242,11 +21247,7 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
   // Main building eave walls — check each side independently
   var hasOH = Q.oh > 0 && Q.truss === 'Wood';
   var mbBaseHeight = (hasOH ? Q.h : Q.h + 1) - (wainscot ? 4 : 0);
-  // Single slope: corner trim covers ~4' on each end — use floor((L-4)/3)
-  // PDF-verified: 40' building → floor((40-4)/3)=12 panels (not ceil(40/3)=14)
-  var panelsPerRun = (Q.roofStyle === 'single')
-    ? Math.floor((Q.l - 4) / 3)
-    : Math.ceil(Q.l / 3);
+  var panelsPerRun = Math.ceil(Q.l / 3);
 
   if (!window._shedOnlyMode) ['left', 'right'].forEach(function(side) {
     // Skip open walls (vent gap does not apply to open walls)
@@ -21258,6 +21259,11 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
     if (wallCfg && wallCfg.encl === 'partial') {
       var partialH = wallCfg.partialH || Math.min(4, Q.h);
       wallHeight = Math.max(0, partialH - (wainscot ? 4 : 0));
+    } else if (Q.roofStyle === 'single' && Q.truss === 'Steel') {
+      // Single slope steel: left=high eave (Q.h+1), right=low eave (loH+1)
+      var _loH = Math.max(8, (Q.h||14) - (Q.w||24)/12);
+      var _eaveH = (side === 'right') ? _loH : Q.h;
+      wallHeight = _eaveH + 1 - (wainscot ? 4 : 0);
     } else if (Q.truss === 'Steel') {
       // Steel: always Q.h + 1 regardless of overhangs or side sheds
       wallHeight = Q.h + 1 - (wainscot ? 4 : 0);
@@ -21333,7 +21339,7 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
     var hiH   = Q.h || 14;                   // Q.h = high eave
     var loH   = Math.max(8, (Q.h||14) - (Q.w||24)/12);
     var wainscotAdj = wainscot ? 4 : 0;
-    var qtyMult = enclCountSS * 2; // 2 sides per enclosed gable end
+    var qtyMult = enclCountSS; // 1 face per enclosed gable end (single slope has no ridge, 1 panel face each)
 
     // Effective pitch from actual rise/run
     var pitchEff = (hiH - loH) / Q.w * 12; // e.g. 2/24*12 = 1.0 (1/12)
@@ -21376,7 +21382,7 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
       category:    'Gable Metal',
       description: 'Snoot Face — Gable End Closure',
       sku:         skuPrefix,
-      quantity:    enclCountSS * 2,
+      quantity:    enclCountSS,
       metalLength: fmtIn(snootFaceH1),
       detail:      displayType + "  |  3' wide  |  snoot OH face panel"
     });
@@ -21384,7 +21390,7 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
       category:    'Gable Metal',
       description: 'Snoot Face — Gable End Filler',
       sku:         skuPrefix,
-      quantity:    enclCountSS * 2,
+      quantity:    enclCountSS,
       metalLength: fmtIn(snootFaceH2),
       detail:      displayType + "  |  3' wide  |  snoot OH face filler"
     });
@@ -22533,9 +22539,7 @@ window.SauceMaterials.calcSteelEavePC2 = function(Q, WALLS, shedCfgs) {
   });
 
   // Main building: both eave runs always
-  // Single slope: left = high eave (open/snoot side) — skip it; only right eave is enclosed
   ['left','right'].forEach(function(side) {
-    if (Q.roofStyle === 'single' && side === 'left') return; // high eave is open on single slope
     if (!replacedEaves[side]) {
       addRun(Q.l, wallPS(side));
     }
@@ -29061,9 +29065,13 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
     }
   });
 
-  // Single slope: snoot truss labor adder — $125 flat
+  // Single slope: snoot truss labor adder — $125 per snoot truss
   if (Q.roofStyle === 'single') {
-    lines.push({ label: 'Single Slope Snoot Truss  |  $125 flat', amount: 125 });
+    var _snootPS = (function(){ var w=(window._WALLS||[]).find(function(x){return x.id==='left';}); return w?(w.postSpacing||Q.postSpacing||10):(Q.postSpacing||10); })();
+    var _numSnoots = Math.floor((Q.l||36) / _snootPS);
+    if (_numSnoots > 0) {
+      lines.push({ label: 'Single Slope Snoot Trusses  |  ' + _numSnoots + ' @ $125.00', amount: _numSnoots * 125 });
+    }
   }
 
   return lines;
