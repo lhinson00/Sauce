@@ -15793,6 +15793,8 @@ function initSalesAuth() {
         loadInventoryPricing();
         console.log('[Sales] Auto-logged in as:', u.username);
         try { logToolEvent('page_load', { referrer: document.referrer || 'direct' }); } catch(e) {}
+        // Load follow-ups for this salesman
+        setTimeout(function() { loadFollowUps(); }, 1200);
       // Show activity log button for lain.hinson on login
       var _ab2 = document.getElementById('vpActivityBtn');
       if (_ab2) _ab2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none';
@@ -15927,6 +15929,7 @@ async function doSalesLogin() {
       loadInventoryPricing();
       hideSalesLoginModal();
       initLainFeatures(); // unlock save/email/pdf for this user
+      setTimeout(function() { loadFollowUps(); }, 1200);
       // Demo badge
       var smTxt = document.querySelector('.salesman-txt');
       var smDot = document.querySelector('.salesman-dot');
@@ -16564,6 +16567,170 @@ function handleSessionExpired() {
   showSalesLoginModal();
   var err = document.getElementById('slErr');
   if (err) err.textContent = 'Your session expired. Please log in again.';
+}
+
+// ── FOLLOW-UP DASHBOARD ───────────────────────────────────────────────────────
+async function loadFollowUps() {
+  var user = (window.currentUser || {}).username || '';
+  if (!user || user === 'customer') return;
+  try {
+    var data = await fetchWithTimeout(API_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'text/plain'},
+      body: JSON.stringify({ action: 'getFollowUps', username: user, token: getToken() })
+    }, 15000);
+    if (data.success && data.followUps && data.followUps.length > 0) {
+      _showFollowUpCard(data.followUps);
+    }
+  } catch(e) {
+    console.log('[FollowUps] fetch error:', e);
+  }
+}
+
+function _showFollowUpCard(followUps) {
+  var existing = document.getElementById('_followUpCard');
+  if (existing) existing.remove();
+
+  var card = document.createElement('div');
+  card.id = '_followUpCard';
+  card.style.cssText = 'position:fixed;bottom:20px;right:20px;width:360px;max-height:70vh;overflow-y:auto;background:#1e2535;border:1px solid rgba(255,130,0,.35);border-radius:14px;z-index:9990;box-shadow:0 8px 40px rgba(0,0,0,.5);font-family:Outfit,sans-serif;';
+
+  var html = '<div style="padding:16px 18px 10px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;justify-content:space-between;">'
+    + '<div style="font-size:14px;font-weight:800;color:#f0f3f7;">📬 Follow-Ups Due <span style="background:rgba(255,130,0,.2);color:#FF8200;border-radius:20px;padding:2px 8px;font-size:12px;margin-left:6px;">' + followUps.length + '</span></div>'
+    + '<button onclick="document.getElementById(\'_followUpCard\').remove();" style="background:none;border:none;color:#64748b;font-size:16px;cursor:pointer;padding:0 4px;">✕</button>'
+    + '</div>';
+
+  followUps.forEach(function(fu) {
+    var dateEmailed = fu.dateEmailed ? new Date(fu.dateEmailed).toLocaleDateString() : '—';
+    html += '<div id="_fu_' + fu.rowIndex + '" style="padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.06);">'
+      + '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">'
+      + '<div>'
+      + '<div style="font-size:13px;font-weight:700;color:#f0f3f7;">' + (fu.customerName || '—') + '</div>'
+      + '<div style="font-size:11px;color:#94a3b8;margin-top:2px;">' + (fu.specs || '') + '</div>'
+      + '<div style="font-size:11px;color:#94a3b8;">' + (fu.total ? fu.total + '  ·  ' : '') + 'Emailed ' + dateEmailed + '</div>'
+      + (fu.phone ? '<div style="font-size:11px;color:#64748b;margin-top:2px;">📞 ' + fu.phone + '</div>' : '')
+      + '</div>'
+      + '<div style="font-size:13px;font-weight:800;color:#4ade80;">' + (fu.total || '') + '</div>'
+      + '</div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;">'
+      + '<button onclick="_fuSendModal(' + fu.rowIndex + ',\'' + fu.quoteId + '\',\'' + (fu.customerName||'').replace(/'/g,'') + '\',\'' + (fu.specs||'').replace(/'/g,'') + '\')" style="flex:1;padding:7px 4px;border-radius:7px;border:none;background:linear-gradient(135deg,#FF8200,#e06500);color:#fff;font-size:11px;font-weight:700;cursor:pointer;">📤 Send Follow-Up</button>'
+      + '<button onclick="_fuSnooze(' + fu.rowIndex + ')" style="flex:1;padding:7px 4px;border-radius:7px;border:1px solid rgba(255,255,255,.15);background:transparent;color:#f0f3f7;font-size:11px;font-weight:700;cursor:pointer;">⏰ Snooze</button>'
+      + '<button onclick="_fuAction(' + fu.rowIndex + ',\'closed\',\'' + fu.quoteId + '\')" style="flex:1;padding:7px 4px;border-radius:7px;border:1px solid rgba(255,255,255,.08);background:transparent;color:#64748b;font-size:11px;font-weight:700;cursor:pointer;">✕ Close</button>'
+      + '</div>'
+      + '</div>';
+  });
+
+  html += '<div style="padding:12px 18px;text-align:center;">'
+    + '<button onclick="document.getElementById(\'_followUpCard\').remove();" style="background:none;border:none;color:#64748b;font-size:11px;cursor:pointer;font-family:Outfit,sans-serif;">Dismiss all</button>'
+    + '</div>';
+
+  card.innerHTML = html;
+  document.body.appendChild(card);
+}
+
+async function _fuAction(rowIndex, action, quoteId) {
+  var row = document.getElementById('_fu_' + rowIndex);
+  if (row) row.style.opacity = '0.4';
+  try {
+    await fetchWithTimeout(API_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'text/plain'},
+      body: JSON.stringify({ action: 'updateFollowUp', rowIndex: rowIndex, followUpAction: action, token: getToken() })
+    }, 10000);
+  } catch(e) {}
+  if (row) row.remove();
+  // If card is now empty (only header + dismiss remain), remove it
+  var card = document.getElementById('_followUpCard');
+  if (card && card.querySelectorAll('[id^="_fu_"]').length === 0) card.remove();
+}
+
+function _fuSendModal(rowIndex, quoteId, customerName, specs) {
+  var existing = document.getElementById('_fuSendModal');
+  if (existing) existing.remove();
+  var firstName = (customerName || '').split(' ')[0] || 'there';
+  var defaultMsg = "Hi " + firstName + ",\n\nJust following up on the " + (specs||'building') + " quote I sent you recently. Your quote is still saved and ready to go — I'd love to help you move forward.\n\nFeel free to reply with any questions or give me a call directly.\n\nThank you for your time!";
+  var m = document.createElement('div');
+  m.id = '_fuSendModal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
+  m.innerHTML = '<div style="background:#1e2535;border:1px solid rgba(255,130,0,.3);border-radius:14px;padding:24px;width:100%;max-width:480px;font-family:Outfit,sans-serif;">'
+    + '<div style="font-size:14px;font-weight:800;color:#f0f3f7;margin-bottom:4px;">📤 Send Follow-Up — ' + customerName + '</div>'
+    + '<div style="font-size:11px;color:#94a3b8;margin-bottom:14px;">' + specs + ' &nbsp;·&nbsp; Quote <span style="color:#f59e0b">' + quoteId + '</span></div>'
+    + '<div style="font-size:11px;color:#94a3b8;margin-bottom:6px;">Message (editable) — original quote will be included below this:</div>'
+    + '<textarea id="_fuMsgBody" style="width:100%;height:140px;background:#111827;border:1px solid rgba(255,255,255,.12);border-radius:8px;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;padding:10px;resize:vertical;box-sizing:border-box;line-height:1.5;">' + defaultMsg + '</textarea>'
+    + '<div style="font-size:10px;color:#64748b;margin-top:6px;margin-bottom:16px;">Reply-to: lain.hinson@summertownmetals.com</div>'
+    + '<div style="display:flex;gap:8px;">'
+    + '<button id="_fuSendBtn" onclick="_fuSendConfirm('+rowIndex+',this.dataset.qid)" data-qid="'+quoteId+'" style="flex:2;padding:11px;border-radius:8px;border:none;background:linear-gradient(135deg,#FF8200,#e06500);color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Send Follow-Up Email</button>'
+    + '<button onclick="document.getElementById(\'_fuSendModal\').remove();" style="flex:1;padding:11px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#94a3b8;font-size:12px;font-weight:600;cursor:pointer;font-family:Outfit,sans-serif;">Cancel</button>'
+    + '</div></div>';
+  document.body.appendChild(m);
+  m.addEventListener('click', function(e){ if(e.target===m) m.remove(); });
+}
+
+async function _fuSendConfirm(rowIndex, quoteId) {
+  var sendBtn = document.getElementById('_fuSendBtn');
+  var msgBody = (document.getElementById('_fuMsgBody')||{}).value || '';
+  if (sendBtn) { sendBtn.textContent = 'Sending…'; sendBtn.disabled = true; }
+  try {
+    var result = await fetchWithTimeout(API_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'text/plain'},
+      body: JSON.stringify({
+        action:        'sendFollowUpEmail',
+        quoteId:       quoteId,
+        rowIndex:      rowIndex,
+        customMessage: msgBody,
+        username:      (window.currentUser||{}).username || '',
+        token:         getToken()
+      })
+    }, 30000);
+    if (!result.success) throw new Error(result.error || 'Send failed');
+    var m = document.getElementById('_fuSendModal');
+    if (m) m.remove();
+    var row = document.getElementById('_fu_' + rowIndex);
+    if (row) row.remove();
+    var card = document.getElementById('_followUpCard');
+    if (card && card.querySelectorAll('[id^="_fu_"]').length === 0) card.remove();
+    showToast('Follow-up sent to customer ✓', 'success');
+  } catch(e) {
+    if (sendBtn) { sendBtn.textContent = 'Send Follow-Up Email'; sendBtn.disabled = false; }
+    alert('Error sending follow-up: ' + e.message);
+  }
+}
+
+function _fuSnooze(rowIndex) {
+  var existing = document.getElementById('_fuSnoozeModal');
+  if (existing) existing.remove();
+  var m = document.createElement('div');
+  m.id = '_fuSnoozeModal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center;';
+  m.innerHTML = '<div style="background:#1e2535;border:1px solid rgba(255,130,0,.3);border-radius:12px;padding:24px;width:280px;font-family:Outfit,sans-serif;">'
+    + '<div style="font-size:14px;font-weight:800;color:#f0f3f7;margin-bottom:16px;">⏰ Snooze Follow-Up</div>'
+    + '<div style="display:flex;flex-direction:column;gap:8px;">'
+    + '<button onclick="_fuSnoozeConfirm(' + rowIndex + ',3)" style="padding:10px;border-radius:7px;border:1px solid rgba(255,255,255,.15);background:transparent;color:#f0f3f7;font-size:13px;font-weight:600;cursor:pointer;font-family:Outfit,sans-serif;">3 days</button>'
+    + '<button onclick="_fuSnoozeConfirm(' + rowIndex + ',7)" style="padding:10px;border-radius:7px;border:1px solid rgba(255,255,255,.15);background:transparent;color:#f0f3f7;font-size:13px;font-weight:600;cursor:pointer;font-family:Outfit,sans-serif;">7 days</button>'
+    + '<button onclick="_fuSnoozeConfirm(' + rowIndex + ',14)" style="padding:10px;border-radius:7px;border:1px solid rgba(255,255,255,.15);background:transparent;color:#f0f3f7;font-size:13px;font-weight:600;cursor:pointer;font-family:Outfit,sans-serif;">14 days</button>'
+    + '<button onclick="document.getElementById(\'_fuSnoozeModal\').remove();" style="padding:8px;border:none;background:none;color:#64748b;font-size:12px;cursor:pointer;font-family:Outfit,sans-serif;">Cancel</button>'
+    + '</div></div>';
+  document.body.appendChild(m);
+  m.addEventListener('click', function(e){ if(e.target===m) m.remove(); });
+}
+
+async function _fuSnoozeConfirm(rowIndex, days) {
+  var m = document.getElementById('_fuSnoozeModal');
+  if (m) m.remove();
+  var row = document.getElementById('_fu_' + rowIndex);
+  if (row) row.style.opacity = '0.4';
+  try {
+    await fetchWithTimeout(API_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'text/plain'},
+      body: JSON.stringify({ action: 'updateFollowUp', rowIndex: rowIndex, followUpAction: 'snooze', snoozeDays: days, token: getToken() })
+    }, 10000);
+  } catch(e) {}
+  if (row) row.remove();
+  var card = document.getElementById('_followUpCard');
+  if (card && card.querySelectorAll('[id^="_fu_"]').length === 0) card.remove();
+  showToast('Snoozed ' + days + ' days', 'success');
 }
 
 function showToast(msg, type, duration) {
