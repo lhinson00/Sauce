@@ -12170,7 +12170,7 @@ function applyVoiceQuote(parsed, overlay) {
         if (isSingleSlope) {
             // Q.h = HIGH eave height. Low eave = Q.h - (Q.w/12) per 1/12 pitch.
             var ssHiH = sh;                                          // high eave = Q.h
-            var ssLoH = Math.max(0, Q.h - Q.w/12) * Sc;             // low eave  = Q.h - width/12
+            var ssLoH = Math.max(0, Math.ceil(Q.h - Q.w/12)) * Sc;             // low eave  = Q.h - width/12
             var ssOh  = ohE;                   // eave overhang
 
             // Key X coordinates
@@ -13159,7 +13159,7 @@ async function generateQuotePDF() {
     }
     var _isSS2 = (Q2.roofStyle === 'single');
     if (_isSS2) {
-      var _ssLoH = Math.max(8, (Q2.h||14) - (Q2.w||24)/12);
+      var _ssLoH = Math.max(8, Math.ceil((Q2.h||14) - (Q2.w||24)/12));
       specRow2('Roof Style',  'Single Slope (Monopitch)');
       specRow2('Roof Pitch',  '1/12');
       specRow2('Eave Heights', 'High: ' + (Q2.h||14) + "'  |  Low: " + Math.round(_ssLoH*10)/10 + "'");
@@ -14641,7 +14641,31 @@ function showSalesTab(name) {
 
 // Submit sales quote — collects both 3D config and salesman fields
 
-async function saveSalesQuote() {
+function _showSaveModal() {
+  var existing = document.getElementById('_saveChoiceModal');
+  if (existing) existing.remove();
+  var qid = window._loadedQuoteId || '';
+  var m = document.createElement('div');
+  m.id = '_saveChoiceModal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;';
+  m.innerHTML = '<div style="background:#1e2535;border:1px solid rgba(255,130,0,.3);border-radius:14px;padding:28px 24px;width:90%;max-width:400px;font-family:Outfit,sans-serif;box-shadow:0 8px 40px rgba(0,0,0,.5);">'
+    + '<div style="font-size:15px;font-weight:800;color:#f0f3f7;margin-bottom:6px;">💾 Save Quote</div>'
+    + '<div style="font-size:12px;color:#94a3b8;margin-bottom:20px;">Quote <strong style="color:#f59e0b">' + qid + '</strong> is currently loaded.</div>'
+    + '<div style="display:flex;flex-direction:column;gap:10px;">'
+    + '<button onclick="document.getElementById(\'_saveChoiceModal\').remove(); saveSalesQuote(\'overwrite\');" style="padding:11px;border-radius:8px;border:none;background:linear-gradient(135deg,#FF8200,#e06500);color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Update Existing — ' + qid + '</button>'
+    + '<button onclick="document.getElementById(\'_saveChoiceModal\').remove(); window._loadedQuoteId=null; saveSalesQuote(\'new\');" style="padding:11px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:transparent;color:#f0f3f7;font-size:13px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Save as New Quote</button>'
+    + '<button onclick="document.getElementById(\'_saveChoiceModal\').remove();" style="padding:9px;border-radius:8px;border:none;background:transparent;color:#64748b;font-size:12px;cursor:pointer;font-family:Outfit,sans-serif;">Cancel</button>'
+    + '</div></div>';
+  document.body.appendChild(m);
+  m.addEventListener('click', function(e){ if (e.target === m) m.remove(); });
+}
+
+async function saveSalesQuote(overwriteMode) {
+  // If a quote is loaded and no decision yet — show modal
+  if (!overwriteMode && window._loadedQuoteId) {
+    _showSaveModal();
+    return;
+  }
   var name = (document.getElementById('st_name')||{}).value || '';
   var phone = (document.getElementById('st_phone')||{}).value || '';
   var email = (document.getElementById('st_email')||{}).value || '';
@@ -14868,22 +14892,27 @@ async function saveSalesQuote() {
       timestamp:      new Date().toISOString()
     };
 
-    // 5. Save snapshot
+    // 5. Save snapshot — overwrite existing or create new
+    var _saveAction = (overwriteMode === 'overwrite' && window._loadedQuoteId) ? 'updateQuoteSnapshot' : 'saveQuoteSnapshot';
+    var _savePayload = {
+      action: _saveAction,
+      username: (window.currentUser || {}).username || '',
+      isDemo: (window.currentUser || {}).isDemo || false,
+      token: getToken(),
+      snapshot: snapshot
+    };
+    if (_saveAction === 'updateQuoteSnapshot') {
+      _savePayload.quoteId = window._loadedQuoteId;
+    }
     var data = await fetchWithTimeout(API_URL, {
       method: 'POST',
       headers: {'Content-Type': 'text/plain'},
-      body: JSON.stringify({
-        action: 'saveQuoteSnapshot',
-        username: (window.currentUser || {}).username || '',
-        isDemo: (window.currentUser || {}).isDemo || false,
-        token: getToken(),
-        snapshot: snapshot
-      })
+      body: JSON.stringify(_savePayload)
     });
     console.log('[SaveQuote] parsed response:', JSON.stringify(data).substring(0, 500));
     if (!data.success) throw new Error(data.error || 'Save failed');
 
-    window._savedQuoteId = data.quoteId || ('ST-' + Date.now());
+    window._savedQuoteId = data.quoteId || window._loadedQuoteId || ('ST-' + Date.now());
     // Track quote save
     try {
       var _qs_name = (document.getElementById('st_name')||{}).value || '';
@@ -14891,11 +14920,13 @@ async function saveSalesQuote() {
       logToolEvent('quote_saved', {
         quoteId:  window._savedQuoteId,
         customer: _qs_name,
-        dims:     _qs_Q.w + "'×" + _qs_Q.l + "'×" + _qs_Q.h + "'"
+        dims:     _qs_Q.w + "'×" + _qs_Q.l + "'×" + _qs_Q.h + "'",
+        mode:     overwriteMode || 'new'
       });
     } catch(e) {}
     window._savedSnapshot = snapshot;
-    window._loadedQuoteId = null; // Cleared — now pointing to fresh save
+    // If overwriting, keep _loadedQuoteId pointing to same quote; if new, clear it
+    window._loadedQuoteId = (overwriteMode === 'overwrite') ? window._savedQuoteId : null;
 
     // Also save to Configurator Quotes — this is the reliable load source (dedicated configEncoded column)
     var Q2 = window._Q || {};
@@ -15115,7 +15146,7 @@ function buildSpecText() {
   h('1. Building Overview');
   var _isSSemail = (Q2.roofStyle === 'single');
   if (_isSSemail) {
-    var _ssLoHE = Math.max(8, (Q2.h||14) - (Q2.w||24)/12);
+    var _ssLoHE = Math.max(8, Math.ceil((Q2.h||14) - (Q2.w||24)/12));
     row('Dimensions', (Q2.w||'?') + "' Wide x " + (Q2.l||'?') + "' Long x " + (Q2.h||'?') + "' High");
     row('Roof Style', 'Single Slope (Monopitch) 1/12');
     row('Eave Heights', 'High: ' + (Q2.h||14) + "'  |  Low: " + Math.round(_ssLoHE*10)/10 + "'");
@@ -17544,8 +17575,12 @@ window.SauceMaterials.wallPostSizeFor = function(wallId, sf) {
 // Enforce minimum stocked lengths per post size.
 // 8x8 treated posts: shortest we carry is PT8816, so floor 8x8 lengths at 16'.
 window.SauceMaterials.enforceMinPostLen = function(postSize, postLen) {
-  if (postSize === '8x8' && postLen < 16) return 16;
-  return postLen;
+  // Always round up to next even foot, minimum 10'
+  var rounded = Math.ceil(postLen / 2) * 2;
+  rounded = Math.max(10, rounded);
+  // 8x8 minimum is 16'
+  if (postSize === '8x8' && rounded < 16) rounded = 16;
+  return rounded;
 };
 
 // ── POST PLACEMENT HELPER ─────────────────────────────────────────────────────
@@ -17607,7 +17642,7 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
   // Low-eave count excludes corners (those are high-eave height in this open-front config)
   if (Q.roofStyle === 'single') {
     var hiH  = Q.h || 14;                    // Q.h = high eave
-    var loH  = Math.max(8, (Q.h||14) - (Q.w||24)/12); // low eave = high - W/12
+    var loH  = Math.max(8, Math.ceil((Q.h||14) - (Q.w||24)/12)); // low eave = high - W/12, ceiled to whole foot
     var postSize = SM.wallPostSizeFor('left', sf) || '6x6';
     var hiLen = onTop ? hiH : hiH + 4;
     var loLen = onTop ? loH : loH + 4;
@@ -18624,7 +18659,7 @@ window.SauceMaterials.calcSteelTrusses = function(Q) {
 
     // Free-standing shed truss SKU map — same as gable TSGT map but with FS suffix for standard widths
     // Standard snoot package uses TSST{w}661FS nomenclature (1/12 pitch, free-standing)
-    var fsSku = 'TSST' + Q.w + '661FS';
+    var fsSku = Q.w === 30 ? 'TSST3010661FS' : 'TSST' + Q.w + '661FS';
 
     var items = [
       {
@@ -21251,7 +21286,7 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
       wallHeight = Math.max(0, partialH - (wainscot ? 4 : 0));
     } else if (Q.roofStyle === 'single' && Q.truss === 'Steel') {
       // Single slope steel: left=high eave (Q.h+1), right=low eave (loH+1)
-      var _loH = Math.max(8, (Q.h||14) - (Q.w||24)/12);
+      var _loH = Math.max(8, Math.ceil((Q.h||14) - (Q.w||24)/12));
       var _eaveH = (side === 'right') ? _loH : Q.h;
       wallHeight = _eaveH + 1 - (wainscot ? 4 : 0);
     } else if (Q.truss === 'Steel') {
@@ -21327,7 +21362,7 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
     if (enclCountSS === 0) return [];
 
     var hiH   = Q.h || 14;                   // Q.h = high eave
-    var loH   = Math.max(8, (Q.h||14) - (Q.w||24)/12);
+    var loH   = Math.max(8, Math.ceil((Q.h||14) - (Q.w||24)/12));
     var wainscotAdj = wainscot ? 4 : 0;
     var qtyMult = enclCountSS; // 1 face per enclosed gable end (single slope has no ridge, 1 panel face each)
 
