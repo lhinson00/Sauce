@@ -1781,7 +1781,13 @@ body.customer-mode #custColorChartLink { display: block !important; }
             </select>
           </div>
         </div>
-        <input type="hidden" id="sf_scissorTruss" value="">
+        <div class="toggle-row" id="rowScissorTruss">
+          <div class="toggle-info">
+            <div class="toggle-lbl">Scissor Truss</div>
+            <div class="toggle-sub">Wood truss only  |  +$30/truss material adder</div>
+          </div>
+          <label class="tog"><input type="checkbox" id="st_scissorTruss" onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+        </div>
         <input type="hidden" id="sf_standingSeam_legacy" value="">
         <input type="hidden" id="sf_postWraps" value="">
         <input type="hidden" id="sf_trussSpacing" value="5">
@@ -2824,14 +2830,14 @@ function buildPitchChips(){
 }
 function buildOHChips(){
   // Wood: none, 12", 18" soffit  |  Steel: none, 18" (no soffit)
-  var wopts=[{val:0,label:'None'},{val:12,label:'12"'},{val:18,label:'18" Soffit'}];
+  var wopts=[{val:0,label:'None'},{val:12,label:'12" Soffit'},{val:18,label:'18" Soffit'}];
   var steelLabel = window._customerMode ? '18" No Soffit' : '18"';
   var sopts=[{val:0,label:'None'},{val:18,label:steelLabel}];
   var opts = cfgTruss==='Steel'?sopts:wopts;
   if(!opts.find(function(o){return o.val===Q.oh;})){Q.oh=0;}
   chips('ohChips',opts,function(){return Q.oh;},function(v){
     Q.oh=v;
-    Q.soffit = (cfgTruss==='Wood' && v===18);
+    Q.soffit = (cfgTruss==='Wood' && v > 0);
   });
 }
 function buildFrameChips(){
@@ -5211,7 +5217,7 @@ function serializeConfig() {
       mbConcrete:    (document.getElementById('sf_mbConcrete')||{}).value||'None',
       mbConcreteAdder:(document.getElementById('sf_mbConcreteAdder')||{}).value||'None',
       sfPitch612:    !!(document.getElementById('sf_pitch612')||{}).checked,
-      scissorTruss:  !!(document.getElementById('sf_scissorTruss')||{}).checked,
+      scissorTruss:  !!(document.getElementById('st_scissorTruss')||{}).checked,
       standingSeam:  !!(document.getElementById('st_standingSeam')||{}).checked,
       osbRoof:       !!(document.getElementById('sf_osbRoof')||{}).checked,
       sfPostWraps:   !!(document.getElementById('sf_postWraps')||{}).checked,
@@ -5427,7 +5433,7 @@ function restoreConfig(cfg) {
       _sv('sf_mbConcrete',     sf.mbConcrete);
       _sv('sf_mbConcreteAdder',sf.mbConcreteAdder);
       _sv('sf_pitch612',       sf.sfPitch612);
-      _sv('sf_scissorTruss',   sf.scissorTruss);
+      (function(){ var el=document.getElementById('st_scissorTruss'); if(el) el.checked=!!sf.scissorTruss; })();
       _sv('st_standingSeam',    sf.standingSeam);
       _sv('sf_osbRoof',         sf.osbRoof);
       _sv('sf_postWraps',      sf.sfPostWraps);
@@ -13172,10 +13178,11 @@ async function generateQuotePDF() {
     if (!isSteel) {
       var ts = val2('st_trussSpacing') || val2('sf_trussSpacing') || '5';
       specRow2('Truss Spacing', ts + "' on center");
+      if (!!(document.getElementById('st_scissorTruss')||{}).checked) specRow2('Scissor Truss', 'Yes');
     }
     var ohIn = Q2.oh || 0;
     if (isSteel) specRow2('Overhang', '18" — No Soffit');
-    else if (ohIn > 0 && Q2.soffit) specRow2('Overhang / Soffit', ohIn + '" Overhang with Soffit');
+    else if (ohIn > 0 && (Q2.soffit || (Q2.truss !== 'Steel' && ohIn > 0))) specRow2('Overhang / Soffit', ohIn + '" Overhang with Soffit');
     else if (ohIn > 0) specRow2('Overhang', ohIn + '" — No Soffit');
     else specRow2('Overhang', 'None');
     if (isStud) {
@@ -15160,10 +15167,11 @@ function buildSpecText() {
   if (!isSteel) {
     var ts = val2('st_trussSpacing') || val2('sf_trussSpacing') || '5';
     row('Truss Spacing', ts + "' on center");
+    if (!!(document.getElementById('st_scissorTruss')||{}).checked) row('Scissor Truss', 'Yes');
   }
   var ohIn = Q2.oh || 0;
   if (isSteel) row('Overhang', '18" — No Soffit');
-  else if (ohIn > 0 && Q2.soffit) row('Overhang / Soffit', ohIn + '" Overhang with Soffit');
+  else if (ohIn > 0 && (Q2.soffit || (!isSteel && ohIn > 0))) row('Overhang / Soffit', ohIn + '" Overhang with Soffit');
   else if (ohIn > 0) row('Overhang', ohIn + '" — No Soffit');
   else row('Overhang', 'None');
 
@@ -16326,6 +16334,9 @@ function applyRouteUI() {
   if (osbRow)    osbRow.style.display    = isWood  ? '' : 'none';
   var cableRow = document.getElementById('rowCableBracing');
   if (cableRow) cableRow.style.display = isSteel ? '' : 'none';
+  var scissorRow = document.getElementById('rowScissorTruss');
+  if (scissorRow) scissorRow.style.display = isWood ? '' : 'none';
+  if (!isWood) { var scEl = document.getElementById('st_scissorTruss'); if (scEl) scEl.checked = false; }
 
   // If switching to steel, uncheck standing seam
   if (isSteel) {
@@ -16986,7 +16997,7 @@ function buildPricePayload(calcType) {
       ssConcreteAdder1: 'None',
       postWraps: (document.getElementById('sf_postWraps') && document.getElementById('sf_postWraps').checked) ? 'Yes' : 'No',
       roofPitch612: (document.getElementById('sf_pitch612') && document.getElementById('sf_pitch612').checked) ? 'Yes' : 'No',
-      scissorTruss: (document.getElementById('sf_scissorTruss') && document.getElementById('sf_scissorTruss').checked) ? 'Yes' : 'No',
+      scissorTruss: !!(document.getElementById('st_scissorTruss')||{}).checked ? 'Yes' : 'No',
       standingSeam: (document.getElementById('st_standingSeam') && document.getElementById('st_standingSeam').checked) ? 'Yes' : 'No',
       osbRoof: (document.getElementById('sf_osbRoof') && document.getElementById('sf_osbRoof').checked) ? 'Yes' : 'No',
       enclosedSideShedLinearFt: (function(){
@@ -18834,6 +18845,19 @@ window.SauceMaterials.calcWoodTrusses = function(Q, shedCfgs) {
       sku:         'WIDTH ' + w + "' — SKU NOT FOUND",
       quantity:    totalTrusses,
       detail:      'Please verify SKU for ' + w + "' width"
+    });
+  }
+
+  // Scissor truss upgrade adder -- $30 per truss
+  var scissorEl = document.getElementById('st_scissorTruss');
+  if (scissorEl && scissorEl.checked) {
+    results.push({
+      category:    'Yard',
+      description: 'Scissor Truss Upgrade',
+      sku:         'SCISSOR-UPGRADE',
+      quantity:    totalTrusses,
+      detail:      totalTrusses + ' trusses x $30/ea',
+      fixedCost:   totalTrusses * 30
     });
   }
 
@@ -30608,6 +30632,8 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       h:            Q2.h || 0,
       pitch:        Q2.pitch || 4,
       oh:           Q2.oh || 0,
+      soffit:       !!(Q2.soffit || (Q2.truss !== 'Steel' && Q2.oh > 0)),
+      truss:        Q2.truss || 'Wood',
       wainscot:     sf.wainscot === 'Yes',
       insulation:   sf.insulation !== 'None' && !!sf.insulation,
       insulType:    sf.insulation || 'None',
@@ -30829,7 +30855,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     html += '<tr>' + labelCell('Overhang / Soffit');
     slots.forEach(function(s,i) {
       var ft=f[i]; var same=i>0&&ft.oh===f[0].oh;
-      var ohLabel = ft.oh===18 ? '18&quot; w/ Soffit' : ft.oh===12 ? '12&quot;' : ft.oh>0 ? ft.oh+'&quot;' : 'None';
+      var ohLabel = ft.oh===0 ? 'None' : ft.soffit ? ft.oh+'&quot; w/ Soffit' : ft.oh+'&quot; — No Soffit';
       html += cell(ohLabel, false, same?null:slotAccent[i]);
     });
     html += '</tr>';
