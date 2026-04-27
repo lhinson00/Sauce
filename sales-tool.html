@@ -3363,7 +3363,7 @@ function spaceWindowsEvenly(wallId) {
 
 // ═══════════════════════════════════════════════════════
 function addGarageDoor(){
-  var d={id:nextDoorId++,sizeKey:'10x10',wall:'back',w:10,h:10,offset:0,type:'garage',icon:'🚪',insulated:false,fullView:false,framedOpening:false,highLift:false,vertTrack:false};
+  var d={id:nextDoorId++,sizeKey:'10x10',size:'10x10',wall:'back',w:10,h:10,offset:0,type:'garage',icon:'🚪',insulated:false,fullView:false,framedOpening:false,highLift:false,vertTrack:false};
   var wall=WALLS.find(function(w){return w.id==='back';})||{len:Q.w};
   d.offset=Math.round((wall.len-d.w)/2*12)/12;
   allDoors.push(d);
@@ -3383,7 +3383,7 @@ function addBarnDoor(){
 function setBarnProp(id,prop,val){
   var d=allDoors.find(function(d){return d.id===id;}); if(!d) return;
   if(prop==='sizeKey'){
-    var p=val.split('x'); d.w=parseInt(p[0]); d.h=parseInt(p[1]); d.sizeKey=val;
+    var p=val.split('x'); d.w=parseInt(p[0]); d.h=parseInt(p[1]); d.sizeKey=val; d.size=val;
     // 14x16 and all 16'+ wide doors only have split kits
     if (d.w >= 16 || (d.w === 14 && d.h >= 16)) d.split = true;
   }
@@ -3398,7 +3398,7 @@ function setBarnProp(id,prop,val){
 }
 function setGarageProp(id,prop,val){
   var d=allDoors.find(function(d){return d.id===id;}); if(!d) return;
-  if(prop==='sizeKey'){var p=val.split('x');d.w=parseInt(p[0]);d.h=parseInt(p[1]);d.sizeKey=val;}
+  if(prop==='sizeKey'){var p=val.split('x');d.w=parseInt(p[0]);d.h=parseInt(p[1]);d.sizeKey=val;d.size=val;}
   else if(prop==='wall'){
     d.wall=val;
     var wall=WALLS.find(function(w){return w.id===val;})||{len:Q.l};
@@ -3416,21 +3416,6 @@ function renderGarageDoors(){
   // Wood truss: max garage door height = building height - 2ft
   var maxDoorH = (Q.truss === 'Wood') ? Q.h - 2 : (Q.truss === 'Steel') ? Q.h - 4 : Infinity;
 
-  // Auto-clamp any existing door that now violates the limit
-  allDoors.forEach(function(d){
-    if (d.h > maxDoorH) {
-      // Find the tallest allowed size with same width, or closest match
-      var allowed = GARAGE_SIZES.filter(function(s){ var p=s.split('x'); return parseInt(p[1])<=maxDoorH; });
-      var sameW = allowed.filter(function(s){ return parseInt(s.split('x')[0])===d.w; });
-      var candidates = sameW.length ? sameW : allowed;
-      if (candidates.length) {
-        // Pick the tallest allowed for this width
-        var best = candidates.reduce(function(a,b){ return parseInt(b.split('x')[1]) > parseInt(a.split('x')[1]) ? b : a; });
-        var p = best.split('x'); d.w=parseInt(p[0]); d.h=parseInt(p[1]); d.sizeKey=best;
-      }
-    }
-  });
-
   var list=document.getElementById('garageDoorList'); list.innerHTML='';
   var garageDoorsOnly = allDoors.filter(function(d){return d.type==='garage';});
   garageDoorsOnly.forEach(function(d){
@@ -3440,14 +3425,20 @@ function renderGarageDoors(){
       var wl=WALLS.find(function(w){return w.id===wid;});
       return '<option value="'+wid+'"'+(d.wall===wid?' selected':'')+'>'+wl.label+'</option>';
     }).join('');
-    // Filter sizes: wood truss limits door height to building height - 2ft
-    var filteredSizes = GARAGE_SIZES.filter(function(s){ return parseInt(s.split('x')[1]) <= maxDoorH; });
-    var sizeOpts=filteredSizes.map(function(s){return '<option'+(s===d.sizeKey?' selected':'')+'>'+s+'</option>';}).join('');
+    // Show all sizes — warn inline if door exceeds headroom limit
+    var sizeOpts=GARAGE_SIZES.map(function(s){
+      var h=parseInt(s.split('x')[1]);
+      var overLimit = (maxDoorH < Infinity && h > maxDoorH);
+      return '<option value="'+s+'"'+(s===d.sizeKey?' selected':'')+(overLimit?' style="color:#b45309"':'')+'>'+s+(overLimit?' ⚠':'')+'</option>';
+    }).join('');
+    var headroomNote = (maxDoorH < Infinity && d.h > maxDoorH)
+      ? '<div style="font-size:10px;color:#b45309;margin-bottom:2px">⚠ Max recommended: '+maxDoorH+"' ("+Q.truss+' truss — needs more headroom)</div>'
+      : '';
     div.innerHTML='<div class="opening-hdr"><span class="opening-icon">🚪</span>'
       +'<span class="opening-lbl">Garage Door '+(garageDoorsOnly.indexOf(d)+1)+'</span>'
       +'<button class="opening-rm" onclick="removeGarageDoor('+d.id+')">✕</button></div>'
       +'<div class="opening-grid">'
-      +(Q.truss==='wood' && maxDoorH < Infinity ? '<div style="font-size:10px;color:#b45309;margin-bottom:2px">Max height '+maxDoorH+"' (wood truss — 2' headroom)</div>" : Q.truss==='steel' && maxDoorH < Infinity ? '<div style="font-size:10px;color:#b45309;margin-bottom:2px">Max height '+maxDoorH+"' (steel truss — 4' headroom)</div>" : '')
+      +headroomNote
       +'<select class="opening-sel" onchange="setGarageProp('+d.id+',\'sizeKey\',this.value)">'+sizeOpts+'</select>'
       +'<select class="opening-sel" onchange="setGarageProp('+d.id+',\'wall\',this.value)">'+wallOpts+'</select>'
       +'</div>'
@@ -5263,7 +5254,14 @@ function restoreConfig(cfg) {
     if(!cfg.Q || !cfg.Q.eavePS) Q.eavePS = (_eaveWall && _eaveWall.postSpacing) || Q.postSpacing || 10;
     if(!cfg.Q || !cfg.Q.gablePS) Q.gablePS = (_gableWall && _gableWall.postSpacing) || 10;
     // Always clear and restore — even if cfg array is absent/empty, stale data must not persist
-    allDoors.length=0; if(cfg.doors) cfg.doors.forEach(function(d){allDoors.push(d);});
+    allDoors.length=0;
+    if(cfg.doors) cfg.doors.forEach(function(d){
+      // Normalize: ensure both sizeKey and size exist and agree
+      if(!d.sizeKey && d.size) d.sizeKey = d.size;
+      if(!d.size && d.sizeKey) d.size = d.sizeKey;
+      if(!d.sizeKey && d.w && d.h) { d.sizeKey = d.w+'x'+d.h; d.size = d.sizeKey; }
+      allDoors.push(d);
+    });
     window._walkDoors = cfg.walkDoors || [];
     window._windows   = cfg.windows   || [];
     window._shedConfigs = []; if(cfg.sheds) cfg.sheds.forEach(function(s){window._shedConfigs.push(s);});
