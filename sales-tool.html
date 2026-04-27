@@ -11215,21 +11215,32 @@ function applyVoiceQuote(parsed, overlay) {
                     }
 
                 } else {
-                    // ── Front/back gable extension — ridge connects at main building peak ──
+                    // ── Front/back gable extension — same pitch as main roof, optional drop ──
+                    // Drop shifts the entire roof plane down uniformly — pitch unchanged.
+                    // At drop=0: inner peak = sr, outer eave = sh (flush with main building).
+                    // At drop=N: inner peak = sr - N*Sc, outer eave = sh - N*Sc (same slope).
                     var dir = sc.wall === 'front' ? -1 : 1;
                     var aZ = sc.wall === 'front' ? -sl/2 : sl/2;
                     var oZ = aZ + dir * ssw;
                     var oZoh = oZ + dir * oh;
-                    // Drop shifts the eave down; ridge always connects at sr (main peak)
                     var gblDropH = (sc.dropFt || 0) * Sc;
-                    var gblEaveH = sh - gblDropH; // eave height (dropped or flush)
-                    var extRidgePeak = sr;         // always connects at main ridge height
-                    // Extension may be narrower than the building — use sc.l and sco for X bounds
-                    var extHalfX = ssl / 2; // half of extension width in scene units
-                    var extX1 = sco - extHalfX - oh; // left edge with overhang
-                    var extX2 = sco + extHalfX + oh; // right edge with overhang
-                    var extXmid = sco;               // ridge X center
-                    // Roof panels — extension width only, eave at gblEaveH, peak at extRidgePeak
+                    // Main building pitch slope (scene units of height per scene unit of X from center)
+                    var mainPitchSlope = (sw > 0) ? (sr - sh) / (sw / 2) : 0;
+                    // Height of extension at any X offset from its center, with drop applied:
+                    //   h(x) = (sh - gblDropH) + |x - sco| * mainPitchSlope
+                    // Inner peak (at extXmid = sco): sh - gblDropH + extHalfX * slope
+                    // But we cap at the corresponding dropped ridge: sr - gblDropH
+                    var extHalfX = ssl / 2;
+                    var extX1 = sco - extHalfX - oh;
+                    var extX2 = sco + extHalfX + oh;
+                    var extXmid = sco;
+                    var gblEaveH = sh - gblDropH;  // outer eave height
+                    var extRidgePeak = Math.min(sr - gblDropH, gblEaveH + extHalfX * mainPitchSlope);
+                    // Helper: roof surface height at a given X for this extension
+                    function gblRoofY(gx) {
+                        return gblEaveH + Math.max(0, extHalfX - Math.abs(gx - sco)) * mainPitchSlope;
+                    }
+                    // Roof panels
                     grps.shed.add(mkQ([extX1, gblEaveH-.01, aZ, extXmid, extRidgePeak, aZ, extXmid, extRidgePeak, oZoh, extX1, gblEaveH-.01, oZoh], mSh));
                     grps.shed.add(mkQ([extX2, gblEaveH-.01, oZoh, extXmid, extRidgePeak, oZoh, extXmid, extRidgePeak, aZ, extX2, gblEaveH-.01, aZ], mSh));
                     // Ribs
@@ -11250,29 +11261,36 @@ function applyVoiceQuote(parsed, overlay) {
                     var rW2=0.03;
                     grps.shed.add(mkQ([extXmid-rW2/2,extRidgePeak+0.003,aZ, extXmid+rW2/2,extRidgePeak+0.003,aZ, extXmid+rW2/2,extRidgePeak+0.003,oZoh, extXmid-rW2/2,extRidgePeak+0.003,oZoh],
                                   new THREE.MeshBasicMaterial({color:pc(trimColorName),side:THREE.DoubleSide})));
-                    // Outer gable end triangle — vertical strips with ribs (no degenerate quad)
+                    // Outer gable end triangle — same pitch slope as main building, shifted down
                     { const wHex=pc(wallColorName);
                       const wR=(wHex>>16)&0xff, wG=(wHex>>8)&0xff, wB=wHex&0xff;
                       const mWBase=new THREE.MeshBasicMaterial({color:wHex,side:THREE.DoubleSide});
                       const mWRi=new THREE.MeshBasicMaterial({color:((Math.min(255,wR+55)<<16)|(Math.min(255,wG+55)<<8)|Math.min(255,wB+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
                       const mWRS=new THREE.MeshBasicMaterial({color:((Math.max(0,wR-40)<<16)|(Math.max(0,wG-40)<<8)|Math.max(0,wB-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
                       const gfSp=0.075, gfW=0.006;
-                      const zf=oZ-dir*0.003; // slightly proud of face toward viewer
+                      const zf=oZ-dir*0.003;
                       for (let gx=sco-extHalfX; gx<sco+extHalfX; gx+=gfSp) {
                         const gxR=Math.min(gx+gfSp, sco+extHalfX);
-                        const yTopL=gblEaveH+(extRidgePeak-gblEaveH)*Math.max(0, 1-Math.abs(gx-sco)/extHalfX);
-                        const yTopR=gblEaveH+(extRidgePeak-gblEaveH)*Math.max(0, 1-Math.abs(gxR-sco)/extHalfX);
+                        const yTopL=Math.min(gblRoofY(gx), extRidgePeak);
+                        const yTopR=Math.min(gblRoofY(gxR), extRidgePeak);
                         if(yTopL<=gblEaveH && yTopR<=gblEaveH) continue;
                         grps.shed.add(mkQ([gx,gblEaveH,zf, gx,yTopL,zf, gxR,yTopR,zf, gxR,gblEaveH,zf], mWBase));
                         grps.shed.add(mkQ([gx,gblEaveH,zf, gx,yTopL,zf, gx+gfW,yTopL,zf, gx+gfW,gblEaveH,zf], mWRi));
                         grps.shed.add(mkQ([gx+gfW,gblEaveH,zf, gx+gfW,yTopL,zf, gx+gfW*2,yTopL,zf, gx+gfW*2,gblEaveH,zf], mWRS));
                       }
-                      // If dropped: draw the gap fill between extension eave and main building eave
+                      // If dropped: fill the exposed band on the main gable wall between the
+                      // extension's inner peak and the main building's ridge line
                       if (gblDropH > 0.001) {
-                        const zGap = aZ + dir*0.003; // flush with main gable wall face
+                        const zGap = aZ + dir*0.003;
                         for (let gx=sco-extHalfX; gx<sco+extHalfX; gx+=gfSp) {
                           const gxR=Math.min(gx+gfSp, sco+extHalfX);
-                          grps.shed.add(mkQ([gx,gblEaveH,zGap, gx,sh,zGap, gxR,sh,zGap, gxR,gblEaveH,zGap], mWBase));
+                          const yBotL=Math.min(gblRoofY(gx), extRidgePeak); // top of extension triangle
+                          const yBotR=Math.min(gblRoofY(gxR), extRidgePeak);
+                          // main building gable height at this X (undropped)
+                          const yTopL2=sh+(sr-sh)*Math.max(0, 1-Math.abs(gx-sco)/extHalfX);
+                          const yTopR2=sh+(sr-sh)*Math.max(0, 1-Math.abs(gxR-sco)/extHalfX);
+                          if(yTopL2<=yBotL && yTopR2<=yBotR) continue;
+                          grps.shed.add(mkQ([gx,yBotL,zGap, gx,yTopL2,zGap, gxR,yTopR2,zGap, gxR,yBotR,zGap], mWBase));
                         }
                       }
                     }
