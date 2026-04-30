@@ -2650,7 +2650,7 @@ function triggerBuild() {
     if (_rp) { _rp.style.height = '22vh'; _rp.style.maxHeight = '22vh'; }
   }
   window._buildGen = (window._buildGen||0)+1;
-  if (rrx) { try{ rrx.forceContextLoss(); rrx.dispose(); }catch(e){} rrx=null; }
+  // Don't dispose renderer here — build3DReplay reuses it across builds
   window._Q = Q;
   window._WALLS = WALLS;
   window._allDoors = allDoors;
@@ -8281,11 +8281,13 @@ function applyVoiceQuote(parsed, overlay) {
             return;
         }
         
-        // 5. Remove old canvas and clear any existing content
-        const old = c.querySelector('canvas'); 
-        if (old) {
-            console.log('[3D] Removing old canvas');
-            old.remove();
+        // 5. Remove old canvas only if no existing renderer to reuse
+        if (!rrx) {
+            const old = c.querySelector('canvas'); 
+            if (old) {
+                console.log('[3D] Removing old canvas');
+                old.remove();
+            }
         }
         
         // Clear any error messages
@@ -8335,7 +8337,12 @@ function applyVoiceQuote(parsed, overlay) {
             console.log('[3D] Creating camera with aspect ratio:', aspectRatio);
             const cam = new THREE.PerspectiveCamera(38, aspectRatio, 0.1, 200);
             
-            // 8. Create WebGL renderer with proper error handling
+            // 8. Reuse existing WebGL renderer if available, otherwise create new one
+            if (rrx) {
+                console.log('[3D] Reusing existing WebGL renderer');
+                rrx.setSize(c.clientWidth, c.clientHeight);
+                rrx.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            } else {
             console.log('[3D] Creating WebGL renderer...');
             try {
                 // Check for mobile devices and adjust settings accordingly
@@ -8376,11 +8383,13 @@ function applyVoiceQuote(parsed, overlay) {
                 console.error('[3D] WebGL context lost!');
                 event.preventDefault();
                 show3DError('3D graphics context was lost. This is common on mobile devices with limited memory. Please try refreshing the page.');
+                rrx = null; // force recreation next build
             });
             
             rrx.domElement.addEventListener('webglcontextrestored', function() {
                 console.log('[3D] WebGL context restored');
             });
+            } // end else (new renderer creation)
             
             // 12. Force immediate render test
             setTimeout(function() {
