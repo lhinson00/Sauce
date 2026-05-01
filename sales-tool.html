@@ -18565,7 +18565,7 @@ window.SauceMaterials.calcFootingPads = function(Q, WALLS, allDoors, shedCfgs, s
     groups[sku] += count;
   }
 
-  if (!onTop && !sf.isStudFrame) {
+  if (!onTop && !sf.isStudFrame && !window._shedOnlyMode) {
     // Eave posts — per wall
     ['left', 'right'].forEach(function(wallId) {
       var wallSize = SM.wallPostSizeFor(wallId, sf);
@@ -23396,12 +23396,14 @@ window.SauceMaterials.calcOutsideCornerTrim = function(Q, WALLS, shedCfgs) {
     { eave: rightEncl, gable: backEncl  }, // back-right
   ];
 
-  corners.forEach(function(c) {
-    if (c.eave || c.gable) {
-      addOC(mbH, 1);
-      if (c.eave !== c.gable) addFur(mbH, 1); // one enclosed, one open → furring
-    }
-  });
+  if (!window._shedOnlyMode) {
+    corners.forEach(function(c) {
+      if (c.eave || c.gable) {
+        addOC(mbH, 1);
+        if (c.eave !== c.gable) addFur(mbH, 1); // one enclosed, one open → furring
+      }
+    });
+  }
 
   // Enclosed side shed outer corners: 2 per shed (front + back of outer wall)
   (shedCfgs||[]).forEach(function(sc) {
@@ -23531,7 +23533,7 @@ window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
 
   // Main building: ×4
   // Single slope: no standard gable rake — sloped edges are the eave trim, not a rake
-  if (Q.roofStyle !== 'single') {
+  if (!window._shedOnlyMode && Q.roofStyle !== 'single') {
     var mbTopChord = getTopChord(Q.w);
     if (mbTopChord) addBoards(nextEven(mbTopChord), 4);
   }
@@ -24188,7 +24190,7 @@ window.SauceLabor.calcCypressAdder = function(Q, shedCfgs) {
   };
 };
 
-window.SauceMaterials.calcRidgeCap = function(Q) {
+window.SauceMaterials.calcRidgeCap = function(Q, shedCfgs) {
   var ps      = Q.postSpacing || 10;
   var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
   var _rdMt=normalizeMetalType((document.getElementById('st_roofMetal')||{}).value||'Tuff-Rib 29ga');var _rdResolved=resolveRidgeCapSku(boardLen,_rdMt);var _rdPfx=(_rdMt==='26-Gauge')?'RC6':'RC6';var _rdC=getSkuColorCode('trim');var sku=_rdResolved||(_rdPfx+_rdC+boardLen);
@@ -24204,6 +24206,23 @@ window.SauceMaterials.calcRidgeCap = function(Q) {
       sku:         sku,
       quantity:    qty,
       detail:      'RC trim at high eave face  |  ' + boardLen + "' boards  |  " + totalLen + "' run"
+    }];
+  }
+
+  // Shed-only mode: only gable-attached sheds have a ridge cap; lean-tos do not
+  if (window._shedOnlyMode) {
+    var shedRidgeLen = 0;
+    (shedCfgs || window._shedConfigs || []).forEach(function(sc) {
+      if (sc.type === 'gable' && sc.l) shedRidgeLen += sc.l;
+    });
+    if (!shedRidgeLen) return []; // pure lean-to shed(s) — no ridge cap
+    var shedQty = Math.ceil(shedRidgeLen / boardLen) + 1;
+    return [{
+      category:    'Trim',
+      description: 'Ridge Cap',
+      sku:         sku,
+      quantity:    shedQty,
+      detail:      boardLen + "' sticks  |  " + shedRidgeLen + "' shed ridge  +1"
     }];
   }
 
@@ -27185,6 +27204,11 @@ window.SauceMaterials.calculate = function(forcedType) {
       var shedPallets = Math.ceil(shedSackcrete.quantity / 42);
       if (shedPallets > 0) items.push({ category:'Yard', description:'Pallet Charge', sku:'PAL', quantity:shedPallets, detail:shedSackcrete.quantity+' bags  |  1 pallet per 42 bags' });
     }
+    // LAG5 — 2 per shed post
+    (function() {
+      var lagItems = SM.calcLagBolts(Q, WALLS, shedCfgs, [], sf);
+      lagItems.forEach(function(item) { item.category = 'Yard'; items.push(item); });
+    })();
     // Shed framing (rafters) + ledgers
     SM.calcShedFraming(Q, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedLedgers(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
@@ -27215,7 +27239,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcInsideCornerTrim(Q, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcOutsideCornerTrim(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableRakeTrim(Q, shedCfgs).forEach(function(item) { items.push(item); });
-    SM.calcRidgeCap(Q).forEach(function(item) { items.push(item); });
+    SM.calcRidgeCap(Q, shedCfgs).forEach(function(item) { items.push(item); });
     // Doors/windows on shed
     SM.calcWalkDoors(forcedType).forEach(function(item) { items.push(item); });
     SM.calcDutchDoors().forEach(function(item) { items.push(item); });
@@ -27303,7 +27327,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     }
     if (!noRoofMetal) {
     SM.calcGableRakeTrim(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
-    SM.calcRidgeCap(sfQ).forEach(function(item) { items.push(item); });
+    SM.calcRidgeCap(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcTransitionFlashing(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcOutsideSolidClosure(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     }
@@ -27415,7 +27439,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcSoffitFJTrim(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcBirdBoxTrim(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableRakeTrim(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
-    SM.calcRidgeCap(bbQ).forEach(function(item) { items.push(item); });
+    SM.calcRidgeCap(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcTransitionFlashing(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcOutsideSolidClosure(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     }
@@ -27556,7 +27580,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     if (!noRoofMetal) {
     SM.calcTransitionFlashing(cyQ, WALLS, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableRakeTrim(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
-    SM.calcRidgeCap(cyQ).forEach(function(item) { items.push(item); });
+    SM.calcRidgeCap(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcOutsideSolidClosure(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
     }
 
@@ -27772,7 +27796,7 @@ window.SauceMaterials.calculate = function(forcedType) {
   }
   if (!noRoofMetal) {
   SM.calcGableRakeTrim(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
-  SM.calcRidgeCap(Q).forEach(function(item) { items.push(item); });
+  SM.calcRidgeCap(Q, shedCfgs).forEach(function(item) { items.push(item); });
   SM.calcOutsideSolidClosure(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   }
   SM.calcAwnings().forEach(function(item) { items.push(item); });
