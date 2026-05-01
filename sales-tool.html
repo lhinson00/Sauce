@@ -2633,6 +2633,8 @@ function updateStripFromLocalCalc() {
     if (!pill || !countEl) return;
     if (missingSkus.length > 0) {
       countEl.textContent = missingSkus.length + ' missing price' + (missingSkus.length > 1 ? 's' : '');
+      // Build tooltip showing each missing SKU
+      pill.title = 'Missing prices: ' + missingSkus.join(', ') + ' — Click to open Materials list';
       pill.style.display = 'flex';
     } else {
       pill.style.display = 'none';
@@ -29327,6 +29329,22 @@ window.openMaterialsModal = function(initialTab) {
     catch(e) { results[t.key] = { error: e.message }; console.error('[Materials]', t.key, e); }
   });
 
+  // Build global missing-price map: SKU -> [type labels] across all tabs
+  var _allMissingByType = {}; // { 'SKU': ['Wood OH', 'Steel', ...] }
+  var _pt2 = window.SauceMaterials._priceTable || {};
+  types.forEach(function(t) {
+    var res = results[t.key];
+    if (!res || res.error || !res.items) return;
+    res.items.forEach(function(item) {
+      if (!item.sku || item.fixedCost != null) return;
+      var skuKey = item.sku.toUpperCase();
+      if (_pt2[skuKey] == null) { // genuinely absent from price table
+        if (!_allMissingByType[skuKey]) _allMissingByType[skuKey] = [];
+        if (_allMissingByType[skuKey].indexOf(t.label) < 0) _allMissingByType[skuKey].push(t.label);
+      }
+    });
+  });
+
   var overlay = document.createElement('div');
   overlay.id = 'sauceMaterialsModal';
   overlay.style.cssText = 'display:flex;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center;';
@@ -29506,9 +29524,11 @@ window.openMaterialsModal = function(initialTab) {
           // No price found for this SKU — flag it
           _missingPrices.push(item.sku);
           var warnBadge = document.createElement('span');
-          warnBadge.title = 'No price on file for ' + item.sku;
-          warnBadge.style.cssText = 'display:inline-flex;align-items:center;gap:3px;background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);color:#ef4444;border-radius:4px;padding:2px 6px;font-size:9px;font-weight:800;white-space:nowrap;';
-          warnBadge.textContent = '⚠ No Price';
+          var _warnTypes = (_allMissingByType && _allMissingByType[(item.sku||'').toUpperCase()]) || [];
+          var _warnTitle = 'No price on file for ' + item.sku + (_warnTypes.length > 1 ? ' — also missing in: ' + _warnTypes.filter(function(x){ return x !== (types.filter(function(t){return t.key===activeKey;})[0]||{}).label; }).join(', ') : '');
+          warnBadge.title = _warnTitle;
+          warnBadge.style.cssText = 'display:inline-flex;align-items:center;gap:3px;background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);color:#ef4444;border-radius:4px;padding:2px 6px;font-size:9px;font-weight:800;white-space:nowrap;cursor:help;';
+          warnBadge.textContent = '⚠ No Price' + (_warnTypes.length > 1 ? ' (' + _warnTypes.length + ' lists)' : '');
           priceEl.appendChild(warnBadge);
           // Also highlight the row subtly
           row.style.background = 'rgba(239,68,68,.06)';
@@ -29565,8 +29585,13 @@ window.openMaterialsModal = function(initialTab) {
       missingIcon.textContent = '⚠';
       var missingText = document.createElement('div');
       missingText.style.cssText = 'font-size:11px;color:#ef4444;';
+      var _missingHtmlParts = _missingPrices.map(function(sku) {
+        var inTypes = (_allMissingByType && _allMissingByType[sku.toUpperCase()] || []);
+        var typeStr = inTypes.length ? ' <span style="color:#fca5a5;font-size:9px;">(' + inTypes.join(', ') + ')</span>' : '';
+        return sku + typeStr;
+      });
       missingText.innerHTML = '<strong style="font-weight:800;">' + _missingPrices.length + ' item' + (_missingPrices.length > 1 ? 's' : '') + ' missing price' + (_missingPrices.length > 1 ? 's' : '') + '</strong> — totals are incomplete.<br>'
-        + '<span style="color:#f87171;font-size:10px;">' + _missingPrices.join(', ') + '</span>';
+        + '<span style="color:#f87171;font-size:10px;">' + _missingHtmlParts.join('&nbsp;&nbsp;') + '</span>';
       missingBanner.appendChild(missingIcon);
       missingBanner.appendChild(missingText);
       body.appendChild(missingBanner);
