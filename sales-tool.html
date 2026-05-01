@@ -2385,8 +2385,14 @@ function updateStripFromLocalCalc() {
       if (res && res.items) {
         res.items.forEach(function(item) {
           if (item.fixedCost != null) { total += item.fixedCost; return; }
-          var up = (window.SauceMaterials._priceTable||{})[(item.sku||'').toUpperCase()] || 0;
-          if (!up) { if (item.sku) _missingSkuSet[(item.sku||'').toUpperCase()] = true; return; }
+          var _pt = window.SauceMaterials._priceTable || {};
+          var _skuKey = (item.sku||'').toUpperCase();
+          var up = _pt[_skuKey];
+          var _inTable = up != null;
+          if (!_inTable || up === 0) {
+            if (item.sku && !_inTable) _missingSkuSet[_skuKey] = true; // only flag genuinely absent SKUs
+            up = 0; return;
+          }
           if (item.metalLength) {
             var ftM = (item.metalLength||'').match(/(\d+)'/), inM = (item.metalLength||'').match(/(\d+(?:\.\d+)?)"/) ;
             var lf = (ftM?parseFloat(ftM[1]):0)+(inM?parseFloat(inM[1])/12:0);
@@ -31505,7 +31511,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     slots.forEach(function(s, i) {
       html += '<td style="padding:12px 14px;text-align:center;background:' + slotBgs[i] + ';border-left:1px solid #ddd;">'
             + '<div style="font-size:14px;font-weight:800;color:' + slotColors[i] + ';">' + esc(s.label || ('Option ' + String.fromCharCode(65+i))) + '</div>'
-            + '<div style="font-size:12px;color:#555;margin-top:2px;">' + esc(allTypes.map(function(k){return TYPE_LABELS2[k]||k;}).join(' / ')||'') + '</div>'
+            + '<div style="font-size:12px;color:#555;margin-top:2px;">' + esc((function(){ var seen={},out=[]; allTypes.forEach(function(k){ var l=TYPE_LABELS2[k]||k; if(!seen[l]){seen[l]=true;out.push(l);} }); return out.join(' / '); })()||'') + '</div>'
             + '<div style="font-size:11px;color:#888;margin-top:2px;">' + esc(s.dims||'') + '</div>'
             + '</td>';
     });
@@ -31722,6 +31728,21 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
             personalNote:   (document.getElementById('cmpNotes') ? document.getElementById('cmpNotes').value.trim() : ''),
             configLink:     slotLinks[0] || '',
             slotLinks:      slotLinks,
+            slotLabels:     slots.map(function(s,i){ return s.label || ('Option ' + String.fromCharCode(65+i)); }),
+            slotDiffs:      (function() {
+              var diffs = [];
+              if (slots.length >= 2 && slots[0].features) {
+                slots.slice(1).forEach(function(s, i) {
+                  if (s.features) {
+                    diffs.push({
+                      label: (s.label || ('Option ' + String.fromCharCode(66+i))) + ' vs ' + (slots[0].label || 'Option A'),
+                      changes: diffFeatures(slots[0].features, s.features)
+                    });
+                  }
+                });
+              }
+              return diffs;
+            })(),
             username:       (window.currentUser||{}).username || '',
             selectedPrices: selectedPrices
           })
@@ -31807,13 +31828,22 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       return CMP.activeTypes.indexOf(k) >= 0;
     });
 
-    // Filter bar
+    // Filter bar — group keys sharing the same label into one chip
     var filterHtml = '<div class="cmp-filter-bar"><span class="cmp-filter-label">Show:</span>';
-    allAvailTypes.forEach(function(k) {
-      var on = CMP.activeTypes.indexOf(k) >= 0;
-      filterHtml += '<label class="cmp-filter-chip' + (on ? ' cmp-filter-on' : '') + '">'
-        + '<input type="checkbox"' + (on ? ' checked' : '') + ' onchange="window._CompareEngine.toggleType(\'' + k + '\')" style="display:none;">'
-        + (TYPE_LABELS[k]||k) + '</label>';
+    var _seenChipLabels = {};
+    var _typeOrder = ['steel','woodNoOH','woodOH','stud','cypress','metalBB'];
+    var _orderedTypes = _typeOrder.filter(function(k){ return allAvailTypes.indexOf(k) >= 0; });
+    allAvailTypes.forEach(function(k){ if (_orderedTypes.indexOf(k) < 0) _orderedTypes.push(k); });
+    _orderedTypes.forEach(function(k) {
+      var lbl = TYPE_LABELS[k] || k;
+      if (_seenChipLabels[lbl]) return; // already rendered a chip for this label
+      _seenChipLabels[lbl] = true;
+      var siblingKeys = _orderedTypes.filter(function(j){ return (TYPE_LABELS[j]||j) === lbl; });
+      var allOn = siblingKeys.every(function(j){ return CMP.activeTypes.indexOf(j) >= 0; });
+      var toggleCall = siblingKeys.map(function(j){ return 'window._CompareEngine.toggleType(\'' + j + '\')'; }).join(';');
+      filterHtml += '<label class="cmp-filter-chip' + (allOn ? ' cmp-filter-on' : '') + '">'
+        + '<input type="checkbox"' + (allOn ? ' checked' : '') + ' onchange="' + toggleCall + '" style="display:none;">'
+        + lbl + '</label>';
     });
     filterHtml += '</div>';
 
