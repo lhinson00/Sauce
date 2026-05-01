@@ -2417,27 +2417,6 @@ function updateStripFromLocalCalc() {
     }
   } catch(e) { console.warn('[Strip] concrete calc error:', e); }
 
-  // Stud frame always uses 4" with footers + metal ledge for main building
-  // Override co.main with fixed stud opts when concrete is selected
-  var concreteAmtStud = 0;
-  try {
-    if (window._lastConcreteOpts && window.SauceConcrete) {
-      var coStud = window._lastConcreteOpts;
-      var studIncluded = false;
-      if (coStud.main && coStud.main.included) {
-        var studMainOpts = Object.assign({}, coStud.main, { thickness: '4', footers: true, metalLedge: true });
-        concreteAmtStud += window.SauceConcrete.calculate(county, sqft, studMainOpts).finalCost;
-        studIncluded = true;
-      }
-      if (coStud.sheds) coStud.sheds.forEach(function(sOpts, i) {
-        if (!sOpts || !sOpts.included) return;
-        var sc = shedCfgs[i];
-        if (sc && sc.w && sc.l) { concreteAmtStud += shedConcreteLineAmt(county, sc, sOpts, Q); studIncluded = true; }
-      });
-      (coStud.aprons||[coStud.apron]).filter(Boolean).forEach(function(a){ if(a&&a.included&&a.sqft){ concreteAmtStud += window.SauceConcrete.calculate(county, a.sqft, a).finalCost; studIncluded = true; } });
-      if (studIncluded && concreteAmtStud > 0) concreteAmtStud = Math.max(concreteAmtStud, 3500);
-    }
-  } catch(e) { console.warn('[Strip] stud concrete error:', e); }
 
   // Shipping
   var shipAmt = miles > 0 ? miles * 6.00 : 0;
@@ -2562,7 +2541,7 @@ function updateStripFromLocalCalc() {
       widowsPeakAdderAmt = 150;
     }
     var labor  = baseLabor + cypressAdderAmt + bbAdderAmt + ssAdderAmt + osbRoofAdderAmt + wetSetAdderAmt + postProtAdderAmt + pitch612AdderAmt + cableBracingAdderAmt + widowsPeakAdderAmt;
-    var conc   = v.forcedType === 'stud' ? concreteAmtStud : concreteAmt;
+    var conc   = concreteAmt;
     var grand  = matWithMft + tax + labor + conc + shipAmt + esdAmt;
     // Note: manualAdder (st_manualAdder) intentionally excluded — material adders
     // are already included in matWithMft via matAdderAmt to avoid double-counting.
@@ -13383,7 +13362,7 @@ async function generateQuotePDF() {
     } else {
       specRow2('Roof Pitch', (Q2.pitch||4) + '/12');
     }
-    specRow2('Truss Type', isSteel ? 'Steel Truss' : 'Wood Truss');
+    specRow2('Truss Type', isSteel ? 'Steel Truss No Soffit' : (Q2.oh > 0 ? 'Wood Truss w/ 12" Soffit' : 'Wood Truss No Soffit'));
     if (!isSteel) {
       var ts = val2('st_trussSpacing') || val2('sf_trussSpacing') || '5';
       specRow2('Truss Spacing', ts + "' on center");
@@ -15378,7 +15357,7 @@ function buildSpecText() {
     row('Dimensions', (Q2.w||'?') + "' Wide x " + (Q2.l||'?') + "' Long x " + (Q2.h||'?') + "' Tall");
     row('Roof Pitch', (Q2.pitch||4) + '/12');
   }
-  row('Truss Type', isSteel ? 'Steel Truss' : 'Wood Truss');
+  row('Truss Type', isSteel ? 'Steel Truss No Soffit' : (Q.oh > 0 ? 'Wood Truss w/ 12" Soffit' : 'Wood Truss No Soffit'));
   if (!isSteel) {
     var ts = val2('st_trussSpacing') || val2('sf_trussSpacing') || '5';
     row('Truss Spacing', ts + "' on center");
@@ -15658,9 +15637,9 @@ async function sendSalesQuoteEmail() {
     if ((document.getElementById('eqChkOH')||{}).checked      && oh.total)    selectedPrices.push({ type:'WoodOH',        label:'Wood Truss w/ 12" Soffit',    results: oh    });
     if ((document.getElementById('eqChkNoOH')||{}).checked    && nooh.total)  selectedPrices.push({ type:'WoodNoOH',      label:'Wood Truss No Soffit',    results: nooh  });
     if ((document.getElementById('eqChkSteel')||{}).checked   && steel.total) selectedPrices.push({ type:'EnclosedSteel', label:'Steel Truss No Soffit',  results: steel });
-    if ((document.getElementById('eqChkStud')||{}).checked    && studR.total) selectedPrices.push({ type:'StudFramed',    label:'Stud Frame',   results: studR });
-    if ((document.getElementById('eqChkCypress')||{}).checked && cypR.total)  selectedPrices.push({ type:'Cypress',       label:'Cypress',      results: cypR  });
-    if ((document.getElementById('eqChkBB')||{}).checked      && bbR.total)   selectedPrices.push({ type:'MetalBB',       label:'Metal B&B',    results: bbR   });
+    if ((document.getElementById('eqChkStud')||{}).checked    && studR.total) selectedPrices.push({ type:'StudFramed',    label:'Wood Truss w/ 12" Soffit', results: studR });
+    if ((document.getElementById('eqChkCypress')||{}).checked && cypR.total)  selectedPrices.push({ type:'Cypress',       label:'Wood Truss w/ 12" Soffit', results: cypR  });
+    if ((document.getElementById('eqChkBB')||{}).checked      && bbR.total)   selectedPrices.push({ type:'MetalBB',       label:'Wood Truss w/ 12" Soffit', results: bbR   });
     if (!selectedPrices.length) { alert('Please select at least one price to include.'); btn.disabled=false; btn.textContent='Send Email'; return; }
 
     // Build filtered 3D link — only include totals for checked types
@@ -28535,14 +28514,6 @@ window.openConcreteModal = function(forcedType) {
   var panel = document.createElement('div');
   panel.style.cssText = 'background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:24px;width:92%;max-width:560px;max-height:90vh;display:flex;flex-direction:column;font-family:Outfit,sans-serif;gap:10px;overflow-y:auto;';
 
-  // Stud frame notice — main building always 4" mono w/ metal ledge
-  if (forcedType === 'stud' && saved.main && saved.main.included) {
-    var studNote = document.createElement('div');
-    studNote.style.cssText = 'background:rgba(192,132,252,.1);border:1px solid rgba(192,132,252,.3);border-radius:10px;padding:10px 14px;font-size:11px;color:#c084fc;font-weight:700;';
-    studNote.innerHTML = '🧱 <strong>Stud Frame</strong> — Main building concrete is always priced as <strong>4" Monolithic Pour w/ Footers + Metal Ledge</strong> regardless of selection below. Shed and apron concrete follow your selection.';
-    panel.appendChild(studNote);
-  }
-
   // Header
   var zone = SC.getZone(county);
   var zoneName = zone ? SC.RATES[zone].label : (county ? 'County not mapped' : 'Enter address to auto-detect zone');
@@ -28895,7 +28866,7 @@ window.openConcreteModal = function(forcedType) {
     pierInfoRow2.appendChild(pierDesc2); pierInfoRow2.appendChild(pierTotal2);
 
     // Full slab opts (reuse buildOptsUI embedded)
-    var _slabSaved2 = (savedOpts && savedOpts.type !== 'piers') ? savedOpts : null;
+    var _slabSaved2 = (savedOpts && savedOpts.type !== 'piers') ? Object.assign({}, savedOpts, { included: true }) : { included: true };
     var slabOptsWrap2 = buildOptsUI('', mainSqft, _slabSaved2, onChange);
     slabOptsWrap2.style.cssText = 'display:' + (_mode==='slab' ? 'flex' : 'none') + ';flex-direction:column;gap:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:10px;margin-top:2px;';
 
@@ -29019,7 +28990,7 @@ window.openConcreteModal = function(forcedType) {
     optsWrap.appendChild(pierInfoRow);
 
     // Full slab opts (reuse buildOptsUI stripped of its header/toggle — embedded)
-    var _slabSavedOpts = (savedOpts && savedOpts.type !== 'piers') ? savedOpts : null;
+    var _slabSavedOpts = (savedOpts && savedOpts.type !== 'piers') ? Object.assign({}, savedOpts, { included: true }) : { included: true };
     var slabOptsWrap = buildOptsUI('', shedConcreteSqft(sc, Q), _slabSavedOpts, onChange);
     // Remove the include toggle from the inner slabOptsWrap (first child is secHdr)
     slabOptsWrap.style.cssText = 'display:' + (_mode==='slab' ? 'flex' : 'none') + ';flex-direction:column;gap:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:10px;margin-top:2px;';
@@ -29256,15 +29227,7 @@ window.openConcreteModal = function(forcedType) {
     } else {
       addSection('Main Building', mainSqft, mainOpts);
     }
-    // For stud frame: show the actual priced opts (4" mono + metal ledge) as a note
-    if (forcedType === 'stud' && mainOpts && mainOpts.included) {
-      var studForcedOpts = Object.assign({}, mainOpts, { thickness: '4', footers: true, metalLedge: true });
-      var studNote2 = document.createElement('div');
-      studNote2.style.cssText = 'font-size:10px;color:#c084fc;padding:2px 6px 6px;';
-      var studResult = SC.calculate(county, mainSqft, studForcedOpts);
-      studNote2.textContent = 'Stud frame priced as: 4" Mono w/ Footers + Metal Ledge = $' + studResult.finalCost.toFixed(2);
-      resultsDiv.appendChild(studNote2);
-    }
+
     shedUIs.forEach(function(ui, i) {
       var sc = shedCfgs[ui._idx];
       if (!sc) return;
@@ -31228,9 +31191,9 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
   var CMP = window._CompareEngine = { slots: [], MAX: 3, activeTypes: null }; // activeTypes: null = all
 
   var TYPE_LABELS = {
-    woodOH:'W/ Soffit', woodNoOH:'No Soffit',
-    steel:'Steel', stud:'Stud Frame',
-    cypress:'Cypress', metalBB:'Metal B&B'
+    woodOH:'Wood Truss w/ 12" Soffit', woodNoOH:'Wood Truss No Soffit',
+    steel:'Steel Truss No Soffit', stud:'Wood Truss w/ 12" Soffit',
+    cypress:'Wood Truss w/ 12" Soffit', metalBB:'Wood Truss w/ 12" Soffit'
   };
 
   // ── Helpers ────────────────────────────────────────────
@@ -31447,9 +31410,9 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = 'Sending\u2026'; }
 
     var TYPE_LABELS2 = {
-      woodOH:'W/ Soffit', woodNoOH:'No Soffit',
-      steel:'Steel', stud:'Stud Frame',
-      cypress:'Cypress', metalBB:'Metal B&B'
+      woodOH:'Wood Truss w/ 12" Soffit', woodNoOH:'Wood Truss No Soffit',
+      steel:'Steel Truss No Soffit', stud:'Wood Truss w/ 12" Soffit',
+      cypress:'Wood Truss w/ 12" Soffit', metalBB:'Wood Truss w/ 12" Soffit'
     };
 
     function fmtN(n) { return (n && n > 0) ? '$' + Math.round(n).toLocaleString('en-US') : '\u2014'; }
@@ -31496,8 +31459,8 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
           + '<td style="padding:10px 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888;width:160px;"></td>';
     slots.forEach(function(s, i) {
       html += '<td style="padding:12px 14px;text-align:center;background:' + slotBgs[i] + ';border-left:1px solid #ddd;">'
-            + '<div style="font-size:14px;font-weight:800;color:' + slotColors[i] + ';">Option ' + String.fromCharCode(65+i) + '</div>'
-            + '<div style="font-size:12px;color:#555;margin-top:2px;">' + esc(s.label||'') + '</div>'
+            + '<div style="font-size:14px;font-weight:800;color:' + slotColors[i] + ';">' + esc(s.label || ('Option ' + String.fromCharCode(65+i))) + '</div>'
+            + '<div style="font-size:12px;color:#555;margin-top:2px;">' + esc(allTypes.map(function(k){return TYPE_LABELS2[k]||k;}).join(' / ')||'') + '</div>'
             + '<div style="font-size:11px;color:#888;margin-top:2px;">' + esc(s.dims||'') + '</div>'
             + '</td>';
     });
@@ -31694,7 +31657,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         if (slotLinks[i]) {
           _linksHtml += '<div style="margin-bottom:8px;">'
             + '<a href="' + slotLinks[i] + '" style="display:inline-block;padding:7px 14px;background:' + _slotColors2[i] + ';color:#fff;text-decoration:none;border-radius:4px;font-size:12px;font-weight:700;">'
-            + '&#9654; View Option ' + String.fromCharCode(65+i) + ' — ' + esc(s.label||'') + '</a>'
+            + '&#9654; ' + esc(s.label || ('Option ' + String.fromCharCode(65+i))) + '</a>'
             + '</div>';
         }
       });
