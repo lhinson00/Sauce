@@ -2406,11 +2406,11 @@ function updateStripFromLocalCalc() {
     if (window._lastConcreteOpts && window.SauceConcrete) {
       var co = window._lastConcreteOpts;
       var concreteIncluded = false;
-      if (co.main && co.main.included) { concreteAmt += window.SauceConcrete.calculate(county, sqft, co.main).finalCost; concreteIncluded = true; }
+      if (co.main && co.main.included) { concreteAmt += (co.main.type === 'piers') ? (co.main.cost || 0) : window.SauceConcrete.calculate(county, sqft, co.main).finalCost; concreteIncluded = true; }
       if (co.sheds) co.sheds.forEach(function(sOpts, i) {
         if (!sOpts || !sOpts.included) return;
         var sc = shedCfgs[i];
-        if (sc && sc.w && sc.l) { concreteAmt += window.SauceConcrete.calculate(county, shedConcreteSqft(sc, Q), sOpts).finalCost; concreteIncluded = true; }
+        if (sc && sc.w && sc.l) { concreteAmt += shedConcreteLineAmt(county, sc, sOpts, Q); concreteIncluded = true; }
       });
       (co.aprons||[co.apron]).filter(Boolean).forEach(function(a){ if(a&&a.included&&a.sqft){ concreteAmt += window.SauceConcrete.calculate(county, a.sqft, a).finalCost; concreteIncluded = true; } });
       if (concreteIncluded && concreteAmt > 0) concreteAmt = Math.max(concreteAmt, 3500);
@@ -2432,7 +2432,7 @@ function updateStripFromLocalCalc() {
       if (coStud.sheds) coStud.sheds.forEach(function(sOpts, i) {
         if (!sOpts || !sOpts.included) return;
         var sc = shedCfgs[i];
-        if (sc && sc.w && sc.l) { concreteAmtStud += window.SauceConcrete.calculate(county, shedConcreteSqft(sc, Q), sOpts).finalCost; studIncluded = true; }
+        if (sc && sc.w && sc.l) { concreteAmtStud += shedConcreteLineAmt(county, sc, sOpts, Q); studIncluded = true; }
       });
       (coStud.aprons||[coStud.apron]).filter(Boolean).forEach(function(a){ if(a&&a.included&&a.sqft){ concreteAmtStud += window.SauceConcrete.calculate(county, a.sqft, a).finalCost; studIncluded = true; } });
       if (studIncluded && concreteAmtStud > 0) concreteAmtStud = Math.max(concreteAmtStud, 3500);
@@ -28490,6 +28490,15 @@ window.closeConcreteModal = function() {
   if (el) el.remove();
 };
 
+// Shared helper: cost for a shed's concrete opts (handles piers or normal slab)
+function shedConcreteLineAmt(county, sc, sOpts, Q) {
+  if (!sOpts || !sOpts.included) return 0;
+  if (sOpts.type === 'piers') {
+    return (sOpts.postCount || 0) * 500;
+  }
+  return window.SauceConcrete.calculate(county, shedConcreteSqft(sc, Q), sOpts).finalCost;
+}
+
 window.openConcreteModal = function(forcedType) {
   window.closeConcreteModal();
   var SC = window.SauceConcrete;
@@ -28787,12 +28796,249 @@ window.openConcreteModal = function(forcedType) {
     return wrap;
   }
 
-  // Main building section
-  var mainUI = buildOptsUI('Main Building', mainSqft, saved.main, recalc);
+  // Main building section — with optional Pedestal Piers mode
+  function buildMainConcreteUI(savedOpts, onChange) {
+    // Count main building posts from DOM/state
+    var SM2 = window.SauceMaterials;
+    var _mQ = window._Q || {};
+    var _mW = window._WALLS || [];
+    var _mD = window._allDoors || [];
+    var _mainPostCount = 0;
+    if (SM2 && SM2.getPostsForWall) {
+      ['left','right','front','back'].forEach(function(wallId) {
+        var posts = SM2.getPostsForWall(wallId, _mQ, _mW, _mD);
+        if (wallId === 'left' || wallId === 'right') {
+          _mainPostCount += posts.length;
+        } else {
+          // Gable walls: count non-corner posts only
+          _mainPostCount += posts.filter(function(p){ return !p.corner; }).length;
+        }
+      });
+    }
+    var _mainPierCost = _mainPostCount * 500;
+
+    var _mode = (savedOpts && savedOpts.type === 'piers') ? 'piers' : 'slab';
+    var _included = !!(savedOpts && savedOpts.included);
+
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px;transition:border-color .2s;';
+
+    // Header row
+    var secHdr = document.createElement('div');
+    secHdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;';
+    var titleCol = document.createElement('div');
+    var secTitle = document.createElement('div');
+    secTitle.style.cssText = 'font-size:11px;font-weight:800;color:#f0f3f7;letter-spacing:.3px;';
+    secTitle.textContent = 'Main Building';
+    var secSub = document.createElement('div');
+    secSub.style.cssText = 'font-size:9px;color:#666;margin-top:1px;';
+    secSub.textContent = mainSqft + ' sqft  |  ' + _mainPostCount + ' posts';
+    titleCol.appendChild(secTitle); titleCol.appendChild(secSub);
+    secHdr.appendChild(titleCol);
+
+    var inclBtn = document.createElement('button');
+    function styleInclBtn() {
+      inclBtn.style.cssText = 'padding:5px 14px;border-radius:20px;border:1px solid ' + (_included ? '#4ade80' : 'rgba(255,255,255,.15)') + ';background:' + (_included ? 'rgba(74,222,128,.12)' : 'transparent') + ';color:' + (_included ? '#4ade80' : '#666') + ';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;transition:all .15s;';
+      inclBtn.textContent = _included ? '\u2713 Included' : '+ Include';
+      wrap.style.borderColor = _included ? 'rgba(74,222,128,.3)' : 'rgba(255,255,255,.08)';
+    }
+    styleInclBtn();
+    secHdr.appendChild(inclBtn);
+    wrap.appendChild(secHdr);
+
+    var optsWrap = document.createElement('div');
+    optsWrap.style.cssText = 'display:' + (_included ? 'flex' : 'none') + ';flex-direction:column;gap:10px;';
+
+    // Mode chips
+    var modeLbl = document.createElement('div');
+    modeLbl.style.cssText = 'font-size:9px;font-weight:700;color:#666;letter-spacing:.8px;text-transform:uppercase;margin-bottom:2px;';
+    modeLbl.textContent = 'Concrete Type';
+    optsWrap.appendChild(modeLbl);
+
+    var modeRow = document.createElement('div');
+    modeRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    var pierBtn2 = document.createElement('button');
+    var slabBtn2 = document.createElement('button');
+    pierBtn2.type = 'button'; slabBtn2.type = 'button';
+    pierBtn2.textContent = 'Pedestal Piers  $500/post';
+    slabBtn2.textContent = 'Full Slab';
+
+    function styleModeChips2() {
+      var isPiers = (_mode === 'piers');
+      pierBtn2.style.cssText = 'padding:5px 11px;border-radius:8px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;border:1px solid ' + (isPiers ? '#FF8200' : 'rgba(255,255,255,.12)') + ';background:' + (isPiers ? 'rgba(255,130,0,.18)' : 'transparent') + ';color:' + (isPiers ? '#FF8200' : '#888') + ';';
+      slabBtn2.style.cssText = 'padding:5px 11px;border-radius:8px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;border:1px solid ' + (!isPiers ? '#FF8200' : 'rgba(255,255,255,.12)') + ';background:' + (!isPiers ? 'rgba(255,130,0,.18)' : 'transparent') + ';color:' + (!isPiers ? '#FF8200' : '#888') + ';';
+    }
+    styleModeChips2();
+
+    // Pier info row
+    var pierInfoRow2 = document.createElement('div');
+    pierInfoRow2.style.cssText = 'display:' + (_mode==='piers' ? 'flex' : 'none') + ';align-items:center;justify-content:space-between;background:rgba(255,130,0,.08);border:1px solid rgba(255,130,0,.25);border-radius:8px;padding:8px 12px;';
+    var pierDesc2 = document.createElement('div');
+    pierDesc2.style.cssText = 'font-size:11px;color:#f0f3f7;';
+    pierDesc2.innerHTML = _mainPostCount + ' pedestal piers &times; <strong style="color:#FF8200;">$500</strong>';
+    var pierTotal2 = document.createElement('div');
+    pierTotal2.style.cssText = 'font-size:13px;font-weight:900;color:#FF8200;';
+    pierTotal2.textContent = '$' + _mainPierCost.toLocaleString();
+    pierInfoRow2.appendChild(pierDesc2); pierInfoRow2.appendChild(pierTotal2);
+
+    // Full slab opts (reuse buildOptsUI embedded)
+    var _slabSaved2 = (savedOpts && savedOpts.type !== 'piers') ? savedOpts : null;
+    var slabOptsWrap2 = buildOptsUI('', mainSqft, _slabSaved2, onChange);
+    slabOptsWrap2.style.cssText = 'display:' + (_mode==='slab' ? 'flex' : 'none') + ';flex-direction:column;gap:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:10px;margin-top:2px;';
+
+    pierBtn2.onclick = function() { _mode='piers'; styleModeChips2(); slabOptsWrap2.style.display='none'; pierInfoRow2.style.display='flex'; onChange(); };
+    slabBtn2.onclick = function() { _mode='slab'; styleModeChips2(); slabOptsWrap2.style.display='flex'; pierInfoRow2.style.display='none'; onChange(); };
+    modeRow.appendChild(pierBtn2); modeRow.appendChild(slabBtn2);
+    optsWrap.appendChild(modeRow);
+    optsWrap.appendChild(pierInfoRow2);
+    optsWrap.appendChild(slabOptsWrap2);
+    wrap.appendChild(optsWrap);
+
+    inclBtn.onclick = function() {
+      _included = !_included;
+      styleInclBtn();
+      optsWrap.style.display = _included ? 'flex' : 'none';
+      onChange();
+    };
+
+    wrap.getOpts = function() {
+      if (!_included) return null;
+      if (_mode === 'piers') {
+        return { included: true, type: 'piers', postCount: _mainPostCount, cost: _mainPierCost };
+      }
+      var slabOpts = slabOptsWrap2.getOpts ? slabOptsWrap2.getOpts() : null;
+      if (!slabOpts) slabOpts = { included: true, thickness: '4', footers: false, psi: 3500, reinforcement: { wire: false, rebar: false }, metalLedge: false, stamped: false };
+      slabOpts.included = true;
+      slabOpts.type = 'slab';
+      return slabOpts;
+    };
+    return wrap;
+  }
+
+  var mainUI = buildMainConcreteUI(saved.main, recalc);
   panel.appendChild(mainUI);
 
   // Shed sections
   var shedUIs = [];
+
+  // Helper: count shed posts (mirrors calcShedPosts lineCount)
+  function shedPostCountFor(sc) {
+    if (!sc || !sc.w || !sc.l) return 0;
+    var ps = (window._WALLS||[]).find(function(w){return w.id===sc.wall;});
+    var spacing = ps ? (ps.postSpacing || (window._Q||{}).postSpacing || 10) : ((window._Q||{}).postSpacing || 10);
+    return Math.max(1, Math.floor(sc.l / spacing)) + 1;
+  }
+
+  // Builds pier UI (shown when sc.postsOnTop is true)
+  function buildPierUI(label, sc, savedOpts, onChange) {
+    var postCount = shedPostCountFor(sc);
+    var pierCost  = postCount * 500;
+    var _included = !!(savedOpts && savedOpts.included);
+    var _mode     = (savedOpts && savedOpts.type === 'piers') ? 'piers' : 'slab'; // 'slab' = full concrete
+
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px;transition:border-color .2s;';
+
+    // Header row
+    var secHdr = document.createElement('div');
+    secHdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;';
+    var titleCol = document.createElement('div');
+    var secTitle = document.createElement('div');
+    secTitle.style.cssText = 'font-size:11px;font-weight:800;color:#f0f3f7;letter-spacing:.3px;';
+    secTitle.textContent = label;
+    var secSub = document.createElement('div');
+    secSub.style.cssText = 'font-size:9px;color:#666;margin-top:1px;';
+    secSub.textContent = postCount + ' posts';
+    titleCol.appendChild(secTitle); titleCol.appendChild(secSub);
+    secHdr.appendChild(titleCol);
+
+    // Include toggle
+    var inclBtn = document.createElement('button');
+    function styleInclBtn() {
+      inclBtn.style.cssText = 'padding:5px 14px;border-radius:20px;border:1px solid ' + (_included ? '#4ade80' : 'rgba(255,255,255,.15)') + ';background:' + (_included ? 'rgba(74,222,128,.12)' : 'transparent') + ';color:' + (_included ? '#4ade80' : '#666') + ';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;transition:all .15s;';
+      inclBtn.textContent = _included ? '✓ Included' : '+ Include';
+      wrap.style.borderColor = _included ? 'rgba(74,222,128,.3)' : 'rgba(255,255,255,.08)';
+    }
+    styleInclBtn();
+    secHdr.appendChild(inclBtn);
+    wrap.appendChild(secHdr);
+
+    // Mode selector — only visible when included
+    var optsWrap = document.createElement('div');
+    optsWrap.style.cssText = 'display:' + (_included ? 'flex' : 'none') + ';flex-direction:column;gap:10px;';
+
+    // Mode chips: Pedestal Piers | Full Slab
+    var modeLbl = document.createElement('div');
+    modeLbl.style.cssText = 'font-size:9px;font-weight:700;color:#666;letter-spacing:.8px;text-transform:uppercase;margin-bottom:2px;';
+    modeLbl.textContent = 'Concrete Type';
+    optsWrap.appendChild(modeLbl);
+
+    var modeRow = document.createElement('div');
+    modeRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    var pierBtn = document.createElement('button');
+    var slabBtn = document.createElement('button');
+    pierBtn.type = 'button'; slabBtn.type = 'button';
+    pierBtn.textContent = 'Pedestal Piers  $500/post';
+    slabBtn.textContent = 'Full Slab';
+
+    function styleModeChips() {
+      var isPiers = (_mode === 'piers');
+      pierBtn.style.cssText = 'padding:5px 11px;border-radius:8px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;border:1px solid ' + (isPiers ? '#FF8200' : 'rgba(255,255,255,.12)') + ';background:' + (isPiers ? 'rgba(255,130,0,.18)' : 'transparent') + ';color:' + (isPiers ? '#FF8200' : '#888') + ';';
+      slabBtn.style.cssText = 'padding:5px 11px;border-radius:8px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;border:1px solid ' + (!isPiers ? '#FF8200' : 'rgba(255,255,255,.12)') + ';background:' + (!isPiers ? 'rgba(255,130,0,.18)' : 'transparent') + ';color:' + (!isPiers ? '#FF8200' : '#888') + ';';
+    }
+    styleModeChips();
+
+    pierBtn.onclick = function() { _mode = 'piers'; styleModeChips(); slabOptsWrap.style.display='none'; pierInfoRow.style.display='flex'; onChange(); };
+    slabBtn.onclick = function() { _mode = 'slab'; styleModeChips(); slabOptsWrap.style.display='flex'; pierInfoRow.style.display='none'; onChange(); };
+    modeRow.appendChild(pierBtn); modeRow.appendChild(slabBtn);
+    optsWrap.appendChild(modeRow);
+
+    // Pier info row — shown when mode === 'piers'
+    var pierInfoRow = document.createElement('div');
+    pierInfoRow.style.cssText = 'display:' + (_mode==='piers' ? 'flex' : 'none') + ';align-items:center;justify-content:space-between;background:rgba(255,130,0,.08);border:1px solid rgba(255,130,0,.25);border-radius:8px;padding:8px 12px;';
+    var pierDesc = document.createElement('div');
+    pierDesc.style.cssText = 'font-size:11px;color:#f0f3f7;';
+    pierDesc.innerHTML = postCount + ' pedestal piers &times; <strong style="color:#FF8200;">$500</strong>';
+    var pierTotal = document.createElement('div');
+    pierTotal.style.cssText = 'font-size:13px;font-weight:900;color:#FF8200;';
+    pierTotal.textContent = '$' + pierCost.toLocaleString();
+    pierInfoRow.appendChild(pierDesc); pierInfoRow.appendChild(pierTotal);
+    optsWrap.appendChild(pierInfoRow);
+
+    // Full slab opts (reuse buildOptsUI stripped of its header/toggle — embedded)
+    var _slabSavedOpts = (savedOpts && savedOpts.type !== 'piers') ? savedOpts : null;
+    var slabOptsWrap = buildOptsUI('', shedConcreteSqft(sc, Q), _slabSavedOpts, onChange);
+    // Remove the include toggle from the inner slabOptsWrap (first child is secHdr)
+    slabOptsWrap.style.cssText = 'display:' + (_mode==='slab' ? 'flex' : 'none') + ';flex-direction:column;gap:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:10px;margin-top:2px;';
+    // Force inner slab included when shown (it's always "included" if we're in slab mode)
+    var _slabInclBtn = slabOptsWrap.querySelector && slabOptsWrap.querySelector('button');
+    optsWrap.appendChild(slabOptsWrap);
+
+    wrap.appendChild(optsWrap);
+
+    inclBtn.onclick = function() {
+      _included = !_included;
+      styleInclBtn();
+      optsWrap.style.display = _included ? 'flex' : 'none';
+      onChange();
+    };
+
+    wrap.getOpts = function() {
+      if (!_included) return null;
+      if (_mode === 'piers') {
+        return { included: true, type: 'piers', postCount: postCount, cost: pierCost };
+      }
+      // Full slab — use slabOptsWrap.getOpts, ensure included
+      var slabOpts = slabOptsWrap.getOpts ? slabOptsWrap.getOpts() : null;
+      if (!slabOpts) slabOpts = { included: true, thickness: '4', footers: false, psi: 3500, reinforcement: { wire: false, rebar: false }, metalLedge: false, stamped: false };
+      slabOpts.included = true;
+      slabOpts.type = 'slab';
+      return slabOpts;
+    };
+    wrap._idx = undefined; // set by caller
+    return wrap;
+  }
+
   shedCfgs.forEach(function(sc, idx) {
     if (!sc.w || !sc.l) return;
     var shedSqft = shedConcreteSqft(sc, Q);
@@ -28809,9 +29055,15 @@ window.openConcreteModal = function(forcedType) {
     } else {
       _shedDimsLabel = sc.w+"'×"+sc.l+"'";
     }
-    var label = 'Side Shed ' + (idx+1) + ' (' + _shedDimsLabel + ' = ' + Math.round(shedSqft) + ' sqft)';
+    var label = 'Side Shed ' + (idx+1) + ' (' + _shedDimsLabel + (sc.postsOnTop ? ', posts on top' : '') + ')';
     var shedSaved = saved.sheds && saved.sheds[idx] ? saved.sheds[idx] : null;
-    var shedUI = buildOptsUI(label, shedSqft, shedSaved, recalc);
+    var shedUI;
+    if (sc.postsOnTop) {
+      // Posts-on-top shed: show pier vs full slab choice
+      shedUI = buildPierUI(label, sc, shedSaved, recalc);
+    } else {
+      shedUI = buildOptsUI(label, shedSqft, shedSaved, recalc);
+    }
     shedUI._idx = idx;
     panel.appendChild(shedUI);
     shedUIs.push(shedUI);
@@ -28923,9 +29175,9 @@ window.openConcreteModal = function(forcedType) {
     var apronsArr = apronUIs.map(function(ui){ return ui.getOpts(); }).filter(Boolean);
 
     window._lastConcreteOpts = { main: mainOpts, sheds: shedOptsArr, aprons: apronsArr, apron: apronsArr[0]||null, zip: county || _cachedZip || '', county: county || '' };
-    // Sync to st_mainConcrete so 3D slab renders
+    // Sync to st_mainConcrete so 3D slab renders (no slab renders for piers)
     var _mcEl = document.getElementById('st_mainConcrete');
-    if (_mcEl) _mcEl.value = (mainOpts && mainOpts.included) ? (mainOpts.thickness || '4') : 'None';
+    if (_mcEl) _mcEl.value = (mainOpts && mainOpts.included && mainOpts.type !== 'piers') ? (mainOpts.thickness || '4') : 'None';
     // Also sync shed concrete selectors
     var _ssConcIds = ['st_ssConcrete','st_ss2Concrete','st_ss3Concrete','st_ss4Concrete'];
     shedOptsArr.forEach(function(sOpts, i) {
@@ -28933,19 +29185,12 @@ window.openConcreteModal = function(forcedType) {
       var el = document.getElementById(selId);
       if (el) el.value = (sOpts && sOpts.included) ? 'Yes' : 'None';
     });
-    // Sync postsOnTop from footers flag (mono pour = posts on top)
+    // Sync postsOnTop from footers flag (mono pour = posts on top) OR pedestal piers
     var _ptEl = document.getElementById('st_postsOnTop');
-    if (_ptEl) _ptEl.value = (mainOpts && mainOpts.included && mainOpts.footers) ? 'Yes' : 'No';
+    var _mainIsPiersOrMono = mainOpts && mainOpts.included && (mainOpts.type === 'piers' || mainOpts.footers);
+    if (_ptEl) _ptEl.value = _mainIsPiersOrMono ? 'Yes' : 'No';
     // Trigger 3D re-render to show/hide slab
     scheduleBuild();
-
-    // Auto-set posts on top when main building concrete with footers is selected
-    if (mainOpts && mainOpts.included && mainOpts.footers === true) {
-      var ptEl = document.getElementById('st_postsOnTop');
-      if (ptEl && ptEl.value !== 'Yes') {
-        ptEl.value = 'Yes';
-      }
-    }
 
     try { updateStripFromLocalCalc(); } catch(e) {}
 
@@ -28981,7 +29226,23 @@ window.openConcreteModal = function(forcedType) {
       grandTotal += result.finalCost;
     }
 
-    addSection('Main Building', mainSqft, mainOpts);
+    if (mainOpts && mainOpts.type === 'piers') {
+      var mbPierHdr = document.createElement('div');
+      mbPierHdr.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:rgba(255,130,0,.7);margin:6px 0 3px;';
+      mbPierHdr.textContent = 'Main Building';
+      resultsDiv.appendChild(mbPierHdr);
+      var mbPierRow = document.createElement('div');
+      mbPierRow.style.cssText = 'display:flex;justify-content:space-between;font-size:11px;padding:2px 0;';
+      mbPierRow.innerHTML = '<span style="color:#aaa;flex:1;padding-right:8px;">Pedestal Piers (' + mainOpts.postCount + ' × $500)</span><span style="color:#f0f3f7;font-weight:700;">$' + mainOpts.cost.toFixed(2) + '</span>';
+      resultsDiv.appendChild(mbPierRow);
+      var mbPierSub = document.createElement('div');
+      mbPierSub.style.cssText = 'display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:#FF8200;border-top:1px solid rgba(255,130,0,.2);padding-top:4px;margin-top:2px;';
+      mbPierSub.innerHTML = '<span>Main Building Subtotal</span><span>$' + mainOpts.cost.toFixed(2) + '</span>';
+      resultsDiv.appendChild(mbPierSub);
+      grandTotal += mainOpts.cost;
+    } else {
+      addSection('Main Building', mainSqft, mainOpts);
+    }
     // For stud frame: show the actual priced opts (4" mono + metal ledge) as a note
     if (forcedType === 'stud' && mainOpts && mainOpts.included) {
       var studForcedOpts = Object.assign({}, mainOpts, { thickness: '4', footers: true, metalLedge: true });
@@ -28993,7 +29254,28 @@ window.openConcreteModal = function(forcedType) {
     }
     shedUIs.forEach(function(ui, i) {
       var sc = shedCfgs[ui._idx];
-      if (sc) addSection('Side Shed ' + (ui._idx+1), shedConcreteSqft(sc, Q), ui.getOpts());
+      if (!sc) return;
+      var sOpts = ui.getOpts();
+      if (!sOpts) return;
+      if (sOpts.type === 'piers') {
+        // Flat pier cost — show as a custom cost line
+        var pierLabel = 'Side Shed ' + (ui._idx+1);
+        var secHdrP = document.createElement('div');
+        secHdrP.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:rgba(255,130,0,.7);margin:6px 0 3px;';
+        secHdrP.textContent = pierLabel;
+        resultsDiv.appendChild(secHdrP);
+        var pierRow = document.createElement('div');
+        pierRow.style.cssText = 'display:flex;justify-content:space-between;font-size:11px;padding:2px 0;';
+        pierRow.innerHTML = '<span style="color:#aaa;flex:1;padding-right:8px;">Pedestal Piers (' + sOpts.postCount + ' × $500)</span><span style="color:#f0f3f7;font-weight:700;">$' + sOpts.cost.toFixed(2) + '</span>';
+        resultsDiv.appendChild(pierRow);
+        var pierSubtotal = document.createElement('div');
+        pierSubtotal.style.cssText = 'display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:#FF8200;border-top:1px solid rgba(255,130,0,.2);padding-top:4px;margin-top:2px;';
+        pierSubtotal.innerHTML = '<span>' + pierLabel + ' Subtotal</span><span>$' + sOpts.cost.toFixed(2) + '</span>';
+        resultsDiv.appendChild(pierSubtotal);
+        grandTotal += sOpts.cost;
+      } else {
+        addSection('Side Shed ' + (ui._idx+1), shedConcreteSqft(sc, Q), sOpts);
+      }
     });
     apronsArr.forEach(function(a, i) { if (a && a.sqft > 0) addSection('Apron ' + (apronsArr.length > 1 ? (i+1) : ''), a.sqft, a); });
 
@@ -30834,12 +31116,12 @@ window.exportMaterialCSV = function(buildType, labelStr) {
       if (SC && co) {
         var concTotal = 0;
         if (co.main && co.main.included) {
-          concTotal += SC.calculate(county, Q.w * Q.l, co.main).finalCost;
+          concTotal += (co.main.type === 'piers') ? (co.main.cost || 0) : SC.calculate(county, Q.w * Q.l, co.main).finalCost;
         }
         (shedCfgs || []).forEach(function(sc, i) {
           var sOpts = co.sheds && co.sheds[i];
           if (sOpts && sOpts.included && sc.w && sc.l) {
-            concTotal += SC.calculate(county, shedConcreteSqft(sc, window._Q||{}), sOpts).finalCost;
+            concTotal += shedConcreteLineAmt(county, sc, sOpts, window._Q||{});
           }
         });
         (co.aprons||[co.apron]).filter(Boolean).forEach(function(a){ if(a&&a.included&&a.sqft){ concTotal += SC.calculate(county, a.sqft, a).finalCost; } });
