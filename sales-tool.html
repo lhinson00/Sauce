@@ -18939,7 +18939,7 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
 
   var SM = window.SauceMaterials;
   var STANDARD_LENGTHS = [20, 16, 12, 10, 8]; // for shed fill
-  var HEADER_LENGTHS = [20, 12, 10]; // for main building eave headers
+  var HEADER_LENGTHS = [20, 16, 12, 10]; // for main building eave headers (no 8' stock)
 
   // Main building headers: LVL is auto-applied when width > 40' (required),
   // OR when the user manually checks the LVL toggle (user override).
@@ -18965,6 +18965,40 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
     return pieces;
   }
 
+  // Fill eave wall with SYP212 lengths (no 8' stock).
+  // Special case: 8' post spacing uses bay-by-bay logic:
+  //   pairs of bays get one 16' board; final single bay gets one 10' board (2' waste OK).
+  // All other spacings: greedy longest-first fill.
+  var EAVE_HEADER_LENGTHS = [20, 16, 12, 10];
+  function fillEaveWall(wallLen, postSpacing) {
+    var pieces = {};
+    if (postSpacing === 8) {
+      // Bay-by-bay: count bays, pair them up with 16', remainder bay uses 10'
+      var numBays = Math.round(wallLen / 8);
+      var pairsOf2 = Math.floor(numBays / 2);
+      var leftover = numBays % 2; // 0 or 1 remaining bay
+      if (pairsOf2 > 0) pieces[16] = pairsOf2;
+      if (leftover > 0) pieces[10] = (pieces[10] || 0) + 1; // 10' covers 8' bay with 2' waste
+      return pieces;
+    }
+    // All other spacings: greedy longest-first
+    var remaining = wallLen;
+    while (remaining > 0) {
+      var longest = null;
+      for (var i = 0; i < EAVE_HEADER_LENGTHS.length; i++) {
+        if (EAVE_HEADER_LENGTHS[i] <= remaining) { longest = EAVE_HEADER_LENGTHS[i]; break; }
+      }
+      if (!longest) {
+        // Remainder smaller than shortest board - add one 10' to cover with waste
+        pieces[10] = (pieces[10] || 0) + 1;
+        break;
+      }
+      pieces[longest] = (pieces[longest] || 0) + 1;
+      remaining -= longest;
+    }
+    return pieces;
+  }
+
   // Build a result item — LVL uses boardLen for per-ft pricing, SYP uses unit pricing
   function makeItem(desc, sku, qty, boardLength, isLVL) {
     var item = { category:'Yard', description:desc, sku:isLVL ? 'CLVL1178' : sku, quantity:qty };
@@ -18981,27 +19015,18 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
   var shedGroups = {};
 
   // Main building — both eave walls, inside + outside (×2)
-  // Use longest standard board that spans an even number of bays and lands on posts.
-  // e.g. 10' spacing → 20' board covers 2 bays; 12' spacing → 12' board covers 1 bay.
+  // Greedy fill of wall length using EAVE_HEADER_LENGTHS [20,16,12,10] (no 8' stock).
+  // e.g. 40' eave → 16+16+10=42 covers 40' with 2' waste.
   ['left', 'right'].forEach(function(wallId) {
     var wLen = Q.l;
-    var wCfg = (WALLS||[]).find(function(w){ return w.id === wallId; });
-    var ps = (wCfg && wCfg.postSpacing) || Q.postSpacing || 10;
-    var numBays = Math.round(wLen / ps);
-
-    // Find longest standard board that is an exact multiple of post spacing
-    var bestBoard = ps; // default: one bay
-    HEADER_LENGTHS.forEach(function(l) {
-      if (Math.round(l % ps * 100) / 100 < 0.01 && l <= wLen) {
-        if (l > bestBoard) bestBoard = l;
-      }
+    var ePS = Q.eavePS || Q.postSpacing || 10;
+    var pieces = fillEaveWall(wLen, ePS);
+    Object.keys(pieces).forEach(function(boardLen) {
+      var qty = pieces[boardLen];
+      var key = (useLVL ? 'LVL' : 'SYP212') + boardLen;
+      mbGroups[key] = mbGroups[key] || { len: parseInt(boardLen), qty: 0, isLVL: useLVL };
+      mbGroups[key].qty += qty * 2; // ×2 inside+outside
     });
-    // How many boards cover the wall
-    var boardsPerWall = Math.ceil(wLen / bestBoard);
-
-    var key = (useLVL ? 'LVL' : 'SYP212') + bestBoard;
-    mbGroups[key] = mbGroups[key] || { len: bestBoard, qty: 0, isLVL: useLVL };
-    mbGroups[key].qty += boardsPerWall * 2; // ×2 inside+outside
   });
 
   // Side sheds — always 2x12 regardless of LVL toggle
