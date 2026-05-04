@@ -19620,6 +19620,184 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
   return results;
 };
 
+// ── CYPRESS TIMBER FRAMED GABLE EXTENSION ─────────────────────────────
+// Fires when sc.type === 'gable' && sc.cypressRafters is true.
+// Produces all timber framing + trim + hardware for a cypress timber frame gable extension.
+window.SauceMaterials.calcCypressGableExtension = function(Q, WALLS, shedCfgs) {
+  var results = [];
+  var SM = window.SauceMaterials;
+
+  // Metal length chart: width → [noOH_412, noOH_612, OH12_412, OH12_612, OH18_412, OH18_612]
+  var metalChart = {
+    10:[5.583,5.917,6.583,7.000,7.167,7.583], 12:[6.583,7.000,7.667,8.083,8.167,8.667],
+    14:[7.667,8.083,8.750,9.250,9.250,9.833], 16:[8.750,9.250,9.750,10.333,10.333,10.917],
+    18:[9.750,10.333,10.833,11.500,11.333,12.000], 20:[10.833,11.500,11.917,12.583,12.417,13.167],
+    22:[11.917,12.583,12.917,13.667,13.500,14.250], 24:[12.917,13.667,14.000,14.833,14.500,15.417],
+    26:[14.000,14.833,15.083,15.917,15.583,16.500], 28:[15.083,15.917,16.083,17.083,16.667,17.583],
+    30:[16.083,17.083,17.167,18.167,17.667,18.750], 32:[17.167,18.167,18.250,19.333,18.750,19.833],
+    36:[19.250,20.417,20.333,21.500,20.833,22.083], 40:[21.333,22.667,22.417,23.750,22.917,24.333]
+  };
+
+  function getColIdx(oh, pitch) {
+    var ohIdx  = oh === 0 ? 0 : (oh <= 12 ? 2 : 4);
+    var pOff   = pitch <= 4 ? 0 : 1;
+    return ohIdx + pOff;
+  }
+
+  function nextEven(n) { var c = Math.ceil(n); return c % 2 === 0 ? c : c + 1; }
+
+  // coverLength for fly rafters/fascia: same as calcFlyRafters
+  function coverLength(len) {
+    var boards = {};
+    if (len <= 20) { boards[20] = 1; }
+    else if (len <= 24) { boards[12] = 2; }
+    else {
+      var rem = len;
+      if (rem >= 20) { boards[20] = Math.floor(rem / 20); rem = rem % 20; }
+      if (rem > 0) boards[12] = (boards[12] || 0) + 1;
+    }
+    var longest = Object.keys(boards).map(Number).sort(function(a,b){return b-a;})[0];
+    boards[longest]++;
+    return boards;
+  }
+
+  var trimColor = getSkuColorCode('trim');
+  var metalType = normalizeMetalType((document.getElementById('st_roofMetal')||{}).value||'Tuff-Rib 29ga');
+  var rcBoardLen = (Q.postSpacing === 12 || Q.postSpacing === 24) ? 12 : 10;
+
+  (shedCfgs || []).forEach(function(sc, idx) {
+    if (sc.type !== 'gable') return;
+    if (!sc.cypressRafters) return;
+    if (!sc.w || !sc.l) return;
+
+    var label = 'Gable Ext ' + (idx + 1);
+    var w = sc.w;   // extension depth (from building)
+    var l = sc.l;   // extension length (along building face)
+    var oh = Q.oh || 0;
+    var pitch = sc.gablePitch || Q.pitch || 4;
+
+    // Top chord / metal length
+    var colIdx = getColIdx(oh, pitch);
+    var metalLen = (metalChart[w] || metalChart[10])[colIdx] || w;
+    var rafterLen = nextEven(Math.ceil(metalLen));
+
+    // Rafter count: 4' OC
+    var rafterCount = Math.floor(l / 4) + 2;
+
+    // Ridge board length
+    var ridgeLen = nextEven(l);
+
+    // Post length - use same logic as main cypress posts
+    var postLen = Q.h + 2; // approximate; same nextEven
+    var postLenEven = nextEven(postLen);
+
+    // --- TIMBER FRAMING ---
+
+    // Posts (2 outer corner posts)
+    results.push({ category:'Cypress Gable Extension', description:label+' Cypress Corner Posts', sku:'RCC88'+postLenEven, quantity:2,
+      detail:'RCC88'+postLenEven+' ×2 corner posts' });
+
+    // Bottom chord beam (full extension length)
+    var beamLen = nextEven(l);
+    results.push({ category:'Cypress Gable Extension', description:label+' Cypress Bottom Chord Beam', sku:'RCC88'+beamLen, quantity:1,
+      detail:'RCC88'+beamLen+' × extension width '+l+"'" });
+
+    // Rafters
+    results.push({ category:'Cypress Gable Extension', description:label+' Cypress Rafters', sku:'RCC48'+rafterLen, quantity:rafterCount,
+      detail:'RCC48'+rafterLen+"  |  4' OC  |  "+rafterCount+' rafters  |  '+metalLen.toFixed(2)+"' top chord" });
+
+    // Ridge beam
+    results.push({ category:'Cypress Gable Extension', description:label+' Cypress Ridge Beam', sku:'RCC48'+ridgeLen, quantity:1,
+      detail:'RCC48'+ridgeLen+'  |  '+l+"' extension length" });
+
+    // Webbing (king jack / angled supports)
+    results.push({ category:'Cypress Gable Extension', description:label+' Cypress Webbing', sku:'RCC6610', quantity:2,
+      detail:'RCC6610 × 2 (king post + angled supports)' });
+
+    // Fly rafters & fascia
+    var flyBoards = coverLength(metalLen);
+    Object.keys(flyBoards).forEach(function(len) {
+      var qty = flyBoards[len] * 4; // ×4 (2 sides × 2 ends)
+      results.push({ category:'Cypress Gable Extension', description:label+' Cypress Fly Rafters & Fascia', sku:'RCC28'+len, quantity:qty,
+        detail:'RCC28'+len+'  |  ×4 (2 slopes × 2 ends)  |  metal len '+metalLen.toFixed(2)+"'" });
+    });
+
+    // T&G Ceiling
+    var rows        = Math.ceil((metalLen * 12) / 5.5);
+    var boardsPerRow = Math.ceil(l / 12);
+    var tgTotal     = Math.ceil(rows * boardsPerRow * 1.10);
+    results.push({ category:'Cypress Gable Extension', description:label+' T&G Ceiling', sku:'SYP2612TG', quantity:tgTotal,
+      detail:metalLen.toFixed(2)+"' chord ×12/5.5 = "+rows+' rows  |  ceil('+l+"/12) = "+boardsPerRow+" boards/row  |  ×1.10 waste = "+tgTotal });
+
+    // --- TRIM (color-dependent) ---
+
+    // Drip edge (2 eaves, each = extension depth sc.w, use 12' boards)
+    var deLen = nextEven(Math.ceil(w / 12) * 12);
+    deLen = Math.max(12, deLen);
+    var deSku = 'DE9' + trimColor + deLen;
+    results.push({ category:'Cypress Gable Extension', description:label+' Drip Edge', sku:deSku, quantity:2,
+      detail:'2 eaves  |  '+w+"' depth  |  DE9"+trimColor+deLen });
+
+    // J-Channel (always 6)
+    results.push({ category:'Cypress Gable Extension', description:label+' J-Channel', sku:'JC9BK10', quantity:6,
+      detail:'6 hardcoded per cypress gable extension' });
+
+    // Side wall flashing (2 pieces, top chord length)
+    var swfLen = nextEven(Math.ceil(metalLen));
+    var swfResolved = resolveTrimSku('sidewallFlash', swfLen, metalType);
+    var swfSku = swfResolved || ('SWF9' + trimColor + swfLen);
+    results.push({ category:'Cypress Gable Extension', description:label+' Side Wall Flashing', sku:swfSku, quantity:2,
+      detail:'SWF9'+trimColor+swfLen+'  |  ×2  |  top chord '+metalLen.toFixed(2)+"'" });
+
+    // Gable rake trim - same logic as normal gable end (2 pieces per rake, 2 rakes)
+    var grLen = nextEven(Math.ceil(metalLen));
+    var grResolved = resolveTrimSku('outsideCorner', grLen, metalType);
+    var grSku = grResolved || ('OC9' + trimColor + grLen);
+    results.push({ category:'Cypress Gable Extension', description:label+' Gable Rake Trim', sku:grSku, quantity:4,
+      detail:'OC9'+trimColor+grLen+'  |  ×4 (2 per rake × 2 rakes)  |  top chord '+metalLen.toFixed(2)+"'" });
+
+    // Ridge cap - same board len / qty as main building ridge cap
+    var rcResolved = resolveRidgeCapSku(rcBoardLen, metalType);
+    var rcSku = rcResolved || ('RC6' + trimColor + rcBoardLen);
+    var rcQty = Math.ceil(l / rcBoardLen) + 1;
+    results.push({ category:'Cypress Gable Extension', description:label+' Ridge Cap', sku:rcSku, quantity:rcQty,
+      detail:rcBoardLen+"' sticks  |  "+l+"' ridge  +1 = "+rcQty });
+
+    // Outside solid closures - same qty as ridge cap
+    results.push({ category:'Cypress Gable Extension', description:label+' Outside Solid Closures', sku:'CLOOSC', quantity:rcQty,
+      detail:'1 per roof panel  |  same qty as ridge cap = '+rcQty });
+
+    // --- HARDWARE ---
+
+    // Rafter hangers
+    results.push({ category:'Cypress Gable Extension', description:label+' Rafter Hangers', sku:'JHRH46R', quantity:rafterCount,
+      detail:'JHRH46R × '+rafterCount+' (1 per rafter)' });
+
+    // Decorative post brackets (1 per post = 2)
+    results.push({ category:'Cypress Gable Extension', description:label+' Decorative Post Brackets', sku:'DPBAPB88R', quantity:2,
+      detail:'DPBAPB88R × 2 corner posts' });
+
+    // L-brackets (2 per corner post = 4 fixed)
+    results.push({ category:'Cypress Gable Extension', description:label+' L-Brackets (Beam to Post)', sku:'DPBAPL6', quantity:4,
+      detail:'DPBAPL6 × 4 (2 corner posts × 2)' });
+
+    // Gable plate (1 fixed)
+    results.push({ category:'Cypress Gable Extension', description:label+' Gable Plate', sku:'DPBAPGP1212', quantity:1,
+      detail:'DPBAPGP1212 × 1 per extension' });
+
+    // Timber lock screws - beam to post (HL10): 2 connections × 6 = 12
+    results.push({ category:'Cypress Gable Extension', description:label+' Timber Lock Screws (Beam→Post)', sku:'HL10', quantity:12,
+      detail:'HL10  |  2 beam-to-post connections × 6 screws = 12' });
+
+    // Timber lock screws - rafter (HL8): rafterCount × 12 (6 at ridge + 6 at beam)
+    var hl8Qty = rafterCount * 12;
+    results.push({ category:'Cypress Gable Extension', description:label+' Timber Lock Screws (Rafter)', sku:'HL8', quantity:hl8Qty,
+      detail:'HL8  |  '+rafterCount+' rafters × 12 (6 at ridge + 6 at beam) = '+hl8Qty });
+  });
+
+  return results;
+};
+
 // ── CYPRESS SHED UPGRADE: cypress headers + T&G ceiling ───────────────
 // Fires per side shed when sc.cypressRafters or sc.tongueAndGroove is set.
 // Cypress rafter frame: headers -> RCC88xx, rafters already handled in calcShedFraming.
@@ -27589,6 +27767,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     if (typeof SM.calcCypressShedUpgrade === 'function') {
       SM.calcCypressShedUpgrade(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
     }
+    if (typeof SM.calcCypressGableExtension === 'function') SM.calcCypressGableExtension(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedLedgers(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableExtRoofFraming(Q, shedCfgs).forEach(function(item) { items.push(item); });
     // Steel shed trusses + purlins
@@ -27671,6 +27850,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     if (typeof SM.calcCypressShedUpgrade === 'function') {
       SM.calcCypressShedUpgrade(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
     }
+    if (typeof SM.calcCypressGableExtension === 'function') SM.calcCypressGableExtension(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedLedgers(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableExtRoofFraming(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedPosts(sfQ, WALLS, sfShedCfgs, sfSf).forEach(function(item) { items.push(item); });
@@ -27800,6 +27980,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     if (typeof SM.calcCypressShedUpgrade === 'function') {
       SM.calcCypressShedUpgrade(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
     }
+    if (typeof SM.calcCypressGableExtension === 'function') SM.calcCypressGableExtension(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedLedgers(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableExtRoofFraming(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedPosts(bbQ, WALLS, bbShedCfgs, bbSf).forEach(function(item) { items.push(item); });
@@ -27944,6 +28125,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     if (typeof SM.calcCypressShedUpgrade === 'function') {
       SM.calcCypressShedUpgrade(cyQ, WALLS, cyShedCfgs).forEach(function(item) { items.push(item); });
     }
+    if (typeof SM.calcCypressGableExtension === 'function') SM.calcCypressGableExtension(cyQ, WALLS, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedLedgers(cyQ, WALLS, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableExtRoofFraming(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
 
@@ -28062,6 +28244,7 @@ window.SauceMaterials.calculate = function(forcedType) {
   if (typeof SM.calcCypressShedUpgrade === 'function') {
     SM.calcCypressShedUpgrade(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   }
+  if (typeof SM.calcCypressGableExtension === 'function') SM.calcCypressGableExtension(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   // Purlins — main building then side shed
   pushBuffered(SM.calcSteelPurlins(Q));
   pushBuffered(SM.calcWoodPurlins(Q));
@@ -29746,6 +29929,7 @@ window.openMaterialsModal = function(initialTab) {
   panel.appendChild(body);
 
   var CATEGORY_ORDER = [
+    'Cypress Gable Extension',
     'Yard',
     'Roof Metal','Side Shed Roof Metal',
     'Sidewall Metal','Gable Metal','Side Shed Gable Metal',
@@ -31349,7 +31533,8 @@ var CSV_SECTION_MAP = {
   'Windows':               'WINDOWS',
   'Hardware':              'HARDWARE',
   'Labor':                 'HARDWARE',
-  'Concrete':              'HARDWARE'
+  'Concrete':              'HARDWARE',
+  'Cypress Gable Extension': 'CYPRESS GABLE'
 };
 
 // Panel categories whose SKU is a base prefix (length comes from metalLength)
@@ -31387,6 +31572,7 @@ function getInventoryDesc(sku) {
 
 function buildCSV(items) {
   var CATEGORY_ORDER = [
+    'Cypress Gable Extension',
     'Yard',
     'Roof Metal','Side Shed Roof Metal',
     'Sidewall Metal','Gable Metal','Side Shed Gable Metal',
