@@ -9055,8 +9055,9 @@ function applyVoiceQuote(parsed, overlay) {
                     posts.push({ ft: wallLen, jamb: false, corner: true });
                 wallDoors.forEach(d => {
                     [d.offset||0,(d.offset||0)+d.w].forEach(e => {
-                        if (!posts.some(p => Math.abs(p.ft-e)<0.01))
-                            posts.push({ ft:e, jamb:true, corner:false });
+                        const existing = posts.find(p => Math.abs(p.ft-e)<0.01);
+                        if (existing) { existing.jamb = true; }
+                        else { posts.push({ ft:e, jamb:true, corner:false }); }
                     });
                 });
                 posts.sort((a,b) => a.ft-b.ft);
@@ -18219,8 +18220,14 @@ window.SauceMaterials.getPostsForWall = function(wallId, Q, WALLS, allDoors) {
     posts.push({ ft: wLen, jamb: false, corner: true });
   wd.forEach(function(d) {
     [d.offset||0, (d.offset||0)+d.w].forEach(function(e) {
-      if (!posts.some(function(p) { return Math.abs(p.ft - e) < 0.01; }))
-        posts.push({ ft: e, jamb: true, corner: false });
+      var existing = posts.find(function(p) { return Math.abs(p.ft - e) < 0.01; });
+      if (existing) {
+        // Upgrade existing post to jamb so it gets single-sided brackets
+        existing.jamb = true;
+        if (d.type === 'garage') existing.doorType = 'garage';
+      } else {
+        posts.push({ ft: e, jamb: true, corner: false, doorType: d.type || 'walk' });
+      }
     });
   });
   posts.sort(function(a, b) { return a.ft - b.ft; });
@@ -18842,29 +18849,33 @@ window.SauceMaterials.calcPostBrackets = function(Q, WALLS, allDoors, shedCfgs, 
   function add(sku, count) { if (count > 0) groups[sku] = (groups[sku] || 0) + count; }
 
   // ── Main building — only when postsOnTop and NOT stud frame ──
+  // Rules:
+  //   4 building corners (shared between eave+gable) -> singleSku x2 each, counted once
+  //   garage door jamb post (any wall)               -> singleSku x4 per door (2 posts x2)
+  //   walk door jamb post (any wall)                 -> singleSku x2
+  //   all other posts                                -> regularSku x1
   if (onTop && !sf.isStudFrame) {
-    ['left', 'right'].forEach(function(wallId) {
-      var wallSize = SM.wallPostSizeFor(wallId, sf);
-      var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
-      posts.forEach(function(p) {
-        if (p.corner) {
-          add(singleSku(wallSize), 2);
-        } else if (p.jamb) {
-          add(singleSku(wallSize), 2);
-        } else {
-          add(regularSku(wallSize), 1);
-        }
-      });
-    });
+    // Fixed: 4 building corners always get 2 single-sided each = 8 total
+    var cornerSize = SM.wallPostSizeFor('left', sf);
+    add(singleSku(cornerSize), 8); // 4 corners x2
 
-    ['front', 'back'].forEach(function(wallId) {
-      var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
+    // All walls: interior posts regular, garage jambs single x4, walk jambs single x2
+    // Skip corner posts (already counted above)
+    ['left', 'right', 'front', 'back'].forEach(function(wallId) {
+      var wCfg = (WALLS||[]).find(function(w){ return w.id === wallId; });
       if (wCfg && wCfg.encl === 'open') return;
       var wallSize = SM.wallPostSizeFor(wallId, sf);
       var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
       posts.forEach(function(p) {
-        if (p.corner) return;
-        add(regularSku(wallSize), 1);
+        if (p.corner) {
+          return; // corners already counted
+        } else if (p.jamb && p.doorType === 'garage') {
+          add(singleSku(wallSize), 4); // 2 jamb posts x2 single-sided per door
+        } else if (p.jamb) {
+          add(singleSku(wallSize), 2); // walk door jamb
+        } else {
+          add(regularSku(wallSize), 1);
+        }
       });
     });
   }
