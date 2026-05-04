@@ -4500,6 +4500,18 @@ function setShedProp(id,prop,val){
   if(prop==='encl' && val==='enclosed'){ sc.enclWalls=['outer','gable1','gable2']; sc.enclFt=sc.l; sc.enclFrom='start'; }
   renderSheds(); scheduleBuild();
 }
+// Cypress foundation warning
+function checkCypressFoundation(shedId) {
+  var idx = (window._shedConfigs || []).findIndex(function(s){ return s.id === shedId; });
+  if (idx < 0) return;
+  var co = window._lastConcreteOpts || {};
+  var shedCo = (co.sheds || [])[idx];
+  var hasFooters = shedCo && shedCo.included && (shedCo.footers === true || shedCo.type === 'piers');
+  if (!hasFooters) {
+    showToast('Cypress posts must be mounted on top — footer or pier selection recommended for this shed.', 'warn');
+  }
+}
+
 function toggleShedOpen(id){
   var sc=window._shedConfigs.find(function(s){return s.id===id;}); if(!sc) return;
   sc._open=!sc._open;
@@ -4640,6 +4652,89 @@ function shedConcreteSqft(sc, Q) {
   }
   // leanto — simple rectangle
   return w * l;
+}
+
+// Build cypress upgrade toggle HTML for a given shed config
+function buildCypressToggles(sc) {
+  var id       = sc.id;
+  var isSteel  = isSteelRoofSystem();
+  var hasCyPost = !!sc.cypressPosts;
+  var hasCyRaft = !!sc.cypressRafters;
+  var hasTG     = !!sc.tongueAndGroove;
+  var subShow   = hasCyPost ? '' : 'display:none;';
+
+  // Cypress Posts toggle
+  var html = '<div class="toggle-row" style="margin-bottom:6px;padding:6px 0;border-top:1px solid rgba(255,130,0,.22);">'
+    + '<div class="toggle-info">'
+    + '<div class="toggle-lbl" style="color:#c87a00;">&#x1F333; Cypress Posts</div>'
+    + '<div class="toggle-sub">RCC88xx posts — footer/pier recommended</div>'
+    + '</div>'
+    + '<label class="tog"><input type="checkbox" id="shedCyPost_' + id + '" '
+    + (hasCyPost ? 'checked' : '')
+    + ' onchange="toggleCypressPosts(' + id + ', this.checked)">'
+    + '<span class="tog-track"></span></label>'
+    + '</div>';
+
+  if (!isSteel) {
+    // Cypress Rafter Frame sub-toggle
+    html += '<div id="cyRaftRow_' + id + '" style="' + subShow + 'margin-left:16px;margin-bottom:4px;">'
+      + '<div class="toggle-row" style="padding:4px 0;">'
+      + '<div class="toggle-info">'
+      + '<div class="toggle-lbl" style="color:#c87a00;">Cypress Rafter Frame</div>'
+      + '<div class="toggle-sub">RCC48xx at 4\' OC — swaps headers, removes skirting, includes T&amp;G</div>'
+      + '</div>'
+      + '<label class="tog"><input type="checkbox" id="shedCyRaft_' + id + '" '
+      + (hasCyRaft ? 'checked' : '')
+      + ' onchange="toggleCypressRafters(' + id + ', this.checked)">'
+      + '<span class="tog-track"></span></label>'
+      + '</div>'
+      + '</div>';
+
+    // T&G Ceiling sub-toggle
+    html += '<div id="cyTGRow_' + id + '" style="' + subShow + 'margin-left:16px;margin-bottom:4px;">'
+      + '<div class="toggle-row" style="padding:4px 0;">'
+      + '<div class="toggle-info">'
+      + '<div class="toggle-lbl" style="color:#c87a00;">T&amp;G Ceiling</div>'
+      + '<div class="toggle-sub">SYP2612TG boards — width/5.5 rows ÷ 12\' boards</div>'
+      + '</div>'
+      + '<label class="tog"><input type="checkbox" id="shedTG_' + id + '" '
+      + (hasTG ? 'checked' : '')
+      + ' onchange="setShedProp(' + id + ', \'tongueAndGroove\', this.checked); scheduleBuild()">'
+      + '<span class="tog-track"></span></label>'
+      + '</div>'
+      + '</div>';
+  }
+
+  return html;
+}
+
+function toggleCypressPosts(id, on) {
+  setShedProp(id, 'cypressPosts', on);
+  if (on) {
+    checkCypressFoundation(id);
+  } else {
+    // Turn off sub-options
+    setShedProp(id, 'cypressRafters', false);
+    setShedProp(id, 'tongueAndGroove', false);
+  }
+  // Show/hide sub-toggle rows
+  var show = on ? '' : 'none';
+  var rr = document.getElementById('cyRaftRow_' + id);
+  var tr = document.getElementById('cyTGRow_' + id);
+  if (rr) rr.style.display = show;
+  if (tr) tr.style.display = show;
+  scheduleBuild();
+}
+
+function toggleCypressRafters(id, on) {
+  setShedProp(id, 'cypressRafters', on);
+  if (on) {
+    // Auto-enable T&G when cypress rafter frame is on
+    setShedProp(id, 'tongueAndGroove', true);
+    var tg = document.getElementById('shedTG_' + id);
+    if (tg) tg.checked = true;
+  }
+  scheduleBuild();
 }
 
 function renderSheds(){
@@ -4812,6 +4907,8 @@ function renderSheds(){
         +'<div class=\"toggle-info\"><div class=\"toggle-lbl\">Shed Posts On Top</div><div class=\"toggle-sub\">Posts on slab — removes sackcrete, pads & lag bolts; adds brackets</div></div>'
         +'<label class=\"tog\"><input type=\"checkbox\" id=\"shedPostsOnTop_'+sc.id+'\" '+(sc.postsOnTop?'checked':'')+' onchange=\"setShedProp('+sc.id+',\'postsOnTop\',this.checked);scheduleBuild()\"><span class=\"tog-track\"></span></label>'
         +'</div>'
+      // —— CYPRESS UPGRADE TOGGLES ——
+      +(isLeanto ? buildCypressToggles(sc) : '')
       ) : '')
       +(function(){
         if (sc.encl !== 'enclosed' && sc.encl !== 'partial') return '';
@@ -18278,6 +18375,8 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
     var postLen    = Math.ceil(totalH / 2) * 2;
     postLen        = window.SauceMaterials.enforceMinPostLen(postSize, postLen);
     var sku        = skuBase + postLen;
+    // Cypress posts override
+    if (sc.cypressPosts) { sku = 'RCC88' + postLen; }
 
     function add(count, lbl) {
       var wallCap = sc.wall.charAt(0).toUpperCase() + sc.wall.slice(1);
@@ -18867,8 +18966,10 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
   });
 
   // Side sheds — always 2x12 regardless of LVL toggle
+  // When cypress rafter frame is on, headers swap to RCC88xx (handled in calcCypressShedUpgrade)
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.cypressRafters) return; // headers become RCC88xx, calculated separately
 
     function addShedPieces(len, multiplier) {
       var pieces = fillWall(len);
@@ -19310,7 +19411,19 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
     }
 
     if (sc.type === 'leanto') {
-      addFraming(sc.w, sc.l, sc.finishedCeiling);
+      if (sc.cypressRafters) {
+        // Cypress rafter frame: 4' OC, RCC48xx SKU
+        var cyRafterQty = Math.floor(sc.l / 4) + 2;
+        // Rafter length uses same logic as standard (shed width determines length from rafterMap)
+        var cyRafterSkuMap = {
+          6:'RCC4810', 8:'RCC4810', 10:'RCC4812', 12:'RCC4814',
+          14:'RCC4816', 16:'RCC4818', 18:'RCC4820', 20:'RCC4824'
+        };
+        var cyRafterSku = cyRafterSkuMap[sc.w] || ('RCC48' + (Math.ceil(sc.w / 2) * 2 + 2));
+        rafterGroups[cyRafterSku] = (rafterGroups[cyRafterSku] || 0) + cyRafterQty;
+      } else {
+        addFraming(sc.w, sc.l, sc.finishedCeiling);
+      }
       return;
     }
 
@@ -19369,6 +19482,77 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
       quantity:    joistHangerGroups[sku],
       detail:      '2 per joist  |  finished ceiling'
     });
+  });
+
+  return results;
+};
+
+// ── CYPRESS SHED UPGRADE: cypress headers + T&G ceiling ───────────────
+// Fires per side shed when sc.cypressRafters or sc.tongueAndGroove is set.
+// Cypress rafter frame: headers -> RCC88xx, rafters already handled in calcShedFraming.
+// T&G ceiling: SYP2612TG, rows = ceil(shedWidth / 5.5), boards/row = ceil(shedLength / 12) x waste.
+window.SauceMaterials.calcCypressShedUpgrade = function(Q, WALLS, shedCfgs) {
+  var results = [];
+  var WASTE = 1.10;
+
+  var HEADER_LENGTHS_CY = [8,10,12,14,16,18,20,22,24,26,28,30];
+  function fillWallCy(wallLen) {
+    var pieces = {};
+    var rem = wallLen;
+    HEADER_LENGTHS_CY.slice().reverse().forEach(function(l) {
+      if (rem <= 0) return;
+      var n = Math.floor(rem / l);
+      if (n > 0) { pieces[l] = (pieces[l]||0) + n; rem -= n * l; }
+    });
+    if (rem > 0) { var shortest = HEADER_LENGTHS_CY[0]; pieces[shortest] = (pieces[shortest]||0) + 1; }
+    return pieces;
+  }
+
+  (shedCfgs || []).forEach(function(sc, idx) {
+    if (!sc.wall || !sc.w || !sc.l) return;
+    if (sc.type === 'gable') return;
+    var label = 'Shed ' + (idx + 1);
+
+    // Cypress headers (cypress rafter frame only)
+    if (sc.cypressRafters) {
+      var hdrGroups = {};
+      function addHdrPieces(len, multiplier) {
+        var pieces = fillWallCy(len);
+        Object.keys(pieces).forEach(function(l) {
+          hdrGroups[l] = (hdrGroups[l] || 0) + pieces[l] * multiplier;
+        });
+      }
+      if (sc.type === 'leanto') addHdrPieces(sc.l, 2);
+      if (sc.type === 'wrap')   { addHdrPieces(sc.l, 2); if (sc.wrapLeg > 0) addHdrPieces(sc.wrapLeg, 2); }
+      if (sc.type === 'wrap3')  {
+        addHdrPieces(sc.l, 2);
+        var isEave3 = (sc.wall === 'left' || sc.wall === 'right');
+        addHdrPieces(isEave3 ? Q.w : Q.l, 4);
+      }
+      Object.keys(hdrGroups).sort(function(a,b){return a-b;}).forEach(function(l) {
+        results.push({
+          category:    'Yard',
+          description: label + ' Cypress Headers',
+          sku:         'RCC88' + l,
+          quantity:    hdrGroups[l],
+          detail:      sc.l + "' shed  |  RCC88" + l + "  |  x2 (inside+outside)"
+        });
+      });
+    }
+
+    // T&G Ceiling
+    if (sc.tongueAndGroove) {
+      var rows         = Math.ceil(sc.w / 5.5);
+      var boardsPerRow = Math.ceil(sc.l / 12);
+      var totalBoards  = Math.ceil(rows * boardsPerRow * WASTE);
+      results.push({
+        category:    'Yard',
+        description: label + ' T&G Ceiling',
+        sku:         'SYP2612TG',
+        quantity:    totalBoards,
+        detail:      sc.w + "' wide / 5.5 = " + rows + " rows  |  " + boardsPerRow + " boards/row  |  x1.10 waste = " + totalBoards
+      });
+    }
   });
 
   return results;
@@ -22400,6 +22584,7 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
   (shedCfgs||[]).forEach(function(sc) {
     if (!sc.w || !sc.l) return;
     if (sc.noSkirt) return; // skirt toggled off for this shed
+    if (sc.cypressRafters) return; // cypress rafter frame removes skirting
     if (sc.wall !== 'left' && sc.wall !== 'right') {
       if (sc.type !== 'wrap3' && !isGableGableAttached(sc)) return;
     }
@@ -27258,6 +27443,10 @@ window.SauceMaterials.calculate = function(forcedType) {
     })();
     // Shed framing (rafters) + ledgers
     SM.calcShedFraming(Q, shedCfgs).forEach(function(item) { items.push(item); });
+    // Cypress shed upgrade: cypress headers + T&G ceiling
+    if (typeof SM.calcCypressShedUpgrade === 'function') {
+      SM.calcCypressShedUpgrade(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    }
     SM.calcShedLedgers(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableExtRoofFraming(Q, shedCfgs).forEach(function(item) { items.push(item); });
     // Steel shed trusses + purlins
@@ -27337,6 +27526,9 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcStudWallGirts(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
     // Open side sheds follow standard post frame rules (rafters, ledgers, etc.)
     SM.calcShedFraming(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
+    if (typeof SM.calcCypressShedUpgrade === 'function') {
+      SM.calcCypressShedUpgrade(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    }
     SM.calcShedLedgers(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableExtRoofFraming(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedPosts(sfQ, WALLS, sfShedCfgs, sfSf).forEach(function(item) { items.push(item); });
@@ -27463,6 +27655,9 @@ window.SauceMaterials.calculate = function(forcedType) {
     pushBuffered(SM.calcWoodOHPurlins(bbQ));
     pushBuffered(SM.calcWoodOHShedPurlins(bbQ, bbShedCfgs));
     SM.calcShedFraming(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
+    if (typeof SM.calcCypressShedUpgrade === 'function') {
+      SM.calcCypressShedUpgrade(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
+    }
     SM.calcShedLedgers(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableExtRoofFraming(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcShedPosts(bbQ, WALLS, bbShedCfgs, bbSf).forEach(function(item) { items.push(item); });
@@ -27604,6 +27799,9 @@ window.SauceMaterials.calculate = function(forcedType) {
     pushBuffered(SM.calcWoodOHPurlins(cyQ));
     pushBuffered(SM.calcWoodOHShedPurlins(cyQ, cyShedCfgs));
     SM.calcShedFraming(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
+    if (typeof SM.calcCypressShedUpgrade === 'function') {
+      SM.calcCypressShedUpgrade(cyQ, WALLS, cyShedCfgs).forEach(function(item) { items.push(item); });
+    }
     SM.calcShedLedgers(cyQ, WALLS, cyShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableExtRoofFraming(cyQ, cyShedCfgs).forEach(function(item) { items.push(item); });
 
@@ -27718,6 +27916,10 @@ window.SauceMaterials.calculate = function(forcedType) {
   SM.calcGableExtRoofFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   // Rafters (from calcShedFraming)
   SM.calcShedFraming(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  // Cypress shed upgrade: cypress headers + T&G ceiling
+  if (typeof SM.calcCypressShedUpgrade === 'function') {
+    SM.calcCypressShedUpgrade(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
+  }
   // Purlins — main building then side shed
   pushBuffered(SM.calcSteelPurlins(Q));
   pushBuffered(SM.calcWoodPurlins(Q));
