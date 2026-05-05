@@ -14345,6 +14345,101 @@ async function confirmSaveDesign(){
 
 var API_URL = 'https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec';
 
+// ── SUPABASE CONFIG ──────────────────────────────
+var _SB_URL  = 'https://rvhzploxeeqgggjefsif.supabase.co';
+var _SB_KEY  = 'sb_publishable_JFnksTNbexbFQ0LZtC3Olg_Tf2baKx4';
+var _SB_ON   = true; // flip to false to disable Supabase entirely
+
+// Low-level Supabase REST helper
+async function sbFetch(path, opts) {
+  if (!_SB_ON) return null;
+  try {
+    var r = await fetch(_SB_URL + '/rest/v1/' + path, Object.assign({
+      headers: {
+        'apikey': _SB_KEY,
+        'Authorization': 'Bearer ' + _SB_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      }
+    }, opts));
+    if (!r.ok) { console.warn('[SB]', path, r.status, await r.text()); return null; }
+    return r.status === 204 ? null : await r.json();
+  } catch(e) { console.warn('[SB] fetch error:', e.message); return null; }
+}
+
+// Upsert a quote row to Supabase
+async function sbSaveQuote(snap) {
+  var row = {
+    id:              snap.quoteId || snap.quoteID || '',
+    date:            snap.timestamp ? snap.timestamp.substring(0,10).replace(/-/g,'/') : new Date().toLocaleDateString('en-US'),
+    name:            snap.customerName || '',
+    salesman:        snap.salesman || '',
+    phone:           snap.phone || '',
+    email:           snap.email || '',
+    city:            snap.address || '',
+    total:           (snap.pricingResults && (snap.pricingResults.totalCombined || snap.pricingResults.total)) ? '$' + Math.round(parseFloat((snap.pricingResults.totalCombined || snap.pricingResults.total)||0)).toLocaleString('en-US') : '',
+    specs:           snap.displaySummary ? ((snap.formFields&&snap.formFields.width||'?')+'x'+(snap.formFields&&snap.formFields.length||'?')+'x'+(snap.formFields&&snap.formFields.height||'?')) : '',
+    status:          snap.status || 'draft',
+    source:          'QS',
+    form_fields:     snap.formFields || {},
+    display_summary: snap.displaySummary || {},
+    pricing_results: snap.pricingResults || {},
+    config_encoded:  snap.configEncoded || '',
+    snapshot:        snap,
+    updated_at:      new Date().toISOString()
+  };
+  if (!row.id) { console.warn('[SB] sbSaveQuote: no quoteId'); return null; }
+  return sbFetch('quotes?on_conflict=id', { method: 'POST', body: JSON.stringify(row),
+    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+               'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+}
+
+// Load quote list from Supabase
+async function sbGetQuotes(salesman) {
+  var q = 'quotes?select=id,date,name,salesman,phone,email,city,total,specs,status,source,form_fields,display_summary,pricing_results,config_encoded&order=date.desc&limit=200';
+  if (salesman) q += '&salesman=eq.' + encodeURIComponent(salesman);
+  var rows = await sbFetch(q, { method: 'GET' });
+  if (!rows || !rows.length) return null;
+  // Normalize to same shape as GAS response
+  return rows.map(function(r) {
+    return {
+      quoteId:        r.id,
+      rowIndex:       0,
+      date:           r.date,
+      name:           r.name,
+      salesman:       r.salesman,
+      phone:          r.phone,
+      email:          r.email,
+      city:           r.city,
+      total:          r.total,
+      specs:          r.specs,
+      status:         r.status || 'draft',
+      source:         r.source,
+      formFields:     r.form_fields || {},
+      displaySummary: r.display_summary || {},
+      pricingResults: r.pricing_results || {},
+      configEncoded:  r.config_encoded || ''
+    };
+  });
+}
+
+// Update quote status in Supabase
+async function sbUpdateStatus(quoteId, status) {
+  return sbFetch('quotes?id=eq.' + encodeURIComponent(quoteId),
+    { method: 'PATCH', body: JSON.stringify({ status: status, updated_at: new Date().toISOString() }),
+      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+                 'Content-Type': 'application/json', 'Prefer': 'return=minimal' } });
+}
+
+// Delete quote from Supabase
+async function sbDeleteQuote(quoteId) {
+  return sbFetch('quotes?id=eq.' + encodeURIComponent(quoteId),
+    { method: 'DELETE',
+      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+                 'Content-Type': 'application/json', 'Prefer': 'return=minimal' } });
+}
+
+
 async function openLoadDesignModal(){
   document.getElementById('loadDesignModal').style.display = 'flex';
   var s = document.getElementById('loadDesignSearch');
@@ -14356,19 +14451,31 @@ async function openLoadDesignModal(){
   var list = document.getElementById('savedDesignList');
   list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">Loading...</div>';
   try {
-    var resp = await fetchWithTimeout('https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec', {
-      method: 'POST', headers: {'Content-Type': 'text/plain'},
-      body: JSON.stringify({
-        action: 'getConfiguratorQuotes',
-        username: (window.currentUser||{}).username || '',
-        token: getToken(),
-        salesman: (window.currentUser||{}).username || ''
-      })
-    }, 55000);
-    var data = await safeJson(resp);
-    var quotes = data.quotes || data.designs || [];
-    console.log('[Modal] data.success:', data.success, 'quotes:', quotes.length, 'raw:', JSON.stringify(data).substring(0,300));
-    if (!data.success || !quotes.length) {
+    var quotes = null;
+    var _salesman = (window.currentUser||{}).username || '';
+
+    // Try Supabase first (fast) -- fall back to GAS if unavailable
+    try {
+      quotes = await sbGetQuotes(_salesman);
+      if (quotes && quotes.length) console.log('[Modal] Supabase: loaded', quotes.length, 'quotes');
+    } catch(sbErr) { console.warn('[SB] list failed:', sbErr); quotes = null; }
+
+    // GAS fallback
+    if (!quotes || !quotes.length) {
+      console.log('[Modal] falling back to GAS');
+      var resp = await fetchWithTimeout(API_URL, {
+        method: 'POST', headers: {'Content-Type': 'text/plain'},
+        body: JSON.stringify({
+          action: 'getConfiguratorQuotes',
+          username: _salesman, token: getToken(), salesman: _salesman
+        })
+      }, 55000);
+      var data = await safeJson(resp);
+      quotes = data.quotes || data.designs || [];
+      console.log('[Modal] GAS fallback:', quotes.length, 'quotes');
+    }
+
+    if (!quotes || !quotes.length) {
       list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">No saved quotes yet</div>';
       return;
     }
@@ -14529,6 +14636,7 @@ async function deleteQuote(qid) {
       method: 'POST', headers: {'Content-Type': 'text/plain'},
       body: JSON.stringify({ action: 'deleteQuote', quoteId: qid, token: getToken(), username: (window.currentUser||{}).username||'' })
     }, 30000).catch(function(e){ console.warn('[Delete] GAS error:', e); });
+    sbDeleteQuote(qid).catch(function(){});
   } catch(err) {
     console.error('[Delete] error:', err);
   }
@@ -14953,6 +15061,7 @@ function _renderDesignList(quotes, list, append) {
       fetchWithTimeout(API_URL,{method:'POST',headers:{'Content-Type':'text/plain'},
         body:JSON.stringify({action:'updateQuoteStatus',quoteId:qid,status:newStatus,token:getToken(),username:(window.currentUser||{}).username||''})
       },15000).catch(function(e){console.warn('[Status]',e);});
+      sbUpdateStatus(qid, newStatus).catch(function(){});
     }
   };
 }
@@ -15478,6 +15587,10 @@ async function saveSalesQuote(overwriteMode) {
         baseUrl: 'https://lhinson00.github.io/Sauce/sales-tool.html'
       })
     }).catch(function(){});
+
+    // Dual-write to Supabase (fire and forget -- GAS is authoritative)
+    var _sbSnap = Object.assign({}, snapshot, { quoteId: window._savedQuoteId });
+    sbSaveQuote(_sbSnap).catch(function(e){ console.warn('[SB] save failed:', e); });
 
     // 6. Update UI
     btn.textContent = '✅ Saved!';
