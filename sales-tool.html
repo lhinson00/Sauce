@@ -15672,7 +15672,7 @@ async function saveSalesQuote(overwriteMode) {
 
 // ── EMAIL QUOTE MODAL ──────────────────────────────────
 
-function openTextQuoteModal() {
+async function openTextQuoteModal() {
   if (!window._Q) { alert('Please configure a building first.'); return; }
   var custName  = (document.getElementById('st_name')  ||{}).value || '';
   var custPhone = (document.getElementById('st_phone') ||{}).value || '';
@@ -15681,9 +15681,8 @@ function openTextQuoteModal() {
   var salesPhone = cu.phone || '931-796-1521';
   var salesName  = cu.fullName || cu.username || 'Lain';
   var firstName  = custName.split(' ')[0] || custName;
-  var qid    = window._savedQuoteId || '';
-  var link3d = qid ? 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&loadQuote=' + qid
-             : ((window._savedSnapshot && window._savedSnapshot.configLink) || '');
+  // link3d built after checkboxes are known -- see buildMsg() which calls _buildTextLink()
+  var link3d = '';
   var oh    = window._lastPriceOH      || {};
   var nooh  = window._lastPriceNoOH    || {};
   var steel = window._lastPriceSteel   || {};
@@ -15699,15 +15698,40 @@ function openTextQuoteModal() {
     {k:'Cyp',   label:'Cypress',               price:cyp},
     {k:'BB',    label:'Metal B&B',             price:bb}
   ];
-  function buildMsg() {
+  async function buildMsg() {
     var selected = [];
     priceOptions.forEach(function(o) {
       var chk = document.getElementById('tqChk' + o.k);
-      if (chk && chk.checked && o.price && o.price.total) selected.push(o.label + ':  ' + fmtPriceFull(o.price.total));
+      if (chk && chk.checked && o.price && o.price.total) selected.push(o);
     });
+    // Build filtered config link with only selected prices -- same as email
+    var _cu = window.currentUser || {};
+    var _filteredTotals = {};
+    selected.forEach(function(o) {
+      if (o.k === 'OH')    _filteredTotals.totalOH      = fmtPriceFull(o.price.total);
+      if (o.k === 'NoOH')  _filteredTotals.totalNoOH    = fmtPriceFull(o.price.total);
+      if (o.k === 'Steel') _filteredTotals.totalSteel   = fmtPriceFull(o.price.total);
+      if (o.k === 'Stud')  _filteredTotals.totalStud    = fmtPriceFull(o.price.total);
+      if (o.k === 'Cyp')   _filteredTotals.totalCypress = fmtPriceFull(o.price.total);
+      if (o.k === 'BB')    _filteredTotals.totalBB      = fmtPriceFull(o.price.total);
+    });
+    if (selected.length) _filteredTotals.total = fmtPriceFull(selected[0].price.total);
+    try {
+      var _cfg = JSON.parse(JSON.stringify(serializeConfig()));
+      _cfg._viewData = {
+        pricingResults:  _filteredTotals,
+        salesmanName:    _cu.fullName || _cu.username || '',
+        salesmanPhone:   _cu.phone   || '',
+        salesmanEmail:   _cu.email   || '',
+        salesmanCompany: _cu.company || ''
+      };
+      var _enc = await safeEncodeCompressed(_cfg);
+      link3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + _enc;
+    } catch(e) { link3d = (window._savedSnapshot && window._savedSnapshot.configLink) || ''; }
+    var selectedLabels = selected.map(function(o){ return o.label + ':  ' + fmtPriceFull(o.price.total); });
     var m = 'Hi ' + firstName + ',\n\n';
     m += 'We appreciate you reaching out to us for a quote on your potential building project. Please find the quote and link below.\n\n';
-    if (selected.length) m += selected.join('\n') + '\n\n';
+    if (selectedLabels.length) m += selectedLabels.join('\n') + '\n\n';
     if (link3d) m += link3d + '\n\n';
     m += 'If you have any questions, please do not hesitate to reach out to me at this number.\n\n';
     m += salesName + '\nSummertown Metals';
@@ -15748,59 +15772,45 @@ function openTextQuoteModal() {
   window._tqBuildMsg = buildMsg;
   priceOptions.forEach(function(o) {
     var chk = document.getElementById('tqChk' + o.k);
-    if (chk) chk.addEventListener('change', buildMsg);
+    if (chk) chk.addEventListener('change', function(){ buildMsg(); });
   });
+  window._tqBuildMsg = buildMsg;
   buildMsg();
 }
 
 function _copyTextQuote() {
-  // Read checkbox states directly -- don't trust textarea
-  var keys = ['OH','NoOH','Steel','Stud','Cyp','BB'];
-  var labels = {OH:'Wood Truss w/ Soffit',NoOH:'Wood Truss No Soffit',Steel:'Steel Truss No Soffit',Stud:'Stud Frame',Cyp:'Cypress',BB:'Metal B&B'};
-  var checked = [];
-  keys.forEach(function(k) {
-    var chk = document.getElementById('tqChk' + k);
-    console.log('[TQ] tqChk'+k, chk ? ('checked='+chk.checked) : 'NOT FOUND');
-    if (chk && chk.checked) checked.push(k);
-  });
-  console.log('[TQ] checked keys:', checked);
-  var msg = (document.getElementById('tqMsg')||{}).value || '';
-  console.log('[TQ] textarea first 200:', msg.substring(0,200));
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(msg).then(function(){
-      showToast('Copied to clipboard', 'success');
+  var _fn = window._tqBuildMsg;
+  var _doIt = function() {
+    var msg = (document.getElementById('tqMsg')||{}).value || '';
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(msg).then(function(){
+        showToast('Copied to clipboard', 'success');
+        document.getElementById('textQuoteModal').remove();
+      }).catch(function(){ alert('Copy failed -- please select the text manually.'); });
+    } else {
+      var ta = document.getElementById('tqMsg');
+      if (ta) { ta.select(); document.execCommand('copy'); }
+      showToast('Copied!', 'success');
       document.getElementById('textQuoteModal').remove();
-    }).catch(function(){ alert('Copy failed -- please select the text manually.'); });
-  } else {
-    var ta = document.getElementById('tqMsg');
-    if (ta) { ta.select(); document.execCommand('copy'); }
-    showToast('Copied!', 'success');
-    document.getElementById('textQuoteModal').remove();
-  }
+    }
+  };
+  if (_fn) { _fn().then(_doIt).catch(_doIt); } else { _doIt(); }
 }
 
 function _sendTextQuote() {
-  if (typeof window._tqBuildMsg === 'function') window._tqBuildMsg();
-  var phone = (document.getElementById('tqPhone')||{}).value || '';
-  var msg   = (document.getElementById('tqMsg')  ||{}).value || '';
-  var clean = phone.replace(/[^0-9+]/g,'');
-
-  // Try sms: link (works on iPhone/Android, fails silently on desktop)
-  var smsLink = 'sms:' + clean + '&body=' + encodeURIComponent(msg);
-  var a = document.createElement('a');
-  a.href = smsLink;
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-
-  // Also copy to clipboard as fallback
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(msg).then(function(){
-      showToast('Copied to clipboard', 'success');
-    }).catch(function(){});
-  }
-
+  var _fn = window._tqBuildMsg;
+  var _doSend = function() {
+    var phone = (document.getElementById('tqPhone')||{}).value || '';
+    var msg   = (document.getElementById('tqMsg')  ||{}).value || '';
+    var clean = phone.replace(/[^0-9+]/g,'');
+    var smsLink = 'sms:' + clean + '&body=' + encodeURIComponent(msg);
+    var a = document.createElement('a'); a.href = smsLink; a.style.display = 'none';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    if (navigator.clipboard) navigator.clipboard.writeText(msg).catch(function(){});
+    document.getElementById('textQuoteModal').remove();
+  };
+  if (_fn) { _fn().then(_doSend).catch(_doSend); } else { _doSend(); }
+}
   document.getElementById('textQuoteModal').remove();
 }
 
