@@ -6378,6 +6378,24 @@ function vpToggleWalls() {
     // CR- IDs are customer-submitted designs in Configurator Quotes — no token needed.
     // QS- IDs are salesman snapshots — require a valid session token.
     var isCustDesign = quoteId.indexOf('CR-') === 0 || quoteId.indexOf('CC-') === 0;
+
+    // In view mode, load from Supabase -- no token needed
+    if (window._viewModeActive && !isCustDesign) {
+      sbFetch('quotes?id=eq.' + encodeURIComponent(quoteId) + '&select=config_encoded,snapshot', { method: 'GET' })
+        .then(function(rows) {
+          if (!rows || !rows[0] || !rows[0].config_encoded) { triggerBuild(); return; }
+          var encoded = rows[0].config_encoded;
+          var snap = rows[0].snapshot || {};
+          safeDecodeAsync(encoded).then(function(cfg) {
+            if (!cfg) { triggerBuild(); return; }
+            restoreConfig(cfg);
+            setTimeout(function(){ populateViewCard(snap); }, 600);
+          });
+        })
+        .catch(function() { triggerBuild(); });
+      return;
+    }
+
     fetch('https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec', {
       method: 'POST',
       headers: {'Content-Type': 'text/plain'},
@@ -15671,7 +15689,7 @@ async function saveSalesQuote(overwriteMode) {
 
 // ── EMAIL QUOTE MODAL ──────────────────────────────────
 
-async function openTextQuoteModal() {
+function openTextQuoteModal() {
   if (!window._Q) { alert('Please configure a building first.'); return; }
   var custName  = (document.getElementById('st_name')  ||{}).value || '';
   var custPhone = (document.getElementById('st_phone') ||{}).value || '';
@@ -15681,8 +15699,11 @@ async function openTextQuoteModal() {
   var salesName  = cu.fullName || cu.username || 'Lain';
   var firstName  = custName.split(' ')[0] || custName;
 
-  // Use the view=1 config link -- no login required for customer
-  var link3d = (window._savedSnapshot && window._savedSnapshot.configLink) || '';
+  // Short customer link -- view=1 skips login, loadQuote keeps URL short
+  var _qid = window._savedQuoteId || '';
+  var link3d = _qid
+    ? 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&loadQuote=' + _qid
+    : ((window._savedSnapshot && window._savedSnapshot.configLink) || '');
 
   // Available prices
   var oh    = window._lastPriceOH      || {};
@@ -15691,14 +15712,6 @@ async function openTextQuoteModal() {
   var stud  = window._lastPriceStud    || {};
   var cyp   = window._lastPriceCypress || {};
   var bb    = window._lastPriceBB      || {};
-
-  // Try to shorten the URL via TinyURL (free, no account needed)
-  if (link3d) {
-    try {
-      var _resp = await fetch('https://tinyurl.com/api-create.php?url=' + encodeURIComponent(link3d));
-      if (_resp.ok) { var _short = await _resp.text(); if (_short && _short.startsWith('http')) link3d = _short.trim(); }
-    } catch(e) { /* keep long URL if shortener fails */ }
-  }
 
   var dims = Q.w + "' x " + Q.l + "' x " + Q.h + "'";
 
