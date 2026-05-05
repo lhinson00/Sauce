@@ -14456,7 +14456,7 @@ async function openLoadDesignModal(){
     // Try Supabase first (fast) -- fall back to GAS if unavailable
     try {
       quotes = await sbGetQuotes(_salesman);
-      if (quotes && quotes.length) console.log('[Modal] Supabase: loaded', quotes.length, 'quotes');
+      if (quotes && quotes.length) { console.log('[Modal] Supabase: loaded', quotes.length, 'quotes'); window._sbListDirty = false; }
     } catch(sbErr) { console.warn('[SB] list failed:', sbErr); quotes = null; }
 
     // GAS fallback
@@ -15080,8 +15080,21 @@ async function loadSavedDesign(d){
     var encoded = d.configEncoded || '';
     var data = null;
     console.log('[Load] inline encoded:', encoded ? encoded.substring(0,50) : 'none');
-    // Use inline configEncoded if present (already in list response) -- skips a server round trip
+    // Use inline configEncoded if present -- but if this quote was just saved/overwritten, fetch fresh
+    var _justSaved = window._savedQuoteId && (d.quoteId === window._savedQuoteId) && window._sbListDirty;
     var _needFetch = !encoded || encoded.length < 100;
+    // If just saved, fetch fresh configEncoded directly from Supabase
+    if (_justSaved) {
+      try {
+        var _freshRows = await sbFetch('quotes?id=eq.' + encodeURIComponent(d.quoteId) + '&select=config_encoded', { method: 'GET' });
+        if (_freshRows && _freshRows[0] && _freshRows[0].config_encoded) {
+          encoded = _freshRows[0].config_encoded;
+          console.log('[Load] fresh from Supabase, length:', encoded.length);
+          window._sbListDirty = false;
+          _needFetch = false;
+        }
+      } catch(e) { console.warn('[SB] fresh fetch failed:', e); }
+    }
     if (_needFetch && (d.quoteId || d.designId)) {
       var qid = d.quoteId || d.designId;
       console.log('[Load] fetching:', API_URL, 'quoteId:', qid);
@@ -15094,6 +15107,7 @@ async function loadSavedDesign(d){
       var snap2 = data.snapshot || data;
       encoded = snap2.configEncoded || data.configEncoded || '';
       console.log('[Load] configEncoded length:', encoded.length);
+      window._sbListDirty = false;
     } else {
       console.log('[Load] using inline configEncoded, length:', encoded.length);
     }
@@ -15590,6 +15604,7 @@ async function saveSalesQuote(overwriteMode) {
     // Dual-write to Supabase (fire and forget -- GAS is authoritative)
     var _sbSnap = Object.assign({}, snapshot, { quoteId: window._savedQuoteId });
     sbSaveQuote(_sbSnap).catch(function(e){ console.warn('[SB] save failed:', e); });
+    window._sbListDirty = true; // force re-fetch on next modal open
 
     // 6. Update UI
     btn.textContent = '✅ Saved!';
