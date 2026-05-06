@@ -13205,7 +13205,6 @@ async function generateQuotePDF() {
   // Build price entries array — respect checkbox selections, same for open and enclosed
   var priceEntries = [];
   // When called from email flow, use the email's selectedPrices directly
-  alert('[PDF DEBUG] _pdfForcedPriceEntries = ' + (window._pdfForcedPriceEntries ? JSON.stringify(window._pdfForcedPriceEntries.map(function(x){return x.type;})) : 'NULL'));
   if (window._pdfForcedPriceEntries && window._pdfForcedPriceEntries.length) {
     priceEntries = window._pdfForcedPriceEntries.map(function(sp) {
       return { label: sp.label, r: sp.results };
@@ -15822,19 +15821,8 @@ function openTextQuoteModal() {
   ['OH','NoOH','Steel','Stud','Cyp','BB'].forEach(function(k){ var c=document.getElementById('tqChk'+k); if(c) c.addEventListener('change', _tqRefresh); });
   window._tqRefresh = _tqRefresh;
   window._tqPdfUrl = null;
-  // Show placeholder while PDF generates
-  var _ta0 = document.getElementById('tqMsg');
-  if (_ta0) _ta0.value = 'Generating PDF quote link...';
-  // Auto-generate PDF then populate message
-  setTimeout(function() {
-    var _prMap = {OH:window._lastPriceOH||{},NoOH:window._lastPriceNoOH||{},Steel:window._lastPriceSteel||{},Stud:window._lastPriceStud||{},Cyp:window._lastPriceCypress||{},BB:window._lastPriceBB||{}};
-    var _opts  = [{k:'OH',type:'WoodOH',label:'Wood Truss w/ Soffit'},{k:'NoOH',type:'WoodNoOH',label:'Wood Truss No Soffit'},{k:'Steel',type:'EnclosedSteel',label:'Steel Truss No Soffit'},{k:'Stud',type:'StudFramed',label:'Stud Frame'},{k:'Cyp',type:'Cypress',label:'Cypress'},{k:'BB',type:'MetalBB',label:'Metal B&B'}];
-    var forced = [];
-    _opts.forEach(function(o){ var c=document.getElementById('tqChk'+o.k); if(c&&c.checked&&_prMap[o.k]&&_prMap[o.k].total) forced.push({type:o.type,label:o.label,results:_prMap[o.k]}); });
-    uploadQuotePDFToSupabase(forced.length ? forced : null)
-      .then(function(url){ window._tqPdfUrl = url; _tqRefresh(); })
-      .catch(function(e){ console.error('[TQ] PDF upload failed:', e); showToast('PDF failed: ' + (e&&e.message||'unknown'), 'error'); _tqRefresh(); });
-  }, 200);
+  // Populate preview immediately -- PDF generated at send/copy time
+  setTimeout(_tqRefresh, 100);
 }
 
 
@@ -15863,41 +15851,51 @@ function _attachPDFToText() {
 }
 
 function _copyTextQuote() {
-  var _doIt = function() {
-    var msg = (document.getElementById('tqMsg')||{}).value || '';
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(msg).then(function(){
-        showToast('Copied to clipboard', 'success');
+  var _prMap = {OH:window._lastPriceOH||{},NoOH:window._lastPriceNoOH||{},Steel:window._lastPriceSteel||{},Stud:window._lastPriceStud||{},Cyp:window._lastPriceCypress||{},BB:window._lastPriceBB||{}};
+  var _opts  = [{k:'OH',type:'WoodOH',label:'Wood Truss w/ Soffit'},{k:'NoOH',type:'WoodNoOH',label:'Wood Truss No Soffit'},{k:'Steel',type:'EnclosedSteel',label:'Steel Truss No Soffit'},{k:'Stud',type:'StudFramed',label:'Stud Frame'},{k:'Cyp',type:'Cypress',label:'Cypress'},{k:'BB',type:'MetalBB',label:'Metal B&B'}];
+  var forced = [];
+  _opts.forEach(function(o){ var c=document.getElementById('tqChk'+o.k); if(c&&c.checked&&_prMap[o.k]&&_prMap[o.k].total) forced.push({type:o.type,label:o.label,results:_prMap[o.k]}); });
+  showToast('Generating PDF...', 'success');
+  uploadQuotePDFToSupabase(forced.length ? forced : null)
+    .then(function(url) {
+      window._tqPdfUrl = url;
+      if (window._tqRefresh) window._tqRefresh();
+      var msg = (document.getElementById('tqMsg')||{}).value || '';
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(msg).then(function(){
+          showToast('Copied to clipboard', 'success');
+          document.getElementById('textQuoteModal').remove();
+        }).catch(function(){ alert('Copy failed.'); });
+      } else {
+        var ta = document.getElementById('tqMsg');
+        if (ta) { ta.select(); document.execCommand('copy'); }
+        showToast('Copied!', 'success');
         document.getElementById('textQuoteModal').remove();
-      }).catch(function(){ alert('Copy failed.'); });
-    } else {
-      var ta = document.getElementById('tqMsg');
-      if (ta) { ta.select(); document.execCommand('copy'); }
-      showToast('Copied!', 'success');
-      document.getElementById('textQuoteModal').remove();
-    }
-  };
-  if (window._tqRefresh) {
-    window._tqRefresh();
-    setTimeout(_doIt, 800);
-  } else { _doIt(); }
+      }
+    })
+    .catch(function(){ showToast('PDF failed, copying without PDF link', 'error'); });
 }
 
 function _sendTextQuote() {
   var phone = (document.getElementById('tqPhone')||{}).value || '';
-  var _doIt = function() {
-    var msg = (document.getElementById('tqMsg')||{}).value || '';
-    var clean = phone.replace(/[^0-9+]/g,'');
-    var smsLink = 'sms:' + clean + '&body=' + encodeURIComponent(msg);
-    var a = document.createElement('a'); a.href = smsLink; a.style.display = 'none';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    if (navigator.clipboard) navigator.clipboard.writeText(msg).catch(function(){});
-    document.getElementById('textQuoteModal').remove();
-  };
-  if (window._tqRefresh) {
-    window._tqRefresh();
-    setTimeout(_doIt, 800);
-  } else { _doIt(); }
+  var _prMap = {OH:window._lastPriceOH||{},NoOH:window._lastPriceNoOH||{},Steel:window._lastPriceSteel||{},Stud:window._lastPriceStud||{},Cyp:window._lastPriceCypress||{},BB:window._lastPriceBB||{}};
+  var _opts  = [{k:'OH',type:'WoodOH',label:'Wood Truss w/ Soffit'},{k:'NoOH',type:'WoodNoOH',label:'Wood Truss No Soffit'},{k:'Steel',type:'EnclosedSteel',label:'Steel Truss No Soffit'},{k:'Stud',type:'StudFramed',label:'Stud Frame'},{k:'Cyp',type:'Cypress',label:'Cypress'},{k:'BB',type:'MetalBB',label:'Metal B&B'}];
+  var forced = [];
+  _opts.forEach(function(o){ var c=document.getElementById('tqChk'+o.k); if(c&&c.checked&&_prMap[o.k]&&_prMap[o.k].total) forced.push({type:o.type,label:o.label,results:_prMap[o.k]}); });
+  showToast('Generating PDF...', 'success');
+  uploadQuotePDFToSupabase(forced.length ? forced : null)
+    .then(function(url) {
+      window._tqPdfUrl = url;
+      if (window._tqRefresh) window._tqRefresh();
+      var msg = (document.getElementById('tqMsg')||{}).value || '';
+      var clean = phone.replace(/[^0-9+]/g,'');
+      var smsLink = 'sms:' + clean + '&body=' + encodeURIComponent(msg);
+      var a = document.createElement('a'); a.href = smsLink; a.style.display = 'none';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      if (navigator.clipboard) navigator.clipboard.writeText(msg).catch(function(){});
+      document.getElementById('textQuoteModal').remove();
+    })
+    .catch(function(){ showToast('PDF failed', 'error'); });
 }
 
 function openEmailQuoteModal() {
