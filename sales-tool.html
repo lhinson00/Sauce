@@ -19531,7 +19531,7 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
   if (Q.truss === 'Steel') return [];
 
   var SM = window.SauceMaterials;
-  var STANDARD_LENGTHS = [20, 16, 12, 10, 8]; // for shed fill
+  var STANDARD_LENGTHS = [20, 16, 12, 10]; // for shed fill — no 8' stock (same as main building)
   var HEADER_LENGTHS = [20, 16, 12, 10]; // for main building eave headers (no 8' stock)
 
   // Main building headers: LVL is auto-applied when width > 40' (required),
@@ -19542,18 +19542,30 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
   var userChecked = !!(lvlEl && lvlEl.checked && !lvlEl._autoChecked);
   var useLVL = (Q.w || 0) > 40 || userChecked;
 
-  // Fill a wall length with standard lumber pieces, greedy longest first
-  function fillWall(wallLen) {
+  // Fill a shed wall with header boards driven entirely by post spacing (bay-by-bay).
+  // Board length equals post spacing (or the nearest stocked length above it).
+  //   12' spacing → 12' boards, 1 per bay
+  //   10' spacing → 20' boards (spans 2 bays), 10' for a leftover single bay
+  //    8' spacing → 16' boards (spans 2 bays, no 8' stock), 10' for a leftover single bay
+  // wallLen is the shed run length; ps is the gable post spacing (Q.postSpacing || Q.gablePS || 10).
+  function fillWall(wallLen, ps) {
     var pieces = {};
-    var remaining = wallLen;
-    while (remaining > 0) {
-      var longest = null;
-      for (var i = 0; i < STANDARD_LENGTHS.length; i++) {
-        if (STANDARD_LENGTHS[i] <= remaining) { longest = STANDARD_LENGTHS[i]; break; }
-      }
-      if (!longest) break;
-      pieces[longest] = (pieces[longest] || 0) + 1;
-      remaining -= longest;
+    var numBays = Math.round(wallLen / ps);
+    if (ps >= 12) {
+      // One 12' board per bay
+      pieces[12] = numBays;
+    } else if (ps >= 10) {
+      // 20' covers 2 bays; leftover single bay gets a 10'
+      var pairsOf2 = Math.floor(numBays / 2);
+      var leftover  = numBays % 2;
+      if (pairsOf2 > 0) pieces[20] = pairsOf2;
+      if (leftover  > 0) pieces[10] = (pieces[10] || 0) + 1;
+    } else {
+      // 8' spacing — use 16' (spans 2 bays); leftover single bay gets a 10'
+      var pairsOf2 = Math.floor(numBays / 2);
+      var leftover  = numBays % 2;
+      if (pairsOf2 > 0) pieces[16] = pairsOf2;
+      if (leftover  > 0) pieces[10] = (pieces[10] || 0) + 1;
     }
     return pieces;
   }
@@ -19624,12 +19636,14 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
 
   // Side sheds — always 2x12 regardless of LVL toggle
   // When cypress rafter frame is on, headers swap to RCC88xx (handled in calcCypressShedUpgrade)
+  // Header board length is driven by gable post spacing (bay-by-bay, same logic as eave walls).
+  var shedPS = Q.gablePS || Q.postSpacing || 10; // gable end post spacing governs shed headers
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
     if (sc.cypressRafters) return; // headers become RCC88xx, calculated separately
 
     function addShedPieces(len, multiplier) {
-      var pieces = fillWall(len);
+      var pieces = fillWall(len, shedPS);
       Object.keys(pieces).forEach(function(l) {
         var key = 'SYP212' + l;
         shedGroups[key] = shedGroups[key] || { len: parseInt(l), qty: 0, isLVL: false };
@@ -25131,15 +25145,15 @@ window.SauceMaterials.calcCypress = function(Q, WALLS, shedCfgs, allDoors) {
     detail:      Math.round(soffitLF) + "' soffit LF  |  3 runs/sheet  |  " + soffitSheets + " sheets"
   });
 
-  // -- WINDOW & WALK DOOR TRIM (RCC1612) --
+  // -- WINDOW & WALK DOOR TRIM (RCC1610) --
   var walkDoors = (window._walkDoors || []).length;
   var windows   = (window._windows   || []).length;
   var trimQty   = (walkDoors * 3) + (windows * 2);
   if (trimQty > 0) {
     items.push({
-      category:    'Trim',
+      category:    'Yard',
       description: 'Cypress Door/Window Trim',
-      sku:         'RCC1612',
+      sku:         'RCC1610',
       quantity:    trimQty,
       detail:      walkDoors + ' walk doors (x3) + ' + windows + ' windows (x2) = ' + trimQty
     });
