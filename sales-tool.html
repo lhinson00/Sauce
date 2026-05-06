@@ -1277,7 +1277,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
       <div class="mobile-action-bar-top" style="display:none;">
         <button onclick="openVoiceQuoteModal()" style="width:100%;padding:11px;border-radius:10px;border:1.5px solid rgba(255,130,0,.5);background:rgba(255,130,0,.12);color:#FF8200;font-size:13px;font-weight:800;font-family:Outfit,sans-serif;cursor:pointer;letter-spacing:.3px;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:6px;">&#x1F3A4; Voice Quote</button>
         <div style="display:flex;gap:6px;margin-bottom:6px;">
-          <button class="act-btn primary" onclick="saveSalesQuote()" style="flex:2;">&#x1F4BE; Save Quote</button>
+          <button class="act-btn primary" id="saveQuoteBtnMobile" onclick="saveSalesQuote()" style="flex:2;">&#x1F4BE; Save Quote</button>
           <button class="act-btn secondary" onclick="openConcreteModal()" style="flex:1;">&#x1FAA8; Concrete</button>
           <button class="act-btn secondary" id="quotePdfBtnMobile" onclick="openQuotePDFModal()" style="flex:1;display:none;">&#x1F4C4; PDF</button>
           <button class="act-btn secondary" id="textQuoteBtnMobile" onclick="openTextQuoteModal()" style="flex:1;display:none;">&#x1F4F1; Text</button>
@@ -15403,9 +15403,17 @@ async function saveSalesQuote(overwriteMode) {
     return;
   }
 
-  var btn = document.getElementById('saveQuoteBtn') || document.querySelector('[onclick*="saveSalesQuote"]');
+  var btn    = document.getElementById('saveQuoteBtn');
+  var btnMob = document.getElementById('saveQuoteBtnMobile');
   var status = document.getElementById('saveQuoteStatus');
-  if (btn) { btn.textContent = '💾 Saving…'; btn.disabled = true; }
+  function _setBtnState(text, disabled, bg) {
+    [btn, btnMob].forEach(function(b) {
+      if (!b) return;
+      b.textContent = text; b.disabled = disabled;
+      b.style.background = bg || '';
+    });
+  }
+  _setBtnState('💾 Saving…', true, '');
 
   try {
     // 1. Build share/config link
@@ -15642,8 +15650,19 @@ async function saveSalesQuote(overwriteMode) {
       timestamp:      new Date().toISOString()
     };
 
-    // 5. Save snapshot — overwrite existing or create new
-    var _saveAction = (overwriteMode === 'overwrite' && window._loadedQuoteId) ? 'updateQuoteSnapshot' : 'saveQuoteSnapshot';
+    // 5. Save snapshot — generate ID client-side so Supabase doesn't depend on GAS response
+    var _isOverwrite = (overwriteMode === 'overwrite' && window._loadedQuoteId);
+    var _saveAction  = _isOverwrite ? 'updateQuoteSnapshot' : 'saveQuoteSnapshot';
+    var _clientId    = _isOverwrite ? window._loadedQuoteId : ('ST-' + Date.now());
+    snapshot.quoteId = _clientId;
+    window._savedQuoteId = _clientId;
+
+    // Save to Supabase first — fast, reliable, works on mobile
+    var _sbSnap = Object.assign({}, snapshot, { quoteId: _clientId });
+    try { await sbSaveQuote(_sbSnap); console.log('[SB] save complete'); }
+    catch(e) { console.warn('[SB] save failed:', e); throw new Error('Save failed: ' + e.message); }
+
+    // Fire GAS in the background (fire-and-forget — not mobile-critical)
     var _savePayload = {
       action: _saveAction,
       username: (window.currentUser || {}).username || '',
@@ -15651,18 +15670,16 @@ async function saveSalesQuote(overwriteMode) {
       token: getToken(),
       snapshot: snapshot
     };
-    if (_saveAction === 'updateQuoteSnapshot') {
-      _savePayload.quoteId = window._loadedQuoteId;
-    }
-    var data = await fetchWithTimeout(API_URL, {
+    if (_isOverwrite) _savePayload.quoteId = window._loadedQuoteId;
+    fetch(API_URL, {
       method: 'POST',
       headers: {'Content-Type': 'text/plain'},
       body: JSON.stringify(_savePayload)
-    });
-    console.log('[SaveQuote] parsed response:', JSON.stringify(data).substring(0, 500));
-    if (!data.success) throw new Error(data.error || 'Save failed');
+    }).catch(function(e){ console.warn('[GAS] save failed (non-critical):', e); });
 
-    window._savedQuoteId = data.quoteId || window._loadedQuoteId || ('ST-' + Date.now());
+    // Also fire the configurator quote save (fire-and-forget)
+    var Q2 = window._Q || {};
+    var specs2 = Q2.w+"'x"+Q2.l+"'x"+Q2.h+"' | "+(Q2.pitch||4)+"/12 | "+(Q2.truss||'Wood')+" truss";
     // Track quote save
     try {
       var _qs_name = (document.getElementById('st_name')||{}).value || '';
@@ -15696,13 +15713,8 @@ async function saveSalesQuote(overwriteMode) {
       })
     }).catch(function(){});
 
-    // Dual-write to Supabase (fire and forget -- GAS is authoritative)
-    var _sbSnap = Object.assign({}, snapshot, { quoteId: window._savedQuoteId });
-    try { await sbSaveQuote(_sbSnap); console.log('[SB] save complete'); }
-    catch(e) { console.warn('[SB] save failed:', e); }
-
     // 6. Update UI
-    if (btn) { btn.textContent = '✅ Saved!'; btn.style.background = 'linear-gradient(135deg,#059669,#10b981)'; }
+    _setBtnState('✅ Saved!', true, 'linear-gradient(135deg,#059669,#10b981)');
     if (status) {
       status.textContent = 'Quote ID: ' + window._savedQuoteId;
       status.style.color = '#4ade80';
@@ -15715,12 +15727,10 @@ async function saveSalesQuote(overwriteMode) {
     var pdfBtn = document.getElementById('quotePdfBtn');
     if (pdfBtn) pdfBtn.style.display = '';
 
-    setTimeout(function(){
-      if (btn) { btn.disabled = false; btn.textContent = '💾 Save Quote'; btn.style.background = ''; }
-    }, 3000);
+    setTimeout(function(){ _setBtnState('💾 Save Quote', false, ''); }, 3000);
 
   } catch(err) {
-    if (btn) { btn.textContent = '💾 Save Quote'; btn.disabled = false; }
+    _setBtnState('💾 Save Quote', false, '');
     alert('Save failed: ' + err.message);
   }
 }
