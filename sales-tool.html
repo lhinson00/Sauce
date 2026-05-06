@@ -1070,7 +1070,6 @@ body.customer-mode #custColorChartLink { display: block !important; }
 
   <div style="display:flex;align-items:center;gap:6px;">
     <div id="calcStatusBadge" class="state-confirmed"><div class="csb-dot"></div><span id="calcStatusText">Ready</span></div>
-    <div id="missingPriceWarn" onclick="try{openMaterialsModal();}catch(e){}" title="Click to open Materials list" style="display:none;align-items:center;gap:5px;background:rgba(239,68,68,.18);border:1px solid rgba(239,68,68,.5);border-radius:5px;padding:3px 9px;cursor:pointer;margin-left:6px;"><span style="font-size:12px;line-height:1;">⚠</span><span id="missingPriceCount" style="font-size:9px;font-weight:800;color:#ef4444;letter-spacing:.3px;white-space:nowrap;">0 missing prices</span></div>
     <button onclick="forceRefreshPrice()" id="priceRefreshBtn" title="Calculate price" style="display:none;">⟳ Calculate</button>
   </div>
   <div class="price-strip-spacer"></div>
@@ -2387,8 +2386,10 @@ function updateStripFromLocalCalc() {
 
   // Helper: materials subtotal for a variant
   var _missingSkuSet = {}; // deduped set of SKUs with no price — shared across all variants
+  var _variantHasMissing = {}; // per-variant flag: forcedType -> true if any SKU is unpriced
   function matForVariant(forcedType) {
     var total = 0;
+    var hasMissing = false;
     try {
       var res = window.SauceMaterials.calculate(forcedType);
       if (res && res.items) {
@@ -2399,7 +2400,7 @@ function updateStripFromLocalCalc() {
           var up = _pt[_skuKey];
           var _inTable = up != null;
           if (!_inTable || up === 0) {
-            if (item.sku && !_inTable) _missingSkuSet[_skuKey] = true; // only flag genuinely absent SKUs
+            if (item.sku && !_inTable) { _missingSkuSet[_skuKey] = true; hasMissing = true; }
             up = 0; return;
           }
           if (item.metalLength) {
@@ -2414,6 +2415,7 @@ function updateStripFromLocalCalc() {
         });
       }
     } catch(e) {}
+    _variantHasMissing[forcedType] = hasMissing;
     return total;
   }
 
@@ -2499,33 +2501,33 @@ function updateStripFromLocalCalc() {
     var matWithMft = mat + mft + matAdderAmt;  // Match materials modal: mat + MFT + custom adders
     var tax    = farmTax ? 0 : mat * 0.0975;
     var baseLabor = materialKit ? 0 : (v.labor ? v.labor.finalLabor : 0);
-    // Cypress gets an extra labor adder for board installation
+    var isWoodTruss = v.forcedType !== 'steel';
+    // All labor adders are zeroed when materialKit (material-only) is toggled
     var cypressAdderAmt = 0;
-    if (v.forcedType === 'cypress' && window.SauceLabor.calcCypressAdder) {
+    if (!materialKit && v.forcedType === 'cypress' && window.SauceLabor.calcCypressAdder) {
       var cyAdder = window.SauceLabor.calcCypressAdder(Q, shedCfgs);
       if (cyAdder) cypressAdderAmt = cyAdder.amount;
     }
     var bbAdderAmt = 0;
-    if (v.forcedType === 'metalBB' && window.SauceLabor.calcMetalBBAdder) {
+    if (!materialKit && v.forcedType === 'metalBB' && window.SauceLabor.calcMetalBBAdder) {
       var bbAdder = window.SauceLabor.calcMetalBBAdder(Q, shedCfgs);
       if (bbAdder) bbAdderAmt = bbAdder.amount;
     }
     var ssAdderAmt = 0;
-    var isWoodTruss = v.forcedType !== 'steel';
-    if (isWoodTruss && window.SauceLabor.calcStandingSeamAdder) {
+    if (!materialKit && isWoodTruss && window.SauceLabor.calcStandingSeamAdder) {
       var ssLabQ = Object.assign({}, Q, { truss: 'Wood' });
       var ssAdder = window.SauceLabor.calcStandingSeamAdder(ssLabQ, shedCfgs);
       if (ssAdder) ssAdderAmt = ssAdder.amount;
     }
     // OSB roof labor adder — $10/sheet, all wood truss variants when toggle on
     var osbRoofAdderAmt = 0;
-    if (isWoodTruss && !!(document.getElementById('sf_osbRoof')||{}).checked && window.SauceMaterials && window.SauceMaterials.calcOSBRoof) {
+    if (!materialKit && isWoodTruss && !!(document.getElementById('sf_osbRoof')||{}).checked && window.SauceMaterials && window.SauceMaterials.calcOSBRoof) {
       var osbLabQ = Object.assign({}, Q, { truss: 'Wood' });
       window.SauceMaterials.calcOSBRoof(osbLabQ, shedCfgs).forEach(function(i){ osbRoofAdderAmt += (i.quantity||0) * 10; });
     }
     // Wet Set Posts — $350/post, post frame only (not stud, not metalBB)
     var wetSetAdderAmt = 0;
-    if (v.forcedType !== 'stud' && v.forcedType !== 'metalBB' && !!(document.getElementById('st_wetSetPosts')||{}).checked && window.SauceMaterials && window.SauceMaterials.getPostsForWall) {
+    if (!materialKit && v.forcedType !== 'stud' && v.forcedType !== 'metalBB' && !!(document.getElementById('st_wetSetPosts')||{}).checked && window.SauceMaterials && window.SauceMaterials.getPostsForWall) {
       var SM2 = window.SauceMaterials;
       var wetPostCount = SM2.getPostsForWall('left', Q, WALLS, shedCfgs).length
                        + SM2.getPostsForWall('right', Q, WALLS, shedCfgs).length
@@ -2536,25 +2538,25 @@ function updateStripFromLocalCalc() {
     }
     // Post Protectors labor — $10/post
     var postProtAdderAmt = 0;
-    if (!!(document.getElementById('st_postProtectors')||{}).checked && window.SauceMaterials && window.SauceMaterials.calcPostProtectors) {
+    if (!materialKit && !!(document.getElementById('st_postProtectors')||{}).checked && window.SauceMaterials && window.SauceMaterials.calcPostProtectors) {
       window.SauceMaterials.calcPostProtectors(Q, WALLS, window._allDoors||[], shedCfgs).forEach(function(i){ postProtAdderAmt += (i.quantity||0) * 10; });
     }
     // 6/12 Pitch labor — $0.25/sqft footprint, steel truss only
     var pitch612AdderAmt = 0;
-    if (v.forcedType === 'steel' && !!(document.getElementById('st_pitch612')||{}).checked) {
+    if (!materialKit && v.forcedType === 'steel' && !!(document.getElementById('st_pitch612')||{}).checked) {
       var p612Sqft = (Q.w||0) * (Q.l||0);
       (shedCfgs||[]).forEach(function(sc){ if (sc.w && sc.l) p612Sqft += shedConcreteSqft(sc, Q); });
       pitch612AdderAmt = p612Sqft * 0.25;
     }
     // Cable Bracing labor — $400/set, steel truss only
     var cableBracingAdderAmt = 0;
-    if (v.forcedType === 'steel' && !!(document.getElementById('st_cableBracing')||{}).checked && window.SauceMaterials && window.SauceMaterials.calcCableBracing) {
+    if (!materialKit && v.forcedType === 'steel' && !!(document.getElementById('st_cableBracing')||{}).checked && window.SauceMaterials && window.SauceMaterials.calcCableBracing) {
       var cableItems = window.SauceMaterials.calcCableBracing(Q);
       if (cableItems.length) cableBracingAdderAmt = (cableItems[0].quantity || 0) * 400;
     }
     // Widow's Peak labor — $150, not on steel or woodNoOH
     var widowsPeakAdderAmt = 0;
-    if (v.forcedType !== 'steel' && v.forcedType !== 'woodNoOH' && !!(document.getElementById('st_widowsPeak')||{}).checked) {
+    if (!materialKit && v.forcedType !== 'steel' && v.forcedType !== 'woodNoOH' && !!(document.getElementById('st_widowsPeak')||{}).checked) {
       widowsPeakAdderAmt = 150;
     }
     var labor  = baseLabor + cypressAdderAmt + bbAdderAmt + ssAdderAmt + osbRoofAdderAmt + wetSetAdderAmt + postProtAdderAmt + pitch612AdderAmt + cableBracingAdderAmt + widowsPeakAdderAmt;
@@ -2578,6 +2580,14 @@ function updateStripFromLocalCalc() {
       tot.textContent = grand > 0 ? fmtPriceFull(grand) : '—';
       tot.classList.remove('pending');
       if (grand > 0) tot.classList.add('highlight'); else tot.classList.remove('highlight');
+      // Red total if this variant has any unpriced SKUs
+      if (_variantHasMissing[v.forcedType]) {
+        tot.style.color = '#ef4444';
+        tot.style.fontWeight = '900';
+      } else {
+        tot.style.color = '';
+        tot.style.fontWeight = '';
+      }
     }
 
     // Store into _lastPrice* so PDF/email can read them
@@ -2633,22 +2643,8 @@ function updateStripFromLocalCalc() {
     }
   });
 
-  // Update missing price warning pill in price strip
-  (function() {
-    var missingSkus = Object.keys(_missingSkuSet || {});
-    window._missingPriceSKUs = missingSkus;
-    var pill = document.getElementById('missingPriceWarn');
-    var countEl = document.getElementById('missingPriceCount');
-    if (!pill || !countEl) return;
-    if (missingSkus.length > 0) {
-      countEl.textContent = missingSkus.length + ' missing price' + (missingSkus.length > 1 ? 's' : '');
-      // Build tooltip showing each missing SKU
-      pill.title = 'Missing prices: ' + missingSkus.join(', ') + ' — Click to open Materials list';
-      pill.style.display = 'flex';
-    } else {
-      pill.style.display = 'none';
-    }
-  })();
+  // Store missing SKUs for downstream use (materials modal, etc.)
+  window._missingPriceSKUs = Object.keys(_missingSkuSet || {});
 }
 function triggerBuild() {
   // Always sync hidden color selects from JS vars before building
