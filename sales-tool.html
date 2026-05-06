@@ -14760,10 +14760,17 @@ function _renderDesignList(quotes, list, append) {
     return n > 0 ? '$'+Math.round(n).toLocaleString('en-US') : '';
   }
 
-  // Group by customer name
+  // Sort all quotes newest-first before grouping so group order also reflects recency
+  var sorted = quotes.slice().sort(function(a, b) {
+    var ta = a.timestamp ? new Date(a.timestamp).getTime() : (a.date ? new Date(a.date).getTime() : 0);
+    var tb = b.timestamp ? new Date(b.timestamp).getTime() : (b.date ? new Date(b.date).getTime() : 0);
+    return tb - ta;
+  });
+
+  // Group by customer name — group order follows first appearance (newest quote wins)
   var groups = {};
   var groupOrder = [];
-  quotes.forEach(function(d) {
+  sorted.forEach(function(d) {
     var key = (d.name || d.label || d.customerName || 'Unnamed').trim();
     if (!groups[key]) { groups[key] = []; groupOrder.push(key); }
     groups[key].push(d);
@@ -15051,8 +15058,12 @@ function _renderDesignList(quotes, list, append) {
   var html = '';
   groupOrder.forEach(function(name) {
     var grp = groups[name];
-    // Sort newest first
-    grp.sort(function(a,b){ return new Date(b.date||0) - new Date(a.date||0); });
+    // Sort newest first — prefer timestamp, fall back to date
+    grp.sort(function(a,b){
+      var ta = a.timestamp ? new Date(a.timestamp).getTime() : (a.date ? new Date(a.date).getTime() : 0);
+      var tb = b.timestamp ? new Date(b.timestamp).getTime() : (b.date ? new Date(b.date).getTime() : 0);
+      return tb - ta;
+    });
     var multi = grp.length > 1;
     html += '<div style="margin-bottom:16px;">';
     // Customer header
@@ -29656,7 +29667,7 @@ window.openConcreteModal = function(forcedType) {
   resultsDiv.style.cssText = 'background:#1e293b;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:3px;';
 
   // Build options UI for a section — chip-based, intuitive
-  function buildOptsUI(labelText, sqft, savedOpts, onChange) {
+  function buildOptsUI(labelText, sqft, savedOpts, onChange, isStudFrame) {
     var wrap = document.createElement('div');
     wrap.style.cssText = 'background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px;transition:border-color .2s;';
 
@@ -29765,11 +29776,22 @@ window.openConcreteModal = function(forcedType) {
     optsWrap.appendChild(thickGroup);
 
     // ── Footers ──
+    // Stud frame / Metal B&B always requires footers + metal ledge — auto-force when isStudFrame
     var footGroup = document.createElement('div');
     footGroup.appendChild(makeRowLabel('Footers'));
     // savedOpts.footers is boolean — convert to '1'/'0' string for chip matching
-    var savedFootersVal = savedOpts ? (savedOpts.footers ? '1' : '0') : '0';
+    // isStudFrame overrides to '1' always (stud frame cannot be poured in-ground)
+    var savedFootersVal = isStudFrame ? '1' : (savedOpts ? (savedOpts.footers ? '1' : '0') : '0');
     var footChips = makeChips([{val:'0',label:'No Footers'},{val:'1',label:'w/ Footers'}], null, savedFootersVal);
+    if (isStudFrame) {
+      // Lock footer chips — stud/BB frame must always use footers
+      footChips.querySelectorAll('button').forEach(function(b) {
+        b.disabled = true;
+        b.style.opacity = b.textContent.indexOf('w/ Footer') >= 0 ? '1' : '0.3';
+        b.style.cursor = 'default';
+        b.onclick = function(e) { e.stopPropagation(); };
+      });
+    }
     footGroup.appendChild(footChips);
     optsWrap.appendChild(footGroup);
 
@@ -29801,7 +29823,7 @@ window.openConcreteModal = function(forcedType) {
     extrasGroup.appendChild(makeRowLabel('Extras'));
     var extrasRow = document.createElement('div');
     extrasRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
-    var savedML = savedOpts ? !!savedOpts.metalLedge : false;
+    var savedML = isStudFrame ? true : (savedOpts ? !!savedOpts.metalLedge : false);
     var savedSt = savedOpts ? !!savedOpts.stamped : false;
     var metalLedgeChk = makeCheckbox('Metal Ledge  +$0.25/sqft', '_', savedML);
     var stampedChk    = makeCheckbox('Stamped  +$10.00/sqft', '_', savedSt);
@@ -29837,10 +29859,10 @@ window.openConcreteModal = function(forcedType) {
       return {
         included:      true,
         thickness:     thickChips.getValue(),
-        footers:       footChips.getValue() === '1',
+        footers:       isStudFrame ? true : (footChips.getValue() === '1'), // stud/BB always w/ footers
         psi:           parseInt(psiChips.getValue()),
         reinforcement: reinforcement,
-        metalLedge:    metalLedgeChk.getValue(),
+        metalLedge:    isStudFrame ? true : metalLedgeChk.getValue(), // stud/BB always metal ledge
         stamped:       stampedChk.getValue()
       };
     };
@@ -29935,7 +29957,7 @@ window.openConcreteModal = function(forcedType) {
 
     // Full slab opts (reuse buildOptsUI embedded)
     var _slabSaved2 = (savedOpts && savedOpts.type !== 'piers') ? Object.assign({}, savedOpts, { included: true }) : { included: true };
-    var slabOptsWrap2 = buildOptsUI('', mainSqft, _slabSaved2, onChange);
+    var slabOptsWrap2 = buildOptsUI('', mainSqft, _slabSaved2, onChange, (typeof currentFrameType !== 'undefined' && (currentFrameType === 'stud')));
     slabOptsWrap2.style.cssText = 'display:' + (_mode==='slab' ? 'flex' : 'none') + ';flex-direction:column;gap:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:10px;margin-top:2px;';
 
     pierBtn2.onclick = function() { _mode='piers'; styleModeChips2(); slabOptsWrap2.style.display='none'; pierInfoRow2.style.display='flex'; onChange(); };
