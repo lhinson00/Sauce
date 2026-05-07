@@ -374,13 +374,15 @@ async function sbFetch(path, opts={}) {
 
 async function loadQuotes() {
   const rows = await sbFetch(
-    `quotes?salesman=eq.${enc(CU.username)}&select=id,date,name,phone,email,city,total,specs,status,form_fields,pricing_results,config_encoded,updated_at,crm_data&order=updated_at.desc&limit=500`
+    `quotes?salesman=eq.${enc(CU.username)}&select=id,date,name,phone,email,city,total,specs,status,form_fields,pricing_results,config_encoded,updated_at,crm_data,snapshot&order=updated_at.desc&limit=500`
   );
   return (rows||[]).map(norm);
 }
 
 function norm(r) {
   const c = r.crm_data || {};
+  const snap = r.snapshot || {};
+  const ds = snap.displaySummary || {};
   return {
     id: r.id||'', date: r.date||'', updated_at: r.updated_at||'',
     name: r.name||'', phone: r.phone||'', email: r.email||'', city: r.city||'',
@@ -391,9 +393,12 @@ function norm(r) {
     final_material:  c.final_material  || 0,
     cs_amount:       c.cs_amount       || 0,
     mat_only:        c.mat_only        || false,
+    selected_variants: c.selected_variants || [],
     form_fields:     r.form_fields     || {},
     pricing_results: r.pricing_results || {},
     config_encoded:  r.config_encoded  || '',
+    display_summary: ds,
+    snapshot:        snap,
   };
 }
 
@@ -696,104 +701,169 @@ function renderCommission() {
 async function openDetail(id) {
   const q=QQ.find(q=>q.id===id); if(!q)return;
   _cq=q;
-  const ff=q.form_fields||{}, pr=q.pricing_results||{};
-  document.getElementById('dp-title').textContent=q.name||'Unknown Customer';
-  document.getElementById('dp-sub').textContent=q.id+' · '+(q.date||'')+' · '+(q.city||'');
-  document.getElementById('dp-badge').innerHTML=badge(q.status)+(q.mat_only?' <span class="badge badge-matonly">Mat Only</span>':'');
+  const ff  = q.form_fields     || {};
+  const pr  = q.pricing_results || {};
+  const ds  = q.display_summary || {};
+  const snap= q.snapshot        || {};
 
-  const notes=await loadNotes(id);
+  document.getElementById('dp-title').textContent = q.name||'Unknown Customer';
+  document.getElementById('dp-sub').textContent   = q.id+' · Quoted '+fmtDate(q.date)+(q.city?' · '+q.city:'');
+  document.getElementById('dp-badge').innerHTML   = badge(q.status)+(q.mat_only?' <span class="badge badge-matonly">Mat Only</span>':'');
 
-  document.getElementById('dp-body').innerHTML=`
-    <!-- LEFT -->
-    <div>
-      <div class="dp-sec">Customer</div>
-      <div class="card-sm" style="margin-bottom:14px">
-        <div style="font-size:16px;font-weight:600;margin-bottom:8px">${q.name||'—'}</div>
-        ${q.phone?`<div style="margin-bottom:4px;color:var(--text2)">📱 ${q.phone}</div>`:''}
-        ${q.email?`<div style="margin-bottom:4px;color:var(--text2)">✉️ ${q.email}</div>`:''}
-        ${q.city?`<div style="color:var(--text2)">📍 ${q.city}</div>`:''}
-      </div>
-      <div class="dp-sec">CRM Status</div>
-      <div class="f-group">
-        <label class="f-label">Status</label>
-        <select class="f-ctrl" onchange="dpPatch('${id}','status',this.value);document.getElementById('dp-badge').innerHTML=badge(this.value)+(${q.mat_only}?' <span class class=badge badge-matonly>Mat Only</span>':'')">
-          ${STATUSES.map(s=>`<option${s===q.status?' selected':''}>${s}</option>`).join('')}
-        </select>
-      </div>
-      <div class="f-group">
-        <label class="f-label">Follow-Up Date</label>
-        <input type="date" class="f-ctrl" value="${q.follow_up_date||''}" onchange="dpPatch('${id}','follow_up_date',this.value)">
-      </div>
-      <div class="f-group">
-        <label class="f-label">Ship / Invoice Date</label>
-        <input type="date" class="f-ctrl" value="${q.ship_date||''}" onchange="dpPatch('${id}','ship_date',this.value)">
-      </div>
-      <div class="f-group">
-        <label class="f-label">Final Material Total</label>
-        <input type="number" step="0.01" class="f-ctrl" placeholder="0.00" value="${q.final_material||''}" onchange="dpPatch('${id}','final_material',+this.value)">
-      </div>
-      <div class="f-group">
-        <label class="f-label">CS Amount</label>
-        <input type="number" step="0.01" class="f-ctrl" placeholder="0.00" value="${q.cs_amount||''}" onchange="dpPatch('${id}','cs_amount',+this.value)">
-      </div>
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px">
-        <input type="checkbox" ${q.mat_only?'checked':''} style="width:15px;height:15px;accent-color:var(--amber)" onchange="dpPatch('${id}','mat_only',this.checked)">
-        <span style="font-size:13px;color:var(--text2)">Material Only</span>
-      </label>
-    </div>
-    <!-- RIGHT -->
-    <div>
-      <div class="dp-sec">Building</div>
-      <div class="bld-grid">
-        ${ff.width?`<div class="bld-item"><div class="bld-lbl">Width</div><div class="bld-val">${ff.width}'</div></div>`:''}
-        ${ff.length?`<div class="bld-item"><div class="bld-lbl">Length</div><div class="bld-val">${ff.length}'</div></div>`:''}
-        ${ff.height?`<div class="bld-item"><div class="bld-lbl">Height</div><div class="bld-val">${ff.height}'</div></div>`:''}
-        ${ff.roofPitch?`<div class="bld-item"><div class="bld-lbl">Pitch</div><div class="bld-val">${ff.roofPitch}/12</div></div>`:''}
-        ${ff.truss?`<div class="bld-item"><div class="bld-lbl">Truss</div><div class="bld-val">${ff.truss}</div></div>`:''}
-        ${ff.roofMetal?`<div class="bld-item"><div class="bld-lbl">Metal</div><div class="bld-val">${ff.roofMetal}</div></div>`:''}
-        ${ff.roofColor?`<div class="bld-item"><div class="bld-lbl">Roof</div><div class="bld-val">${ff.roofColor}</div></div>`:''}
-        ${ff.wallColor?`<div class="bld-item"><div class="bld-lbl">Wall</div><div class="bld-val">${ff.wallColor}</div></div>`:''}
-        ${ff.trimColor?`<div class="bld-item"><div class="bld-lbl">Trim</div><div class="bld-val">${ff.trimColor}</div></div>`:''}
-        ${ff.concrete&&ff.concrete!=='None'?`<div class="bld-item"><div class="bld-lbl">Concrete</div><div class="bld-val">${ff.concrete}</div></div>`:''}
-        ${ff.insulation&&ff.insulation!=='None'?`<div class="bld-item"><div class="bld-lbl">Insulation</div><div class="bld-val">${ff.insulation}</div></div>`:''}
-        ${ff.wainscot==='Yes'?`<div class="bld-item"><div class="bld-lbl">Wainscot</div><div class="bld-val">Yes</div></div>`:''}
-      </div>
-      ${q.specs?`<div style="font-size:12px;color:var(--text3);margin-bottom:12px">${q.specs}</div>`:''}
-      <div class="dp-sec">Quoted Pricing</div>
-      <div class="card-sm" style="margin-bottom:12px">
-        ${pr.totalNoOH?`<div class="price-row"><span class="price-lbl">Post Frame (No OH)</span><span class="price-val">${pr.totalNoOH}</span></div>`:''}
-        ${pr.totalOH?`<div class="price-row"><span class="price-lbl">Post Frame (w/ Soffit)</span><span class="price-val">${pr.totalOH}</span></div>`:''}
-        ${pr.totalSteel?`<div class="price-row"><span class="price-lbl">Steel Truss</span><span class="price-val">${pr.totalSteel}</span></div>`:''}
-        ${pr.totalStud?`<div class="price-row"><span class="price-lbl">Stud Frame</span><span class="price-val">${pr.totalStud}</span></div>`:''}
-        ${pr.totalCypress?`<div class="price-row"><span class="price-lbl">Cypress B&amp;B</span><span class="price-val">${pr.totalCypress}</span></div>`:''}
-        ${pr.totalBB?`<div class="price-row"><span class="price-lbl">Metal B&amp;B</span><span class="price-val">${pr.totalBB}</span></div>`:''}
-        ${!pr.totalOH&&!pr.totalNoOH&&!pr.totalSteel&&!pr.totalStud&&!pr.totalCypress&&!pr.totalBB?'<div style="color:var(--text3);font-size:12px">No pricing data.</div>':''}
-      </div>
-    </div>
-    <!-- FULL: Contact Log -->
-    <div class="dp-full">
-      <div class="dp-sec">Contact Log</div>
-      <div id="dp-notes">${renderNotes(notes)}</div>
-      <div style="display:flex;gap:8px;margin-top:10px">
-        <select id="nt-type" class="f-ctrl" style="flex-shrink:0;width:110px">
-          <option value="note">Note</option>
-          <option value="call">Call</option>
-          <option value="text">Text</option>
-          <option value="email">Email</option>
-        </select>
-        <input id="nt-body" class="f-ctrl" style="flex:1" placeholder="Add a note, call log, or follow-up…" onkeydown="if(event.key==='Enter')addNote('${id}')">
-        <button class="btn btn-primary btn-sm" onclick="addNote('${id}')">Add</button>
-      </div>
-    </div>
-  `;
+  const notes = await loadNotes(id);
 
-  document.getElementById('dp-actions').innerHTML=`
-    ${q.phone?`<a class="act-link green" href="sms:${q.phone.replace(/\D/g,'')}" onclick="saveNote('${id}','text','Sent text message')">📱 Text</a>`:''}
-    ${q.email?`<a class="act-link green" href="mailto:${q.email}?subject=Your Pole Barn Quote ${q.id}" onclick="saveNote('${id}','email','Sent email')">✉️ Email</a>`:''}
-    ${q.config_encoded?`<a class="act-link" href="${SALES}?quote=${q.id}" target="_blank">🔗 Open in Sales Tool</a>`:''}
-    <a class="act-link" href="${SALES}" target="_blank">➕ New Quote</a>
-    <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="closeDetail()">Close</button>
-  `;
+  // Pricing variants
+  const VMAP = [
+    {key:'totalNoOH',    label:'Post Frame — No Overhang'},
+    {key:'totalOH',      label:'Post Frame — 12" Soffit'},
+    {key:'totalSteel',   label:'Steel Truss'},
+    {key:'totalStud',    label:'Stud Frame'},
+    {key:'totalCypress', label:'Cypress Board & Batten'},
+    {key:'totalBB',      label:'Metal Board & Batten'},
+  ];
+  const storedTotal = parseMoney(q.total);
+  let presentedKey = null;
+  if (storedTotal > 0) {
+    const m = VMAP.find(v=>{ const vt=parseMoney(pr[v.key]); return vt>0&&Math.abs(vt-storedTotal)<5; });
+    if (m) presentedKey = m.key;
+  }
+  const savedV = q.selected_variants || [];
+  const showV  = savedV.length > 0
+    ? VMAP.filter(v=>savedV.includes(v.key)&&pr[v.key])
+    : VMAP.filter(v=>pr[v.key]&&parseMoney(pr[v.key])>0);
+
+  // Building
+  const dims  = [ff.width,ff.length,ff.height].filter(Boolean).map(d=>d+"'").join(' x ');
+  const pitch = ff.roofPitch ? ff.roofPitch+'/12' : '';
+  const truss = ff.truss || ds.truss || '';
+  const oh    = ds.oh && ds.oh!=='0' ? ds.oh+'" Soffit' : 'No Soffit';
+
+  const gds  = Object.keys(ff).filter(k=>k.startsWith('garageDoor')&&k.endsWith('Type')).map(k=>ff[k]).filter(Boolean);
+  const wds  = Object.keys(ff).filter(k=>k.startsWith('walkDoor')  &&k.endsWith('Type')).map(k=>ff[k]).filter(Boolean);
+  const wins = Object.keys(ff).filter(k=>k.startsWith('window')    &&k.endsWith('Type')).map(k=>ff[k]).filter(Boolean);
+
+  const upg=[];
+  if(ff.insulation&&ff.insulation!=='None') upg.push('Insulation: '+ff.insulation);
+  if(ff.insulationRoof==='Yes') upg.push('Roof Insulation');
+  if(ff.insulationWalls==='Yes') upg.push('Wall Insulation');
+  if(ff.concrete&&ff.concrete!=='None') upg.push('Concrete: '+ff.concrete);
+  if(ff.wainscot==='Yes') upg.push('Wainscot'+(ds.wainscotColor?' ('+ds.wainscotColor+')':''));
+  if(ff.postWraps==='Yes') upg.push('Post Wraps');
+  if(ff.lvlHeaders==='Yes') upg.push('LVL Headers');
+  if(ff.gutters==='Yes') upg.push('Gutters'+(ds.gutterType?' — '+ds.gutterType:'')+(ds.gutterGuard?' w/ Guard':''));
+  if(ff.barjoist==='Yes') upg.push('Bar Joist'+(ff.barjoistType?' ('+ff.barjoistType+')':''));
+  if(ff.wetSetPosts==='Yes') upg.push('Wet-Set Posts');
+  if(ff.postProtectors==='Yes') upg.push('Post Protectors');
+  if(ff.rockWainscot==='Yes') upg.push('Stone Wainscot');
+  if(ds.cupolaOn) upg.push('Cupola '+ds.cupolaSize+'" x '+ds.cupolaQty);
+  if(ff.pitch612==='Yes') upg.push('6/12 Pitch (Steel)');
+  if(ff.manualNotes) upg.push('Notes: '+ff.manualNotes);
+
+  const pricingRows = showV.map(v => {
+    const isp = v.key===presentedKey;
+    const bg  = isp ? 'background:rgba(255,140,0,.09);' : '';
+    const clr = isp ? 'color:var(--amber)' : 'color:var(--text2)';
+    const lclr= isp ? 'color:var(--text);font-weight:600' : 'color:var(--text2)';
+    const pBadge = isp ? '<span style="font-size:9px;font-weight:700;letter-spacing:1px;color:var(--amber);text-transform:uppercase;margin-left:8px;background:var(--amber-dim);padding:1px 6px;border-radius:3px;border:1px solid var(--amber2)">PRESENTED</span>' : '';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:11px 14px;border-bottom:1px solid var(--border);'+bg+'">'
+      + '<div style="font-size:13px;'+lclr+'">'+v.label+pBadge+'</div>'
+      + '<div style="font-family:Barlow Condensed,sans-serif;font-size:20px;font-weight:700;'+clr+'">'+pr[v.key]+'</div>'
+      + '</div>';
+  }).join('');
+
+  const upgRows = upg.map(u =>
+    '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:13px;color:var(--text2)">'
+    +'<span style="color:var(--green);flex-shrink:0">✓</span>'+u+'</div>'
+  ).join('');
+
+  const bldGrid = [
+    ff.roofColor  ? ['Roof Color', ff.roofColor]   : null,
+    ff.wallColor  ? ['Wall Color', ff.wallColor]   : null,
+    ff.trimColor  ? ['Trim Color', ff.trimColor]   : null,
+    ff.roofMetal  ? ['Roof Metal', ff.roofMetal]   : null,
+    ff.wallMetal  ? ['Wall Metal', ff.wallMetal]   : null,
+    ff.mbPostSize ? ['Post Size',  ff.mbPostSize]  : null,
+    ff.eavePostSpacing ? ['Eave Spacing', ff.eavePostSpacing+"'"] : null,
+    ff.trussSpacing    ? ['Truss Spacing', ff.trussSpacing+"'"]  : null,
+  ].filter(Boolean).map(([lbl,val]) =>
+    '<div class="bld-item"><div class="bld-lbl">'+lbl+'</div><div class="bld-val">'+val+'</div></div>'
+  ).join('');
+
+  document.getElementById('dp-body').innerHTML =
+    '<div>'
+    +'<div class="dp-sec">Customer</div>'
+    +'<div class="card-sm" style="margin-bottom:14px">'
+    +'<div style="font-size:17px;font-weight:600;color:var(--text);margin-bottom:10px">'+q.name+'</div>'
+    +(q.phone?'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="color:var(--text2)">📱 '+q.phone+'</span><a class="fup-btn" style="font-size:11px;padding:2px 8px" href="sms:'+q.phone.replace(/\D/g,'')+'">Text</a></div>':'')
+    +(q.email?'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="color:var(--text2)">✉️ '+q.email+'</span><a class="fup-btn" style="font-size:11px;padding:2px 8px" href="mailto:'+q.email+'?subject=Your Pole Barn Quote '+q.id+'">Email</a></div>':'')
+    +(q.city?'<div style="color:var(--text2)">📍 '+q.city+'</div>':'')
+    +'</div>'
+    +'<div class="dp-sec">CRM Status</div>'
+    +'<div class="f-group"><label class="f-label">Status</label>'
+    +'<select class="f-ctrl" onchange="dpPatch(\''+id+'\',\'status\',this.value);document.getElementById(\'dp-badge\').innerHTML=badge(this.value)">'
+    +STATUSES.map(s=>'<option'+(s===q.status?' selected':'')+'>'+s+'</option>').join('')
+    +'</select></div>'
+    +'<div class="f-group"><label class="f-label">Follow-Up Date</label><input type="date" class="f-ctrl" value="'+(q.follow_up_date||'')+'" onchange="dpPatch(\''+id+'\',\'follow_up_date\',this.value)"></div>'
+    +'<div class="f-group"><label class="f-label">Ship / Invoice Date</label><input type="date" class="f-ctrl" value="'+(q.ship_date||'')+'" onchange="dpPatch(\''+id+'\',\'ship_date\',this.value)"></div>'
+    +'<div class="f-group"><label class="f-label">Final Material Total</label><input type="number" step="0.01" class="f-ctrl" placeholder="0.00" value="'+(q.final_material||'')+'" onchange="dpPatch(\''+id+'\',\'final_material\',+this.value)"></div>'
+    +'<div class="f-group"><label class="f-label">CS Amount</label><input type="number" step="0.01" class="f-ctrl" placeholder="0.00" value="'+(q.cs_amount||'')+'" onchange="dpPatch(\''+id+'\',\'cs_amount\',+this.value)"></div>'
+    +'<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px">'
+    +'<input type="checkbox" '+(q.mat_only?'checked':'')+' style="width:15px;height:15px;accent-color:var(--amber)" onchange="dpPatch(\''+id+'\',\'mat_only\',this.checked)">'
+    +'<span style="font-size:13px;color:var(--text2)">Material Only</span></label>'
+    +'</div>'
+
+    +'<div>'
+    +'<div class="dp-sec">What Was Quoted</div>'
+    +'<div style="background:var(--bg3);border-radius:var(--radius);padding:16px;margin-bottom:12px;border:1px solid var(--border2)">'
+    +'<div style="font-family:Barlow Condensed,sans-serif;font-size:32px;font-weight:700;color:var(--text);letter-spacing:.5px;margin-bottom:4px">'+(dims||'—')+'</div>'
+    +'<div style="font-size:14px;color:var(--text2);margin-bottom:14px">'+[truss,pitch,oh].filter(Boolean).join(' · ')+'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">'+bldGrid+'</div>'
+    +'</div>'
+
+    +(gds.length||wds.length||wins.length ?
+      '<div class="dp-sec">Openings</div>'
+      +'<div style="background:var(--bg3);border-radius:var(--radius);padding:12px 14px;margin-bottom:12px;border:1px solid var(--border2)">'
+      +(gds.length?'<div style="margin-bottom:10px"><div class="bld-lbl" style="margin-bottom:5px">Overhead Doors ('+gds.length+')</div><div style="color:var(--text2);font-size:13px">'+gds.join(' · ')+'</div></div>':'')
+      +(wds.length?'<div style="margin-bottom:10px"><div class="bld-lbl" style="margin-bottom:5px">Walk Doors ('+wds.length+')</div><div style="color:var(--text2);font-size:13px">'+wds.join(' · ')+'</div></div>':'')
+      +(wins.length?'<div><div class="bld-lbl" style="margin-bottom:5px">Windows ('+wins.length+')</div><div style="color:var(--text2);font-size:13px">'+wins.join(' · ')+'</div></div>':'')
+      +'</div>'
+    : '')
+
+    +(ds.sheds ?
+      '<div class="dp-sec">Side Sheds / Extensions</div>'
+      +'<div style="background:var(--bg3);border-radius:var(--radius);padding:12px 14px;margin-bottom:12px;border:1px solid var(--border2);color:var(--text2);font-size:13px">'+ds.sheds+'</div>'
+    : '')
+
+    +(upg.length ?
+      '<div class="dp-sec">Upgrades & Options</div>'
+      +'<div style="background:var(--bg3);border-radius:var(--radius);padding:10px 14px;margin-bottom:12px;border:1px solid var(--border2)">'+upgRows+'</div>'
+    : '')
+
+    +'<div class="dp-sec">Quoted Pricing — '+showV.length+' Variant'+(showV.length!==1?'s':'')+'</div>'
+    +'<div style="background:var(--bg3);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border2);margin-bottom:12px">'
+    +(pricingRows||'<div style="padding:14px;color:var(--text3);font-size:12px">No pricing saved with this quote.</div>')
+    +'</div>'
+    +'</div>'
+
+    +'<div class="dp-full">'
+    +'<div class="dp-sec">Contact Log</div>'
+    +'<div id="dp-notes">'+renderNotes(notes)+'</div>'
+    +'<div style="display:flex;gap:8px;margin-top:10px">'
+    +'<select id="nt-type" class="f-ctrl" style="flex-shrink:0;width:110px">'
+    +'<option value="note">Note</option><option value="call">Call</option>'
+    +'<option value="text">Text</option><option value="email">Email</option>'
+    +'</select>'
+    +'<input id="nt-body" class="f-ctrl" style="flex:1" placeholder="Add a note, call log, or follow-up…" onkeydown="if(event.key===\'Enter\')addNote(\''+id+'\')">'
+    +'<button class="btn btn-primary btn-sm" onclick="addNote(\''+id+'\')">Add</button>'
+    +'</div>'
+    +'</div>';
+
+  document.getElementById('dp-actions').innerHTML =
+    (q.phone?'<a class="act-link green" href="sms:'+q.phone.replace(/\D/g,'')+'" onclick="saveNote(\''+id+'\',\'text\',\'Sent text message\')">📱 Text</a>':'')
+    +(q.email?'<a class="act-link green" href="mailto:'+q.email+'?subject=Your Pole Barn Quote '+q.id+'" onclick="saveNote(\''+id+'\',\'email\',\'Sent email\')">✉️ Email</a>':'')
+    +(q.config_encoded?'<a class="act-link" href="'+SALES+'?quote='+q.id+'" target="_blank">🔗 Open in Sales Tool</a>':'')
+    +'<a class="act-link" href="'+SALES+'" target="_blank">➕ New Quote</a>'
+    +'<button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="closeDetail()">Close</button>';
 
   document.getElementById('detail-overlay').classList.add('open');
 }
