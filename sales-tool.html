@@ -33561,3 +33561,59 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
   .catch(function() { triggerBuild(); });
 })();
 </script>
+
+<script>
+// ── CRM QUOTE LOADER ─────────────────────────────────────────────────────────
+// Loads a quote in full salesman edit mode when opened from the CRM via ?quote=ID
+// Fires after auth is initialized — safe to call getToken()
+(function() {
+  var _p = new URLSearchParams(window.location.search);
+  var _qid = _p.get('quote') || _p.get('loadQuote');
+  if (!_qid || _p.get('view') === '1') return; // view=1 handled by loader above
+  if (_qid.indexOf('CR-') === 0 || _qid.indexOf('CC-') === 0) return;
+
+  function _doLoad() {
+    var _su = 'https://rvhzploxeeqgggjefsif.supabase.co';
+    var _sk = 'sb_publishable_JFnksTNbexbFQ0LZtC3Olg_Tf2baKx4';
+    console.log('[CRM] Loading quote in salesman mode:', _qid);
+    fetch(_su + '/rest/v1/quotes?id=eq.' + encodeURIComponent(_qid)
+      + '&select=config_encoded,form_fields,pricing_results,name,phone,email,city,snapshot', {
+      headers: { 'apikey': _sk, 'Authorization': 'Bearer ' + _sk }
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(rows) {
+      if (!rows || !rows[0]) { console.warn('[CRM] Quote not found:', _qid); return; }
+      var row = rows[0];
+      var snap = row.snapshot || {};
+      var ff = row.form_fields || snap.formFields || {};
+      if (!row.config_encoded) { console.warn('[CRM] No config_encoded for:', _qid); return; }
+      safeDecodeAsync(row.config_encoded).then(function(cfg) {
+        if (!cfg) { console.warn('[CRM] Could not decode config'); return; }
+        restoreConfig(cfg);
+        triggerBuild();
+        // Restore customer fields
+        setTimeout(function() {
+          var name  = row.name  || (snap.salesFields && snap.salesFields.name)  || '';
+          var phone = row.phone || (snap.salesFields && snap.salesFields.phone) || '';
+          var email = row.email || (snap.salesFields && snap.salesFields.email) || '';
+          var city  = row.city  || (snap.salesFields && snap.salesFields.address) || '';
+          function _sv(id, val) { var el = document.getElementById(id); if (el && val) el.value = val; }
+          _sv('st_name',    name);
+          _sv('st_phone',   phone);
+          _sv('st_email',   email);
+          _sv('st_address', city);
+          window._loadedQuoteId = _qid;
+          console.log('[CRM] Quote loaded:', _qid, name);
+        }, 600);
+      }).catch(function(e) { console.warn('[CRM] Decode error:', e); });
+    })
+    .catch(function(e) { console.warn('[CRM] Fetch error:', e); });
+  }
+
+  // Wait for auth to be ready before loading
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() { setTimeout(_doLoad, 800); });
+  } else {
+    setTimeout(_doLoad, 800);
+  }
+})();
