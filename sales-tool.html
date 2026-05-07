@@ -21225,11 +21225,47 @@ window.SauceMaterials.calcWoodPurlins = function(Q) {
     60:  {noOH_412:32, noOH_612:34, OH12_412:34, OH12_612:36, OH18_412:34, OH18_612:36}
   };
 
-  // Determine scenario key from building config
-  function getKey(oh, pitch) {
-    var ohKey  = oh === 0 ? 'noOH' : (oh <= 12 ? 'OH12' : 'OH18');
-    var pitchKey = pitch <= 4 ? '412' : '612';
-    return ohKey + '_' + pitchKey;
+  // Purlin row count = ceilEven(metalLength) — reproduces existing chart exactly for 4/12 and 6/12,
+  // and correctly extends to 8/12 and 10/12 automatically.
+  function ceilEven(n) { return Math.ceil(n / 2) * 2; }
+
+  // Inline metal length calc (mirrors getMetalLen inside calcRoofMetal)
+  // woodChart columns: [noOH_412, noOH_612, noOH_812, noOH_1012, OH12_412, OH12_612, OH12_812, OH12_1012, OH18_412, OH18_612]
+  var _purlinWoodChart = {
+    10:[5.583,5.917,6.333,6.833,6.583,7.000,7.500,8.083,7.167,7.583],
+    12:[6.583,7.000,7.500,8.083,7.667,8.083,8.667,9.417,8.167,8.667],
+    14:[7.667,8.083,8.667,9.417,8.750,9.250,9.917,10.667,9.250,9.833],
+    16:[8.750,9.250,9.917,10.667,9.750,10.333,11.083,12.000,10.333,10.917],
+    18:[9.750,10.333,11.083,12.000,10.833,11.500,12.333,13.333,11.333,12.000],
+    20:[10.833,11.500,12.333,13.333,11.917,12.583,13.500,14.583,12.417,13.167],
+    22:[11.917,12.583,13.500,14.583,12.917,13.667,14.750,15.917,13.500,14.250],
+    24:[12.917,13.667,14.750,15.917,14.000,14.833,15.917,17.250,14.500,15.417],
+    25:[13.500,14.250,15.333,16.583,14.500,15.417,16.500,17.833,15.083,15.917],
+    26:[14.000,14.833,15.917,17.250,15.083,15.917,17.083,18.500,15.583,16.500],
+    28:[15.083,15.917,17.083,18.500,16.083,17.083,18.333,19.833,16.667,17.583],
+    30:[16.083,17.083,18.333,19.833,17.167,18.167,19.500,21.083,17.667,18.750],
+    32:[17.167,18.167,19.500,21.083,18.250,19.333,20.750,22.417,18.750,19.833],
+    34:[18.250,19.333,20.750,22.417,19.250,20.417,21.917,23.750,19.750,21.000],
+    36:[19.250,20.417,21.917,23.750,20.333,21.500,23.167,25.000,20.833,22.083],
+    38:[20.333,21.500,23.167,25.000,21.333,22.667,24.333,26.333,21.917,23.250],
+    40:[21.333,22.667,24.333,26.333,22.417,23.750,25.500,27.667,22.917,24.333],
+    42:[22.417,23.750,25.500,27.667,23.500,24.917,26.750,28.917,24.000,25.417],
+    44:[23.417,24.917,26.750,28.917,24.500,26.000,27.917,30.250,25.083,26.583],
+    46:[24.500,26.000,27.917,30.250,25.583,27.083,29.167,31.500,26.083,27.667],
+    48:[25.583,27.083,29.167,31.500,26.667,28.250,30.333,32.833,27.167,28.833],
+    50:[26.667,28.250,30.333,32.833,27.667,29.333,31.500,34.167,28.250,29.917],
+    52:[27.667,29.333,31.500,34.167,28.750,30.500,32.750,35.417,29.250,31.000],
+    54:[28.750,30.500,32.750,35.417,29.833,31.583,33.917,36.750,30.333,32.167],
+    56:[29.833,31.583,33.917,36.750,30.833,32.750,35.167,38.000,31.417,33.250],
+    60:[31.917,33.833,36.333,39.333,33.000,34.917,37.583,40.667,33.500,35.500]
+  };
+  function _purlinMetalLen(w, oh, pitch) {
+    var row = _purlinWoodChart[w];
+    if (!row) return null;
+    var ohKey    = oh === 0 ? 0 : (oh <= 12 ? 1 : 2);
+    var pitchKey = pitch <= 4 ? 0 : pitch <= 6 ? 1 : pitch <= 8 ? 2 : 3;
+    if (ohKey === 2 && pitchKey > 1) pitchKey = 1; // OH18 only has 4/12 and 6/12
+    return row[ohKey === 2 ? 8 + Math.min(pitchKey,1) : ohKey * 4 + pitchKey];
   }
 
   // Board length driven by truss spacing
@@ -21247,11 +21283,8 @@ window.SauceMaterials.calcWoodPurlins = function(Q) {
     return boards;
   }
 
-  var widthMap = purlinsPerRun[Q.w];
-  if (!widthMap) return [];
-
-  var key    = getKey(Q.oh, Q.pitch);
-  var count  = widthMap[key];
+  var _mLen = _purlinMetalLen(Q.w, Q.oh, Q.pitch);
+  var count  = _mLen ? ceilEven(_mLen) : (purlinsPerRun[Q.w] ? purlinsPerRun[Q.w][Q.oh===0?'noOH':(Q.oh<=12?'OH12':'OH18')+'_'+(Q.pitch<=4?'412':'612')] : null);
   if (!count) return [];
 
   var boards  = fillLength(Q.l);
@@ -22754,34 +22787,36 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
   var metalType = normalizeMetalType((document.getElementById('st_roofMetal')||{}).value || 'Tuff-Rib 29ga');
   var skuPrefix = getColoredSkuPrefix(metalType, 'roof');
 
-  // Wood truss metal lengths (decimal feet) — [noOH_412, noOH_612, OH12_412, OH12_612, OH18_412, OH18_612]
+  // Wood truss metal lengths (decimal feet)
+  // Columns: [noOH_412, noOH_612, noOH_812, noOH_1012, OH12_412, OH12_612, OH12_812, OH12_1012, OH18_412, OH18_612]
+  // 8/12 and 10/12 not offered on steel — wood only
   var woodChart = {
-    10:  [5.583,5.917,6.583,7.000,7.167,7.583],
-    12:  [6.583,7.000,7.667,8.083,8.167,8.667],
-    14:  [7.667,8.083,8.750,9.250,9.250,9.833],
-    16:  [8.750,9.250,9.750,10.333,10.333,10.917],
-    18:  [9.750,10.333,10.833,11.500,11.333,12.000],
-    20:  [10.833,11.500,11.917,12.583,12.417,13.167],
-    22:  [11.917,12.583,12.917,13.667,13.500,14.250],
-    24:  [12.917,13.667,14.000,14.833,14.500,15.417],
-    25:  [13.500,14.250,14.500,15.417,15.083,15.917],
-    26:  [14.000,14.833,15.083,15.917,15.583,16.500],
-    28:  [15.083,15.917,16.083,17.083,16.667,17.583],
-    30:  [16.083,17.083,17.167,18.167,17.667,18.750],
-    32:  [17.167,18.167,18.250,19.333,18.750,19.833],
-    34:  [18.250,19.333,19.250,20.417,19.750,21.000],
-    36:  [19.250,20.417,20.333,21.500,20.833,22.083],
-    38:  [20.333,21.500,21.333,22.667,21.917,23.250],
-    40:  [21.333,22.667,22.417,23.750,22.917,24.333],
-    42:  [22.417,23.750,23.500,24.917,24.000,25.417],
-    44:  [23.417,24.917,24.500,26.000,25.083,26.583],
-    46:  [24.500,26.000,25.583,27.083,26.083,27.667],
-    48:  [25.583,27.083,26.667,28.250,27.167,28.833],
-    50:  [26.667,28.250,27.667,29.333,28.250,29.917],
-    52:  [27.667,29.333,28.750,30.500,29.250,31.000],
-    54:  [28.750,30.500,29.833,31.583,30.333,32.167],
-    56:  [29.833,31.583,30.833,32.750,31.417,33.250],
-    60:  [31.917,33.833,33.000,34.917,33.500,35.500]
+    10:  [5.583,5.917,6.333,6.833,  6.583,7.000,7.500,8.083,  7.167,7.583],
+    12:  [6.583,7.000,7.500,8.083,  7.667,8.083,8.667,9.417,  8.167,8.667],
+    14:  [7.667,8.083,8.667,9.417,  8.750,9.250,9.917,10.667, 9.250,9.833],
+    16:  [8.750,9.250,9.917,10.667, 9.750,10.333,11.083,12.000,10.333,10.917],
+    18:  [9.750,10.333,11.083,12.000,10.833,11.500,12.333,13.333,11.333,12.000],
+    20:  [10.833,11.500,12.333,13.333,11.917,12.583,13.500,14.583,12.417,13.167],
+    22:  [11.917,12.583,13.500,14.583,12.917,13.667,14.750,15.917,13.500,14.250],
+    24:  [12.917,13.667,14.750,15.917,14.000,14.833,15.917,17.250,14.500,15.417],
+    25:  [13.500,14.250,15.333,16.583,14.500,15.417,16.500,17.833,15.083,15.917],
+    26:  [14.000,14.833,15.917,17.250,15.083,15.917,17.083,18.500,15.583,16.500],
+    28:  [15.083,15.917,17.083,18.500,16.083,17.083,18.333,19.833,16.667,17.583],
+    30:  [16.083,17.083,18.333,19.833,17.167,18.167,19.500,21.083,17.667,18.750],
+    32:  [17.167,18.167,19.500,21.083,18.250,19.333,20.750,22.417,18.750,19.833],
+    34:  [18.250,19.333,20.750,22.417,19.250,20.417,21.917,23.750,19.750,21.000],
+    36:  [19.250,20.417,21.917,23.750,20.333,21.500,23.167,25.000,20.833,22.083],
+    38:  [20.333,21.500,23.167,25.000,21.333,22.667,24.333,26.333,21.917,23.250],
+    40:  [21.333,22.667,24.333,26.333,22.417,23.750,25.500,27.667,22.917,24.333],
+    42:  [22.417,23.750,25.500,27.667,23.500,24.917,26.750,28.917,24.000,25.417],
+    44:  [23.417,24.917,26.750,28.917,24.500,26.000,27.917,30.250,25.083,26.583],
+    46:  [24.500,26.000,27.917,30.250,25.583,27.083,29.167,31.500,26.083,27.667],
+    48:  [25.583,27.083,29.167,31.500,26.667,28.250,30.333,32.833,27.167,28.833],
+    50:  [26.667,28.250,30.333,32.833,27.667,29.333,31.500,34.167,28.250,29.917],
+    52:  [27.667,29.333,31.500,34.167,28.750,30.500,32.750,35.417,29.250,31.000],
+    54:  [28.750,30.500,32.750,35.417,29.833,31.583,33.917,36.750,30.333,32.167],
+    56:  [29.833,31.583,33.917,36.750,30.833,32.750,35.167,38.000,31.417,33.250],
+    60:  [31.917,33.833,36.333,39.333,33.000,34.917,37.583,40.667,33.500,35.500]
   };
 
   // Steel truss metal lengths [noOH, OH18]
@@ -22812,6 +22847,8 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
   };
 
   // Get metal length in decimal feet
+  // woodChart columns: [noOH_412, noOH_612, noOH_812, noOH_1012, OH12_412, OH12_612, OH12_812, OH12_1012, OH18_412, OH18_612]
+  // 8/12 and 10/12 wood only — steel chart is pitch-agnostic
   function getMetalLen(width, truss, oh, pitch) {
     if (truss === 'Steel') {
       var row = steelChart[width];
@@ -22820,9 +22857,12 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
     } else {
       var row = woodChart[width];
       if (!row) return null;
-      var ohKey = oh===0?0:(oh<=12?1:2);
-      var pitchKey = pitch<=4?0:1;
-      return row[ohKey*2+pitchKey];
+      var ohKey   = oh === 0 ? 0 : (oh <= 12 ? 1 : 2);
+      var pitchKey = pitch <= 4 ? 0 : pitch <= 6 ? 1 : pitch <= 8 ? 2 : 3;
+      // OH18 only has 4/12 and 6/12 columns — cap pitchKey at 1 for OH18
+      if (ohKey === 2 && pitchKey > 1) pitchKey = 1;
+      // noOH and OH12 have 4 pitch columns each (offset 0 and 4)
+      return row[ohKey === 2 ? 8 + Math.min(pitchKey,1) : ohKey * 4 + pitchKey];
     }
   }
 
@@ -28444,13 +28484,14 @@ window.SauceMaterials.calcPitchAdder = function(Q) {
   if (pitch < 6) return [];
   var spacing      = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
   var totalTrusses = Math.floor(Q.l / spacing) + 1;
-  var is812  = pitch >= 8;
-  var rate   = is812 ? 60 : 30;
-  var label  = is812 ? '8/12' : '6/12';
+  var sku, rate, label;
+  if (pitch >= 10)     { sku = 'TRUSS1012ADJ'; rate = 90; label = '10/12'; }
+  else if (pitch >= 8) { sku = 'TRUSS812ADJ';  rate = 60; label = '8/12';  }
+  else                 { sku = 'TRUSS612ADJ';   rate = 30; label = '6/12';  }
   return [{
     category:    'Yard',
     description: label + ' Pitch Truss Adder',
-    sku:         is812 ? 'TRUSS812ADJ' : 'TRUSS612ADJ',
+    sku:         sku,
     quantity:    totalTrusses,
     fixedCost:   totalTrusses * rate,
     detail:      label + ' pitch  |  $' + rate + '.00 per truss  |  ' + totalTrusses + ' trusses'
@@ -31362,12 +31403,26 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
     if (ppCount > 0) lines.push({ label: 'Post Protectors Install  |  ' + ppCount + ' posts @ $10.00', amount: ppCount * 10 });
   }
 
-  // 6/12 Pitch labor adder — $0.25/sqft of building footprint
-  var pitch612On = !!(document.getElementById('st_pitch612')||{}).checked;
-  if (pitch612On) {
-    var pitch612Sqft = (Q.w||0) * (Q.l||0);
-    (window._shedConfigs||[]).forEach(function(sc){ if (sc.w && sc.l) pitch612Sqft += shedConcreteSqft(sc, window._Q||{}); });
-    if (pitch612Sqft > 0) lines.push({ label: '6/12 Pitch  |  ' + pitch612Sqft + ' sqft @ $0.25', amount: pitch612Sqft * 0.25 });
+  // Pitch labor adders — main building sqft only (no shed extensions)
+  // Wood: fires on Q.pitch value. Steel: fires on st_pitch612 toggle (steel only offers 6/12)
+  // Rates from labor sheet: 6/12=$0.25, 8/12=$0.80, 10/12=$1.25 per sqft
+  var _pitchSqft = (Q.w||0) * (Q.l||0); // main building only — no sheds
+  var _pitch     = parseInt(Q.pitch) || 4;
+  var _isSteelLbr = (buildingType === 'steel' || buildingType === 'EnclosedSteel');
+
+  if (_isSteelLbr) {
+    // Steel: only 6/12 toggle-driven
+    var pitch612On = !!(document.getElementById('st_pitch612')||{}).checked;
+    if (pitch612On && _pitchSqft > 0)
+      lines.push({ label: '6/12 Pitch  |  ' + _pitchSqft + ' sqft @ $0.25', amount: _pitchSqft * 0.25 });
+  } else {
+    // Wood variants: driven by Q.pitch
+    if (_pitch >= 10 && _pitchSqft > 0)
+      lines.push({ label: '10/12 Pitch  |  ' + _pitchSqft + ' sqft @ $1.25', amount: _pitchSqft * 1.25 });
+    else if (_pitch >= 8 && _pitchSqft > 0)
+      lines.push({ label: '8/12 Pitch  |  ' + _pitchSqft + ' sqft @ $0.80', amount: _pitchSqft * 0.80 });
+    else if (_pitch >= 6 && _pitchSqft > 0)
+      lines.push({ label: '6/12 Pitch  |  ' + _pitchSqft + ' sqft @ $0.25', amount: _pitchSqft * 0.25 });
   }
 
   // 8x8 / 10x10 post upcharges — per wall
