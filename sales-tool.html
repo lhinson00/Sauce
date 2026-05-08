@@ -15448,6 +15448,66 @@ function showSalesTab(name) {
 
 // Submit sales quote — collects both 3D config and salesman fields
 
+function _showVariantModal(onConfirm) {
+  var existing = document.getElementById('_variantModal');
+  if (existing) existing.remove();
+
+  // Build available variants list
+  var variants = [
+    { key:'pqChkNoOH',    label:'Post Frame — No Overhang',   total: window._lastPriceNoOH  },
+    { key:'pqChkOH',      label:'Post Frame — 12" Soffit',    total: window._lastPriceOH    },
+    { key:'pqChkSteel',   label:'Steel Truss',                 total: window._lastPriceSteel },
+    { key:'pqChkStud',    label:'Stud Frame',                  total: window._lastPriceStud  },
+    { key:'pqChkCypress', label:'Cypress Board & Batten',      total: window._lastPriceCypress },
+    { key:'pqChkBB',      label:'Metal Board & Batten',        total: window._lastPriceBB    },
+  ].filter(function(v){ return v.total && v.total.total > 0; });
+
+  // Pre-check any boxes already checked in the PDF panel, or the active tab
+  function isChecked(key) {
+    var el = document.getElementById(key);
+    return el ? el.checked : false;
+  }
+  var rows = variants.map(function(v) {
+    var checked = isChecked(v.key);
+    var price = v.total && v.total.total ? '$'+Math.round(v.total.total).toLocaleString('en-US') : '';
+    return '<label style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.07);cursor:pointer">'
+      + '<input type="checkbox" id="_vc_'+v.key+'" '+(checked?'checked':'')+' style="width:16px;height:16px;accent-color:#FF8200;flex-shrink:0">'
+      + '<span style="flex:1;font-size:13px;color:#e8edf5">'+v.label+'</span>'
+      + '<span style="font-family:Barlow Condensed,sans-serif;font-size:15px;font-weight:700;color:#ff8c00">'+price+'</span>'
+      + '</label>';
+  }).join('');
+
+  var m = document.createElement('div');
+  m.id = '_variantModal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;';
+  m.innerHTML = '<div style="background:#1e2535;border:1px solid rgba(255,130,0,.3);border-radius:14px;padding:28px 24px;width:92%;max-width:440px;font-family:Barlow,sans-serif;box-shadow:0 8px 40px rgba(0,0,0,.5);">'
+    + '<div style="font-size:15px;font-weight:800;color:#f0f3f7;margin-bottom:4px;">Select Quoted Variants</div>'
+    + '<div style="font-size:12px;color:#94a3b8;margin-bottom:16px;">Check all options you presented to the customer. These will be saved with the quote.</div>'
+    + '<div style="margin-bottom:18px">' + rows + '</div>'
+    + '<div style="display:flex;gap:10px">'
+    + '<button id="_vcSave" style="flex:1;padding:11px;border-radius:8px;border:none;background:linear-gradient(135deg,#FF8200,#e06500);color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:Barlow Condensed,sans-serif;letter-spacing:.5px;text-transform:uppercase">Save Quote</button>'
+    + '<button onclick="document.getElementById(\'_variantModal\').remove()" style="padding:11px 16px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:transparent;color:#94a3b8;font-size:13px;cursor:pointer;font-family:Barlow,sans-serif;">Cancel</button>'
+    + '</div>'
+    + '</div>';
+  document.body.appendChild(m);
+
+  document.getElementById('_vcSave').addEventListener('click', function() {
+    var selected = variants.filter(function(v){
+      var el = document.getElementById('_vc_'+v.key);
+      return el && el.checked;
+    }).map(function(v){
+      // Map pqChk key to totalXxx key
+      var map = { pqChkNoOH:'totalNoOH', pqChkOH:'totalOH', pqChkSteel:'totalSteel',
+                  pqChkStud:'totalStud', pqChkCypress:'totalCypress', pqChkBB:'totalBB' };
+      return map[v.key];
+    }).filter(Boolean);
+    window._pendingSelectedVariants = selected;
+    m.remove();
+    onConfirm();
+  });
+  m.addEventListener('click', function(e){ if (e.target === m) m.remove(); });
+}
+
 function _showSaveModal() {
   var existing = document.getElementById('_saveChoiceModal');
   if (existing) existing.remove();
@@ -15468,9 +15528,15 @@ function _showSaveModal() {
 }
 
 async function saveSalesQuote(overwriteMode) {
-  // If a quote is loaded and no decision yet — show modal
-  if (!overwriteMode && window._loadedQuoteId) {
-    _showSaveModal();
+  // Step 1: If no overwrite decision yet, show variant selection first
+  if (!overwriteMode) {
+    _showVariantModal(function() {
+      if (window._loadedQuoteId) {
+        _showSaveModal();
+      } else {
+        saveSalesQuote('new');
+      }
+    });
     return;
   }
   var name = (document.getElementById('st_name')||{}).value || '';
@@ -15656,17 +15722,21 @@ async function saveSalesQuote(overwriteMode) {
       totalBB:        fmtPriceFull((window._lastPriceBB||{}).total)
     };
 
-    // Read which variants are checked in the PDF/email panel — store for CRM
+    // Read which variants were selected in the save modal — store for CRM
     (function() {
-      var chk = function(id) { var el = document.getElementById(id); return el && el.checked; };
-      var sv = [];
-      if (chk('pqChkOH')      && oh.total)                              sv.push('totalOH');
-      if (chk('pqChkNoOH')    && nooh.total)                            sv.push('totalNoOH');
-      if (chk('pqChkSteel')   && steel.total)                           sv.push('totalSteel');
-      if (chk('pqChkStud')    && (window._lastPriceStud||{}).total)     sv.push('totalStud');
-      if (chk('pqChkCypress') && (window._lastPriceCypress||{}).total)  sv.push('totalCypress');
-      if (chk('pqChkBB')      && (window._lastPriceBB||{}).total)       sv.push('totalBB');
+      var sv = window._pendingSelectedVariants || [];
+      // Fallback: read pqChk checkboxes if modal wasn't used
+      if (!sv.length) {
+        var chk = function(id) { var el = document.getElementById(id); return el && el.checked; };
+        if (chk('pqChkOH')      && oh.total)                              sv.push('totalOH');
+        if (chk('pqChkNoOH')    && nooh.total)                            sv.push('totalNoOH');
+        if (chk('pqChkSteel')   && steel.total)                           sv.push('totalSteel');
+        if (chk('pqChkStud')    && (window._lastPriceStud||{}).total)     sv.push('totalStud');
+        if (chk('pqChkCypress') && (window._lastPriceCypress||{}).total)  sv.push('totalCypress');
+        if (chk('pqChkBB')      && (window._lastPriceBB||{}).total)       sv.push('totalBB');
+      }
       pricingResults.selectedVariants = sv;
+      window._pendingSelectedVariants = null; // clear after use
     })();
 
     // 3b. Build display summary — used in quote list without needing to decode configEncoded
