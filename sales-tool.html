@@ -15832,6 +15832,43 @@ async function saveSalesQuote(overwriteMode) {
     snapshot.quoteId = _clientId;
     window._savedQuoteId = _clientId;
 
+    // Capture 4 building snapshots for CRM display
+    try {
+      var d3 = window._3d;
+      if (d3 && d3.rrx && d3.scene && d3.cam) {
+        var _origTh=d3.th, _origPh=d3.ph, _origDi=d3.di;
+        var _capW=480, _capH=320;
+        d3.rrx.setSize(_capW, _capH);
+        if (d3.dimLabels) d3.dimLabels.forEach(function(l){l.visible=false;});
+        var _snapViews = [
+          {name:'Front',      th:Math.PI*1.0,  ph:Math.PI*0.08, di:13},
+          {name:'Left side',  th:Math.PI*1.5,  ph:Math.PI*0.08, di:13},
+          {name:'Back',       th:0,             ph:Math.PI*0.08, di:13},
+          {name:'Right side', th:Math.PI*0.5,  ph:Math.PI*0.08, di:13},
+        ];
+        var _snaps = [];
+        for (var _vi=0; _vi<_snapViews.length; _vi++) {
+          var _sv = _snapViews[_vi];
+          d3.th=_sv.th; d3.ph=_sv.ph; d3.di=_sv.di; d3.setC();
+          d3.rrx.render(d3.scene, d3.cam);
+          _snaps.push(d3.rrx.domElement.toDataURL('image/jpeg', 0.75));
+        }
+        // Restore renderer
+        var _vpEl = document.getElementById('qgRV') || document.querySelector('.vp-container');
+        var _vpW = _vpEl ? _vpEl.clientWidth : window.innerWidth;
+        var _vpH = _vpEl ? _vpEl.clientHeight : 400;
+        d3.rrx.setSize(_vpW, _vpH);
+        d3.rrx.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        d3.th=_origTh; d3.ph=_origPh; d3.di=_origDi; d3.setC();
+        d3.rrx.render(d3.scene, d3.cam);
+        if (d3.dimLabels) d3.dimLabels.forEach(function(l){l.visible=true;});
+        snapshot.snapshots = _snaps;
+        console.log('[Snap] Captured 4 building views');
+      }
+    } catch(snapErr) {
+      console.warn('[Snap] Capture failed (non-fatal):', snapErr);
+    }
+
     // Save to Supabase first — fast, reliable, works on mobile
     var _sbSnap = Object.assign({}, snapshot, { quoteId: _clientId });
     try { await sbSaveQuote(_sbSnap); console.log('[SB] save complete'); }
@@ -33702,5 +33739,64 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
   window.addEventListener('crm:authready', function() { _doLoad(); }, { once: true });
   // Fallback: if already authenticated before this script ran
   if (window.currentUser && window.currentUser.token) { _doLoad(); }
+
+  // ── CAPTURE MODE (?capture=1&quote=QS-XXXX) ───────────────────────────────
+  // Called from CRM hidden iframe — renders 4 views then posts images back
+  if (_p.get('capture') === '1' && _qid) {
+    document.body.style.visibility = 'hidden';
+    document.body.style.overflow = 'hidden';
+    function _doCapture() {
+      fetch(_su + '/rest/v1/quotes?id=eq.' + encodeURIComponent(_qid) + '&select=config_encoded,name', {
+        headers: { 'apikey': _sk, 'Authorization': 'Bearer ' + _sk }
+      })
+      .then(function(r){ return r.json(); })
+      .then(function(rows){
+        if (!rows || !rows[0] || !rows[0].config_encoded) {
+          window.parent.postMessage({type:'crm_snapshots',id:_qid,error:'No config'}, '*'); return;
+        }
+        safeDecodeAsync(rows[0].config_encoded).then(function(cfg){
+          if (!cfg) { window.parent.postMessage({type:'crm_snapshots',id:_qid,error:'Decode failed'}, '*'); return; }
+          restoreConfig(cfg);
+          triggerBuild();
+          // Wait for 3D to fully render then capture
+          var _attempts = 0;
+          function _tryCapture() {
+            var d3 = window._3d;
+            if (!d3 || !d3.rrx || !d3.scene || !d3.cam) {
+              if (++_attempts < 40) { setTimeout(_tryCapture, 250); return; }
+              window.parent.postMessage({type:'crm_snapshots',id:_qid,error:'3D not ready'}, '*'); return;
+            }
+            try {
+              var _origTh=d3.th, _origPh=d3.ph, _origDi=d3.di;
+              var _capW=640, _capH=428;
+              d3.rrx.setSize(_capW, _capH);
+              if (d3.dimLabels) d3.dimLabels.forEach(function(l){l.visible=false;});
+              var _views = [
+                {th:Math.PI*1.0, ph:Math.PI*0.08, di:13},
+                {th:Math.PI*1.5, ph:Math.PI*0.08, di:13},
+                {th:0,           ph:Math.PI*0.08, di:13},
+                {th:Math.PI*0.5, ph:Math.PI*0.08, di:13},
+              ];
+              var _imgs = [];
+              for (var i=0; i<_views.length; i++) {
+                var v=_views[i]; d3.th=v.th; d3.ph=v.ph; d3.di=v.di; d3.setC();
+                d3.rrx.render(d3.scene, d3.cam);
+                _imgs.push(d3.rrx.domElement.toDataURL('image/jpeg', 0.82));
+              }
+              d3.th=_origTh; d3.ph=_origPh; d3.di=_origDi; d3.setC();
+              if (d3.dimLabels) d3.dimLabels.forEach(function(l){l.visible=true;});
+              window.parent.postMessage({type:'crm_snapshots', id:_qid, snapshots:_imgs}, '*');
+            } catch(e) {
+              window.parent.postMessage({type:'crm_snapshots',id:_qid,error:e.message}, '*');
+            }
+          }
+          setTimeout(_tryCapture, 1200);
+        });
+      })
+      .catch(function(e){ window.parent.postMessage({type:'crm_snapshots',id:_qid,error:e.message}, '*'); });
+    }
+    // Start capture immediately — no auth needed for Supabase anon reads
+    _doCapture();
+  }
 })();
 </script>
