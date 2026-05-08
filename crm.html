@@ -176,7 +176,8 @@ body{background:var(--bg);color:var(--text);font-family:'Barlow',sans-serif;font
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   gap:6px;color:var(--text3);font-size:11px;
 }
-.snap-placeholder i{font-size:20px;}
+.snap-placeholder i{font-size:20px;animation:spin 1.2s linear infinite;}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 
 /* SPEC HERO */
 .spec-hero{
@@ -978,17 +979,13 @@ async function openDetail(id) {
     +'</div>';
 
   // Body
-  const SNAP_VIEWS = [
-    {label:'Front',      az:0,   el:18},
-    {label:'Left side',  az:90,  el:18},
-    {label:'Back',       az:180, el:18},
-    {label:'Right side', az:270, el:18},
-  ];
-
-  const snapshots = q.snapshots || [];
+  const SNAP_LABELS = ['Front','Left side','Back','Right side'];
+  const snapshots = _snapCache[id] || q.snapshots || [];
   const snapHtml = snapshots.length >= 4
     ? '<div class="snap-grid">'
-      + SNAP_VIEWS.map((v,i) => `<div class="snap" onclick="openLb(${i},${JSON.stringify(SNAP_VIEWS).replace(/"/g,"'")},'${id}')"><img src="${snapshots[i]}" style="width:100%;height:100%;object-fit:cover;display:block"><div class="snap-label">${v.label}</div></div>`).join('')
+      + snapshots.slice(0,4).map((src,i) =>
+          `<div class="snap" onclick="openLb(${i},_cq)"><img src="${src}" style="width:100%;height:100%;object-fit:cover;display:block"><div class="snap-label">${SNAP_LABELS[i]}</div></div>`
+        ).join('')
       + '</div>'
     : '<div class="snap-grid" id="snap-grid-'+id+'"></div>';
 
@@ -1043,9 +1040,9 @@ async function openDetail(id) {
     +'<button class="da-btn primary" id="nt-add-btn" data-qid="'+id+'">Add</button>'
     +'</div>';
 
-  // Render 3D snapshots if not already stored
+  // Load real 3D snapshots via iframe capture if not already cached
   if (snapshots.length < 4) {
-    setTimeout(() => renderSnapPreviews(id, q), 50);
+    setTimeout(() => loadSnapPreviews(id), 100);
   }
   } catch(e) {
     console.error('[CRM] openDetail error:', e);
@@ -1101,83 +1098,67 @@ function closeDetail() {
 
 function maybeCloseDetail(e) {}
 
-// ── 3D SNAPSHOT PREVIEWS (simulated until real captures are stored) ───────────
-let _lbViews = [], _lbIdx = 0;
+// ── 3D SNAPSHOT CAPTURE VIA IFRAME ───────────────────────────────────────────
+const _snapCache = {}; // id → [img, img, img, img]
+const _snapPending = {}; // id → [callbacks]
 
-function drawBuilding(canvas, azDeg, elDeg, colors) {
-  const W=canvas.width, H=canvas.height;
-  const ctx=canvas.getContext('2d');
-  const roofClr = colors&&colors.roof || '#1a1a1c';
-  const wallClr = colors&&colors.wall || '#e8e8e8';
-  ctx.fillStyle='#c8dde8'; ctx.fillRect(0,0,W,H*0.4);
-  ctx.fillStyle='#7aabcc'; ctx.fillRect(0,H*0.4,W,H*0.28);
-  ctx.fillStyle='#5a7a4a'; ctx.fillRect(0,H*0.68,W,H);
-  const a=azDeg*Math.PI/180, e=elDeg*Math.PI/180;
-  const sc=Math.min(W,H)*0.017;
-  const bL=60*sc,bW=36*sc,bH=14*sc,rH=(bW/2)*(4/12)*sc;
-  const cx=W*0.5,cy=H*0.63;
-  const cA=Math.cos(a),sA=Math.sin(a),cE=Math.cos(e),sE=Math.sin(e);
-  function p(x,y,z){const rx=x*cA-y*sA,ry=x*sA+y*cA;return[cx+rx,cy-ry*sE-z*cE];}
-  const hw=bW/2,hl=bL/2;
-  const v=[p(-hl,-hw,0),p(hl,-hw,0),p(hl,hw,0),p(-hl,hw,0),p(-hl,-hw,bH),p(hl,-hw,bH),p(hl,hw,bH),p(-hl,hw,bH),p(0,-hw,bH+rH),p(0,hw,bH+rH)];
-  function face(idx,fill){ctx.beginPath();ctx.moveTo(v[idx[0]][0],v[idx[0]][1]);idx.slice(1).forEach(i=>ctx.lineTo(v[i][0],v[i][1]));ctx.closePath();ctx.fillStyle=fill;ctx.fill();ctx.strokeStyle='rgba(0,0,0,0.2)';ctx.lineWidth=0.7;ctx.stroke();}
-  const azN=((azDeg%360)+360)%360;
-  if(azN>90&&azN<270) face([3,2,6,7],shadeColor(wallClr,-15));
-  if(azN>180)         face([0,3,7,4],shadeColor(wallClr,-8));
-  if(azN<180)         face([1,2,6,5],shadeColor(wallClr,-8));
-  if(azN<90||azN>270) face([0,1,5,4],wallClr);
-  face([4,5,8],roofClr); face([7,6,9],roofClr);
-  face([4,8,9,7],shadeColor(roofClr,8)); face([5,6,9,8],shadeColor(roofClr,4));
-  ctx.strokeStyle=colors&&colors.trim||'#1a1a1c'; ctx.lineWidth=1.2;
-  [[0,4],[1,5],[2,6],[3,7]].forEach(([a,b])=>{ctx.beginPath();ctx.moveTo(v[a][0],v[a][1]);ctx.lineTo(v[b][0],v[b][1]);ctx.stroke();});
-  ctx.beginPath();ctx.moveTo(v[8][0],v[8][1]);ctx.lineTo(v[9][0],v[9][1]);ctx.stroke();
+window.addEventListener('message', function(e) {
+  if (!e.data || e.data.type !== 'crm_snapshots') return;
+  const {id, snapshots, error} = e.data;
+  // Remove iframe
+  const fr = document.getElementById('_snap_iframe_'+id);
+  if (fr) fr.remove();
+  if (error) { console.warn('[CRM Snap] Error for', id, error); }
+  if (snapshots && snapshots.length >= 4) {
+    _snapCache[id] = snapshots;
+    // Update any waiting grids
+    const grid = document.getElementById('snap-grid-'+id);
+    if (grid) renderSnapGrid(grid, id, snapshots);
+  }
+  // Fire callbacks
+  (_snapPending[id]||[]).forEach(function(cb){ cb(snapshots||null); });
+  delete _snapPending[id];
+});
+
+function requestSnapshots(id) {
+  if (_snapCache[id]) return;
+  if (document.getElementById('_snap_iframe_'+id)) return; // already loading
+  const fr = document.createElement('iframe');
+  fr.id = '_snap_iframe_'+id;
+  fr.src = SALES + '?capture=1&quote=' + encodeURIComponent(id);
+  fr.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:800px;height:600px;border:none;opacity:0;pointer-events:none;';
+  document.body.appendChild(fr);
 }
 
-function shadeColor(hex,pct){
-  const n=parseInt(hex.replace('#',''),16);
-  const r=Math.max(0,Math.min(255,((n>>16)&255)+pct));
-  const g=Math.max(0,Math.min(255,((n>>8)&255)+pct));
-  const b=Math.max(0,Math.min(255,(n&255)+pct));
-  return '#'+((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1);
+const SNAP_LABELS_ALL = ['Front','Left side','Back','Right side'];
+
+function renderSnapGrid(grid, id, snapshots) {
+  grid.innerHTML = snapshots.slice(0,4).map(function(src, i) {
+    return '<div class="snap" onclick="openLb('+i+',_cq)">'
+      + '<img src="'+src+'" style="width:100%;height:100%;object-fit:cover;display:block">'
+      + '<div class="snap-label">'+SNAP_LABELS_ALL[i]+'</div>'
+      + '</div>';
+  }).join('');
 }
 
-const SNAP_VIEWS = [
-  {label:'Front', az:0,el:18},{label:'Left side',az:90,el:18},
-  {label:'Back',az:180,el:18},{label:'Right side',az:270,el:18},
-];
-
-function renderSnapPreviews(id, q) {
+function loadSnapPreviews(id) {
+  if (_snapCache[id]) {
+    const grid = document.getElementById('snap-grid-'+id);
+    if (grid) renderSnapGrid(grid, id, _snapCache[id]);
+    return;
+  }
+  // Show loading state
   const grid = document.getElementById('snap-grid-'+id);
-  if (!grid) return;
-  const ff = q.form_fields||{};
-  const colorMap = {
-    'Gloss Black':'#1a1a1c','Matte Black':'#202020','Barn Red':'#8c2820',
-    'Pure White':'#f2f2f0','Galvalume':'#a8aaa5','Clay':'#a07858',
-    'Brown':'#6e4830','Country Blue':'#4a5870','Green':'#3a6030',
-    'Charcoal':'#3a3c3e','Ivory':'#e8dfc0','Stone':'#c4bba8',
-  };
-  function hexFor(name){ return colorMap[name]||'#888'; }
-  const colors = {
-    roof: hexFor(ff.roofColor||'Gloss Black'),
-    wall: hexFor(ff.wallColor||'Galvalume'),
-    trim: hexFor(ff.trimColor||'Gloss Black'),
-  };
-
-  SNAP_VIEWS.forEach((view,i)=>{
-    const wrap=document.createElement('div'); wrap.className='snap';
-    const c=document.createElement('canvas'); c.width=220; c.height=165;
-    drawBuilding(c,view.az,view.el,colors);
-    const lbl=document.createElement('div'); lbl.className='snap-label'; lbl.textContent=view.label;
-    wrap.appendChild(c); wrap.appendChild(lbl);
-    wrap.addEventListener('click',()=>openLb(i,q));
-    grid.appendChild(wrap);
-  });
+  if (grid) {
+    grid.innerHTML = SNAP_LABELS_ALL.map(function(lbl) {
+      return '<div class="snap-placeholder"><i class="ti ti-rotate-clockwise-2" aria-hidden="true"></i><span>'+lbl+'</span></div>';
+    }).join('');
+  }
+  requestSnapshots(id);
 }
 
 function openLb(startIdx, q) {
   _lbIdx = startIdx;
-  const ff = q.form_fields||{};
-  _lbViews = SNAP_VIEWS;
   document.getElementById('lb-overlay').classList.add('open');
   renderLb(q);
 }
@@ -1185,13 +1166,26 @@ function closeLb(){ document.getElementById('lb-overlay').classList.remove('open
 function lbStep(d){ _lbIdx=(_lbIdx+d+4)%4; renderLb(_cq); }
 function renderLb(q){
   if (!q) return;
-  const ff = q.form_fields||{};
-  const colorMap={'Gloss Black':'#1a1a1c','Matte Black':'#202020','Barn Red':'#8c2820','Pure White':'#f2f2f0','Galvalume':'#a8aaa5','Clay':'#a07858','Brown':'#6e4830','Country Blue':'#4a5870','Green':'#3a6030','Charcoal':'#3a3c3e','Ivory':'#e8dfc0','Stone':'#c4bba8'};
-  const colors={roof:colorMap[ff.roofColor]||'#1a1a1c',wall:colorMap[ff.wallColor]||'#e8e8e8',trim:colorMap[ff.trimColor]||'#1a1a1c'};
-  const c=document.getElementById('lb-canvas');
-  drawBuilding(c,_lbViews[_lbIdx].az,_lbViews[_lbIdx].el,colors);
-  document.getElementById('lb-label').textContent=_lbViews[_lbIdx].label;
-  document.getElementById('lb-dots').innerHTML=_lbViews.map((_,i)=>'<button class="lb-dot'+(i===_lbIdx?' on':'')+'" onclick="lbGoTo('+i+')"></button>').join('');
+  const snaps = _snapCache[q.id] || q.snapshots || [];
+  const labels = SNAP_LABELS_ALL;
+  const lbc = document.getElementById('lb-canvas');
+  if (snaps.length >= 4) {
+    const img = new Image();
+    img.onload = function(){
+      lbc.width = img.naturalWidth || 700;
+      lbc.height = img.naturalHeight || 525;
+      lbc.getContext('2d').drawImage(img, 0, 0, lbc.width, lbc.height);
+    };
+    img.src = snaps[_lbIdx];
+  } else {
+    lbc.width=700; lbc.height=525;
+    const ctx=lbc.getContext('2d');
+    ctx.fillStyle='var(--bg3)'; ctx.fillRect(0,0,700,525);
+    ctx.fillStyle='#6b7a90'; ctx.font='14px Barlow,sans-serif'; ctx.textAlign='center';
+    ctx.fillText('Loading…', 350, 262);
+  }
+  document.getElementById('lb-label').textContent = labels[_lbIdx];
+  document.getElementById('lb-dots').innerHTML = labels.map((_,i)=>'<button class="lb-dot'+(i===_lbIdx?' on':'')+'" onclick="lbGoTo('+i+')"></button>').join('');
 }
 window.lbGoTo=function(i){_lbIdx=i;renderLb(_cq);};
 function openInSalesTool(){alert("Open the quote in the sales tool to generate PDFs and post layout.");}
