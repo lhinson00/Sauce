@@ -17258,6 +17258,95 @@ var _cachedZip = '';
 var _cachedCounty = '';
 var SHOP_ADDRESS = '3846 Summertown Hwy, Summertown, TN 38483';
 
+// ── LOCAL ZIP MILEAGE TABLE ───────────────────────────────────────────────────
+// Driving miles from Summertown, TN 38483 — covers common customer zips
+// GAS is used as fallback for zips not in this table
+var ZIP_MILES = {
+  // Summertown area
+  '38483':0,'38401':18,'38402':18,'38476':22,'38472':28,'38487':12,'38481':20,'38482':25,
+  // Columbia / Maury County
+  '38401':18,'38402':18,'38403':22,
+  // Nashville area
+  '37201':72,'37202':72,'37203':72,'37204':68,'37205':74,'37206':70,'37207':68,
+  '37208':70,'37209':76,'37210':66,'37211':64,'37212':70,'37213':70,'37214':62,
+  '37215':72,'37216':66,'37217':60,'37218':76,'37219':70,'37220':66,'37221':82,
+  '37228':70,'37229':62,'37232':68,'37234':70,'37238':70,'37240':70,'37243':70,
+  // Brentwood / Franklin
+  '37027':62,'37064':56,'37065':56,'37067':60,'37069':64,
+  // Murfreesboro
+  '37127':55,'37128':52,'37129':52,'37130':50,'37131':52,'37132':52,'37133':50,
+  // Smyrna / La Vergne
+  '37086':58,'37167':60,
+  // Shelbyville / Bedford County
+  '37160':28,'37162':28,
+  // Lewisburg / Marshall County
+  '37091':22,'37090':22,
+  // Lawrenceburg / Lawrence County
+  '38464':22,'38469':28,'38468':20,'38460':30,'38462':18,'38474':15,'38478':25,
+  // Waynesboro / Wayne County
+  '38485':35,'38486':38,
+  // Pulaski / Giles County
+  '38478':25,'38479':30,
+  // Fayetteville / Lincoln County
+  '37334':42,'37355':38,
+  // Winchester / Franklin County
+  '37398':60,'37388':55,
+  // Tullahoma
+  '37388':55,
+  // Huntsville AL area
+  '35801':95,'35802':95,'35803':88,'35804':95,'35805':92,'35806':96,'35807':95,
+  '35808':90,'35809':95,'35810':98,'35811':100,'35816':96,'35824':105,
+  // Decatur AL
+  '35601':78,'35602':78,'35603':80,'35609':78,
+  // Florence AL
+  '35630':95,'35631':95,'35632':95,'35633':95,'35634':95,
+  // Athens AL
+  '35611':88,'35612':90,'35613':85,'35614':90,
+  // Jackson TN
+  '38301':95,'38302':95,'38303':95,'38304':95,'38305':92,'38308':95,
+  // Memphis area
+  '38101':185,'38103':185,'38104':182,'38105':185,'38106':180,'38107':185,
+  '38108':182,'38109':178,'38111':180,'38112':182,'38113':180,'38114':178,
+  '38115':175,'38116':175,'38117':182,'38118':175,'38119':178,'38120':182,
+  '38122':180,'38125':172,'38126':182,'38127':185,'38128':188,'38130':185,
+  '38131':180,'38132':182,'38133':190,'38134':192,'38135':192,'38136':185,
+  '38137':185,'38138':185,'38139':185,'38141':175,'38152':182,
+  // Clarksville TN
+  '37040':92,'37041':92,'37042':90,'37043':92,'37044':92,
+  // Hopkinsville KY
+  '42240':105,'42241':105,
+  // Bowling Green KY
+  '42101':120,'42102':120,'42103':122,'42104':120,
+  // Corinth MS
+  '38834':105,'38835':105,
+  // Tupelo MS
+  '38801':120,'38802':120,'38803':120,'38804':118,
+  // Iuka / Tishomingo MS
+  '38852':98,'38855':100,
+  // Savannah / Hardin County TN
+  '38372':72,'38371':75,
+  // Pickwick area
+  '38376':80,
+  // Centerville / Hickman County
+  '37033':42,'37034':45,
+  // Waverly / Humphreys County
+  '37185':58,'37186':60,
+  // Charlotte / Dickson County
+  '37036':72,'37055':75,
+  // Springfield / Robertson County
+  '37172':90,'37171':88,
+  // Gallatin / Sumner County
+  '37066':90,'37148':85,
+  // Cookeville / Putnam County
+  '38501':95,'38502':95,'38503':95,'38505':95,'38506':95,
+  // Sparta / White County
+  '38583':80,'38585':85,
+  // McMinnville / Warren County
+  '37110':65,'37111':65,
+  // Scottsboro AL
+  '35768':90,'35769':92,'35771':88,
+};
+
 function scheduleAddressLookup() {
   clearTimeout(_addrTimer);
   _addrTimer = setTimeout(doAddressLookup, 1200);
@@ -17267,34 +17356,89 @@ async function doAddressLookup() {
   clearTimeout(_addrTimer);
   var addr = (document.getElementById('st_address')||{}).value || '';
   var display = document.getElementById('st_mileageDisplay');
-  if (!addr || addr.length < 5) {
+  if (!addr || addr.length < 4) {
     if (display) display.textContent = '';
     _cachedMileage = 0; _cachedZip = ''; _cachedCounty = '';
     return;
   }
+
+  // Extract zip code from input — works if user typed zip, city+state, or full address
+  var zipMatch = addr.match(/\b(\d{5})\b/);
+  var zip = zipMatch ? zipMatch[1] : '';
+
   if (display) { display.textContent = '🔄 Calculating distance...'; display.style.color = '#888'; }
+
   try {
-    // Use Apps Script driving distance (Google Maps Directions) — not haversine
-    var resp = await fetchWithTimeout(API_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'text/plain'},
-      body: JSON.stringify({ action: 'lookupAddress', address: addr, token: getToken(), username: (window.currentUser||{}).username||'' })
-    }, 30000);
-    var data = await safeJson(resp);
-    if (!data.success) {
-      if (display) { display.textContent = '⚠️ Address not found'; display.style.color = '#dc3545'; }
-      _cachedMileage = 0; return;
+    var county = '', city = '', state = '', mileage = 0;
+
+    if (zip) {
+      // Step 1: Zip → city/county via Zippopotam.us (free, no auth, reliable)
+      var zresp = await fetch('https://api.zippopotam.us/us/' + zip);
+      if (zresp.ok) {
+        var zdata = await zresp.json();
+        city    = (zdata.places && zdata.places[0]) ? zdata.places[0]['place name'] : '';
+        state   = (zdata.places && zdata.places[0]) ? zdata.places[0]['state abbreviation'] : '';
+        county  = (zdata.places && zdata.places[0]) ? (zdata.places[0]['place name'] + ' County') : '';
+        // Step 2: Check local mileage table first
+        mileage = ZIP_MILES[zip] || 0;
+      }
     }
-    _cachedMileage = data.mileage || 0;
-    _cachedZip    = data.zipCode  || '';
-    _cachedCounty = data.county   || '';
+
+    // Step 3: If no local mileage, try GAS as fallback (not primary)
+    if (!mileage && zip) {
+      try {
+        var gasResp = await Promise.race([
+          fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'},
+            body: JSON.stringify({ action:'lookupAddress', address:zip, token:getToken(), username:(window.currentUser||{}).username||'' }) }, 12000),
+          new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('timeout')); }, 12000); })
+        ]);
+        var gasData = await safeJson(gasResp);
+        if (gasData && gasData.success) {
+          mileage = gasData.mileage || 0;
+          if (gasData.county) county = gasData.county;
+          if (gasData.zipCode) zip = gasData.zipCode;
+        }
+      } catch(gasErr) {
+        console.warn('[Address] GAS fallback failed:', gasErr.message);
+      }
+    }
+
+    // If still no zip found, try parsing city,state from input and look up GAS
+    if (!zip && !mileage) {
+      try {
+        var gasResp2 = await Promise.race([
+          fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'},
+            body: JSON.stringify({ action:'lookupAddress', address:addr, token:getToken(), username:(window.currentUser||{}).username||'' }) }, 12000),
+          new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('timeout')); }, 12000); })
+        ]);
+        var gasData2 = await safeJson(gasResp2);
+        if (gasData2 && gasData2.success) {
+          mileage = gasData2.mileage || 0;
+          county  = gasData2.county  || county;
+          zip     = gasData2.zipCode || zip;
+        }
+      } catch(e) { /* silent */ }
+    }
+
+    _cachedMileage = mileage;
+    _cachedZip     = zip;
+    _cachedCounty  = county;
+
     if (display) {
-      var msg = '📍 ' + _cachedMileage + ' miles from shop';
-      if (_cachedMileage > 200) msg += ' — beyond 200mi';
-      display.textContent = msg;
-      display.style.color = _cachedMileage > 200 ? '#dc3545' : '#15803d';
+      if (mileage > 0) {
+        var msg = '📍 ' + mileage + ' mi from shop';
+        if (city && state) msg += '  ·  ' + city + ', ' + state;
+        if (mileage > 200) msg += ' — beyond 200mi';
+        display.textContent = msg;
+        display.style.color = mileage > 200 ? '#dc3545' : '#15803d';
+      } else if (city) {
+        display.textContent = '📍 ' + city + ', ' + state + (zip ? ' · ' + zip : '') + ' · mileage TBD';
+        display.style.color = '#888';
+      } else {
+        display.textContent = '⚠️ Enter a city, zip, or full address';
+        display.style.color = '#dc3545';
+      }
     }
-    // Fire strip immediately now that mileage/county/zip are set
     try { updateStripFromLocalCalc(); } catch(e) { console.warn('[ShippingStrip]', e); }
   } catch(e) {
     if (display) { display.textContent = '⚠️ Error calculating distance'; display.style.color = '#dc3545'; }
@@ -30106,10 +30250,34 @@ window.openConcreteModal = function(forcedType) {
   var zipStatus = document.createElement('span');
   zipStatus.style.cssText = 'font-size:10px;color:#888;';
 
-  zipBtn.onclick = function() {
+  zipBtn.onclick = async function() {
     var zip = zipInput.value.trim();
     if (zip.length !== 5) { zipStatus.textContent = 'Enter 5-digit zip'; return; }
     zipStatus.textContent = '…';
+    // Try local table first
+    if (ZIP_MILES[zip]) {
+      county = zip; // will resolve via zippopotam below
+    }
+    try {
+      // Get county from Zippopotam (instant, no auth)
+      var zresp = await fetch('https://api.zippopotam.us/us/' + zip);
+      if (zresp.ok) {
+        var zdata = await zresp.json();
+        var place = zdata.places && zdata.places[0];
+        if (place) {
+          county = place['place name'];
+          zone = SC.getZone(county);
+          _cachedZip = zip;
+          _cachedCounty = county;
+          if (ZIP_MILES[zip]) _cachedMileage = ZIP_MILES[zip];
+          updateZoneLabel();
+          zipStatus.textContent = zone ? (place['place name'] + ', ' + place['state abbreviation']) : 'Zone not found';
+          recalc();
+          return;
+        }
+      }
+    } catch(e) {}
+    // Fallback to GAS
     fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
