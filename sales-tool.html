@@ -1342,6 +1342,8 @@ body.customer-mode #custColorChartLink { display: block !important; }
             <div style="font-size:9px;color:var(--muted);font-weight:600;">Address / City</div>
             <input id="st_address" type="text" placeholder="City, State" autocomplete="address-level2" style="font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);" oninput="scheduleAddressLookup()" onblur="doAddressLookup()">
             <div id="st_mileageDisplay" style="font-size:9px;color:var(--muted);margin-top:3px;min-height:12px;"></div>
+            <div id="addrDebugLog" style="display:none;font-size:9px;color:#f59e0b;background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:4px 6px;margin-top:4px;max-height:120px;overflow-y:auto;font-family:monospace;white-space:pre-wrap;"></div>
+            <button onclick="var el=document.getElementById('addrDebugLog');el.style.display=el.style.display==='none'?'block':'none';" style="font-size:9px;padding:2px 6px;margin-top:2px;border-radius:4px;border:1px solid #ccc;background:none;cursor:pointer;color:var(--muted);display:none;" id="addrDebugBtn">Debug</button>
           </div>
         </div>
       </div>
@@ -17720,6 +17722,21 @@ function scheduleAddressLookup() {
   _addrTimer = setTimeout(doAddressLookup, 1200);
 }
 
+function _addrLog(msg) {
+  console.log('[Addr]', msg);
+  var el = document.getElementById('addrDebugLog');
+  var btn = document.getElementById('addrDebugBtn');
+  if (el) {
+    el.style.display = 'block';
+    el.textContent += new Date().toLocaleTimeString('en-US',{hour12:false}) + ' ' + msg + '\n';
+    el.scrollTop = el.scrollHeight;
+  }
+  if (btn) btn.style.display = 'inline-block';
+}
+function _addrLogClear() {
+  var el = document.getElementById('addrDebugLog');
+  if (el) { el.textContent = ''; }
+}
 async function doAddressLookup(addrOverride) {
   clearTimeout(_addrTimer);
   var addr = addrOverride || (document.getElementById('st_address')||{}).value || '';
@@ -17729,9 +17746,12 @@ async function doAddressLookup(addrOverride) {
     if (_el && !_el.value) _el.value = addrOverride;
   }
   var display = document.getElementById('st_mileageDisplay');
+  _addrLogClear();
+  _addrLog('called addr=' + JSON.stringify(addr) + ' override=' + JSON.stringify(addrOverride||'') + ' dom=' + JSON.stringify((document.getElementById('st_address')||{}).value||''));
   if (!addr || addr.length < 4) {
     if (display) display.textContent = '';
     _cachedMileage = 0; _cachedZip = ''; _cachedCounty = '';
+    _addrLog('BAILED — addr too short/empty');
     return;
   }
 
@@ -17743,14 +17763,13 @@ async function doAddressLookup(addrOverride) {
     // Extract zip if present
     var zipMatch = addr.match(/\b(\d{5})\b/);
     var zip = zipMatch ? zipMatch[1] : '';
+    _addrLog('zip=' + zip + ' norm=' + addr.toLowerCase().replace(/[,.\s]+/g,' ').trim());
 
     // If no zip — try local city lookup table
     if (!zip) {
       var norm = addr.toLowerCase().replace(/[,.\s]+/g,' ').trim();
 
       // Strip leading street number + street name to isolate city portion
-      // e.g. "175 daisy lane woodbury tn" → try "woodbury tn", "daisy lane woodbury tn", etc.
-      // Strategy: try full string first, then progressively strip leading words
       var words = norm.split(' ');
       var cityKey = null;
       for (var _wi = 0; _wi < words.length && !cityKey; _wi++) {
@@ -17764,23 +17783,25 @@ async function doAddressLookup(addrOverride) {
         var cityKeys = Object.keys(CITY_MILES);
         for (var _ci = 0; _ci < cityKeys.length && !cityKey; _ci++) {
           var k = cityKeys[_ci];
-          // Strip state abbreviation from key for partial match
           var cityOnly = k.replace(/\s+(tn|al|ms|ky|ga|ar|mo|in|oh|nc|sc|va|wv|fl)$/i,'').trim();
           if (cityOnly.length > 3 && norm.indexOf(cityOnly) !== -1) {
             cityKey = k;
           }
         }
       }
+      _addrLog('cityKey=' + cityKey + ' norm=' + norm);
 
       if (cityKey) {
         var cm = CITY_MILES[cityKey];
         zip = cm.zip; mileage = cm.miles; city = cm.city; state = cm.state;
+        _addrLog('CITY_MILES HIT: ' + city + ' ' + state + ' ' + mileage + 'mi');
       }
     }
 
     // If we have a zip — resolve via Zippopotam
     if (zip && !city) {
       try {
+        _addrLog('Zippopotam fetch zip=' + zip);
         var zresp = await fetch('https://api.zippopotam.us/us/' + zip);
         if (zresp.ok) {
           var zdata = await zresp.json();
@@ -17789,16 +17810,19 @@ async function doAddressLookup(addrOverride) {
             city  = place['place name'];
             state = place['state abbreviation'];
             county = city + ' County';
+            _addrLog('Zippopotam HIT: ' + city + ' ' + state);
           }
         }
-      } catch(e) {}
+      } catch(e) { console.warn('[Addr] Zippopotam failed:', e.message); }
     }
 
     // Check local mileage table if mileage not yet set
     if (!mileage && zip) mileage = ZIP_MILES[zip] || 0;
+    _addrLog('RESULT: mileage=' + mileage + ' zip=' + zip + ' city=' + city);
 
     // GAS fallback — only if we still have no mileage
     if (!mileage) {
+      _addrLog('GAS fallback for: ' + (zip || addr));
       try {
         var gasAddr = zip || addr;
         var gasResp = await Promise.race([
@@ -17807,6 +17831,7 @@ async function doAddressLookup(addrOverride) {
           new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('timeout')); }, 12000); })
         ]);
         var gasData = await safeJson(gasResp);
+        _addrLog('GAS resp: ' + JSON.stringify(gasData).substring(0,80));
         if (gasData && gasData.success) {
           mileage = gasData.mileage || 0;
           if (gasData.county && !county) county = gasData.county;
