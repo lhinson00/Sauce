@@ -13011,140 +13011,86 @@ function applyVoiceQuote(parsed, overlay) {
         }
 
         // ── STEP-DOWN SECTION GEOMETRY ────────────────────────────────────────
-        // Renders a second building attached to the back gable end of the main building.
-        // Same width, pitch, truss, colors — only length and height differ.
         if (stepCfg && stepCfg.active && !isSingleSlope) {
           try {
-            var sl2 = stepCfg.length * Sc;   // step section scaled length
-            var sh2 = stepCfg.height * Sc;   // step section scaled eave height
-            var sr2 = (sh2 + (Q.w / 2) * (Q.pitch / 12)) * Sc; // step section ridge height
-            // Z position: back gable of main building is at sl/2, step section center is offset further
-            var stepZ0 = sl / 2 + sl2 / 2;   // center of step section along Z
+            var sl2  = stepCfg.length * Sc;
+            var sh2  = stepCfg.height * Sc;
+            var sr2  = (stepCfg.height + (Q.w / 2) * (Q.pitch / 12)) * Sc;
+            // The renderer's "front" gable is at Z = -sl/2.
+            // The step section attaches to the "front" (negative Z), centered at:
+            var sZ0  = -(sl / 2 + sl2 / 2);  // center Z of step section
+            var sZf  = -(sl / 2);             // junction face (shared wall) Z
+            var sZb  = -(sl / 2 + sl2);       // far end of step section Z
 
-            // Helper: translated quad — all step geometry offset by stepZ0 along Z
-            function mkQS(pts, mat) {
+            var mWS  = new THREE.MeshBasicMaterial({color: mW.color, side: THREE.DoubleSide});
+            var mRS  = new THREE.MeshBasicMaterial({color: mR.color, side: THREE.DoubleSide});
+            var mSS  = new THREE.MeshBasicMaterial({color: mS.color, side: THREE.DoubleSide});
+
+            // Helper: build a mesh from flat triangle vertex array
+            function mkTri(verts, mat) {
               var geo = new THREE.BufferGeometry();
-              var verts = [];
-              // pts: flat array [x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3]
-              // Two triangles: 0-1-2 and 0-2-3
-              [0,1,2, 0,2,3].forEach(function(i){
-                verts.push(pts[i*3], pts[i*3+1], pts[i*3+2] + stepZ0);
-              });
               geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
               geo.computeVertexNormals();
               return new THREE.Mesh(geo, mat);
             }
+            // Helper: quad as two triangles (4 corners, winding order: 0-1-2, 0-2-3)
+            function mkQuad(p0, p1, p2, p3, mat) {
+              return mkTri([
+                p0[0],p0[1],p0[2], p1[0],p1[1],p1[2], p2[0],p2[1],p2[2],
+                p0[0],p0[1],p0[2], p2[0],p2[1],p2[2], p3[0],p3[1],p3[2]
+              ], mat);
+            }
 
-            // Eave walls (left and right) of step section
-            // Left eave wall
-            grps.walls.add(mkQS([-sw/2,0,-sl2/2, sw/2,0,-sl2/2, sw/2,sh2,-sl2/2, -sw/2,sh2,-sl2/2], mW)); // front cap (shared gable)
-            // Main left eave wall panel
-            var stepLeftGeo = new THREE.BufferGeometry();
-            var stepLeftV = [];
-            [-sl2/2, sl2/2].forEach(function(z) {
-              stepLeftV.push(-sw/2, 0, z+stepZ0, -sw/2, sh2, z+stepZ0);
-            });
-            // Build left eave wall as two triangles
-            grps.walls.add(mkQS([-sw/2,0,-sl2/2, -sw/2,sh2,-sl2/2, -sw/2,sh2,sl2/2, -sw/2,0,sl2/2], mW));
+            // Left eave wall of step section
+            grps.walls.add(mkQuad(
+              [-sw/2,0,sZf],  [-sw/2,0,sZb],  [-sw/2,sh2,sZb], [-sw/2,sh2,sZf], mWS));
             // Right eave wall
-            grps.walls.add(mkQS([sw/2,0,-sl2/2, sw/2,0,sl2/2, sw/2,sh2,sl2/2, sw/2,sh2,-sl2/2], mW));
+            grps.walls.add(mkQuad(
+              [sw/2,0,sZf],   [sw/2,sh2,sZf],  [sw/2,sh2,sZb],  [sw/2,0,sZb],  mWS));
 
-            // Back gable wall of step section (far end)
-            // Rectangular lower portion
-            grps.walls.add(mkQS([-sw/2,0,sl2/2, sw/2,0,sl2/2, sw/2,sh2,sl2/2, -sw/2,sh2,sl2/2], mW));
-            // Gable triangle peak
-            var geoGableBack = new THREE.BufferGeometry();
-            var gbVerts = [
-              -sw/2+stepZ0, sh2, sl2/2+stepZ0,
-               sw/2+stepZ0, sh2, sl2/2+stepZ0,
-               0+stepZ0,    sr2, sl2/2+stepZ0
-            ];
-            // Use mkQS-style but triangle not quad
-            var geoGB2 = new THREE.BufferGeometry();
-            var gbV2 = [
-              -sw/2, sh2, sl2/2+stepZ0,
-               sw/2, sh2, sl2/2+stepZ0,
-               0,    sr2, sl2/2+stepZ0
-            ];
-            geoGB2.setAttribute('position', new THREE.Float32BufferAttribute(gbV2, 3));
-            geoGB2.computeVertexNormals();
-            grps.walls.add(new THREE.Mesh(geoGB2, new THREE.MeshBasicMaterial({color: mW.color, side: THREE.DoubleSide})));
+            // Far gable wall of step section (rectangular lower + triangle peak)
+            grps.walls.add(mkQuad(
+              [-sw/2,0,sZb],  [sw/2,0,sZb],  [sw/2,sh2,sZb],  [-sw/2,sh2,sZb], mWS));
+            grps.walls.add(mkTri([
+              -sw/2, sh2, sZb,
+               sw/2, sh2, sZb,
+               0,    sr2, sZb
+            ], mWS));
 
-            // Front gable of step section (shared wall at junction — same as main building back gable)
-            // Only the portion BELOW the step section eave height (above is covered by main building)
-            grps.walls.add(mkQS([-sw/2,0,-sl2/2, sw/2,0,-sl2/2, sw/2,sh2,-sl2/2, -sw/2,sh2,-sl2/2], mW));
-            // Gable triangle peak of step section front
-            var geoGF = new THREE.BufferGeometry();
-            var gfV = [
-              -sw/2, sh2, -sl2/2+stepZ0,
-               sw/2, sh2, -sl2/2+stepZ0,
-               0,    sr2, -sl2/2+stepZ0
-            ];
-            geoGF.setAttribute('position', new THREE.Float32BufferAttribute(gfV, 3));
-            geoGF.computeVertexNormals();
-            grps.walls.add(new THREE.Mesh(geoGF, new THREE.MeshBasicMaterial({color: mW.color, side: THREE.DoubleSide})));
+            // Junction gable (front face of step section, shared wall area)
+            // Only the triangle ABOVE the step eave — the rectangle below is the main building's back wall
+            grps.walls.add(mkTri([
+              -sw/2, sh2, sZf,
+               sw/2, sh2, sZf,
+               0,    sr2, sZf
+            ], mWS));
 
-            // STEP WALL TRIANGLE — the exposed portion of main building's back gable
-            // above the step section's eave height. This is the visual "step" that
-            // makes the two sections clearly distinct heights.
-            // It sits at Z = sl/2 (the back gable of the main building)
-            // from Y = sh2 (step section eave) up to Y = sr (main building ridge)
-            // triangular shape following the main building's pitch
-            var stepWallGeo = new THREE.BufferGeometry();
-            // The main building back gable at Z = sl/2 (not offset, absolute position)
-            // Peak at center, sides slope down at pitch from sh2 upward
-            // Left half: from (-sw/2, sh2) to (0, sr)
-            // Right half: from (sw/2, sh2) to (0, sr)
-            var swV = [
-              -sw/2, sh2, sl/2,
-               sw/2, sh2, sl/2,
-               0,    sr,  sl/2
-            ];
-            stepWallGeo.setAttribute('position', new THREE.Float32BufferAttribute(swV, 3));
-            stepWallGeo.computeVertexNormals();
-            grps.walls.add(new THREE.Mesh(stepWallGeo, new THREE.MeshBasicMaterial({color: mW.color, side: THREE.DoubleSide})));
+            // STEP WALL TRIANGLE on main building's front gable:
+            // The exposed area above step section eave, below main building peak
+            // Main building front gable is at Z = -sl/2 = sZf
+            grps.walls.add(mkTri([
+              -sw/2, sh2, sZf,
+               0,    sr,  sZf,
+               sw/2, sh2, sZf
+            ], mWS));
 
-            // Roof panels for step section — two slopes
-            // Left slope: from left eave up to ridge
-            var roofLGeo = new THREE.BufferGeometry();
-            var rlV = [
-              -sw/2, sh2, -sl2/2+stepZ0,   -sw/2, sh2, sl2/2+stepZ0,
-               0,    sr2, -sl2/2+stepZ0,    0,    sr2, sl2/2+stepZ0
-            ];
-            // Two triangles for left slope
-            var rlT = [
-              rlV[0],rlV[1],rlV[2],  rlV[3],rlV[4],rlV[5],  rlV[6],rlV[7],rlV[8],
-              rlV[3],rlV[4],rlV[5],  rlV[9],rlV[10],rlV[11], rlV[6],rlV[7],rlV[8]
-            ];
-            roofLGeo.setAttribute('position', new THREE.Float32BufferAttribute(rlT, 3));
-            roofLGeo.computeVertexNormals();
-            grps.roofPanels.add(new THREE.Mesh(roofLGeo, mR));
+            // Roof left slope of step section
+            grps.roof.add(mkQuad(
+              [-sw/2, sh2, sZf],  [0, sr2, sZf],  [0, sr2, sZb],  [-sw/2, sh2, sZb], mRS));
+            // Roof right slope
+            grps.roof.add(mkQuad(
+              [sw/2, sh2, sZf],   [sw/2, sh2, sZb],  [0, sr2, sZb],  [0, sr2, sZf],  mRS));
 
-            // Right slope
-            var roofRGeo = new THREE.BufferGeometry();
-            var rrT = [
-              sw/2, sh2, -sl2/2+stepZ0,   0,    sr2, -sl2/2+stepZ0,  sw/2, sh2, sl2/2+stepZ0,
-              sw/2, sh2, sl2/2+stepZ0,    0,    sr2, -sl2/2+stepZ0,   0,   sr2, sl2/2+stepZ0
-            ];
-            roofRGeo.setAttribute('position', new THREE.Float32BufferAttribute(rrT, 3));
-            roofRGeo.computeVertexNormals();
-            grps.roofPanels.add(new THREE.Mesh(roofRGeo, mR));
-
-            // Ridge cap along top of step section
-            grps.roofPanels.add(new THREE.Mesh(
+            // Ridge cap
+            var ridgeMesh = new THREE.Mesh(
               new THREE.BoxGeometry(0.04, 0.02, sl2),
-              new THREE.MeshBasicMaterial({color: mS.color})
-            )).position && (function(){
-              var ridgeMesh = new THREE.Mesh(
-                new THREE.BoxGeometry(0.04, 0.02, sl2),
-                new THREE.MeshBasicMaterial({color: mS.color})
-              );
-              ridgeMesh.position.set(0, sr2, stepZ0);
-              grps.roofPanels.add(ridgeMesh);
-            })();
+              mSS
+            );
+            ridgeMesh.position.set(0, sr2, sZ0);
+            grps.roof.add(ridgeMesh);
 
           } catch(stepErr) {
-            console.warn('[3D] Step section render failed (non-fatal):', stepErr.message);
+            console.warn('[3D] Step section render failed:', stepErr.message, stepErr.stack);
           }
         }
 
