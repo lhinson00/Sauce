@@ -31438,27 +31438,66 @@ window.openMaterialsModal = function(initialTab) {
           window._Q = Object.assign({}, _origQ, { l: ss.length, h: ss.height });
           var res2 = window.SauceMaterials.calculate(t.key);
           if (res2 && res2.items) {
-            // Single-per-quote items — only keep one copy
+            // Single-per-quote items — only keep one copy (not additive)
             var singlePerQuote = ['RS00','STMPEAK','HDGRS10D30','JHNS1.255LB','STP38A11','HBBA'];
-            var combined = res1.items.slice();
-            res2.items.forEach(function(item) {
-              if (singlePerQuote.indexOf((item.sku||'').toUpperCase()) >= 0) return;
-              combined.push(item);
+
+            // Merge by SKU — sum quantities for matching SKUs, preserving list order
+            // Start with main building items as the base
+            var merged = res1.items.map(function(item) {
+              return Object.assign({}, item); // clone so we don't mutate originals
             });
-            // Deduct 2 eave posts where buildings meet (shared junction wall)
-            // Posts are in 'Yard' category with description containing 'Eave Post'
-            // Find the eave post SKU from main building to match the right length
+
+            // Build index of merged items by SKU for fast lookup
+            var skuIndex = {};
+            merged.forEach(function(item, idx) {
+              var key = (item.sku||'__nosku__' + idx).toUpperCase();
+              if (!skuIndex[key]) skuIndex[key] = [];
+              skuIndex[key].push(idx);
+            });
+
+            // Add step section items — merge into existing SKU or append
+            res2.items.forEach(function(item) {
+              var skuKey = (item.sku||'').toUpperCase();
+              // Single-per-quote: skip entirely
+              if (singlePerQuote.indexOf(skuKey) >= 0) return;
+              // fixedCost items (garage doors, labor adders): always append separately
+              if (item.fixedCost != null) { merged.push(Object.assign({}, item)); return; }
+              // Match by SKU + boardLen (board items with same SKU can have different lengths)
+              var matchIdx = -1;
+              if (skuIndex[skuKey]) {
+                for (var mi = 0; mi < skuIndex[skuKey].length; mi++) {
+                  var candidate = merged[skuIndex[skuKey][mi]];
+                  var sameBoardLen = (candidate.boardLen == null && item.boardLen == null) ||
+                                    (candidate.boardLen === item.boardLen);
+                  var sameMetalLen = candidate.metalLength === item.metalLength;
+                  if (sameBoardLen && sameMetalLen) { matchIdx = skuIndex[skuKey][mi]; break; }
+                }
+              }
+              if (matchIdx >= 0) {
+                // Sum quantities into existing item
+                merged[matchIdx].quantity = (merged[matchIdx].quantity || 0) + (item.quantity || 0);
+              } else {
+                // New SKU/length combo — append and index it
+                var newIdx = merged.length;
+                merged.push(Object.assign({}, item));
+                if (!skuIndex[skuKey]) skuIndex[skuKey] = [];
+                skuIndex[skuKey].push(newIdx);
+              }
+            });
+
+            // Deduct 2 eave posts at junction — scan from end, subtract from Eave Post items
             var postDeducted = 0;
-            for (var ci = combined.length - 1; ci >= 0 && postDeducted < 2; ci--) {
-              var item = combined[ci];
-              if (item.category === 'Yard' && item.description && item.description.indexOf('Eave Post') >= 0 && item.quantity > 0) {
-                var deduct = Math.min(2 - postDeducted, item.quantity);
-                item.quantity -= deduct;
+            for (var ci = merged.length - 1; ci >= 0 && postDeducted < 2; ci--) {
+              var mitem = merged[ci];
+              if (mitem.category === 'Yard' && mitem.description && mitem.description.indexOf('Eave Post') >= 0 && mitem.quantity > 0) {
+                var deduct = Math.min(2 - postDeducted, mitem.quantity);
+                mitem.quantity -= deduct;
                 postDeducted += deduct;
-                if (item.quantity === 0) combined.splice(ci, 1);
+                if (mitem.quantity === 0) merged.splice(ci, 1);
               }
             }
-            res1 = { items: combined, building: _origQ.w + "' x " + (_origQ.l + ss.length) + "' x " + _origQ.h + "' + " + ss.height + "'" };
+
+            res1 = { items: merged, building: _origQ.w + "' x " + (_origQ.l + ss.length) + "' — " + _origQ.l + "' at " + _origQ.h + "' / " + ss.length + "' at " + ss.height + "'" };
           }
         } catch(stepE) {
           console.warn('[Materials] Step section calc failed:', stepE.message);
