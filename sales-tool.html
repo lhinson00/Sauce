@@ -2431,6 +2431,9 @@ function updateStripFromLocalCalc() {
   var materialKit = !!(document.getElementById('st_materialKit')||{}).checked;
   var farmTax     = !!(document.getElementById('st_farmTax')||{}).checked;
   var sqft     = Q.w * Q.l;
+  if (window._stepSection && window._stepSection.active) {
+    sqft += Q.w * window._stepSection.length; // combined footprint for concrete/area calcs
+  }
   if (window._shedOnlyMode) {
     // Use combined shed sqft for concrete
     sqft = (window._shedConfigs||[]).reduce(function(s, sc){ return s + shedConcreteSqft(sc, Q); }, 0);
@@ -2553,13 +2556,25 @@ function updateStripFromLocalCalc() {
   var esdChecked = !!(document.getElementById('st_esd')||{}).checked;
   var esdAmt = 0;
   if (esdChecked && window.SauceESD) {
-    var _sqft = (Q.w||0) * (Q.l||0);
+    var _sqft = (Q.w||0) * ((Q.l||0) + (window._stepSection && window._stepSection.active ? window._stepSection.length : 0));
     var _shedSqft = (shedCfgs||[]).reduce(function(s,sc){ return s + shedConcreteSqft(sc, Q); }, 0);
     esdAmt = (_sqft + _shedSqft) * 0.45 + 750;
   }
 
-  // Labor all variants
-  var laborAll = window.SauceLabor.calculateAll();
+  // Labor all variants — run off combined length when step section active
+  var laborAll = (function() {
+    var ss = window._stepSection;
+    if (ss && ss.active && window._Q) {
+      var _origL = window._Q.l;
+      try {
+        window._Q.l = _origL + ss.length;
+        return window.SauceLabor.calculateAll();
+      } finally {
+        window._Q.l = _origL;
+      }
+    }
+    return window.SauceLabor.calculateAll();
+  })();
 
   // Define variants
   var variants;
@@ -33311,7 +33326,19 @@ window.exportMaterialCSV = function(buildType, labelStr) {
         if (buildType === 'stud')     laborOverride = { truss: 'Wood',  oh: window._Q.oh > 0 ? window._Q.oh : 18, frameType: 'stud' };
         if (buildType === 'cypress')  laborOverride = { truss: 'Wood',  oh: window._Q.oh > 0 ? window._Q.oh : 18, frameType: 'post' };
         if (buildType === 'metalBB')  laborOverride = { truss: 'Wood',  oh: window._Q.oh > 0 ? window._Q.oh : 18, frameType: 'stud' };
-        var laborResult = laborOverride ? SL.calculate(laborOverride) : SL.calculate();
+        var laborResult = (function() {
+          var ss = window._stepSection;
+          if (ss && ss.active && window._Q) {
+            var _origL = window._Q.l;
+            try {
+              window._Q.l = _origL + ss.length;
+              return laborOverride ? SL.calculate(laborOverride) : SL.calculate();
+            } finally {
+              window._Q.l = _origL;
+            }
+          }
+          return laborOverride ? SL.calculate(laborOverride) : SL.calculate();
+        })();
         if (laborResult && laborResult.finalLabor) {
           exportItems.push({
             category: 'Labor',
