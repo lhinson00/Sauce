@@ -33059,6 +33059,62 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
   };
 
   // ── Send comparison via GAS ────────────────────────────
+  CMP.sendComparisonText = function() {
+    var phoneEl = document.getElementById('cmpToPhone');
+    var phone = phoneEl ? phoneEl.value.trim() : '';
+    if (!phone) { alert('Please enter a customer phone number.'); return; }
+
+    var slots = CMP.slots;
+    if (!slots.length) { alert('No options saved to compare.'); return; }
+
+    var _cu = window.currentUser || {};
+    var _firstName = (document.getElementById('st_name')||{}).value.split(' ')[0] || 'there';
+    var _sn = _cu.fullName || _cu.username || 'Lain';
+    var notesEl = document.getElementById('cmpNotes');
+    var notes = notesEl ? notesEl.value.trim() : '';
+
+    // Build price summary lines
+    var _allTypes = [];
+    slots.forEach(function(s){ Object.keys(s.totals||{}).forEach(function(k){ if(_allTypes.indexOf(k)<0) _allTypes.push(k); }); });
+    var activeTypes = (CMP.activeTypes&&CMP.activeTypes.length) ? _allTypes.filter(function(k){ return CMP.activeTypes.indexOf(k)>=0; }) : _allTypes;
+
+    var TYPE_SHORT = { woodOH:'Wood w/ Soffit', woodNoOH:'Wood No Soffit', steel:'Steel Truss', stud:'Stud Frame', cypress:'Cypress', metalBB:'Metal B&B' };
+
+    var msg = 'Hi ' + _firstName + ',\n\nHere is your building comparison from Summertown Metals:\n\n';
+
+    slots.forEach(function(s, i) {
+      var label = s.label || ('Option ' + String.fromCharCode(65+i));
+      msg += '--- ' + label + ' ---\n';
+      if (s.dims) msg += s.dims + '\n';
+      activeTypes.forEach(function(k) {
+        var t = (s.totals||{})[k];
+        if (t && t.total) msg += TYPE_SHORT[k] + ': $' + Math.round(t.total).toLocaleString('en-US') + '\n';
+      });
+      // Add 3D view link if available
+      if (s.cfg) {
+        try {
+          var _sCfg = JSON.parse(JSON.stringify(s.cfg));
+          var _enc = null;
+          if (typeof safeEncodeCompressed === 'function') {
+            safeEncodeCompressed(_sCfg).then(function(enc) {
+              if (enc) msg += 'View 3D: https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + enc + '\n';
+            });
+          }
+        } catch(e) {}
+      }
+      msg += '\n';
+    });
+
+    if (notes) msg += notes + '\n\n';
+    msg += 'Questions? Reply to this message.\n' + _sn + ' - Summertown Metals';
+
+    var clean = phone.replace(/[^0-9+]/g,'');
+    var smsLink = 'sms:' + clean + '&body=' + encodeURIComponent(msg);
+    var a = document.createElement('a'); a.href = smsLink; a.style.display = 'none';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    if (navigator.clipboard) navigator.clipboard.writeText(msg).catch(function(){});
+  };
+
   CMP.sendComparison = function() {
     if (!window.currentUser || !window.currentUser.token) return;
     var emailEl = document.getElementById('cmpToEmail');
@@ -33577,15 +33633,18 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       + '<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888;margin-bottom:6px;">Notes (optional)</div>'
       + '<textarea id="cmpNotes" rows="3" placeholder="Add context for the customer..." style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,130,0,.2);background:rgba(255,255,255,.04);color:#e2e8f0;font-size:12px;font-family:Outfit,sans-serif;resize:vertical;outline:none;"></textarea>'
       + (isLain
-        ? '<div style="display:flex;gap:8px;margin-top:10px;">'
-          + '<input id="cmpToEmail" type="email" placeholder="Customer email" style="flex:1;padding:7px 10px;border-radius:7px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:#e2e8f0;font-size:11px;font-family:Outfit,sans-serif;outline:none;">'
-          + '<button id="cmpSendBtn" onclick="window._CompareEngine.sendComparison()" style="padding:7px 18px;border-radius:7px;border:none;background:linear-gradient(135deg,#FF8200,#cc6800);color:#1a2232;font-size:11px;font-weight:800;font-family:Outfit,sans-serif;cursor:pointer;letter-spacing:.3px;white-space:nowrap;">Send Comparison</button>'
+        ? '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">'
+          + '<input id="cmpToPhone" type="tel" placeholder="Customer phone" style="flex:1;min-width:130px;padding:7px 10px;border-radius:7px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:#e2e8f0;font-size:11px;font-family:Outfit,sans-serif;outline:none;">'
+          + '<input id="cmpToEmail" type="email" placeholder="Customer email" style="flex:1;min-width:160px;padding:7px 10px;border-radius:7px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:#e2e8f0;font-size:11px;font-family:Outfit,sans-serif;outline:none;">'
+          + '<button onclick="window._CompareEngine.sendComparisonText()" style="padding:7px 14px;border-radius:7px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:#e2e8f0;font-size:11px;font-weight:800;font-family:Outfit,sans-serif;cursor:pointer;white-space:nowrap;">💬 Text</button>'
+          + '<button id="cmpSendBtn" onclick="window._CompareEngine.sendComparison()" style="padding:7px 18px;border-radius:7px;border:none;background:linear-gradient(135deg,#FF8200,#cc6800);color:#1a2232;font-size:11px;font-weight:800;font-family:Outfit,sans-serif;cursor:pointer;letter-spacing:.3px;white-space:nowrap;">✉️ Email</button>'
           + '</div>'
         : '')
       + '</div>';
     // Preserve values from any existing inputs before we blow away innerHTML —
     // prevents re-renders (e.g. filter toggles, slot clears) from wiping customer email / notes.
     var _prevEmail = (m.querySelector('#cmpToEmail')||{}).value;
+    var _prevPhone = (m.querySelector('#cmpToPhone')||{}).value;
     var _prevNotes = (m.querySelector('#cmpNotes')||{}).value;
 
     m.querySelector('#cmpFilter').innerHTML = filterHtml;
@@ -33595,6 +33654,8 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     // Restore preserved values
     var _newEmail = m.querySelector('#cmpToEmail');
     if (_newEmail && _prevEmail != null) _newEmail.value = _prevEmail;
+    var _newPhone = m.querySelector('#cmpToPhone');
+    if (_newPhone && _prevPhone != null) _newPhone.value = _prevPhone;
     var _newNotes = m.querySelector('#cmpNotes');
     if (_newNotes && _prevNotes != null) _newNotes.value = _prevNotes;
   }
