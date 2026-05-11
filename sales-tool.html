@@ -14527,7 +14527,7 @@ async function sbSaveQuote(snap) {
 
 // Load quote list from Supabase
 async function sbGetQuotes(salesman) {
-  var q = 'quotes?select=id,date,name,salesman,phone,email,city,total,specs,status,source,form_fields,display_summary,pricing_results,config_encoded,updated_at&order=updated_at.desc&limit=200';
+  var q = 'quotes?select=id,date,name,salesman,phone,email,city,total,specs,status,source,form_fields,display_summary,pricing_results,config_encoded,snapshots,updated_at&order=updated_at.desc&limit=200';
   if (salesman) q += '&salesman=eq.' + encodeURIComponent(salesman);
   var rows = await sbFetch(q, { method: 'GET' });
   if (!rows || !rows.length) return null;
@@ -15833,48 +15833,58 @@ async function saveSalesQuote(overwriteMode) {
     window._savedQuoteId = _clientId;
 
     // Capture 4 building snapshots for CRM display
+    var _capturedSnaps = null;
     try {
       var d3 = window._3d;
       if (d3 && d3.rrx && d3.scene && d3.cam) {
         var _origTh=d3.th, _origPh=d3.ph, _origDi=d3.di;
-        var _capW=400, _capH=267;
+        var _capW=320, _capH=213;
         d3.rrx.setSize(_capW, _capH);
         if (d3.dimLabels) d3.dimLabels.forEach(function(l){l.visible=false;});
         var _snapViews = [
-          {name:'Front',      th:Math.PI*1.0,  ph:Math.PI*0.08, di:13},
-          {name:'Left side',  th:Math.PI*1.5,  ph:Math.PI*0.08, di:13},
-          {name:'Back',       th:0,             ph:Math.PI*0.08, di:13},
-          {name:'Right side', th:Math.PI*0.5,  ph:Math.PI*0.08, di:13},
+          {th:Math.PI*1.0, ph:Math.PI*0.08, di:13},
+          {th:Math.PI*1.5, ph:Math.PI*0.08, di:13},
+          {th:0,           ph:Math.PI*0.08, di:13},
+          {th:Math.PI*0.5, ph:Math.PI*0.08, di:13},
         ];
         var _snaps = [];
         for (var _vi=0; _vi<_snapViews.length; _vi++) {
-          var _sv = _snapViews[_vi];
-          d3.th=_sv.th; d3.ph=_sv.ph; d3.di=_sv.di; d3.setC();
+          var _sv=_snapViews[_vi]; d3.th=_sv.th; d3.ph=_sv.ph; d3.di=_sv.di; d3.setC();
           d3.rrx.render(d3.scene, d3.cam);
-          _snaps.push(d3.rrx.domElement.toDataURL('image/jpeg', 0.75));
+          _snaps.push(d3.rrx.domElement.toDataURL('image/jpeg', 0.6));
         }
-        // Restore renderer
-        var _vpEl = document.getElementById('qgRV') || document.querySelector('.vp-container');
-        var _vpW = _vpEl ? _vpEl.clientWidth : window.innerWidth;
-        var _vpH = _vpEl ? _vpEl.clientHeight : 400;
-        d3.rrx.setSize(_vpW, _vpH);
+        var _vpEl=document.getElementById("qgRV")||document.querySelector(".vp-container");
+        d3.rrx.setSize(_vpEl?_vpEl.clientWidth:window.innerWidth, _vpEl?_vpEl.clientHeight:400);
         d3.rrx.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         d3.th=_origTh; d3.ph=_origPh; d3.di=_origDi; d3.setC();
         d3.rrx.render(d3.scene, d3.cam);
         if (d3.dimLabels) d3.dimLabels.forEach(function(l){l.visible=true;});
-        snapshot.snapshots = _snaps;
+        _capturedSnaps = _snaps;
         console.log('[Snap] Captured 4 building views');
       }
     } catch(snapErr) {
-      console.warn('[Snap] Capture failed (non-fatal):', snapErr);
+      console.warn('[Snap] Capture failed:', snapErr);
     }
 
-    // Save to Supabase first — fast, reliable, works on mobile
+    // Save main row — snapshots excluded to keep payload lean
     var _sbSnap = Object.assign({}, snapshot, { quoteId: _clientId });
+    delete _sbSnap.snapshots;
     try { await sbSaveQuote(_sbSnap); console.log('[SB] save complete'); }
     catch(e) { console.warn('[SB] save failed:', e); throw new Error('Save failed: ' + e.message); }
 
-    // Fire GAS in the background (fire-and-forget — not mobile-critical)
+    // Save snapshots separately
+    if (_capturedSnaps) {
+      try {
+        await sbFetch('quotes?id=eq.' + encodeURIComponent(_clientId), {
+          method: 'PATCH',
+          body: JSON.stringify({ snapshots: _capturedSnaps }),
+          headers: { 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+        });
+        console.log('[Snap] Snapshots saved');
+      } catch(snapSaveErr) {
+        console.warn('[Snap] Snapshot save failed (non-fatal):', snapSaveErr);
+      }
+    }
     var _savePayload = {
       action: _saveAction,
       username: (window.currentUser || {}).username || '',
