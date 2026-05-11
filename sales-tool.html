@@ -33363,6 +33363,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
 
     var _cu = window.currentUser || {};
     var _firstName = (document.getElementById('st_name')||{}).value.split(' ')[0] || 'there';
+    var _custName  = (document.getElementById('st_name')||{}).value || 'Customer';
     var _sn = _cu.fullName || _cu.username || 'Lain';
     var notesEl = document.getElementById('cmpNotes');
     var notes = notesEl ? notesEl.value.trim() : '';
@@ -33371,34 +33372,41 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     var _allTypes = [];
     slots.forEach(function(s){ Object.keys(s.totals||{}).forEach(function(k){ if(_allTypes.indexOf(k)<0) _allTypes.push(k); }); });
     var activeTypes = (CMP.activeTypes&&CMP.activeTypes.length) ? _allTypes.filter(function(k){ return CMP.activeTypes.indexOf(k)>=0; }) : _allTypes;
-    var TYPE_SHORT = { woodOH:'Wood w/ Soffit', woodNoOH:'Wood No Soffit', steel:'Steel Truss', stud:'Stud Frame', cypress:'Cypress', metalBB:'Metal B&B' };
+    var TYPE_LABELS2 = { woodOH:'Wood Truss w/ 12" Soffit', woodNoOH:'Wood Truss No Soffit', steel:'Steel Truss No Soffit', stud:'Stud Framed', cypress:'Cypress B&B', metalBB:'Metal Board & Batten' };
 
-    // Build the price options for PDF generation — use first slot's active totals
-    var forced = [];
-    var firstSlot = slots[0] || {};
-    activeTypes.forEach(function(k) {
-      var t = (firstSlot.totals||{})[k];
-      var typeMap = { woodOH:{type:'WoodOH',label:'Wood Truss w/ Soffit'}, woodNoOH:{type:'WoodNoOH',label:'Wood Truss No Soffit'}, steel:{type:'EnclosedSteel',label:'Steel Truss No Soffit'}, stud:{type:'StudFramed',label:'Stud Frame'}, cypress:{type:'Cypress',label:'Cypress'}, metalBB:{type:'MetalBB',label:'Metal B&B'} };
-      if (t && t.total && typeMap[k]) forced.push({ type:typeMap[k].type, label:typeMap[k].label, results:t });
-    });
+    showToast('Generating comparison PDF...', 'success');
 
-    showToast('Generating PDF...', 'success');
-    uploadQuotePDFToSupabase(forced.length ? forced : null)
+    // Generate comparison PDF then upload and send
+    _generateComparisonPDFBlob(slots, activeTypes, TYPE_LABELS2, _custName, _cu, notes)
+      .then(function(blob) {
+        if (!blob) throw new Error('PDF generation failed');
+        var _su = 'https://rvhzploxeeqgggjefsif.supabase.co';
+        var _sk = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ2aHpwbG94ZWVxZ2dnamVmc2lmIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3ODAwMTAwNiwiZXhwIjoyMDkzNTc3MDA2fQ.wbKKwjArCU-8BXzTzgG5IiT0MP82e2w3iOoOtnf6QQI';
+        var qid = window._savedQuoteId || 'cmp';
+        var fname = qid + '-comparison-' + Date.now() + '.pdf';
+        return fetch(_su + '/storage/v1/object/quote-pdfs/' + fname, {
+          method: 'POST',
+          headers: { 'apikey': _sk, 'Authorization': 'Bearer ' + _sk, 'Content-Type': 'application/pdf', 'x-upsert': 'true' },
+          body: blob
+        }).then(function(r) {
+          if (!r.ok) throw new Error('Upload failed');
+          return _su + '/storage/v1/object/public/quote-pdfs/' + fname;
+        });
+      })
       .then(function(pdfUrl) {
-        var msg = 'Hi ' + _firstName + ',\n\nWe appreciate you reaching out to us for a quote on your potential building project. Please find the comparison and links below.\n\n';
+        var msg = 'Hi ' + _firstName + ',\n\nWe appreciate you reaching out to us for a quote on your potential building project. Please find your building comparison and links below.\n\n';
 
-        // Price lines per slot
         slots.forEach(function(s, i) {
           var label = s.label || ('Option ' + String.fromCharCode(65+i));
           msg += '--- ' + label + (s.dims ? ' (' + s.dims + ')' : '') + ' ---\n';
           activeTypes.forEach(function(k) {
             var t = (s.totals||{})[k];
-            if (t && t.total) msg += TYPE_SHORT[k] + ': $' + Math.round(t.total).toLocaleString('en-US') + '\n';
+            if (t && t.total) msg += (TYPE_LABELS2[k]||k) + ': $' + Math.round(t.total).toLocaleString('en-US') + '\n';
           });
           msg += '\n';
         });
 
-        msg += 'Please find your quote by clicking the following link:\n' + pdfUrl + '\n\n';
+        msg += 'Please find your comparison quote by clicking the following link:\n' + pdfUrl + '\n\n';
         msg += 'Please review the new customer information in the following link:\n' + _NC + '\n\n';
         if (notes) msg += notes + '\n\n';
         msg += 'If you have any questions, please do not hesitate to reach out to me at this number.\n\n' + _sn + '\nSummertown Metals';
@@ -33409,8 +33417,119 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         if (navigator.clipboard) navigator.clipboard.writeText(msg).catch(function(){});
       })
-      .catch(function(e){ showToast('PDF failed: ' + (e&&e.message||'error'), 'error'); });
+      .catch(function(e){ showToast('Error: ' + (e&&e.message||'failed'), 'error'); });
   };
+
+  // Build a comparison PDF blob matching the email table layout
+  function _generateComparisonPDFBlob(slots, activeTypes, typeLabels, custName, cu, notes) {
+    return new Promise(function(resolve) {
+      try {
+        var J = window.jspdf && window.jspdf.jsPDF;
+        if (!J) { resolve(null); return; }
+        var doc = new J({ orientation:'portrait', unit:'pt', format:'letter' });
+        var W = 612, H = 792;
+        var margin = 36, y = margin;
+        var slotColors = ['#1a5276','#145a32','#6e2f8a'];
+
+        // Header bar
+        doc.setFillColor(44, 62, 80);
+        doc.rect(margin, y, W - margin*2, 36, 'F');
+        doc.setTextColor(255,255,255);
+        doc.setFont('helvetica','bold');
+        doc.setFontSize(14);
+        doc.text('Building Comparison', margin+12, y+23);
+        doc.setFontSize(9);
+        doc.setFont('helvetica','normal');
+        doc.text(slots.length + ' options  ·  ' + custName + '  ·  ' + new Date().toLocaleDateString(), W-margin-12, y+23, {align:'right'});
+        y += 48;
+
+        // Column widths
+        var labelW = 160;
+        var slotW  = Math.floor((W - margin*2 - labelW) / slots.length);
+
+        // Slot header row
+        var hRowH = 44;
+        doc.setFillColor(240,240,240);
+        doc.rect(margin, y, W-margin*2, hRowH, 'F');
+        doc.setFontSize(8); doc.setTextColor(120,120,120); doc.setFont('helvetica','bold');
+        doc.text('', margin+6, y+16);
+        slots.forEach(function(s, i) {
+          var x = margin + labelW + slotW*i;
+          var hex = slotColors[i] || '#333';
+          var r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+          doc.setFillColor(r,g,b);
+          doc.rect(x, y, slotW, hRowH, 'F');
+          doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(11);
+          var label = s.label || ('Option ' + String.fromCharCode(65+i));
+          doc.text(label, x + slotW/2, y+18, {align:'center'});
+          doc.setFont('helvetica','normal'); doc.setFontSize(8);
+          if (s.dims) doc.text(s.dims, x + slotW/2, y+30, {align:'center'});
+        });
+        y += hRowH + 2;
+
+        // Price rows per type
+        activeTypes.forEach(function(k, ki) {
+          var rowH = 28;
+          var bg = ki%2===0 ? [255,255,255] : [248,248,248];
+          doc.setFillColor(bg[0],bg[1],bg[2]);
+          doc.rect(margin, y, W-margin*2, rowH, 'F');
+          // Label
+          doc.setTextColor(80,80,80); doc.setFont('helvetica','normal'); doc.setFontSize(9);
+          doc.text(typeLabels[k]||k, margin+8, y+rowH/2+3);
+          // Values per slot
+          slots.forEach(function(s, i) {
+            var t = (s.totals||{})[k];
+            var x = margin + labelW + slotW*i;
+            if (t && t.total) {
+              var hex = slotColors[i] || '#333';
+              var r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+              doc.setTextColor(r,g,b); doc.setFont('helvetica','bold'); doc.setFontSize(11);
+              doc.text('$'+Math.round(t.total).toLocaleString('en-US'), x+slotW/2, y+rowH/2+3, {align:'center'});
+            } else {
+              doc.setTextColor(180,180,180); doc.setFont('helvetica','normal'); doc.setFontSize(9);
+              doc.text('—', x+slotW/2, y+rowH/2+3, {align:'center'});
+            }
+          });
+          // Border line
+          doc.setDrawColor(220,220,220); doc.setLineWidth(0.5);
+          doc.line(margin, y+rowH, W-margin, y+rowH);
+          y += rowH;
+        });
+
+        y += 14;
+
+        // Notes
+        if (notes) {
+          doc.setFillColor(255,253,231);
+          var noteLines = doc.splitTextToSize(notes, W-margin*2-16);
+          var noteH = noteLines.length * 13 + 20;
+          doc.rect(margin, y, W-margin*2, noteH, 'F');
+          doc.setDrawColor(245,158,11); doc.setLineWidth(3);
+          doc.line(margin, y, margin, y+noteH);
+          doc.setTextColor(100,80,0); doc.setFont('helvetica','bold'); doc.setFontSize(8);
+          doc.text('NOTES', margin+10, y+13);
+          doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(60,60,60);
+          doc.text(noteLines, margin+10, y+25);
+          y += noteH + 12;
+        }
+
+        // Footer
+        var footY = H - margin;
+        doc.setDrawColor(200,200,200); doc.setLineWidth(0.5);
+        doc.line(margin, footY-18, W-margin, footY-18);
+        doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(120,120,120);
+        var snLine = (cu.fullName||cu.username||'') + '  ·  Summertown Metals  ·  ' + (cu.phone||'(931) 964-2500');
+        doc.text(snLine, W/2, footY-6, {align:'center'});
+
+        // Output blob
+        var blob = doc.output('blob');
+        resolve(blob);
+      } catch(e) {
+        console.warn('[CMP PDF]', e);
+        resolve(null);
+      }
+    });
+  }
 
   CMP.sendComparison = function() {
     if (!window.currentUser || !window.currentUser.token) return;
