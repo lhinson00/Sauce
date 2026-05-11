@@ -5010,10 +5010,23 @@ function renderSheds(){
     var isGable=(sc.type==='gable');
     var isWrap=(sc.type==='wrap'||sc.type==='wrap3'||sc.type==='wrap4');
 
+    var stepActive = window._stepSection && window._stepSection.active;
     var wallOpts=['back','front','left','right'].map(function(wid){
       var wl=WALLS.find(function(w){return w.id===wid;});
       return '<option value="'+wid+'"'+(sc.wall===wid?' selected':'')+'>'+wl.label+'</option>';
     }).join('');
+    if (stepActive) {
+      var stepWalls = [
+        {id:'step-left',  label:'Step Left Eave'},
+        {id:'step-right', label:'Step Right Eave'},
+        {id:'step-front', label:'Step Far End (Gable)'},
+      ];
+      wallOpts += '<optgroup label="Step-down Section">';
+      stepWalls.forEach(function(sw2){
+        wallOpts += '<option value="'+sw2.id+'"'+(sc.wall===sw2.id?' selected':'')+'>'+sw2.label+'</option>';
+      });
+      wallOpts += '</optgroup>';
+    }
 
     var typeChips=SHED_TYPES.map(function(t){
       return '<div class="shed-chip'+(sc.type===t.val?' active':'')+'" onclick="setShedProp('+sc.id+',\'type\',\''+t.val+'\');scheduleBuild()">'+t.label+'</div>';
@@ -8624,6 +8637,28 @@ function applyVoiceQuote(parsed, overlay) {
     // ═══ MAIN 3D FUNCTION ═══════════════════════════════════════════════
     
     function build3DReplay(placed, shedCfgs, wallCfgs, stepCfg) {
+      // Normalize step-wall sheds — translate step-left/right/front to their
+      // main-building equivalents with a Z offset so all existing rendering code
+      // works unchanged. Step section center is at sZ0 = -(sl/2 + sl2/2) in scene units.
+      var _ss = window._stepSection;
+      if (_ss && _ss.active && shedCfgs && shedCfgs.length) {
+        var _sl2 = _ss.length * 0.1;  // Sc = 0.1
+        var _sl  = (placed && placed.l ? placed.l : (window._Q && window._Q.l ? window._Q.l : Q.l)) * 0.1;
+        var _sZ0 = -(_sl / 2 + _sl2 / 2); // step section center Z
+        shedCfgs = shedCfgs.map(function(sc) {
+          if (!sc.wall || !sc.wall.startsWith('step-')) return sc;
+          var baseWall = sc.wall.replace('step-', '');
+          // step-front means the far end of the step section (which is 'front' in step coords)
+          // In scene coords, step-front is at sZb = -(sl/2 + sl2) — the far gable
+          // Map: step-left→left, step-right→right, step-front→front (far end)
+          return Object.assign({}, sc, {
+            wall: baseWall,
+            _stepZOff: _sZ0,        // Z translation to apply to this shed
+            _stepMainL: _ss.length, // override mainWallLen for eave walls
+            _isStepShed: true
+          });
+        });
+      }
         // ═══ COMPREHENSIVE 3D LOADING FIX ════════════════════════════════════════
         
         console.log('[3D] Starting build3DReplay...');
@@ -9079,7 +9114,8 @@ function applyVoiceQuote(parsed, overlay) {
         (shedCfgs || []).forEach(sc => {
             const ssw = sc.w * Sc, ssl = sc.l * Sc;
             const isEW = (sc.wall === 'left' || sc.wall === 'right');
-            const mwl = isEW ? Q.l : Q.w;
+            const mwl = (sc._isStepShed && isEW ? sc._stepMainL : (isEW ? Q.l : Q.w));
+            const _sZOff = sc._stepZOff || 0;
             const sLen = sc.l;
             const sPos = sc.position || 'center';
             let sOff = 0;
@@ -9088,7 +9124,7 @@ function applyVoiceQuote(parsed, overlay) {
             else if (sPos === 'end') { sOff = mwl - sLen; }
             else if (sPos === 'custom') { sOff = Math.max(0, Math.min(sc.offsetFt || 0, mwl - sLen)); }
             else { sOff = (mwl - sLen) / 2; }
-            let slabOff = (sOff + sLen / 2 - mwl / 2) * Sc;
+            let slabOff = (sOff + sLen / 2 - mwl / 2) * Sc + _sZOff;
             let slabL = ssl;
             if (sc.type === 'wrap') {
                 const _fwFt2 = isEW ? Q.l : Q.w;
@@ -9223,7 +9259,8 @@ function applyVoiceQuote(parsed, overlay) {
             }
             if (sc.type !== 'leanto' && sc.type !== 'wrap' && sc.type !== 'wrap3') return;
             const isEave = sc.wall === 'left' || sc.wall === 'right';
-            const mainWallLen = isEave ? Q.l : Q.w;
+            const mainWallLen = (sc._isStepShed && isEave ? sc._stepMainL : (isEave ? Q.l : Q.w));
+            const _scPZOff = sc._stepZOff || 0;
             const shedLen = sc.l;
             const shedPos = sc.position || 'center';
             let shedOffFt = 0;
@@ -9232,7 +9269,7 @@ function applyVoiceQuote(parsed, overlay) {
             else if (shedPos === 'end') shedOffFt = mainWallLen - shedLen;
             else if (shedPos === 'custom') shedOffFt = Math.max(0, Math.min(sc.offsetFt || 0, mainWallLen - shedLen));
             else shedOffFt = (mainWallLen - shedLen) / 2;
-            const _sco = (shedOffFt + shedLen / 2 - mainWallLen / 2) * Sc;
+            const _sco = (shedOffFt + shedLen / 2 - mainWallLen / 2) * Sc + _scPZOff;
             const _ssl = sc.l * Sc;
             if (isEave) {
                 const aX = sc.wall === 'left' ? -sw/2 : sw/2;
@@ -11294,12 +11331,15 @@ function applyVoiceQuote(parsed, overlay) {
             const ssw = sc.w * Sc, ssl = sc.l * Sc;
             const ltPitchR = sc.ltPitch || 1;
             const dropHR = (sc.dropFt || 0) * Sc;
-            const attachHR = sh - dropHR;
+            // Step sheds attach at step section eave height, not main building height
+            const _scAttachH = sc._isStepShed ? (stepCfg ? stepCfg.height * Sc : sh) : sh;
+            const attachHR = _scAttachH - dropHR;
             const sSh = attachHR - (sc.w * (ltPitchR / 12)) * Sc;
 
             // Compute shed offset for roof positioning
             const isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
-            const mainWallLen = isEaveWall ? Q.l : Q.w;
+            // Step sheds use step section length as the main wall length
+            const mainWallLen = sc._isStepShed && isEaveWall ? (sc._stepMainL || Q.l) : (isEaveWall ? Q.l : Q.w);
             const shedLen = sc.l;
             const shedPos = sc.position || 'center';
             let shedOffFt = 0;
@@ -11308,31 +11348,33 @@ function applyVoiceQuote(parsed, overlay) {
             else if (shedPos === 'end') { shedOffFt = mainWallLen - shedLen; }
             else if (shedPos === 'custom') { shedOffFt = Math.max(0, Math.min(sc.offsetFt || 0, mainWallLen - shedLen)); }
             else { shedOffFt = (mainWallLen - shedLen) / 2; }
-            const sco = (shedOffFt + shedLen / 2 - mainWallLen / 2) * Sc; // shed center offset
+            // For step sheds, shift the center offset by the step section's Z position
+            const _stepZOff = (sc._stepZOff || 0);
+            const sco = (shedOffFt + shedLen / 2 - mainWallLen / 2) * Sc + _stepZOff;
 
             // For wrap: always compute effective ssl/sco anchored at corner
-            // _effSsl uses ssl (= sc.l * Sc) directly — already the user-specified length
-            // _effSco positions the leg at the correct corner (ccw=back/right, cw=front/left)
             let _effSsl = ssl, _effSco = sco;
             if (sc.type === 'wrap' || sc.type === 'wrap3') {
                 const _fwSc = mainWallLen * Sc;
-                _effSsl = ssl; // ssl = sc.l * Sc — user-specified length
+                _effSsl = ssl;
                 _effSco = sc.wrapDir === 'ccw' ? (_fwSc/2 - _effSsl/2) : (-_fwSc/2 + _effSsl/2);
+                _effSco += _stepZOff;
             }
 
-            // Lean-to heights: attachment at main eave minus drop, outer edge from pitch
+            // Lean-to heights: attachment at step eave (or main eave) minus drop
             const ltPitch = sc.ltPitch || 1;
             const dropH = (sc.dropFt || 0) * Sc;
-            const attachH = sh - dropH; // where shed meets main building (monitor gap if drop > 0)
-            const outerH = attachH - (sc.w * (ltPitch / 12)) * Sc; // outer edge from pitch slope
+            const attachH = _scAttachH - dropH;
+            const outerH = attachH - (sc.w * (ltPitch / 12)) * Sc;
 
             function addLeanto(wall, sW, sL, scoOvr) {
                 var _sco = (scoOvr !== undefined) ? scoOvr : sco;
                 var oX, oZ, aX, aZ;
                 var ohL = oh, ohW = oh;
-                // Steel truss: no gable-end overhang on side sheds — eave overhang only
                 if (Q.truss === 'Steel') ohL = 0;
                 const shedRoofHex = pc(roofColorName);
+                // For step-front shed, the attachment face is the far end of the step section
+                var _stepFaceZ = sc._isStepShed && stepCfg ? -(sl/2 + stepCfg.length * Sc) : null;
                 if (wall === 'left') {
                     oX = -sw / 2 - sW - ohW; aX = -sw / 2;
                     grps.shed.add(mkQ([oX, outerH - .01, sL / 2 + _sco + ohL, aX, attachH - .01, sL / 2 + _sco + ohL, aX, attachH - .01, -sL / 2 + _sco - ohL, oX, outerH - .01, -sL / 2 + _sco - ohL], mSh));
@@ -11348,7 +11390,8 @@ function applyVoiceQuote(parsed, overlay) {
                     grps.shed.add(mkL([new THREE.Vector3(oX, outerH, -sL / 2 + _sco - ohL), new THREE.Vector3(aX, attachH, -sL / 2 + _sco - ohL)], mHip));
                     grps.shed.add(mkL([new THREE.Vector3(oX, outerH, sL / 2 + _sco + ohL), new THREE.Vector3(aX, attachH, sL / 2 + _sco + ohL)], mHip));
                 } else if (wall === 'front') {
-                    oZ = -sl / 2 - sW - ohW; aZ = -sl / 2;
+                    aZ = _stepFaceZ !== null ? _stepFaceZ : -sl / 2;
+                    oZ = aZ - sW - ohW;
                     grps.shed.add(mkQ([sL / 2 + _sco + ohL, outerH - .01, oZ, sL / 2 + _sco + ohL, attachH - .01, aZ, -sL / 2 + _sco - ohL, attachH - .01, aZ, -sL / 2 + _sco - ohL, outerH - .01, oZ], mSh));
                     addShedRoofRibs('front', null, null, oZ, aZ, outerH, attachH, sL, _sco, ohL, ohW, shedRoofHex, grps.shed);
                     grps.shed.add(mkL([new THREE.Vector3(-sL / 2 + _sco - ohL, outerH, oZ), new THREE.Vector3(sL / 2 + _sco + ohL, outerH, oZ)], mHip));
@@ -13097,6 +13140,40 @@ function applyVoiceQuote(parsed, overlay) {
             var ridgeMesh = new THREE.Mesh(new THREE.BoxGeometry(0.04,0.02,sl2), mSS);
             ridgeMesh.position.set(0, sr2, sZ0);
             grps.roof.add(ridgeMesh);
+
+            // ── Step section posts — same style as main building
+            var stepPostH = stepCfg.height * Sc - (postsOnTop ? slabH : 0);
+            var stepEavePS = (Q.eavePS || Q.postSpacing || 10) * Sc;
+            var stepGablePS = (Q.gablePS || Q.postSpacing || 10) * Sc;
+
+            // Eave wall posts left and right, skip junction (sZf) which is main building's posts
+            [-sw/2, sw/2].forEach(function(xSide) {
+              for (var zp = sZf - stepEavePS; zp > sZb + stepEavePS * 0.5; zp -= stepEavePS) {
+                var sp2 = new THREE.Mesh(new THREE.BoxGeometry(ps, stepPostH, ps), mPeave);
+                sp2.position.set(xSide, postBase + stepPostH / 2, zp);
+                sp2.castShadow = true;
+                grps.mainPosts.add(sp2);
+                if (postsOnTop) addBracket(xSide, zp, grps.mainPosts, slabH);
+              }
+            });
+
+            // Far gable interior posts
+            for (var xp = -sw/2 + stepGablePS; xp < sw/2 - stepGablePS * 0.5; xp += stepGablePS) {
+              var gp2 = new THREE.Mesh(new THREE.BoxGeometry(ps, stepPostH, ps), mPeave);
+              gp2.position.set(xp, postBase + stepPostH / 2, sZb);
+              gp2.castShadow = true;
+              grps.mainPosts.add(gp2);
+              if (postsOnTop) addBracket(xp, sZb, grps.mainPosts, slabH);
+            }
+
+            // Far gable corners
+            [-sw/2, sw/2].forEach(function(xc) {
+              var cp2 = new THREE.Mesh(new THREE.BoxGeometry(ps, stepPostH, ps), mPeave);
+              cp2.position.set(xc, postBase + stepPostH / 2, sZb);
+              cp2.castShadow = true;
+              grps.mainPosts.add(cp2);
+              if (postsOnTop) addBracket(xc, sZb, grps.mainPosts, slabH);
+            });
 
             // ── Metal ribs — match main building
             var wHex2 = pc(wallColorName);
