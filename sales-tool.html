@@ -33072,47 +33072,50 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     var _sn = _cu.fullName || _cu.username || 'Lain';
     var notesEl = document.getElementById('cmpNotes');
     var notes = notesEl ? notesEl.value.trim() : '';
+    var _NC = 'https://rvhzploxeeqgggjefsif.supabase.co/storage/v1/object/public/quote-pdfs/New%20Customer%20Info.pdf';
 
-    // Build price summary lines
     var _allTypes = [];
     slots.forEach(function(s){ Object.keys(s.totals||{}).forEach(function(k){ if(_allTypes.indexOf(k)<0) _allTypes.push(k); }); });
     var activeTypes = (CMP.activeTypes&&CMP.activeTypes.length) ? _allTypes.filter(function(k){ return CMP.activeTypes.indexOf(k)>=0; }) : _allTypes;
-
     var TYPE_SHORT = { woodOH:'Wood w/ Soffit', woodNoOH:'Wood No Soffit', steel:'Steel Truss', stud:'Stud Frame', cypress:'Cypress', metalBB:'Metal B&B' };
 
-    var msg = 'Hi ' + _firstName + ',\n\nHere is your building comparison from Summertown Metals:\n\n';
-
-    slots.forEach(function(s, i) {
-      var label = s.label || ('Option ' + String.fromCharCode(65+i));
-      msg += '--- ' + label + ' ---\n';
-      if (s.dims) msg += s.dims + '\n';
-      activeTypes.forEach(function(k) {
-        var t = (s.totals||{})[k];
-        if (t && t.total) msg += TYPE_SHORT[k] + ': $' + Math.round(t.total).toLocaleString('en-US') + '\n';
-      });
-      // Add 3D view link if available
-      if (s.cfg) {
-        try {
-          var _sCfg = JSON.parse(JSON.stringify(s.cfg));
-          var _enc = null;
-          if (typeof safeEncodeCompressed === 'function') {
-            safeEncodeCompressed(_sCfg).then(function(enc) {
-              if (enc) msg += 'View 3D: https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + enc + '\n';
-            });
-          }
-        } catch(e) {}
-      }
-      msg += '\n';
+    // Build the price options for PDF generation — use first slot's active totals
+    var forced = [];
+    var firstSlot = slots[0] || {};
+    activeTypes.forEach(function(k) {
+      var t = (firstSlot.totals||{})[k];
+      var typeMap = { woodOH:{type:'WoodOH',label:'Wood Truss w/ Soffit'}, woodNoOH:{type:'WoodNoOH',label:'Wood Truss No Soffit'}, steel:{type:'EnclosedSteel',label:'Steel Truss No Soffit'}, stud:{type:'StudFramed',label:'Stud Frame'}, cypress:{type:'Cypress',label:'Cypress'}, metalBB:{type:'MetalBB',label:'Metal B&B'} };
+      if (t && t.total && typeMap[k]) forced.push({ type:typeMap[k].type, label:typeMap[k].label, results:t });
     });
 
-    if (notes) msg += notes + '\n\n';
-    msg += 'Questions? Reply to this message.\n' + _sn + ' - Summertown Metals';
+    showToast('Generating PDF...', 'success');
+    uploadQuotePDFToSupabase(forced.length ? forced : null)
+      .then(function(pdfUrl) {
+        var msg = 'Hi ' + _firstName + ',\n\nWe appreciate you reaching out to us for a quote on your potential building project. Please find the comparison and links below.\n\n';
 
-    var clean = phone.replace(/[^0-9+]/g,'');
-    var smsLink = 'sms:' + clean + '&body=' + encodeURIComponent(msg);
-    var a = document.createElement('a'); a.href = smsLink; a.style.display = 'none';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    if (navigator.clipboard) navigator.clipboard.writeText(msg).catch(function(){});
+        // Price lines per slot
+        slots.forEach(function(s, i) {
+          var label = s.label || ('Option ' + String.fromCharCode(65+i));
+          msg += '--- ' + label + (s.dims ? ' (' + s.dims + ')' : '') + ' ---\n';
+          activeTypes.forEach(function(k) {
+            var t = (s.totals||{})[k];
+            if (t && t.total) msg += TYPE_SHORT[k] + ': $' + Math.round(t.total).toLocaleString('en-US') + '\n';
+          });
+          msg += '\n';
+        });
+
+        msg += 'Please find your quote by clicking the following link:\n' + pdfUrl + '\n\n';
+        msg += 'Please review the new customer information in the following link:\n' + _NC + '\n\n';
+        if (notes) msg += notes + '\n\n';
+        msg += 'If you have any questions, please do not hesitate to reach out to me at this number.\n\n' + _sn + '\nSummertown Metals';
+
+        var clean = phone.replace(/[^0-9+]/g,'');
+        var smsLink = 'sms:' + clean + '&body=' + encodeURIComponent(msg);
+        var a = document.createElement('a'); a.href = smsLink; a.style.display = 'none';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        if (navigator.clipboard) navigator.clipboard.writeText(msg).catch(function(){});
+      })
+      .catch(function(e){ showToast('PDF failed: ' + (e&&e.message||'error'), 'error'); });
   };
 
   CMP.sendComparison = function() {
