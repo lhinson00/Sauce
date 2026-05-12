@@ -34932,27 +34932,37 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
   var MB = window._MatBuilder = {};
 
   // ── State ─────────────────────────────────────────────
-  var _rows   = [];   // [{id, sku, desc, qty, ft, unitPrice}]
-  var _nextId = 1;
-  var _shipping = 0;
+  var _rows        = [];   // [{id, sku, desc, qty, ft, inch, unitPrice}]
+  var _nextId      = 1;
+  var _shipping    = 0;
   var _shipIncluded = true;
+  var _taxIncluded  = true;
+  var TAX_RATE      = 0.000975; // 0.0975%
 
   function newRow(sku, desc, unitPrice) {
-    return { id: _nextId++, sku: sku||'', desc: desc||'', qty: 1, ft: 0, unitPrice: unitPrice||0 };
+    return { id: _nextId++, sku: sku||'', desc: desc||'', qty: 1, ft: 0, inch: 0, unitPrice: unitPrice||0 };
   }
 
   function lineTotal(r) {
     var up = r.unitPrice || 0;
     if (!up) return 0;
-    return r.ft > 0 ? up * r.qty * r.ft : up * r.qty;
+    var lf = (r.ft||0) + (r.inch||0)/12;
+    return lf > 0 ? up * r.qty * lf : up * r.qty;
   }
 
   function subtotal() {
     return _rows.reduce(function(s, r) { return s + lineTotal(r); }, 0);
   }
 
+  function taxAmt() {
+    return subtotal() * TAX_RATE;
+  }
+
   function grandTotal() {
-    return subtotal() + (_shipIncluded ? _shipping : 0);
+    var sub  = subtotal();
+    var ship = _shipIncluded ? _shipping : 0;
+    var tax  = _taxIncluded  ? taxAmt()  : 0;
+    return sub + ship + tax;
   }
 
   function fmt$(n) {
@@ -34969,17 +34979,10 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     return out;
   }
 
-  // ── Shipping calc (mirrors main tool logic) ────────────
+  // ── Shipping: $6/mile one-way ─────────────────────────
   function recalcShipping() {
     var miles = window._lastDrivingMiles || 0;
-    var sub   = subtotal();
-    if (!miles || sub <= 0) { _shipping = 0; renderTotals(); return; }
-    var rate;
-    if (miles <= 100)      rate = 0.045;
-    else if (miles <= 150) rate = 0.055;
-    else if (miles <= 200) rate = 0.065;
-    else                   rate = 0.075;
-    _shipping = Math.round(sub * rate);
+    _shipping = miles > 0 ? Math.round(miles * 6) : 0;
     renderTotals();
   }
 
@@ -34989,14 +34992,22 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     if (!el) return;
     var sub  = subtotal();
     var ship = _shipIncluded ? _shipping : 0;
-    var gt   = sub + ship;
+    var tax  = _taxIncluded  ? taxAmt()  : 0;
+    var gt   = sub + ship + tax;
+    var miles = window._lastDrivingMiles ? Math.round(window._lastDrivingMiles) : 0;
     el.innerHTML =
       '<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:12px;color:#aaa;"><span>Subtotal</span><span>' + fmt$(sub) + '</span></div>'
-    + '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:12px;color:#aaa;">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:12px;color:#aaa;">'
     +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">'
     +     '<input type="checkbox" id="mb-ship-chk"' + (_shipIncluded ? ' checked' : '') + ' onchange="window._MatBuilder._toggleShip(this.checked)" style="accent-color:#FF8200;">'
-    +     'Shipping' + (window._lastDrivingMiles ? ' (' + Math.round(window._lastDrivingMiles) + ' mi)' : '') + '</label>'
+    +     'Shipping' + (miles ? ' <span style="color:#666;font-size:10px;">(' + miles + ' mi × $6)</span>' : ' <span style="color:#555;font-size:10px;">(enter address first)</span>') + '</label>'
     +   '<span>' + fmt$(ship) + '</span>'
+    + '</div>'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:12px;color:#aaa;">'
+    +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">'
+    +     '<input type="checkbox" id="mb-tax-chk"' + (_taxIncluded ? ' checked' : '') + ' onchange="window._MatBuilder._toggleTax(this.checked)" style="accent-color:#FF8200;">'
+    +     'Tax <span style="color:#666;font-size:10px;">(0.0975%)</span></label>'
+    +   '<span>' + fmt$(tax) + '</span>'
     + '</div>'
     + '<div style="display:flex;justify-content:space-between;padding:8px 0 0;font-size:14px;font-weight:800;color:#FF8200;border-top:1px solid rgba(255,130,0,.2);margin-top:4px;"><span>Total</span><span>' + fmt$(gt) + '</span></div>';
   }
@@ -35015,7 +35026,8 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         + '<td style="padding:6px 4px;"><input value="' + esc(r.sku) + '" onchange="window._MatBuilder._skuChange(' + r.id + ',this.value)" style="width:110px;background:#1a1a2e;border:1px solid #333;border-radius:5px;color:#f0f3f7;font-size:11px;padding:4px 6px;font-family:Outfit,sans-serif;"></td>'
         + '<td style="padding:6px 4px;font-size:11px;color:#ccc;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(r.desc) + '">' + esc(r.desc || '—') + '</td>'
         + '<td style="padding:6px 4px;"><input type="number" value="' + r.qty + '" min="1" onchange="window._MatBuilder._qtyChange(' + r.id + ',this.value)" style="width:55px;background:#1a1a2e;border:1px solid #333;border-radius:5px;color:#f0f3f7;font-size:11px;padding:4px 6px;text-align:center;font-family:Outfit,sans-serif;"></td>'
-        + '<td style="padding:6px 4px;"><input type="number" value="' + (r.ft||0) + '" min="0" step="1" onchange="window._MatBuilder._ftChange(' + r.id + ',this.value)" placeholder="0" style="width:55px;background:#1a1a2e;border:1px solid #333;border-radius:5px;color:#f0f3f7;font-size:11px;padding:4px 6px;text-align:center;font-family:Outfit,sans-serif;"></td>'
+        + '<td style="padding:6px 4px;"><input type="number" value="' + (r.ft||0) + '" min="0" step="1" onchange="window._MatBuilder._ftChange(' + r.id + ',this.value)" placeholder="0" style="width:50px;background:#1a1a2e;border:1px solid #333;border-radius:5px;color:#f0f3f7;font-size:11px;padding:4px 6px;text-align:center;font-family:Outfit,sans-serif;"></td>'
+        + '<td style="padding:6px 4px;"><input type="number" value="' + (r.inch||0) + '" min="0" max="11" step="1" onchange="window._MatBuilder._inChange(' + r.id + ',this.value)" placeholder="0" style="width:50px;background:#1a1a2e;border:1px solid #333;border-radius:5px;color:#f0f3f7;font-size:11px;padding:4px 6px;text-align:center;font-family:Outfit,sans-serif;"></td>'
         + '<td style="padding:6px 4px;font-size:11px;color:#aaa;">' + (r.unitPrice ? fmt$(r.unitPrice) : '<span style="color:#ef4444;">No price</span>') + '</td>'
         + '<td style="padding:6px 4px;font-size:11px;color:#FF8200;font-weight:700;">' + (lt > 0 ? fmt$(lt) : '—') + '</td>'
         + '<td style="padding:6px 4px;text-align:center;"><button onclick="window._MatBuilder._removeRow(' + r.id + ')" style="background:none;border:none;color:#555;font-size:14px;cursor:pointer;line-height:1;" title="Remove">&times;</button></td>'
@@ -35049,7 +35061,12 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
 
   MB._ftChange = function(id, val) {
     var r = _rows.find(function(x){return x.id===id;});
-    if (r) { r.ft = Math.max(0, parseFloat(val)||0); renderRows(); recalcShipping(); }
+    if (r) { r.ft = Math.max(0, parseInt(val)||0); renderRows(); recalcShipping(); }
+  };
+
+  MB._inChange = function(id, val) {
+    var r = _rows.find(function(x){return x.id===id;});
+    if (r) { r.inch = Math.min(11, Math.max(0, parseInt(val)||0)); renderRows(); recalcShipping(); }
   };
 
   MB._removeRow = function(id) {
@@ -35060,6 +35077,11 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
 
   MB._toggleShip = function(on) {
     _shipIncluded = on;
+    renderTotals();
+  };
+
+  MB._toggleTax = function(on) {
+    _taxIncluded = on;
     renderTotals();
   };
 
@@ -35111,12 +35133,17 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       var sku  = r.sku || '';
       var desc = r.desc || getInventoryDesc(sku) || '';
       var ft   = r.ft || 0;
+      var inch = r.inch || 0;
       var qty  = r.qty || 0;
-      rows.push([csvEscape(sku), csvEscape(desc), ft, 0, qty, csvEscape('Material Only')].join(','));
+      rows.push([csvEscape(sku), csvEscape(desc), ft, inch, qty, csvEscape('Material Only')].join(','));
     });
     // Shipping row
     if (_shipIncluded && _shipping > 0) {
-      rows.push(['SHIPPING', csvEscape('Shipping / Delivery'), 0, 0, 1, ''].join(',') + ',' + _shipping.toFixed(2));
+      rows.push(['SHIPPING', csvEscape('Shipping / Delivery — ' + Math.round(window._lastDrivingMiles||0) + ' mi × $6'), 0, 0, 1, ''].join(',') + ',,' + _shipping.toFixed(2));
+    }
+    // Tax row
+    if (_taxIncluded && taxAmt() > 0) {
+      rows.push(['TAX', csvEscape('Tax (0.0975%)'), 0, 0, 1, ''].join(',') + ',,' + taxAmt().toFixed(2));
     }
     var name = (document.getElementById('mb-cust-name')||{}).value || 'Material-Order';
     var today = new Date();
@@ -35152,6 +35179,8 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       items:        JSON.parse(JSON.stringify(_rows)),
       shipping:     _shipIncluded ? _shipping : 0,
       shipIncluded: _shipIncluded,
+      tax:          _taxIncluded ? taxAmt() : 0,
+      taxIncluded:  _taxIncluded,
       grandTotal:   gt,
       pricingResults: { total: '$' + Math.round(gt).toLocaleString('en-US'), totalCombined: '$' + Math.round(gt).toLocaleString('en-US') }
     };
@@ -35247,6 +35276,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       + '<th style="padding:8px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:left;">Description</th>'
       + '<th style="padding:8px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:center;">Qty</th>'
       + '<th style="padding:8px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:center;">Ft</th>'
+      + '<th style="padding:8px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:center;">In</th>'
       + '<th style="padding:8px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:left;">Unit Price</th>'
       + '<th style="padding:8px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:left;">Total</th>'
       + '<th style="padding:8px 4px;width:28px;"></th>'
