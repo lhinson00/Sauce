@@ -1269,6 +1269,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
       <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
         <button id="cmpSaveBtn" onclick="window._CompareEngine && window._CompareEngine.saveToCompare()" title="Save current build to comparison" style="padding:5px 10px;border-radius:7px;border:1.5px solid rgba(255,130,0,.4);background:rgba(255,130,0,.1);color:#FF8200;font-family:Outfit,sans-serif;font-size:10px;font-weight:700;cursor:pointer;letter-spacing:.4px;white-space:nowrap;">&#8862; <span id="cmpSaveBtnLabel">Save to Compare</span></button>
         <button id="cmpViewBtn" onclick="window._CompareEngine && window._CompareEngine.open()" title="View comparison" style="padding:5px 10px;border-radius:7px;border:1.5px solid rgba(255,255,255,.15);background:rgba(255,255,255,.05);color:#888;font-family:Outfit,sans-serif;font-size:10px;font-weight:700;cursor:pointer;letter-spacing:.4px;white-space:nowrap;">&#8644; View Compare</button>
+        <button id="matBuilderBtn" onclick="window._MatBuilder && window._MatBuilder.open()" title="Material Only Builder" style="display:none;padding:5px 10px;border-radius:7px;border:1.5px solid rgba(255,255,255,.15);background:rgba(255,255,255,.05);color:#888;font-family:Outfit,sans-serif;font-size:10px;font-weight:700;cursor:pointer;letter-spacing:.4px;white-space:nowrap;">&#128203; Mat. Builder</button>
       </div>
     </div>
 
@@ -30180,9 +30181,12 @@ function loadInventoryPricing() {
     .then(function(r){ return r.json(); })
     .then(function(d){
       if (d.success && d.prices) {
-        window.SauceMaterials._priceTable = d.prices;
-        try { localStorage.setItem('saucePriceTable', JSON.stringify(d.prices)); } catch(e) {}
-        console.log('[Prices] Loaded ' + Object.keys(d.prices).length + ' prices from sheet');
+        // Normalize all keys to uppercase on load
+        var _normalized = {};
+        Object.keys(d.prices).forEach(function(k){ _normalized[k.trim().toUpperCase()] = d.prices[k]; });
+        window.SauceMaterials._priceTable = _normalized;
+        try { localStorage.setItem('saucePriceTable', JSON.stringify(_normalized)); } catch(e) {}
+        console.log('[Prices] Loaded ' + Object.keys(_normalized).length + ' prices from sheet');
         // Cache descriptions if backend provides them
         if (d.descriptions) {
           window.SauceMaterials._descTable = d.descriptions;
@@ -30234,7 +30238,10 @@ function _savePriceTable() {
 }
 
 function getPrice(sku) {
-  return window.SauceMaterials._priceTable[sku] || null;
+  if (!sku) return null;
+  var pt = window.SauceMaterials._priceTable;
+  var key = sku.trim().toUpperCase();
+  return pt[key] != null ? pt[key] : (pt[sku] != null ? pt[sku] : null);
 }
 
 window.closePriceManager = function() {
@@ -34912,6 +34919,392 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     modal.addEventListener('mousedown', function(e) { _cmpMouseDownOnBackdrop = (e.target === modal); });
     modal.addEventListener('click', function(e) { if (e.target === modal && _cmpMouseDownOnBackdrop) window._CompareEngine.close(); });
   });
+
+})();
+</script>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// MATERIAL BUILDER — freeform SKU-based order builder
+// ═══════════════════════════════════════════════════════
+(function() {
+
+  var MB = window._MatBuilder = {};
+
+  // ── State ─────────────────────────────────────────────
+  var _rows   = [];   // [{id, sku, desc, qty, ft, unitPrice}]
+  var _nextId = 1;
+  var _shipping = 0;
+  var _shipIncluded = true;
+
+  function newRow(sku, desc, unitPrice) {
+    return { id: _nextId++, sku: sku||'', desc: desc||'', qty: 1, ft: 0, unitPrice: unitPrice||0 };
+  }
+
+  function lineTotal(r) {
+    var up = r.unitPrice || 0;
+    if (!up) return 0;
+    return r.ft > 0 ? up * r.qty * r.ft : up * r.qty;
+  }
+
+  function subtotal() {
+    return _rows.reduce(function(s, r) { return s + lineTotal(r); }, 0);
+  }
+
+  function grandTotal() {
+    return subtotal() + (_shipIncluded ? _shipping : 0);
+  }
+
+  function fmt$(n) {
+    if (!n || n <= 0) return '$0.00';
+    return '$' + n.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  }
+
+  // ── SKU autocomplete list ──────────────────────────────
+  function allSkus() {
+    var pt  = window.SauceMaterials && window.SauceMaterials._priceTable || {};
+    var dt  = window.SauceMaterials && window.SauceMaterials._descTable  || {};
+    var out = {};
+    Object.keys(pt).forEach(function(k) { out[k] = { sku: k, desc: dt[k] || '', price: pt[k] }; });
+    return out;
+  }
+
+  // ── Shipping calc (mirrors main tool logic) ────────────
+  function recalcShipping() {
+    var miles = window._lastDrivingMiles || 0;
+    var sub   = subtotal();
+    if (!miles || sub <= 0) { _shipping = 0; renderTotals(); return; }
+    var rate;
+    if (miles <= 100)      rate = 0.045;
+    else if (miles <= 150) rate = 0.055;
+    else if (miles <= 200) rate = 0.065;
+    else                   rate = 0.075;
+    _shipping = Math.round(sub * rate);
+    renderTotals();
+  }
+
+  // ── Render helpers ─────────────────────────────────────
+  function renderTotals() {
+    var el = document.getElementById('mb-totals');
+    if (!el) return;
+    var sub  = subtotal();
+    var ship = _shipIncluded ? _shipping : 0;
+    var gt   = sub + ship;
+    el.innerHTML =
+      '<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:12px;color:#aaa;"><span>Subtotal</span><span>' + fmt$(sub) + '</span></div>'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:12px;color:#aaa;">'
+    +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">'
+    +     '<input type="checkbox" id="mb-ship-chk"' + (_shipIncluded ? ' checked' : '') + ' onchange="window._MatBuilder._toggleShip(this.checked)" style="accent-color:#FF8200;">'
+    +     'Shipping' + (window._lastDrivingMiles ? ' (' + Math.round(window._lastDrivingMiles) + ' mi)' : '') + '</label>'
+    +   '<span>' + fmt$(ship) + '</span>'
+    + '</div>'
+    + '<div style="display:flex;justify-content:space-between;padding:8px 0 0;font-size:14px;font-weight:800;color:#FF8200;border-top:1px solid rgba(255,130,0,.2);margin-top:4px;"><span>Total</span><span>' + fmt$(gt) + '</span></div>';
+  }
+
+  function renderRows() {
+    var tbody = document.getElementById('mb-tbody');
+    if (!tbody) return;
+    if (!_rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#555;padding:20px;font-size:12px;">No items yet — search for a SKU above to add</td></tr>';
+      renderTotals();
+      return;
+    }
+    tbody.innerHTML = _rows.map(function(r, idx) {
+      var lt = lineTotal(r);
+      return '<tr id="mb-row-' + r.id + '" style="border-bottom:1px solid rgba(255,255,255,.05);">'
+        + '<td style="padding:6px 4px;"><input value="' + esc(r.sku) + '" onchange="window._MatBuilder._skuChange(' + r.id + ',this.value)" style="width:110px;background:#1a1a2e;border:1px solid #333;border-radius:5px;color:#f0f3f7;font-size:11px;padding:4px 6px;font-family:Outfit,sans-serif;"></td>'
+        + '<td style="padding:6px 4px;font-size:11px;color:#ccc;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(r.desc) + '">' + esc(r.desc || '—') + '</td>'
+        + '<td style="padding:6px 4px;"><input type="number" value="' + r.qty + '" min="1" onchange="window._MatBuilder._qtyChange(' + r.id + ',this.value)" style="width:55px;background:#1a1a2e;border:1px solid #333;border-radius:5px;color:#f0f3f7;font-size:11px;padding:4px 6px;text-align:center;font-family:Outfit,sans-serif;"></td>'
+        + '<td style="padding:6px 4px;"><input type="number" value="' + (r.ft||0) + '" min="0" step="1" onchange="window._MatBuilder._ftChange(' + r.id + ',this.value)" placeholder="0" style="width:55px;background:#1a1a2e;border:1px solid #333;border-radius:5px;color:#f0f3f7;font-size:11px;padding:4px 6px;text-align:center;font-family:Outfit,sans-serif;"></td>'
+        + '<td style="padding:6px 4px;font-size:11px;color:#aaa;">' + (r.unitPrice ? fmt$(r.unitPrice) : '<span style="color:#ef4444;">No price</span>') + '</td>'
+        + '<td style="padding:6px 4px;font-size:11px;color:#FF8200;font-weight:700;">' + (lt > 0 ? fmt$(lt) : '—') + '</td>'
+        + '<td style="padding:6px 4px;text-align:center;"><button onclick="window._MatBuilder._removeRow(' + r.id + ')" style="background:none;border:none;color:#555;font-size:14px;cursor:pointer;line-height:1;" title="Remove">&times;</button></td>'
+        + '</tr>';
+    }).join('');
+    renderTotals();
+  }
+
+  function esc(s) {
+    return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // ── Row mutation handlers ──────────────────────────────
+  MB._skuChange = function(id, val) {
+    var r = _rows.find(function(x){return x.id===id;});
+    if (!r) return;
+    var key = val.trim().toUpperCase();
+    r.sku  = key;
+    var inv = allSkus();
+    var hit = inv[key];
+    r.desc      = (hit && hit.desc) ? hit.desc : (getInventoryDesc(key) || '');
+    r.unitPrice = hit ? hit.price : (getPrice(key) || 0);
+    renderRows();
+    recalcShipping();
+  };
+
+  MB._qtyChange = function(id, val) {
+    var r = _rows.find(function(x){return x.id===id;});
+    if (r) { r.qty = Math.max(1, parseInt(val)||1); renderRows(); recalcShipping(); }
+  };
+
+  MB._ftChange = function(id, val) {
+    var r = _rows.find(function(x){return x.id===id;});
+    if (r) { r.ft = Math.max(0, parseFloat(val)||0); renderRows(); recalcShipping(); }
+  };
+
+  MB._removeRow = function(id) {
+    _rows = _rows.filter(function(x){return x.id!==id;});
+    renderRows();
+    recalcShipping();
+  };
+
+  MB._toggleShip = function(on) {
+    _shipIncluded = on;
+    renderTotals();
+  };
+
+  // ── SKU search/add ─────────────────────────────────────
+  MB._skuSearch = function(val) {
+    var list = document.getElementById('mb-sku-suggest');
+    if (!list) return;
+    var q = (val||'').trim().toUpperCase();
+    if (q.length < 2) { list.innerHTML = ''; list.style.display = 'none'; return; }
+    var inv = allSkus();
+    var hits = Object.keys(inv).filter(function(k){ return k.indexOf(q) === 0; }).slice(0, 12);
+    if (!hits.length) { list.innerHTML = ''; list.style.display = 'none'; return; }
+    list.style.display = 'block';
+    list.innerHTML = hits.map(function(k) {
+      var d = inv[k];
+      return '<div onclick="window._MatBuilder._addSku(\'' + k + '\')" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.05);font-size:11px;" onmouseover="this.style.background=\'rgba(255,130,0,.12)\'" onmouseout="this.style.background=\'\'"> <span style="color:#FF8200;font-weight:700;">' + k + '</span>'
+        + (d.desc ? '<span style="color:#888;margin-left:8px;">' + esc(d.desc.substring(0,40)) + '</span>' : '')
+        + (d.price ? '<span style="color:#4ade80;margin-left:8px;">' + fmt$(d.price) + '</span>' : '<span style="color:#ef4444;margin-left:8px;">No price</span>')
+        + '</div>';
+    }).join('');
+  };
+
+  MB._addSku = function(sku) {
+    var inv  = allSkus();
+    var hit  = inv[sku] || {};
+    var r    = newRow(sku, hit.desc || getInventoryDesc(sku) || '', hit.price || getPrice(sku) || 0);
+    _rows.push(r);
+    var inp = document.getElementById('mb-sku-inp');
+    var list = document.getElementById('mb-sku-suggest');
+    if (inp)  { inp.value = ''; }
+    if (list) { list.innerHTML = ''; list.style.display = 'none'; }
+    renderRows();
+    recalcShipping();
+    // Scroll to bottom of table
+    var wrap = document.getElementById('mb-table-wrap');
+    if (wrap) wrap.scrollTop = wrap.scrollHeight;
+  };
+
+  MB._addBlankRow = function() {
+    _rows.push(newRow('', '', 0));
+    renderRows();
+  };
+
+  // ── Export CSV ─────────────────────────────────────────
+  MB._export = function() {
+    if (!_rows.length) { alert('No items to export.'); return; }
+    var rows = ['HARDWARE'];
+    _rows.forEach(function(r) {
+      var sku  = r.sku || '';
+      var desc = r.desc || getInventoryDesc(sku) || '';
+      var ft   = r.ft || 0;
+      var qty  = r.qty || 0;
+      rows.push([csvEscape(sku), csvEscape(desc), ft, 0, qty, csvEscape('Material Only')].join(','));
+    });
+    // Shipping row
+    if (_shipIncluded && _shipping > 0) {
+      rows.push(['SHIPPING', csvEscape('Shipping / Delivery'), 0, 0, 1, ''].join(',') + ',' + _shipping.toFixed(2));
+    }
+    var name = (document.getElementById('mb-cust-name')||{}).value || 'Material-Order';
+    var today = new Date();
+    var ds = (today.getMonth()+1) + '-' + today.getDate() + '-' + today.getFullYear();
+    var fname = (name.trim().replace(/\s+/g,'-') || 'Material-Order') + '_' + ds + '.csv';
+    var blob = new Blob([rows.join('\r\n')], {type:'text/csv;charset=utf-8;'});
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = fname; document.body.appendChild(a); a.click();
+    setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(a.href); }, 500);
+  };
+
+  // ── Save to Supabase ───────────────────────────────────
+  MB._save = function() {
+    var btn = document.getElementById('mb-save-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    var cu   = window.currentUser || {};
+    var name = (document.getElementById('mb-cust-name')||{}).value.trim();
+    var phone= (document.getElementById('mb-cust-phone')||{}).value.trim();
+    var email= (document.getElementById('mb-cust-email')||{}).value.trim();
+    var addr = (document.getElementById('mb-cust-addr')||{}).value.trim();
+    if (!name) { alert('Please enter a customer name.'); if(btn){btn.disabled=false;btn.textContent='💾 Save';} return; }
+    var id = 'MB-' + Date.now();
+    var gt = grandTotal();
+    var snap = {
+      quoteId:      id,
+      quoteType:    'material_only',
+      salesman:     cu.username || 'lain.hinson',
+      customerName: name,
+      phone:        phone,
+      email:        email,
+      address:      addr,
+      timestamp:    new Date().toISOString(),
+      items:        JSON.parse(JSON.stringify(_rows)),
+      shipping:     _shipIncluded ? _shipping : 0,
+      shipIncluded: _shipIncluded,
+      grandTotal:   gt,
+      pricingResults: { total: '$' + Math.round(gt).toLocaleString('en-US'), totalCombined: '$' + Math.round(gt).toLocaleString('en-US') }
+    };
+    var row = {
+      id:          id,
+      date:        new Date().toLocaleDateString('en-US'),
+      name:        name,
+      salesman:    cu.username || 'lain.hinson',
+      phone:       phone,
+      email:       email,
+      city:        addr,
+      total:       '$' + Math.round(gt).toLocaleString('en-US'),
+      specs:       'Material Only · ' + _rows.length + ' item' + (_rows.length !== 1 ? 's' : ''),
+      status:      'Quoted',
+      source:      'MB',
+      form_fields: { quoteType: 'material_only' },
+      pricing_results: snap.pricingResults,
+      snapshot:    snap,
+      updated_at:  new Date().toISOString()
+    };
+    fetch(_SB_URL + '/rest/v1/quotes?on_conflict=id', {
+      method: 'POST',
+      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+                 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(row)
+    })
+    .then(function(r) {
+      if (btn) { btn.disabled = false; btn.textContent = '✓ Saved!'; setTimeout(function(){ btn.textContent = '💾 Save'; }, 2000); }
+      if (typeof showToast === 'function') showToast('Saved as ' + id, 'ok');
+    })
+    .catch(function(e) {
+      if (btn) { btn.disabled = false; btn.textContent = '💾 Save'; }
+      alert('Save failed: ' + e.message);
+    });
+  };
+
+  // ── Open modal ─────────────────────────────────────────
+  MB.open = function() {
+    var existing = document.getElementById('mbModal');
+    if (existing) { existing.style.display = 'flex'; renderRows(); recalcShipping(); return; }
+
+    var overlay = document.createElement('div');
+    overlay.id = 'mbModal';
+    overlay.style.cssText = 'display:flex;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9998;align-items:flex-start;justify-content:center;padding:20px 12px;box-sizing:border-box;';
+    overlay.addEventListener('click', function(e){ if(e.target===overlay) overlay.style.display='none'; });
+
+    var panel = document.createElement('div');
+    panel.style.cssText = 'background:#1e1e2e;border:1px solid rgba(255,130,0,.25);border-radius:14px;padding:18px 16px;width:100%;max-width:820px;max-height:calc(100vh - 40px);display:flex;flex-direction:column;gap:12px;font-family:Outfit,sans-serif;overflow:hidden;';
+
+    // Header
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;flex-shrink:0;';
+    hdr.innerHTML = '<div style="font-size:15px;font-weight:800;color:#f0f3f7;">&#128203; Material Builder</div>'
+      + '<button onclick="document.getElementById(\'mbModal\').style.display=\'none\'" style="background:none;border:none;color:#888;font-size:20px;cursor:pointer;line-height:1;">&times;</button>';
+    panel.appendChild(hdr);
+
+    // Customer fields
+    var custRow = document.createElement('div');
+    custRow.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;flex-shrink:0;';
+    var custFields = [
+      {id:'mb-cust-name',  label:'Customer Name',  placeholder:'Full name',       src:'st_name'},
+      {id:'mb-cust-phone', label:'Phone',           placeholder:'(xxx) xxx-xxxx',  src:'st_phone'},
+      {id:'mb-cust-email', label:'Email',           placeholder:'email@example.com',src:'st_email'},
+      {id:'mb-cust-addr',  label:'Address / City',  placeholder:'City, ST',        src:'st_address'}
+    ];
+    custFields.forEach(function(f) {
+      var srcVal = (document.getElementById(f.src)||{}).value || '';
+      custRow.innerHTML += '<div><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888;margin-bottom:4px;">' + f.label + '</div>'
+        + '<input id="' + f.id + '" value="' + esc(srcVal) + '" placeholder="' + f.placeholder + '" style="width:100%;box-sizing:border-box;padding:7px 9px;border-radius:7px;border:1px solid rgba(255,130,0,.2);background:#2a2a3e;color:#f0f3f7;font-size:11px;font-family:Outfit,sans-serif;"></div>';
+    });
+    panel.appendChild(custRow);
+
+    // SKU search bar
+    var searchWrap = document.createElement('div');
+    searchWrap.style.cssText = 'position:relative;flex-shrink:0;';
+    searchWrap.innerHTML = '<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888;margin-bottom:5px;">Add SKU</div>'
+      + '<div style="display:flex;gap:8px;align-items:center;">'
+      + '<div style="position:relative;flex:1;">'
+      + '<input id="mb-sku-inp" placeholder="Type SKU to search inventory…" oninput="window._MatBuilder._skuSearch(this.value)" onkeydown="if(event.key===\'Escape\'){document.getElementById(\'mb-sku-suggest\').style.display=\'none\';}" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,130,0,.25);background:#2a2a3e;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;">'
+      + '<div id="mb-sku-suggest" style="display:none;position:absolute;top:100%;left:0;right:0;background:#2a2a3e;border:1px solid rgba(255,130,0,.3);border-radius:8px;margin-top:3px;z-index:100;max-height:220px;overflow-y:auto;"></div>'
+      + '</div>'
+      + '<button onclick="window._MatBuilder._addBlankRow()" style="padding:8px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.05);color:#aaa;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">+ Blank Row</button>'
+      + '</div>';
+    panel.appendChild(searchWrap);
+
+    // Table
+    var tableWrap = document.createElement('div');
+    tableWrap.id = 'mb-table-wrap';
+    tableWrap.style.cssText = 'overflow-y:auto;flex:1;min-height:0;border-radius:8px;border:1px solid rgba(255,255,255,.07);';
+    tableWrap.innerHTML = '<table style="width:100%;border-collapse:collapse;">'
+      + '<thead><tr style="background:#12121e;position:sticky;top:0;z-index:1;">'
+      + '<th style="padding:8px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:left;">SKU</th>'
+      + '<th style="padding:8px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:left;">Description</th>'
+      + '<th style="padding:8px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:center;">Qty</th>'
+      + '<th style="padding:8px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:center;">Ft</th>'
+      + '<th style="padding:8px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:left;">Unit Price</th>'
+      + '<th style="padding:8px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:left;">Total</th>'
+      + '<th style="padding:8px 4px;width:28px;"></th>'
+      + '</tr>'
+      + '<tbody id="mb-tbody"></tbody></table>';
+    panel.appendChild(tableWrap);
+
+    // Totals
+    var totalsWrap = document.createElement('div');
+    totalsWrap.style.cssText = 'flex-shrink:0;border-top:1px solid rgba(255,255,255,.08);padding-top:10px;';
+    totalsWrap.id = 'mb-totals';
+    panel.appendChild(totalsWrap);
+
+    // Action buttons
+    var actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:8px;flex-shrink:0;';
+    actions.innerHTML = '<button id="mb-save-btn" onclick="window._MatBuilder._save()" style="flex:1;padding:10px;background:linear-gradient(135deg,#FF8200,#cc6800);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">&#128190; Save</button>'
+      + '<button onclick="window._MatBuilder._export()" style="flex:1;padding:10px;background:#2a2a3e;color:#FF8200;border:1px solid rgba(255,130,0,.4);border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">&#8595; Export CSV</button>'
+      + '<button onclick="if(confirm(\'Clear all items?\')){ window._MatBuilder._clear(); }" style="padding:10px 16px;background:#2a2a3e;color:#888;border:1px solid rgba(255,255,255,.1);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Clear</button>';
+    panel.appendChild(actions);
+
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    // Close suggest on outside click
+    document.addEventListener('click', function(e) {
+      var inp = document.getElementById('mb-sku-inp');
+      var sug = document.getElementById('mb-sku-suggest');
+      if (sug && inp && !inp.contains(e.target) && !sug.contains(e.target)) {
+        sug.style.display = 'none';
+      }
+    });
+
+    renderRows();
+    recalcShipping();
+  };
+
+  MB._clear = function() {
+    _rows = [];
+    renderRows();
+    recalcShipping();
+  };
+
+  // Show button for lain only after login
+  function showBtnIfLain() {
+    var isLain = (window.currentUser||{}).username === 'lain.hinson';
+    var btn = document.getElementById('matBuilderBtn');
+    if (btn) btn.style.display = isLain ? '' : 'none';
+  }
+
+  // Hook into login events
+  var _origOnLogin = window._onLoginSuccess;
+  window._onLoginSuccess = function() {
+    if (_origOnLogin) _origOnLogin.apply(this, arguments);
+    showBtnIfLain();
+  };
+  // Also check on load
+  setTimeout(showBtnIfLain, 1500);
 
 })();
 </script>
