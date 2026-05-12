@@ -18038,6 +18038,7 @@ async function doAddressLookup(addrOverride) {
       if (gasData && gasData.sessionExpired && _cu2.loginExpiry && Date.now() < _cu2.loginExpiry) gasData = null;
       if (gasData && gasData.success && gasData.mileage) {
         _cachedMileage = gasData.mileage;
+        window._cachedMileage = gasData.mileage;
         _cachedZip     = gasData.zipCode || '';
         _cachedCounty  = gasData.county  || '';
         if (display) {
@@ -18045,6 +18046,7 @@ async function doAddressLookup(addrOverride) {
           display.style.color = '#15803d';
         }
         try { updateStripFromLocalCalc(); } catch(ex) {}
+        try { if (window._MatBuilder && window._MatBuilder._refreshShip) window._MatBuilder._refreshShip(); } catch(ex) {}
         return;
       }
     } catch(gasErr) {}
@@ -34981,10 +34983,14 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     return out;
   }
 
-  // ── Shipping: delegate to SauceLabor.calcShipping ($6/mi) ────
+  // ── Shipping: $6/mile one-way ─────────────────────────
+  function getMiles() {
+    return parseFloat(window._cachedMileage || 0) || 0;
+  }
+
   function recalcShipping() {
-    var result = window.SauceLabor && window.SauceLabor.calcShipping ? window.SauceLabor.calcShipping() : null;
-    _shipping = result ? result.amount : 0;
+    var miles = getMiles();
+    _shipping = miles > 0 ? miles * 6 : 0;
     renderTotals();
   }
 
@@ -34996,8 +35002,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     var ship = _shipIncluded ? _shipping : 0;
     var tax  = _taxIncluded  ? taxAmt()  : 0;
     var gt   = sub + ship + tax;
-    var _shipResult = window.SauceLabor && window.SauceLabor.calcShipping ? window.SauceLabor.calcShipping() : null;
-    var miles = _shipResult ? _shipResult.miles : 0;
+    var miles = Math.round(getMiles());
     el.innerHTML =
       '<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:12px;color:#aaa;"><span>Subtotal</span><span>' + fmt$(sub) + '</span></div>'
     + '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:12px;color:#aaa;">'
@@ -35198,7 +35203,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     });
     // Shipping row
     if (_shipIncluded && _shipping > 0) {
-      rows.push(['SHIPPING', csvEscape('Shipping / Delivery — ' + Math.round(window._cachedMileage||0) + ' mi × $6'), 0, 0, 1, ''].join(',') + ',,' + _shipping.toFixed(2));
+      rows.push(['SHIPPING', csvEscape('Shipping / Delivery — ' + Math.round(getMiles()) + ' mi × $6'), 0, 0, 1, ''].join(',') + ',,' + _shipping.toFixed(2));
     }
     // Tax row
     if (_taxIncluded && taxAmt() > 0) {
@@ -35385,6 +35390,43 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     var btn = document.getElementById('matBuilderBtn');
     if (btn) btn.style.display = isLain ? '' : 'none';
   }
+
+  // Handle ?mbload= param from CRM — load items into builder
+  (function() {
+    var params = new URLSearchParams(window.location.search);
+    var mbRaw  = params.get('mbload');
+    if (!mbRaw) return;
+    try {
+      var data = JSON.parse(decodeURIComponent(mbRaw));
+      if (!data.mbLoad) return;
+      // Wait for login before opening
+      var _tryOpen = function() {
+        if (!(window.currentUser && window.currentUser.username)) {
+          setTimeout(_tryOpen, 500);
+          return;
+        }
+        // Restore items
+        if (data.items && data.items.length) {
+          _rows = data.items.map(function(r) {
+            return { id: _nextId++, sku: r.sku||'', desc: r.desc||'', qty: r.qty||1, ft: r.ft||0, inch: r.inch||0, unitPrice: r.unitPrice||0 };
+          });
+        }
+        _shipIncluded = data.shipIncluded !== false;
+        _taxIncluded  = data.taxIncluded  !== false;
+        // Pre-fill customer fields after modal opens
+        MB.open();
+        setTimeout(function() {
+          var setV = function(id, v) { var el=document.getElementById(id); if(el&&v) el.value=v; };
+          setV('mb-cust-name',  data.customerName);
+          setV('mb-cust-phone', data.phone);
+          setV('mb-cust-email', data.email);
+          setV('mb-cust-addr',  data.address);
+          recalcShipping();
+        }, 200);
+      };
+      setTimeout(_tryOpen, 800);
+    } catch(e) { console.warn('[MB] mbload parse error:', e); }
+  })();
 
   // Hook into login events
   var _origOnLogin = window._onLoginSuccess;
