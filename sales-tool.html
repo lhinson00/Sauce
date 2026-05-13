@@ -14768,21 +14768,32 @@ function initLainFeatures(){
   if (!raw) return;
   try {
     var u = JSON.parse(raw);
-    // Any active logged-in salesperson gets full features (not just lain.hinson)
     if (!u || !u.username) return;
     if (u.loginExpiry && Date.now() > u.loginExpiry) return;
-    if (!u.token) return; // must have a valid session token
+    if (!u.token) return;
+
+    // Ensure currentUser is set (may not be on mobile if auto-login block hasn't fired yet)
+    if (!window.currentUser) window.currentUser = u;
 
     var btn = document.getElementById('vpSaveDesign');
     if (btn) btn.style.display = 'block';
-    // Mat. Builder — lain.hinson only
     var _mbBtn = document.getElementById('matBuilderBtn');
     if (_mbBtn) _mbBtn.style.display = (u.username === 'lain.hinson') ? '' : 'none';
-    // Show email toggle in quote form and change button label
     var toggleRow = document.getElementById('qfEmailToggleRow');
     if (toggleRow) toggleRow.style.display = 'flex';
     var submitBtn = document.getElementById('qSubmitBtn');
     if (submitBtn) submitBtn.textContent = 'Save Design →';
+
+    // Guaranteed price fetch — fires on every page load if session is valid
+    // Catches mobile cases where the auto-login block may not trigger loadInventoryPricing
+    setTimeout(function() {
+      var pt = window.SauceMaterials && window.SauceMaterials._priceTable;
+      var hasPrices = pt && Object.keys(pt).length > 100;
+      if (!hasPrices) {
+        console.log('[Prices] initLainFeatures: price table empty, fetching now...');
+        if (typeof loadInventoryPricing === 'function') loadInventoryPricing();
+      }
+    }, 1500);
 
   } catch(e){}
 }
@@ -30183,9 +30194,15 @@ window.closeMaterialsModal = function() {
 
 // Load inventory pricing from the sheet — called on login
 function loadInventoryPricing() {
-  setTimeout(function() {
+  var _attempt = 0;
+  function _doFetch() {
+    _attempt++;
     var token = getToken();
-    if (!token) { console.log('[Prices] No token yet, skipping load'); return; }
+    if (!token) {
+      if (_attempt < 5) { setTimeout(_doFetch, 1000); }
+      else { console.log('[Prices] No token after 5 attempts'); }
+      return;
+    }
     fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
@@ -30193,7 +30210,7 @@ function loadInventoryPricing() {
     })
     .then(function(r){ return r.json(); })
     .then(function(d){
-      if (d.success && d.prices) {
+      if (d.success && d.prices && Object.keys(d.prices).length > 0) {
         var _normalized = {};
         Object.keys(d.prices).forEach(function(k){ _normalized[k.trim().toUpperCase()] = d.prices[k]; });
         window.SauceMaterials._priceTable = _normalized;
@@ -30202,13 +30219,19 @@ function loadInventoryPricing() {
         if (d.descriptions) {
           window.SauceMaterials._descTable = d.descriptions;
           try { localStorage.setItem('sauceDescTable', JSON.stringify(d.descriptions)); } catch(e) {}
-          console.log('[Prices] Loaded ' + Object.keys(d.descriptions).length + ' descriptions from sheet');
         }
         setTimeout(function(){ try{ updateStripFromLocalCalc(); }catch(e){} }, 100);
+      } else if (_attempt < 3) {
+        console.log('[Prices] Empty response, retrying...');
+        setTimeout(_doFetch, 2000);
       }
     })
-    .catch(function(e){ console.log('[Prices] Load error:', e); });
-  }, 1000);
+    .catch(function(e){
+      console.log('[Prices] Load error (attempt ' + _attempt + '):', e);
+      if (_attempt < 3) { setTimeout(_doFetch, 2000); }
+    });
+  }
+  setTimeout(_doFetch, 500);
 }
 
 // Save inventory pricing to the sheet — lain.hinson only
