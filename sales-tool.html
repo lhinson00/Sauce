@@ -17410,7 +17410,6 @@ function initSalesAuth() {
         window.currentUser = u;
         window.dispatchEvent(new Event('crm:authready'));
         setTimeout(warmPing, 500);
-        try { localStorage.removeItem('saucePriceTable'); } catch(e) {}
         loadInventoryPricing();
         console.log('[Sales] Auto-logged in as:', u.username);
         try { logToolEvent('page_load', { referrer: document.referrer || 'direct' }); } catch(e) {}
@@ -17546,7 +17545,6 @@ async function doSalesLogin() {
       sessionStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       setTimeout(warmPing, 500);
-      try { localStorage.removeItem('saucePriceTable'); } catch(e) {}
       loadInventoryPricing();
       initLainFeatures(); // unlock save/email/pdf for this user
       // Demo badge
@@ -30185,40 +30183,35 @@ window.closeMaterialsModal = function() {
 
 // Load inventory pricing from the sheet — called on login
 function loadInventoryPricing() {
-  // Wait a tick to ensure token is fully set before calling
-  setTimeout(function() {
-    var token = getToken();
-    if (!token) { console.log('[Prices] No token yet, skipping load'); return; }
-    fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' }, // avoid preflight CORS
-      body: JSON.stringify({ action: 'getInventoryPricing', token: token, username: (window.currentUser||{}).username||'' })
-    })
-    .then(function(r){ return r.json(); })
-    .then(function(d){
-      if (d.success && d.prices) {
-        // Normalize all keys to uppercase on load
-        var _normalized = {};
-        Object.keys(d.prices).forEach(function(k){ _normalized[k.trim().toUpperCase()] = d.prices[k]; });
-        window.SauceMaterials._priceTable = _normalized;
-        try { localStorage.setItem('saucePriceTable', JSON.stringify(_normalized)); } catch(e) {}
-        console.log('[Prices] Loaded ' + Object.keys(_normalized).length + ' prices from sheet');
-        // Cache descriptions if backend provides them
-        if (d.descriptions) {
-          window.SauceMaterials._descTable = d.descriptions;
-          try { localStorage.setItem('sauceDescTable', JSON.stringify(d.descriptions)); } catch(e) {}
-          console.log('[Prices] Loaded ' + Object.keys(d.descriptions).length + ' descriptions from sheet');
-        }
-        // Refresh local pricing strip with new prices — force full reprice
-        setTimeout(function(){
-          try { updateStripFromLocalCalc(); } catch(e) {}
-          // Force full recalc of all variants so mobile matches desktop
-          try { if (typeof scheduleBuild === 'function') scheduleBuild(); } catch(e) {}
-        }, 200);
-      }
-    })
-    .catch(function(e){ console.log('[Prices] Load error:', e); });
-  }, 1000);
+  fetch(_SB_URL + '/rest/v1/inventory?select=sku,price,description&limit=50000', {
+    headers: {
+      'apikey':        _SB_KEY,
+      'Authorization': 'Bearer ' + _SB_KEY
+    }
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(rows) {
+    if (!Array.isArray(rows) || !rows.length) {
+      console.log('[Prices] Supabase inventory empty — keeping existing table');
+      return;
+    }
+    var prices = {}, descs = {};
+    rows.forEach(function(r) {
+      if (!r.sku) return;
+      var key = r.sku.trim().toUpperCase();
+      prices[key] = r.price || 0;
+      if (r.description) descs[key] = r.description;
+    });
+    window.SauceMaterials._priceTable = prices;
+    window.SauceMaterials._descTable  = descs;
+    try { localStorage.setItem('saucePriceTable', JSON.stringify(prices)); } catch(e) {}
+    try { localStorage.setItem('sauceDescTable',  JSON.stringify(descs));  } catch(e) {}
+    console.log('[Prices] Loaded ' + rows.length + ' prices from Supabase');
+    setTimeout(function() { try { updateStripFromLocalCalc(); } catch(e) {} }, 100);
+  })
+  .catch(function(e) {
+    console.log('[Prices] Supabase load error — keeping existing table:', e);
+  });
 }
 
 // Save inventory pricing to the sheet — lain.hinson only
@@ -30240,8 +30233,7 @@ function saveInventoryPricingToSheet() {
 }
 
 // Load price table from localStorage
-// Always start with empty price table — fresh prices loaded from sheet after login
-// This ensures mobile and desktop always use the same server-side prices
+// Price table always loaded fresh from sheet after login — never from localStorage
 window.SauceMaterials._priceTable = {};
 
 // SKU → inventory description table (populated from API when available)
