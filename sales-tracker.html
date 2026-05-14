@@ -596,8 +596,8 @@
     </div>
     <div class="form-row">
       <div class="form-group">
-        <div class="form-label">CS Amount ($)</div>
-        <input class="form-input" id="f-cs" type="number" step="0.01" placeholder="0.00">
+        <div class="form-label">CS Amount ($) <span style="color:var(--text3);font-size:11px;font-weight:400;letter-spacing:0;text-transform:none">— enter 0 if order completed</span></div>
+        <input class="form-input" id="f-cs" type="number" step="0.01" placeholder="leave blank if pending">
       </div>
       <div class="form-group">
         <div class="form-label">Ship / Invoice Date</div>
@@ -712,7 +712,16 @@ async function sbFetch(path, opts={}) {
   return ct.includes('json') ? r.json() : null;
 }
 
+// CS state model:
+//   o.cs === null/undefined → "pending" (no CS amount entered yet)
+//   o.cs === 0              → "completed" (order finalized in our system, no CS owed)
+//   o.cs > 0                → CS exposure amount
 function rowToOrder(r) {
+  // Preserve null/empty as null so we can tell "pending" from "completed (0)"
+  const csRaw = r.cs;
+  const csVal = (csRaw === null || csRaw === undefined || csRaw === '')
+    ? null
+    : (parseFloat(csRaw) || 0);
   return {
     id:         r.id,  // keep as string (text PK from Supabase)
     order:      r.order_num || '',
@@ -721,7 +730,7 @@ function rowToOrder(r) {
     desc:       r.description || '',
     material:   parseFloat(r.material) || 0,
     commission: parseFloat(r.commission) || 0,
-    cs:         parseFloat(r.cs) || 0,
+    cs:         csVal,
     shipDate:   r.ship_date || '',
     matOnly:    r.mat_only || false,
     notes:      r.notes || '',
@@ -729,6 +738,10 @@ function rowToOrder(r) {
 }
 
 function orderToRow(o) {
+  // Preserve the null/0 distinction on write so "pending" round-trips
+  const csOut = (o.cs === null || o.cs === undefined || o.cs === '')
+    ? null
+    : (parseFloat(o.cs) || 0);
   return {
     id:          String(o.id),
     salesman:    currentUser ? currentUser.username : 'lain.hinson',
@@ -738,7 +751,7 @@ function orderToRow(o) {
     description: o.desc || '',
     material:    parseFloat(o.material) || 0,
     commission:  parseFloat(o.commission) || 0,
-    cs:          parseFloat(o.cs) || 0,
+    cs:          csOut,
     ship_date:   o.shipDate || '',
     mat_only:    !!o.matOnly,
     notes:       o.notes || '',
@@ -849,13 +862,24 @@ function renderGlobalSearch() {
 function renderDashboard() {
   const months = ALL_MONTHS.filter(m => orders.some(o => o.month === m));
 
-  // KPI: YTD for current calendar year
+  // YTD for current calendar year — by SALE month
   const yr = new Date().getFullYear();
   const ytdMonths = months.filter(m => m.includes(yr));
   const ytdMat  = ytdMonths.reduce((s,m) => s + getMonthlySummary(m).mat, 0);
   const ytdComm = ytdMonths.reduce((s,m) => s + getMonthlySummary(m).comm, 0);
   const ytdCS   = ytdMonths.reduce((s,m) => s + getMonthlySummary(m).cs, 0);
   const ytdNet  = ytdComm - ytdCS * 0.2; // CS owed is 20% of CS
+
+  // YTD totals by SHIP date — what actually shipped this calendar year
+  let ytdShipMat = 0, ytdShipComm = 0, ytdShipCount = 0;
+  orders.forEach(o => {
+    if (!o.shipDate) return;
+    const d = new Date(o.shipDate + 'T00:00:00');
+    if (d.getFullYear() !== yr) return;
+    ytdShipMat  += (+o.material   || 0);
+    ytdShipComm += (+o.commission || 0);
+    ytdShipCount++;
+  });
 
   const curSum = getMonthlySummary(CURRENT_MONTH);
 
@@ -871,14 +895,14 @@ function renderDashboard() {
       <div class="kpi-sub">CS owed: ${fmt$(curSum.cs * 0.2)}</div>
     </div>
     <div class="kpi">
-      <div class="kpi-label">YTD ${yr} — Commission</div>
-      <div class="kpi-value amber">${fmtK(ytdComm)}</div>
-      <div class="kpi-sub">${fmt$(ytdMat)} material shipped</div>
+      <div class="kpi-label">YTD ${yr} — Sales</div>
+      <div class="kpi-value amber">${fmtK(ytdMat)}</div>
+      <div class="kpi-sub">${fmtK(ytdComm)} commission · Net ${fmtK(ytdNet)}</div>
     </div>
     <div class="kpi">
-      <div class="kpi-label">YTD ${yr} — Est. Net</div>
-      <div class="kpi-value ${ytdNet>=0?'green':'red'}">${fmtK(ytdNet)}</div>
-      <div class="kpi-sub">After CS deductions (est.)</div>
+      <div class="kpi-label">YTD ${yr} — Shipped</div>
+      <div class="kpi-value amber">${fmtK(ytdShipMat)}</div>
+      <div class="kpi-sub">${fmtK(ytdShipComm)} commission · ${ytdShipCount} order${ytdShipCount===1?'':'s'}</div>
     </div>
   `;
 
@@ -1147,7 +1171,7 @@ function renderOrders() {
       <td class="editable" style="color:var(--text2);max-width:200px;overflow:hidden;text-overflow:ellipsis" onclick="startEdit(${o.id},'desc',this)">${o.desc||'—'}</td>
       <td class="td-num editable" onclick="startEdit(${o.id},'material',this)">${fmt$(+o.material||0)}</td>
       <td class="td-num td-green editable" onclick="startEdit(${o.id},'commission',this)">${fmt$(+o.commission||0)}</td>
-      <td class="td-num td-red editable" onclick="startEdit(${o.id},'cs',this)">${(+o.cs||0) > 0 ? fmt$(+o.cs) : '—'}</td>
+      <td class="td-num editable ${o.cs === 0 ? 'td-green' : 'td-red'}" onclick="startEdit(${o.id},'cs',this)" title="${o.cs === 0 ? 'Completed — no CS owed' : (o.cs == null ? 'CS amount pending' : '')}">${o.cs === 0 ? '✓ Done' : ((+o.cs||0) > 0 ? fmt$(+o.cs) : '—')}</td>
       <td class="editable" onclick="startEdit(${o.id},'shipDate',this)">${o.shipDate||'—'}</td>
       <td><span class="shipped-dot ${o.shipDate?'yes':'no'}"></span>${o.shipDate?'Shipped':'Pending'}</td>
       <td class="editable" onclick="toggleMatOnlyRow(${o.id},this)" title="Click to toggle Material Only">${o.matOnly ? '<span class="badge-matonly">Mat Only</span>' : '<span style="color:var(--text3);font-size:11px">—</span>'}</td>
@@ -1172,7 +1196,12 @@ function startEdit(id, field, td) {
     input = document.createElement('input');
     input.type = 'number';
     input.step = '0.01';
-    input.value = o[field] || '';
+    if (field === 'cs') {
+      // Preserve 0 vs null distinction: completed orders show "0", pending shows blank
+      input.value = (o.cs == null) ? '' : o.cs;
+    } else {
+      input.value = o[field] || '';
+    }
     input.placeholder = '0.00';
   } else {
     input = document.createElement('input');
@@ -1197,7 +1226,11 @@ function startEdit(id, field, td) {
 function commitEdit(id, field, val, td) {
   const o = orders.find(o => o.id == id);
   if (!o) return;
-  if (field === 'material' || field === 'commission' || field === 'cs') {
+  if (field === 'cs') {
+    // Empty input = "pending" (null); explicit "0" = "completed"
+    const t = (val == null ? '' : String(val)).trim();
+    o.cs = (t === '') ? null : (parseFloat(t) || 0);
+  } else if (field === 'material' || field === 'commission') {
     o[field] = parseFloat(val) || 0;
   } else {
     o[field] = val.trim();
@@ -1238,7 +1271,7 @@ function editOrder(id) {
   document.getElementById('f-desc').value     = o.desc || '';
   document.getElementById('f-material').value = o.material || '';
   document.getElementById('f-commission').value = o.commission || '';
-  document.getElementById('f-cs').value       = o.cs || '';
+  document.getElementById('f-cs').value       = (o.cs == null) ? '' : o.cs;
   document.getElementById('f-shipdate').value = o.shipDate || '';
   document.getElementById('f-notes').value    = o.notes || '';
   document.getElementById('f-matonly').checked = !!o.matOnly;
@@ -1273,6 +1306,7 @@ function calcComm() {
 }
 
 function saveOrder() {
+  const csRaw = document.getElementById('f-cs').value.trim();
   const data = {
     order:      document.getElementById('f-order').value.trim(),
     month:      document.getElementById('f-month').value,
@@ -1280,7 +1314,7 @@ function saveOrder() {
     desc:       document.getElementById('f-desc').value.trim(),
     material:   parseFloat(document.getElementById('f-material').value) || 0,
     commission: parseFloat(document.getElementById('f-commission').value) || 0,
-    cs:         parseFloat(document.getElementById('f-cs').value) || 0,
+    cs:         csRaw === '' ? null : (parseFloat(csRaw) || 0),
     shipDate:   document.getElementById('f-shipdate').value,
     notes:      document.getElementById('f-notes').value.trim(),
     matOnly:    document.getElementById('f-matonly').checked,
