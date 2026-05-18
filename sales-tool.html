@@ -17931,6 +17931,26 @@ async function doAddressLookup(addrOverride) {
         zip = cm.zip; mileage = cm.miles; city = cm.city; state = cm.state;
         if (cm.county) county = cm.county;
         console.log('[Addr]','CITY_MILES cache hit: ' + city + ' ' + state + ' ' + mileage + 'mi');
+        // Verify cached value via GAS in background — update if different by >5 miles
+        (async function(cacheKey, cachedMiles) {
+          try {
+            var vResp = await fetchWithTimeout(API_URL, {
+              method: 'POST', headers: { 'Content-Type': 'text/plain' },
+              body: JSON.stringify({ action: 'lookupAddress', address: addr, token: getToken() })
+            }, 12000);
+            if (vResp.ok) {
+              var vData = await vResp.json();
+              if (vData.success && vData.mileage > 0 && Math.abs(vData.mileage - cachedMiles) > 5) {
+                console.log('[Addr]','GAS corrected cache: ' + cachedMiles + ' → ' + vData.mileage + ' mi');
+                CITY_MILES[cacheKey].miles = vData.mileage;
+                _cachedMileage = vData.mileage;
+                window._cachedMileage = vData.mileage;
+                try { updateStripFromLocalCalc(); } catch(e) {}
+                try { if (window._MatBuilder && window._MatBuilder._refreshShip) window._MatBuilder._refreshShip(); } catch(e) {}
+              }
+            }
+          } catch(e) {}
+        })(cityKey, mileage);
       }
     } else if (ZIP_MILES[zip]) {
       mileage = ZIP_MILES[zip];
@@ -17995,23 +18015,43 @@ async function doAddressLookup(addrOverride) {
         state = stateAbbr[state] || state;
       }
 
-      // ── OSRM driving route ────────────────────────────────────────────
-      var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/' +
-        SHOP_LNG + ',' + SHOP_LAT + ';' + destLng + ',' + destLat +
-        '?overview=false';
-
-      var routeResp = await fetch(osrmUrl);
-      if (!routeResp.ok) throw new Error('OSRM HTTP ' + routeResp.status);
-      var routeData = await routeResp.json();
-
-      if (routeData.code !== 'Ok' || !routeData.routes || !routeData.routes.length) {
-        throw new Error('No route found');
+      // ── GAS driving route (Google Maps via Apps Script) ──────────────
+      var gasRoute = null;
+      try {
+        var gasResp = await fetchWithTimeout(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({ action: 'lookupAddress', address: addr, token: getToken() })
+        }, 12000);
+        if (gasResp.ok) {
+          var gasData = await gasResp.json();
+          if (gasData.success && gasData.mileage > 0) {
+            gasRoute = gasData;
+            mileage = gasData.mileage;
+            if (gasData.zipCode) zip = gasData.zipCode;
+            if (gasData.county)  county = gasData.county;
+            console.log('[Addr]','GAS driving miles: ' + mileage);
+          }
+        }
+      } catch(e) {
+        console.log('[Addr]','GAS route failed, falling back to OSRM:', e.message);
       }
 
-      // OSRM returns distance in meters — convert to miles, round
-      var meters = routeData.routes[0].distance;
-      mileage = Math.round(meters / 1609.34);
-      console.log('[Addr]','OSRM driving miles: ' + mileage);
+      // ── OSRM fallback if GAS failed ────────────────────────────────────
+      if (!mileage) {
+        var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/' +
+          SHOP_LNG + ',' + SHOP_LAT + ';' + destLng + ',' + destLat +
+          '?overview=false';
+        var routeResp = await fetch(osrmUrl);
+        if (!routeResp.ok) throw new Error('OSRM HTTP ' + routeResp.status);
+        var routeData = await routeResp.json();
+        if (routeData.code !== 'Ok' || !routeData.routes || !routeData.routes.length) {
+          throw new Error('No route found');
+        }
+        var meters = routeData.routes[0].distance;
+        mileage = Math.round(meters / 1609.34);
+        console.log('[Addr]','OSRM fallback driving miles: ' + mileage);
+      }
 
       // Cache the result in CITY_MILES for this session
       var cacheKey = addr.toLowerCase().replace(/[,.\s]+/g,' ').trim();
