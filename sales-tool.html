@@ -17662,7 +17662,8 @@ var ZIP_MILES = {
   '37208':70,'37209':76,'37210':66,'37211':64,'37212':70,'37213':70,'37214':62,
   '37215':72,'37216':66,'37217':60,'37218':76,'37219':70,'37220':66,'37221':82,
   '37228':70,'37229':62,'37232':68,'37234':70,'37238':70,'37240':70,'37243':70,
-  // Brentwood / Franklin
+  // East TN
+  '37821':155,
   '37027':62,'37064':56,'37065':56,'37067':60,'37069':64,
   // Murfreesboro
   '37127':55,'37128':52,'37129':52,'37130':50,'37131':52,'37132':52,'37133':50,
@@ -17834,6 +17835,8 @@ var CITY_MILES = {
   'waverly tn':{zip:'37185',miles:58,city:'Waverly',state:'TN'},
   // Cheatham County TN
   'ashland city tn':{zip:'37015',miles:80,city:'Ashland City',state:'TN',county:'Cheatham'},
+  'newport tn':{zip:'37821',miles:155,city:'Newport',state:'TN',county:'Cocke'},
+  'newport':{zip:'37821',miles:155,city:'Newport',state:'TN',county:'Cocke'},
   // Montgomery County TN
   'clarksville tn':{zip:'37040',miles:92,city:'Clarksville',state:'TN'},
   // Robertson County TN
@@ -17892,235 +17895,102 @@ async function doAddressLookup(addrOverride) {
   console.log('[Addr]','called addr=' + JSON.stringify(addr));
   if (!addr || addr.length < 3) {
     if (display) display.textContent = '';
-    _cachedMileage = 0; _cachedZip = ''; _cachedCounty = '';
+    _cachedMileage = 0; window._cachedMileage = 0; _cachedZip = ''; _cachedCounty = '';
     return;
   }
 
   if (display) { display.textContent = 'Calculating distance...'; display.style.color = '#888'; }
 
-  // Shop coordinates — Summertown, TN
-  var SHOP_LAT = 35.4317, SHOP_LNG = -87.1089;
-
   try {
-    var county = '', city = '', state = '', mileage = 0, zip = '';
+    var mileage = 0, zip = '', county = '', city = '', state = '';
 
-    // ── Step 1: Check CITY_MILES cache first (instant, offline) ──────────
-    var zipMatch = addr.match(/\b(\d{5})\b/);
-    zip = zipMatch ? zipMatch[1] : '';
-
-    if (!zip) {
-      var norm = addr.toLowerCase().replace(/[,.\s]+/g,' ').trim();
-      var words = norm.split(' ');
-      var cityKey = null;
-      for (var _wi = 0; _wi < words.length && !cityKey; _wi++) {
-        var candidate = words.slice(_wi).join(' ');
-        cityKey = Object.keys(CITY_MILES).find(function(k) {
-          return candidate === k || candidate.startsWith(k + ' ') || candidate.startsWith(k);
-        });
-      }
-      if (!cityKey) {
-        var cityKeys = Object.keys(CITY_MILES);
-        for (var _ci = 0; _ci < cityKeys.length && !cityKey; _ci++) {
-          var ck = cityKeys[_ci];
-          var cityOnly = ck.replace(/\s+(tn|al|ms|ky|ga|ar|mo|in|oh|nc|sc|va|wv|fl)$/i,'').trim();
-          if (cityOnly.length > 3 && norm.indexOf(cityOnly) !== -1) cityKey = ck;
+    // ── Primary: GAS Google Maps Directions (authoritative driving miles + county) ──
+    try {
+      var gasResp = await fetchWithTimeout(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ action: 'lookupAddress', address: addr, token: getToken() })
+      }, 15000);
+      if (gasResp.ok) {
+        var gasData = await gasResp.json();
+        console.log('[Addr]','GAS response:', JSON.stringify(gasData));
+        if (gasData.success && gasData.mileage > 0) {
+          mileage = gasData.mileage;
+          if (gasData.zipCode) zip     = gasData.zipCode;
+          if (gasData.county)  county  = gasData.county.replace(' County','').replace(' county','').toUpperCase();
+          if (gasData.city)    city    = gasData.city;
+          if (gasData.state)   state   = gasData.state;
+          console.log('[Addr]','GAS driving miles: ' + mileage + ' county: ' + county + ' zip: ' + zip);
         }
       }
-      if (cityKey) {
-        var cm = CITY_MILES[cityKey];
-        zip = cm.zip; mileage = cm.miles; city = cm.city; state = cm.state;
-        if (cm.county) county = cm.county;
-        console.log('[Addr]','CITY_MILES cache hit: ' + city + ' ' + state + ' ' + mileage + 'mi');
-        // Verify cached value via GAS in background — update if different by >5 miles
-        (async function(cacheKey, cachedMiles) {
-          try {
-            var vResp = await fetchWithTimeout(API_URL, {
-              method: 'POST', headers: { 'Content-Type': 'text/plain' },
-              body: JSON.stringify({ action: 'lookupAddress', address: addr, token: getToken() })
-            }, 12000);
-            if (vResp.ok) {
-              var vData = await vResp.json();
-              if (vData.success && vData.mileage > 0 && Math.abs(vData.mileage - cachedMiles) > 5) {
-                console.log('[Addr]','GAS corrected cache: ' + cachedMiles + ' → ' + vData.mileage + ' mi');
-                CITY_MILES[cacheKey].miles = vData.mileage;
-                _cachedMileage = vData.mileage;
-                window._cachedMileage = vData.mileage;
-                try { updateStripFromLocalCalc(); } catch(e) {}
-                try { if (window._MatBuilder && window._MatBuilder._refreshShip) window._MatBuilder._refreshShip(); } catch(e) {}
-              }
-            }
-          } catch(e) {}
-        })(cityKey, mileage);
-      }
-    } else if (ZIP_MILES[zip]) {
-      mileage = ZIP_MILES[zip];
-      console.log('[Addr]','ZIP_MILES cache hit: ' + zip + ' ' + mileage + 'mi');
+    } catch(e) {
+      console.log('[Addr]','GAS failed:', e.message);
     }
 
-    // ── Step 2: If cache hit, done. Otherwise geocode + OSRM ─────────────
+    // ── Fallback: CITY_MILES cache (instant, no network) ──────────────────
     if (!mileage) {
-      console.log('[Addr]','Cache miss — geocoding: ' + addr);
-
-      // Nominatim geocode — try full address first, then progressively simpler fallbacks
-      async function _nominatim(q) {
-        var r = await fetch('https://nominatim.openstreetmap.org/search?q=' +
-          encodeURIComponent(q) + '&format=json&limit=1&countrycodes=us',
-          { headers: { 'Accept-Language': 'en', 'User-Agent': 'PBQ-SalesTool/1.0' } });
-        return r.ok ? await r.json() : [];
-      }
-
-      var geocodeQuery = addr;
-      if (!/\b(tn|al|ms|ky|tennessee|alabama|mississippi|kentucky)\b/i.test(addr)) {
-        geocodeQuery = addr + ', USA';
-      }
-      var geoData = await _nominatim(geocodeQuery);
-      console.log('[Addr]', 'Nominatim results: ' + geoData.length + ' for: ' + geocodeQuery);
-
-      // If no results, strip street number/name and try city-only with TN fallback
-      if (!geoData || !geoData.length) {
-        var _words = addr.trim().split(/\s+/);
-        var _attempts = [];
-        // Try last word as city + TN (most common market), then last 2 words, then bare
-        if (_words.length >= 2) _attempts.push(_words[_words.length - 1] + ', TN, USA');
-        if (_words.length >= 3) _attempts.push(_words.slice(-2).join(' ') + ', TN, USA');
-        if (_words.length >= 2) _attempts.push(_words[_words.length - 1] + ', USA');
-        if (_words.length >= 3) _attempts.push(_words.slice(-2).join(' ') + ', USA');
-        for (var _ai = 0; _ai < _attempts.length && (!geoData || !geoData.length); _ai++) {
-          console.log('[Addr]', 'Retry: ' + _attempts[_ai]);
-          geoData = await _nominatim(_attempts[_ai]);
+      var zipMatch = addr.match(/\b(\d{5})\b/);
+      var zipInput = zipMatch ? zipMatch[1] : '';
+      if (zipInput && ZIP_MILES[zipInput]) {
+        mileage = ZIP_MILES[zipInput];
+        var _zck = Object.keys(CITY_MILES).find(function(k){ return CITY_MILES[k].zip === zipInput; });
+        if (_zck) { var _zcv = CITY_MILES[_zck]; city=_zcv.city; state=_zcv.state; zip=zipInput; if(_zcv.county) county=_zcv.county.toUpperCase(); }
+        else zip = zipInput;
+        console.log('[Addr]','ZIP_MILES fallback: ' + mileage + ' mi');
+      } else {
+        var norm = addr.toLowerCase().replace(/[,.\s]+/g,' ').trim();
+        var cityKey = null;
+        var words = norm.split(' ');
+        for (var _wi = 0; _wi < words.length && !cityKey; _wi++) {
+          var candidate = words.slice(_wi).join(' ');
+          cityKey = Object.keys(CITY_MILES).find(function(k){ return candidate === k || candidate.startsWith(k+' ') || candidate.startsWith(k); });
         }
-      }
-
-      if (!geoData || !geoData.length) {
-        throw new Error('Address not found: ' + addr);
-      }
-
-      var destLat = parseFloat(geoData[0].lat);
-      var destLng = parseFloat(geoData[0].lon);
-      var displayName = geoData[0].display_name || '';
-      console.log('[Addr]','Geocoded: ' + destLat.toFixed(4) + ',' + destLng.toFixed(4));
-
-      // Parse city/state from Nominatim display_name
-      // Format: "Place, County, State, USA" — take parts
-      var nameParts = displayName.split(',').map(function(p){ return p.trim(); });
-      if (!city && nameParts.length >= 3) {
-        city  = nameParts[0];
-        state = nameParts[nameParts.length - 2]; // second to last is state
-        // Abbreviate state name
-        var stateAbbr = {
-          'Tennessee':'TN','Alabama':'AL','Mississippi':'MS','Kentucky':'KY',
-          'Georgia':'GA','Arkansas':'AR','Missouri':'MO','Indiana':'IN',
-          'Ohio':'OH','North Carolina':'NC','South Carolina':'SC','Virginia':'VA'
-        };
-        state = stateAbbr[state] || state;
-      }
-
-      // ── GAS driving route (Google Maps via Apps Script) ──────────────
-      var gasRoute = null;
-      try {
-        var gasResp = await fetchWithTimeout(API_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({ action: 'lookupAddress', address: addr, token: getToken() })
-        }, 12000);
-        if (gasResp.ok) {
-          var gasData = await gasResp.json();
-          if (gasData.success && gasData.mileage > 0) {
-            gasRoute = gasData;
-            mileage = gasData.mileage;
-            if (gasData.zipCode) zip = gasData.zipCode;
-            if (gasData.county)  county = gasData.county;
-            console.log('[Addr]','GAS driving miles: ' + mileage);
+        if (!cityKey) {
+          var cityKeys = Object.keys(CITY_MILES);
+          for (var _ci = 0; _ci < cityKeys.length && !cityKey; _ci++) {
+            var ck = cityKeys[_ci];
+            var cityOnly = ck.replace(/\s+(tn|al|ms|ky|ga|ar|mo|in|oh|nc|sc|va|wv|fl)$/i,'').trim();
+            if (cityOnly.length > 3 && norm.indexOf(cityOnly) !== -1) cityKey = ck;
           }
         }
-      } catch(e) {
-        console.log('[Addr]','GAS route failed, falling back to OSRM:', e.message);
-      }
-
-      // ── OSRM fallback if GAS failed ────────────────────────────────────
-      if (!mileage) {
-        var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/' +
-          SHOP_LNG + ',' + SHOP_LAT + ';' + destLng + ',' + destLat +
-          '?overview=false';
-        var routeResp = await fetch(osrmUrl);
-        if (!routeResp.ok) throw new Error('OSRM HTTP ' + routeResp.status);
-        var routeData = await routeResp.json();
-        if (routeData.code !== 'Ok' || !routeData.routes || !routeData.routes.length) {
-          throw new Error('No route found');
+        if (cityKey) {
+          var cm = CITY_MILES[cityKey];
+          mileage = cm.miles; zip = cm.zip||''; city = cm.city; state = cm.state;
+          if (cm.county) county = cm.county.toUpperCase();
+          console.log('[Addr]','CITY_MILES fallback: ' + city + ' ' + mileage + 'mi');
         }
-        var meters = routeData.routes[0].distance;
-        mileage = Math.round(meters / 1609.34);
-        console.log('[Addr]','OSRM fallback driving miles: ' + mileage);
-      }
-
-      // Cache the result in CITY_MILES for this session
-      var cacheKey = addr.toLowerCase().replace(/[,.\s]+/g,' ').trim();
-      if (city && state && !CITY_MILES[cacheKey]) {
-        CITY_MILES[cacheKey] = { zip: zip, miles: mileage, city: city, state: state };
       }
     }
 
-    // ── Step 3: Resolve zip/county if still missing ───────────────────────
-    if (zip && !city) {
-      try {
-        var zresp = await fetch('https://api.zippopotam.us/us/' + zip);
-        if (zresp.ok) {
-          var zdata = await zresp.json();
-          var place = zdata.places && zdata.places[0];
-          if (place) { city = place['place name']; state = place['state abbreviation']; }
-        }
-      } catch(e) {}
-    }
-    if (city && !county) county = city + ' County';
-
+    // ── Resolve county string to key ──────────────────────────────────────
+    // county from GAS comes as "Warren County" → strip " County" → "Warren"
+    // Then look up in COUNTY_ZONES using uppercased key
+    var countyKey = county ? county.replace(/\s*county\s*/i,'').trim().toUpperCase() : '';
+    _cachedCounty = countyKey;
     _cachedMileage = mileage;
     window._cachedMileage = mileage;
-    _cachedZip     = zip;
-    _cachedCounty  = county;
+    _cachedZip = zip;
 
     if (display) {
       if (mileage > 0) {
         var msg = mileage + ' mi from shop';
         if (city && state) msg += '  ·  ' + city + ', ' + state;
         if (zip) msg += '  ·  ' + zip;
+        if (countyKey) msg += '  ·  ' + countyKey + ' Co.';
         display.textContent = msg;
         display.style.color = mileage > 200 ? '#dc3545' : '#15803d';
-      } else if (city) {
-        display.textContent = city + ', ' + state + (zip ? '  ·  ' + zip : '') + ' — mileage unavailable';
-        display.style.color = '#888';
       } else {
-        display.textContent = 'Address not found: ' + addr;
+        display.textContent = 'Address not found';
         display.style.color = '#f59e0b';
       }
     }
+
     try { updateStripFromLocalCalc(); } catch(e) {}
     try { if (window._MatBuilder && window._MatBuilder._refreshShip) window._MatBuilder._refreshShip(); } catch(e) {}
 
   } catch(e) {
-    console.log('[Addr]','ERROR: ' + e.message);
-    // Last resort — GAS fallback
-    try {
-      var gasResp = await fetchWithTimeout(API_URL, { method:'POST', headers:{'Content-Type':'text/plain'},
-        body: JSON.stringify({ action:'lookupAddress', address:addr, token:getToken(), username:(window.currentUser||{}).username||'' }) }, 10000);
-      var gasData = await safeJson(gasResp);
-      var _cu2 = window.currentUser || {};
-      if (gasData && gasData.sessionExpired && _cu2.loginExpiry && Date.now() < _cu2.loginExpiry) gasData = null;
-      if (gasData && gasData.success && gasData.mileage) {
-        _cachedMileage = gasData.mileage;
-        window._cachedMileage = gasData.mileage;
-        _cachedZip     = gasData.zipCode || '';
-        _cachedCounty  = gasData.county  || '';
-        if (display) {
-          display.textContent = gasData.mileage + ' mi from shop' + (gasData.zipCode ? '  ·  ' + gasData.zipCode : '');
-          display.style.color = '#15803d';
-        }
-        try { updateStripFromLocalCalc(); } catch(ex) {}
-        try { if (window._MatBuilder && window._MatBuilder._refreshShip) window._MatBuilder._refreshShip(); } catch(ex) {}
-        return;
-      }
-    } catch(gasErr) {}
-    if (display) { display.textContent = 'Could not find: ' + addr; display.style.color = '#f59e0b'; }
-    _cachedMileage = 0;
+    console.log('[Addr]','ERROR:', e.message);
+    if (display) { display.textContent = 'Could not calculate distance'; display.style.color = '#dc3545'; }
   }
 }
 
