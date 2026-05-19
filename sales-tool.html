@@ -17901,97 +17901,92 @@ async function doAddressLookup(addrOverride) {
 
   if (display) { display.textContent = 'Calculating distance...'; display.style.color = '#888'; }
 
+  var mileage = 0, zip = '', county = '', city = '', state = '';
+
+  // ── Primary: GAS Google Maps Directions ─────────────────────────────────
+  // Always try GAS first — it uses Google Maps for accurate driving miles + county
+  var gasSuccess = false;
   try {
-    var mileage = 0, zip = '', county = '', city = '', state = '';
-
-    // ── Primary: GAS Google Maps Directions (authoritative driving miles + county) ──
-    try {
-      var gasResp = await fetchWithTimeout(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ action: 'lookupAddress', address: addr, token: getToken() })
-      }, 15000);
-      if (gasResp.ok) {
-        var gasData = await gasResp.json();
-        console.log('[Addr]','GAS response:', JSON.stringify(gasData));
-        if (gasData.success && gasData.mileage > 0) {
-          mileage = gasData.mileage;
-          if (gasData.zipCode) zip     = gasData.zipCode;
-          if (gasData.county)  county  = gasData.county.replace(' County','').replace(' county','').toUpperCase();
-          if (gasData.city)    city    = gasData.city;
-          if (gasData.state)   state   = gasData.state;
-          console.log('[Addr]','GAS driving miles: ' + mileage + ' county: ' + county + ' zip: ' + zip);
-        }
-      }
-    } catch(e) {
-      console.log('[Addr]','GAS failed:', e.message);
-    }
-
-    // ── Fallback: CITY_MILES cache (instant, no network) ──────────────────
-    if (!mileage) {
-      var zipMatch = addr.match(/\b(\d{5})\b/);
-      var zipInput = zipMatch ? zipMatch[1] : '';
-      if (zipInput && ZIP_MILES[zipInput]) {
-        mileage = ZIP_MILES[zipInput];
-        var _zck = Object.keys(CITY_MILES).find(function(k){ return CITY_MILES[k].zip === zipInput; });
-        if (_zck) { var _zcv = CITY_MILES[_zck]; city=_zcv.city; state=_zcv.state; zip=zipInput; if(_zcv.county) county=_zcv.county.toUpperCase(); }
-        else zip = zipInput;
-        console.log('[Addr]','ZIP_MILES fallback: ' + mileage + ' mi');
-      } else {
-        var norm = addr.toLowerCase().replace(/[,.\s]+/g,' ').trim();
-        var cityKey = null;
-        var words = norm.split(' ');
-        for (var _wi = 0; _wi < words.length && !cityKey; _wi++) {
-          var candidate = words.slice(_wi).join(' ');
-          cityKey = Object.keys(CITY_MILES).find(function(k){ return candidate === k || candidate.startsWith(k+' ') || candidate.startsWith(k); });
-        }
-        if (!cityKey) {
-          var cityKeys = Object.keys(CITY_MILES);
-          for (var _ci = 0; _ci < cityKeys.length && !cityKey; _ci++) {
-            var ck = cityKeys[_ci];
-            var cityOnly = ck.replace(/\s+(tn|al|ms|ky|ga|ar|mo|in|oh|nc|sc|va|wv|fl)$/i,'').trim();
-            if (cityOnly.length > 3 && norm.indexOf(cityOnly) !== -1) cityKey = ck;
-          }
-        }
-        if (cityKey) {
-          var cm = CITY_MILES[cityKey];
-          mileage = cm.miles; zip = cm.zip||''; city = cm.city; state = cm.state;
-          if (cm.county) county = cm.county.toUpperCase();
-          console.log('[Addr]','CITY_MILES fallback: ' + city + ' ' + mileage + 'mi');
-        }
+    var gasResp = await fetchWithTimeout(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action: 'lookupAddress', address: addr, token: getToken() })
+    }, 15000);
+    if (gasResp.ok) {
+      var gasData = await gasResp.json();
+      console.log('[Addr]','GAS response:', JSON.stringify(gasData));
+      if (gasData.success && gasData.mileage > 0) {
+        mileage  = gasData.mileage;
+        zip      = gasData.zipCode || '';
+        county   = (gasData.county || '').replace(/\s*county\s*/i,'').trim().toUpperCase();
+        city     = gasData.city    || '';
+        state    = gasData.state   || '';
+        gasSuccess = true;
+        console.log('[Addr]','GAS: ' + mileage + ' mi | ' + county + ' County | ' + zip);
       }
     }
-
-    // ── Resolve county string to key ──────────────────────────────────────
-    // county from GAS comes as "Warren County" → strip " County" → "Warren"
-    // Then look up in COUNTY_ZONES using uppercased key
-    var countyKey = county ? county.replace(/\s*county\s*/i,'').trim().toUpperCase() : '';
-    _cachedCounty = countyKey;
-    _cachedMileage = mileage;
-    window._cachedMileage = mileage;
-    _cachedZip = zip;
-
-    if (display) {
-      if (mileage > 0) {
-        var msg = mileage + ' mi from shop';
-        if (city && state) msg += '  ·  ' + city + ', ' + state;
-        if (zip) msg += '  ·  ' + zip;
-        if (countyKey) msg += '  ·  ' + countyKey + ' Co.';
-        display.textContent = msg;
-        display.style.color = mileage > 200 ? '#dc3545' : '#15803d';
-      } else {
-        display.textContent = 'Address not found';
-        display.style.color = '#f59e0b';
-      }
-    }
-
-    try { updateStripFromLocalCalc(); } catch(e) {}
-    try { if (window._MatBuilder && window._MatBuilder._refreshShip) window._MatBuilder._refreshShip(); } catch(e) {}
-
   } catch(e) {
-    console.log('[Addr]','ERROR:', e.message);
-    if (display) { display.textContent = 'Could not calculate distance'; display.style.color = '#dc3545'; }
+    console.log('[Addr]','GAS failed:', e.message);
   }
+
+  // ── Fallback: local cache — only if GAS failed ────────────────────────────
+  if (!gasSuccess) {
+    console.log('[Addr]','GAS unavailable — using local cache');
+    var zipMatch = addr.match(/\b(\d{5})\b/);
+    var zipInput = zipMatch ? zipMatch[1] : '';
+    if (zipInput && ZIP_MILES[zipInput]) {
+      mileage = ZIP_MILES[zipInput];
+      zip = zipInput;
+      var _zck = Object.keys(CITY_MILES).find(function(k){ return CITY_MILES[k].zip === zipInput; });
+      if (_zck) { var _zcv = CITY_MILES[_zck]; city=_zcv.city; state=_zcv.state; if(_zcv.county) county=_zcv.county.toUpperCase(); }
+      console.log('[Addr]','ZIP_MILES fallback: ' + mileage + ' mi');
+    } else {
+      var norm = addr.toLowerCase().replace(/[,.\s]+/g,' ').trim();
+      var cityKey = null;
+      var words = norm.split(' ');
+      for (var _wi = 0; _wi < words.length && !cityKey; _wi++) {
+        var candidate = words.slice(_wi).join(' ');
+        cityKey = Object.keys(CITY_MILES).find(function(k){ return candidate === k || candidate.startsWith(k+' ') || candidate.startsWith(k); });
+      }
+      if (!cityKey) {
+        var cityKeys = Object.keys(CITY_MILES);
+        for (var _ci = 0; _ci < cityKeys.length && !cityKey; _ci++) {
+          var ck = cityKeys[_ci];
+          var cityOnly = ck.replace(/\s+(tn|al|ms|ky|ga|ar|mo|in|oh|nc|sc|va|wv|fl)$/i,'').trim();
+          if (cityOnly.length > 3 && norm.indexOf(cityOnly) !== -1) cityKey = ck;
+        }
+      }
+      if (cityKey) {
+        var cm = CITY_MILES[cityKey];
+        mileage = cm.miles; zip = cm.zip||''; city = cm.city; state = cm.state;
+        if (cm.county) county = cm.county.toUpperCase();
+        console.log('[Addr]','CITY_MILES fallback: ' + city + ' ' + mileage + 'mi');
+      }
+    }
+  }
+
+  // ── Apply results ─────────────────────────────────────────────────────────
+  _cachedMileage       = mileage;
+  window._cachedMileage = mileage;
+  _cachedZip           = zip;
+  _cachedCounty        = county;
+
+  if (display) {
+    if (mileage > 0) {
+      var msg = mileage + ' mi from shop';
+      if (city && state) msg += '  ·  ' + city + ', ' + state;
+      if (zip)           msg += '  ·  ' + zip;
+      if (county)        msg += '  ·  ' + county + ' Co.';
+      display.textContent = msg;
+      display.style.color = mileage > 200 ? '#dc3545' : '#15803d';
+    } else {
+      display.textContent = 'Address not found';
+      display.style.color = '#f59e0b';
+    }
+  }
+
+  try { updateStripFromLocalCalc(); } catch(e) {}
+  try { if (window._MatBuilder && window._MatBuilder._refreshShip) window._MatBuilder._refreshShip(); } catch(e) {}
 }
 
 function onInsulationChange() {
