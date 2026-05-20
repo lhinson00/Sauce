@@ -17902,78 +17902,48 @@ async function doAddressLookup(addrOverride) {
   if (display) { display.textContent = 'Calculating distance...'; display.style.color = '#888'; }
 
   var GKEY = 'AIzaSyCs2SXmB1WkirXhYmIrH4xedaWs-xZ2JV8';
-  var SHOP = '3864 Summertown Hwy, Summertown, TN 38483';
+  var SHOP_LAT = 35.4496, SHOP_LNG = -87.3372;
   var mileage = 0, zip = '', county = '', city = '', state = '';
 
   try {
-    // ── Step 1: Geocode the input address ─────────────────────────────────
+    // Step 1: Google Geocoding API — address/zip/county (CORS-safe)
     var geoUrl = 'https://maps.googleapis.com/maps/api/geocode/json?address='
       + encodeURIComponent(addr) + '&key=' + GKEY;
     var geoResp = await fetch(geoUrl);
     var geoData = await geoResp.json();
 
-    if (!geoData.results || !geoData.results.length) {
-      throw new Error('Address not found: ' + addr);
-    }
+    if (!geoData.results || !geoData.results.length) throw new Error('Address not found');
 
     var result = geoData.results[0];
     var destLat = result.geometry.location.lat;
     var destLng = result.geometry.location.lng;
-    var formattedAddr = result.formatted_address;
 
-    // Extract zip, county, city, state from address_components
     result.address_components.forEach(function(c) {
-      if (c.types.indexOf('postal_code') !== -1)                zip    = c.long_name;
+      if (c.types.indexOf('postal_code') !== -1)                 zip    = c.long_name;
       if (c.types.indexOf('administrative_area_level_2') !== -1) county = c.long_name.replace(/\s*County\s*/i,'').trim().toUpperCase();
-      if (c.types.indexOf('locality') !== -1)                   city   = c.long_name;
+      if (c.types.indexOf('locality') !== -1)                    city   = c.long_name;
       if (c.types.indexOf('administrative_area_level_1') !== -1) state  = c.short_name;
     });
 
-    console.log('[Addr]','Geocoded: ' + formattedAddr + ' | zip:' + zip + ' county:' + county);
+    console.log('[Addr]','Geocoded: ' + result.formatted_address + ' | zip:' + zip + ' county:' + county);
 
-    // ── Step 2: Distance Matrix for driving miles ─────────────────────────
-    var distUrl = 'https://maps.googleapis.com/maps/api/distancematrix/json'
-      + '?origins=' + encodeURIComponent(SHOP)
-      + '&destinations=' + encodeURIComponent(formattedAddr)
-      + '&units=imperial&mode=driving&key=' + GKEY;
-    var distResp = await fetch(distUrl);
-    var distData = await distResp.json();
-
-    if (distData.status === 'OK'
-        && distData.rows[0].elements[0].status === 'OK') {
-      var meters = distData.rows[0].elements[0].distance.value;
-      mileage = Math.round(meters * 0.000621371);
-      console.log('[Addr]','Google Maps driving miles: ' + mileage);
+    // Step 2: OSRM driving miles using geocoded coordinates (CORS-safe)
+    var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
+      + SHOP_LNG + ',' + SHOP_LAT + ';' + destLng + ',' + destLat + '?overview=false';
+    var oResp = await fetch(osrmUrl);
+    var oData = await oResp.json();
+    if (oData.code === 'Ok' && oData.routes && oData.routes.length) {
+      mileage = Math.round(oData.routes[0].distance / 1609.34);
+      console.log('[Addr]','OSRM driving miles: ' + mileage);
     } else {
-      throw new Error('Distance Matrix failed: ' + distData.status);
+      throw new Error('OSRM no route');
     }
 
   } catch(e) {
-    console.log('[Addr]','Google Maps error:', e.message);
-    // Fallback: OSRM driving route (no county, but accurate mileage)
-    try {
-      var SHOP_LAT = 35.4496, SHOP_LNG = -87.3372;
-      var nUrl = 'https://nominatim.openstreetmap.org/search?q='
-        + encodeURIComponent(addr) + '&format=json&limit=1&countrycodes=us';
-      var nResp = await fetch(nUrl, {headers:{'User-Agent':'PBQ-SalesTool/1.0'}});
-      var nData = await nResp.json();
-      if (nData && nData.length) {
-        var dLat = parseFloat(nData[0].lat), dLng = parseFloat(nData[0].lon);
-        var oUrl = 'https://router.project-osrm.org/route/v1/driving/'
-          + SHOP_LNG + ',' + SHOP_LAT + ';' + dLng + ',' + dLat + '?overview=false';
-        var oResp = await fetch(oUrl);
-        var oData = await oResp.json();
-        if (oData.code === 'Ok' && oData.routes.length) {
-          mileage = Math.round(oData.routes[0].distance / 1609.34);
-          console.log('[Addr]','OSRM fallback miles: ' + mileage);
-        }
-      }
-    } catch(e2) {
-      console.log('[Addr]','OSRM fallback also failed:', e2.message);
-    }
+    console.log('[Addr]','Lookup error:', e.message);
   }
 
-  // ── Apply results ────────────────────────────────────────────────────────
+  // Apply results
   _cachedMileage        = mileage;
   window._cachedMileage = mileage;
   _cachedZip            = zip;
@@ -17982,9 +17952,9 @@ async function doAddressLookup(addrOverride) {
   if (display) {
     if (mileage > 0) {
       var msg = mileage + ' mi from shop';
-      if (city && state) msg += '  \u00b7  ' + city + ', ' + state;
-      if (zip)           msg += '  \u00b7  ' + zip;
-      if (county)        msg += '  \u00b7  ' + county + ' Co.';
+      if (city && state) msg += '  ·  ' + city + ', ' + state;
+      if (zip)           msg += '  ·  ' + zip;
+      if (county)        msg += '  ·  ' + county + ' Co.';
       display.textContent = msg;
       display.style.color = mileage > 200 ? '#dc3545' : '#15803d';
     } else {
