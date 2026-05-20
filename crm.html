@@ -249,6 +249,7 @@ textarea.f-ctrl{resize:vertical;min-height:60px;}
 .log-dot.text{background:var(--amber);}
 .log-dot.email{background:var(--amber2);}
 .log-dot.status_change{background:var(--yellow);}
+.log-dot.followup{background:#FF8200;}
 .log-body-wrap{flex:1;}
 .log-time{font-size:10px;color:var(--text3);margin-bottom:2px;}
 .log-body{font-size:13px;color:var(--text2);}
@@ -722,6 +723,7 @@ function renderList() {
         <span class="qi-spec">${q.specs||q.city||'—'}</span>
         <span class="qi-date">${q.date ? q.date.split(' ')[0] : '—'}</span>
       </div>
+      ${q.follow_up_date ? `<div style="font-size:10px;margin-top:3px;color:${fc==='fup-overdue'?'var(--red)':fc==='fup-soon'?'var(--yellow)':'var(--text3)'}">📞 Follow-up: ${fmtDate(q.follow_up_date)}</div>` : ''}
     </div>`;
   }).join('');
 }
@@ -1012,6 +1014,7 @@ async function openDetail(id) {
     +'<a class="da-btn" href="'+SALES+'" target="_blank"><i class="ti ti-plus" aria-hidden="true"></i> New quote</a>'
     +(!isMB?'<button class="da-btn" onclick="openInSalesTool()"><i class="ti ti-file-type-pdf" aria-hidden="true"></i> Quote PDF</button>':'')
     +(!isMB?'<button class="da-btn" onclick="openInSalesTool()"><i class="ti ti-ruler-measure" aria-hidden="true"></i> Post layout</button>':'')
+    +'<button class="da-btn" onclick="logFollowUp(\''+id+'\')" style="border-color:rgba(255,130,0,.4);color:#FF8200;"><i class="ti ti-phone" aria-hidden="true"></i> <span>Log Follow-Up</span></button>'
     +'<button class="da-btn danger" onclick="deleteQuote(\''+id+'\')" style="margin-left:auto"><i class="ti ti-trash" aria-hidden="true"></i> Delete</button>'
     +'</div>';
 
@@ -1100,7 +1103,7 @@ async function openDetail(id) {
     +'<div class="sec-t">Contact log</div>'
     +'<div id="dp-notes">'+renderNotes(notes)+'</div>'
     +'<div class="note-add">'
-    +'<select id="nt-type" class="note-type-sel"><option value="note">Note</option><option value="call">Call</option><option value="text">Text</option><option value="email">Email</option></select>'
+    +'<select id="nt-type" class="note-type-sel"><option value="note">Note</option><option value="call">Call</option><option value="text">Text</option><option value="email">Email</option><option value="followup">Follow-Up</option></select>'
     +'<input id="nt-body" class="f-ctrl nt-input" data-qid="'+id+'" style="flex:1" placeholder="Add a note or call log">'
     +'<button class="da-btn primary" id="nt-add-btn" data-qid="'+id+'">Add</button>'
     +'</div>';
@@ -1121,9 +1124,98 @@ function renderNotes(notes) {
   if(!notes||!notes.length) return '<div style="color:var(--text3);font-size:12px;margin-bottom:8px">No contact history yet.</div>';
   return notes.map(n=>`
     <div class="log-entry ${n.type||'note'}">
-      <div class="log-time"><span class="log-type">${n.type||'note'}</span>${fmtDate((n.created_at||'').substring(0,10))}</div>
-      <div class="log-body">${n.body||''}</div>
+      <div class="log-dot ${n.type||'note'}"></div>
+      <div class="log-body-wrap">
+        <div class="log-time"><strong style="text-transform:capitalize;color:var(--text2)">${n.type||'note'}</strong> &nbsp;${fmtDate((n.created_at||'').substring(0,10))}</div>
+        <div class="log-body">${n.body||''}</div>
+      </div>
     </div>`).join('');
+}
+
+function logFollowUp(id) {
+  const q = QQ.find(x => x.id === id);
+  if (!q) return;
+  const firstName = (q.name||'').split(' ')[0] || 'there';
+  const snap = q.snapshot || {};
+  const ff   = snap.formFields || q.form_fields || {};
+  const dims = ff.width && ff.length ? `${ff.width}'×${ff.length}'×${ff.height||'?'}'` : (q.specs||'your building');
+  const defaultMsg = `Hi ${firstName},\n\nJust following up on the ${dims} quote I sent you recently. Your quote is still saved and ready to go — I'd love to help you move forward.\n\nFeel free to reply with any questions or give me a call directly.\n\nThank you for your time!`;
+
+  // Remove any existing modal
+  const old = document.getElementById('_fuModal');
+  if (old) old.remove();
+
+  const m = document.createElement('div');
+  m.id = '_fuModal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+  m.innerHTML = `
+    <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:24px;width:100%;max-width:500px;font-family:'Barlow',sans-serif;">
+      <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px;">📤 Send Follow-Up — ${q.name||''}</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:6px;">${q.specs||''} &nbsp;·&nbsp; <span style="color:var(--amber)">${id}</span></div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Sending to: <strong style="color:var(--text2)">${q.email||'No email on file'}</strong></div>
+      ${!q.email ? '<div style="color:var(--red);font-size:12px;margin-bottom:8px;">⚠ No customer email — cannot send.</div>' : ''}
+      <div style="font-size:11px;color:var(--text3);margin-bottom:6px;margin-top:10px;">Message (editable):</div>
+      <textarea id="_fuMsgBody" style="width:100%;height:140px;background:var(--bg);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-size:12px;font-family:'Barlow',sans-serif;padding:10px;resize:vertical;box-sizing:border-box;line-height:1.5;color-scheme:dark;">${defaultMsg}</textarea>
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;margin-bottom:16px;">Reply-to: lain.hinson@summertownmetals.com</div>
+      <div style="display:flex;gap:8px;">
+        <button id="_fuSendBtn" onclick="sendFollowUpFromCRM('${id}')" ${!q.email?'disabled':''} style="flex:2;padding:10px;border-radius:8px;border:none;background:var(--amber);color:#000;font-size:13px;font-weight:700;cursor:pointer;font-family:'Barlow',sans-serif;${!q.email?'opacity:.4;cursor:not-allowed;':''}">Send Follow-Up Email</button>
+        <button onclick="document.getElementById('_fuModal').remove()" style="flex:1;padding:10px;border-radius:8px;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:12px;cursor:pointer;font-family:'Barlow',sans-serif;">Cancel</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  m.addEventListener('click', e => { if (e.target === m) m.remove(); });
+}
+
+async function sendFollowUpFromCRM(id) {
+  const btn = document.getElementById('_fuSendBtn');
+  const msg = (document.getElementById('_fuMsgBody')||{}).value || '';
+  if (btn) { btn.textContent = 'Sending…'; btn.disabled = true; }
+
+  try {
+    // 1. Send via GAS
+    const resp = await fetch(GAS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({
+        action:        'sendFollowUpEmail',
+        quoteId:       id,
+        customMessage: msg,
+        username:      CU.username || '',
+        token:         CU.token    || ''
+      })
+    });
+    const result = await resp.json();
+    if (!result.success) throw new Error(result.error || 'Send failed');
+
+    // 2. Log in contact log
+    await saveNote(id, 'followup', 'Follow-up email sent to customer.');
+
+    // 3. Set follow-up date to today in crm_data
+    const today = new Date().toISOString().slice(0,10);
+    await patchCrm(id, { follow_up_date: today });
+
+    // 4. Update local quote object
+    const q = QQ.find(x => x.id === id);
+    if (q) q.follow_up_date = today;
+
+    // 5. Close modal and show success
+    const m = document.getElementById('_fuModal');
+    if (m) m.remove();
+
+    // 6. Refresh notes in detail view if open
+    if (_selectedId === id) {
+      const notes = await loadNotes(id);
+      const noteEl = document.getElementById('dp-notes');
+      if (noteEl) noteEl.innerHTML = renderNotes(notes);
+    }
+
+    renderList();
+    alert('✓ Follow-up sent to customer.');
+
+  } catch(e) {
+    if (btn) { btn.textContent = 'Send Follow-Up Email'; btn.disabled = false; }
+    alert('Error: ' + e.message);
+  }
 }
 
 async function addNote(id) {
