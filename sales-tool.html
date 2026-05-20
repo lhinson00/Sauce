@@ -14900,9 +14900,60 @@ async function sbSaveQuote(snap) {
     updated_at:      new Date().toISOString()
   };
   if (!row.id) { console.warn('[SB] sbSaveQuote: no quoteId'); return null; }
-  return sbFetch('quotes?on_conflict=id', { method: 'POST', body: JSON.stringify(row),
+  var result = await sbFetch('quotes?on_conflict=id', { method: 'POST', body: JSON.stringify(row),
     headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
                'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+
+  // Auto-upsert follow-up — only if customer has email and not already sent/closed
+  if (snap.email) {
+    try {
+      var due = new Date(); due.setDate(due.getDate() + 7);
+      var dueStr = due.toISOString().slice(0,10);
+      // Check if follow-up exists for this quote
+      var existing = await sbFetch('follow_ups?quote_id=eq.' + encodeURIComponent(row.id) + '&select=id,status');
+      if (existing && existing.length) {
+        var fu = existing[0];
+        // Only update if still pending or snoozed — don't reset sent/closed
+        if (fu.status === 'pending' || fu.status === 'snoozed') {
+          await sbFetch('follow_ups?id=eq.' + fu.id, {
+            method: 'PATCH',
+            headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+                       'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+            body: JSON.stringify({
+              customer_name: snap.customerName || '',
+              phone:         snap.phone || '',
+              email:         snap.email || '',
+              specs:         row.specs || '',
+              total:         row.total || '',
+              due_date:      dueStr,
+              status:        'pending',
+              updated_at:    new Date().toISOString()
+            })
+          });
+        }
+      } else {
+        // Create new follow-up
+        await sbFetch('follow_ups', {
+          method: 'POST',
+          headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+                     'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+          body: JSON.stringify({
+            quote_id:      row.id,
+            salesman:      snap.salesman || '',
+            customer_name: snap.customerName || '',
+            phone:         snap.phone || '',
+            email:         snap.email || '',
+            specs:         row.specs || '',
+            total:         row.total || '',
+            due_date:      dueStr,
+            status:        'pending'
+          })
+        });
+      }
+    } catch(e) { console.warn('[SB] follow-up upsert error:', e.message); }
+  }
+
+  return result;
 }
 
 // Load quote list from Supabase
@@ -18513,8 +18564,8 @@ async function loadFollowUps() {
   try {
     var today = new Date().toISOString().slice(0,10);
     var rows = await _sbFuFetch(
-      'follow_ups?salesman=eq.lain.hinson&due_date=lte.' + today
-      + '&status=in.(pending,snoozed)&order=due_date.asc&limit=50'
+      'follow_ups?salesman=eq.lain.hinson'
+      + '&status=in.(pending,snoozed)&order=due_date.asc&limit=100'
     );
     if (rows && rows.length) {
       _showFollowUpCard(rows);
