@@ -24201,6 +24201,13 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
 // 4 pieces per measurement (2 gable ends × 2 sides).
 
 window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
+  // Roof-only single slope has no upper gable metal
+  if (Q.roofStyle === 'single') {
+    var _ssFront = (WALLS||[]).find(function(w){return w.id==='front';});
+    var _ssBack  = (WALLS||[]).find(function(w){return w.id==='back';});
+    var _ssEncl  = (_ssFront && _ssFront.encl !== 'open') || (_ssBack && _ssBack.encl !== 'open');
+    if (!_ssEncl) return []; // all open = roof only = no gable metal
+  }
 
   var metalType = normalizeMetalType((document.getElementById('st_roofMetal')||{}).value || 'Tuff-Rib 29ga');
   var skuPrefix = getColoredSkuPrefix(metalType, 'wall');
@@ -24417,6 +24424,11 @@ window.SauceMaterials.calcLeantoUpperGable = function(Q, shedCfgs) {
 // Pieces = ceil((width/2) / 3). Quantity = 4 per piece.
 
 window.SauceMaterials.calcOpenGableMetal = function(Q, WALLS, shedCfgs) {
+  // Roof-only single slope has no upper gable metal
+  if (Q.roofStyle === 'single') {
+    var _ssRoofOnly = (WALLS||[]).every(function(w){ return w.encl === 'open'; });
+    if (_ssRoofOnly) return [];
+  }
 
   var metalType = normalizeMetalType((document.getElementById('st_roofMetal')||{}).value || 'Tuff-Rib 29ga');
   var skuPrefix = getColoredSkuPrefix(metalType, 'wall');
@@ -25887,8 +25899,24 @@ window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
   }
 
   // Main building: ×4
-  // Single slope: no standard gable rake — sloped edges are the eave trim, not a rake
-  if (!window._shedOnlyMode && Q.roofStyle !== 'single') {
+  // Single slope: rake trim runs along sloped gable edges (= panel slant length)
+  if (!window._shedOnlyMode && Q.roofStyle === 'single') {
+    // Slant = sqrt((hiH-loH)^2 + W^2), add back OH and front seat same as panel calc
+    var _ssHi = Q.h || 14;
+    var _ssLo = Math.max(8, _ssHi - (Q.w||24)/12);
+    var _ssRise = _ssHi - _ssLo;
+    var _ssSlant = Math.sqrt(_ssRise * _ssRise + (Q.w||24) * (Q.w||24));
+    var _ssOhFt  = (Q.oh||18) / 12;
+    var _ssSlopeA = Math.atan2(_ssRise, Q.w||24);
+    var _ssPanLen = _ssSlant + _ssOhFt / Math.cos(_ssSlopeA) + 0.917;
+    _ssPanLen = Math.ceil(_ssPanLen * 12) / 12;
+    // 1 rake per sloped gable edge × 2 edges per enclosed gable end
+    var _ssFront = (WALLS||[]).find(function(w){return w.id==='front';});
+    var _ssBack  = (WALLS||[]).find(function(w){return w.id==='back';});
+    var _ssEnds  = (_ssFront && _ssFront.encl !== 'open' ? 2 : 0)
+                 + (_ssBack  && _ssBack.encl  !== 'open' ? 2 : 0);
+    if (_ssEnds > 0) addBoards(nextEven(_ssPanLen), _ssEnds);
+  } else if (!window._shedOnlyMode && Q.roofStyle !== 'single') {
     var mbTopChord = getTopChord(Q.w);
     if (mbTopChord) addBoards(nextEven(mbTopChord), 4);
   }
