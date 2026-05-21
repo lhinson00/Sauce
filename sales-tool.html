@@ -1429,6 +1429,13 @@ body.customer-mode #custColorChartLink { display: block !important; }
         <div style="margin-bottom:9px;">
           <div class="sec-title" style="font-size:9px;margin-bottom:5px;letter-spacing:1.5px;">Roof Style</div>
           <div class="chip-row" id="roofStyleChips"></div>
+          <div id="snootToggleRow" style="display:none;margin-top:8px;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:11px;font-weight:600;color:var(--navy);">
+              <input type="checkbox" id="st_snoot" checked onchange="Q.noSnoot=!this.checked;scheduleBuild();try{updateStripFromLocalCalc();}catch(e){}" style="accent-color:#FF8200;">
+              Include Snoot
+            </label>
+            <div style="font-size:9px;color:var(--muted);margin-top:3px;">Snoot panels, trusses &amp; face closure on high eave</div>
+          </div>
         </div>
         <div style="margin-bottom:9px;">
           <div class="sec-title" style="font-size:9px;margin-bottom:5px;letter-spacing:1.5px;">Truss Type</div>
@@ -13073,12 +13080,10 @@ function applyVoiceQuote(parsed, overlay) {
             var _ssNumBays = Math.floor(Q.l / (Q.eavePS||Q.postSpacing||10));
             for (var _ssi=0; _ssi<=_ssNumBays; _ssi++) {
                 var _ssZp = _ssZ1i + (_ssi/_ssNumBays)*(sl);
-                // High eave (left) — stop just below roof panel (offset 0.015 so top doesn't pierce)
+                // High eave (left) — structural posts always render
                 _ssAddPost(_ssAX, ssHiH - 0.015, _ssZp, mPopen);
-                // Low eave (right) — posts if not open
-                if (!_ssRightOpen) {
-                    _ssAddPost(_ssRX, ssLoH, _ssZp, mPencl);
-                }
+                // Low eave (right) — structural posts always render (open/closed affects walls, not posts)
+                _ssAddPost(_ssRX, ssLoH - 0.015, _ssZp, _ssRightOpen ? mPopen : mPencl);
             }
 
             // ── GABLE END POSTS ───────────────────────────────────────────────
@@ -13106,6 +13111,7 @@ function applyVoiceQuote(parsed, overlay) {
 
             // ── SNOOT on HIGH/OPEN EAVE ────────────────────────────────────────
             // Always 4' snoot at 7/12 pitch. Outer edge drops 4*(7/12) below high eave.
+            if (!Q.noSnoot) {
             var _snFt = 4;                              // always 4' snoot
             var _snW  = _snFt * Sc;                    // 4' in scene units
             var _snX  = _ssAX - _snW;                  // extends left past high eave line
@@ -13127,6 +13133,7 @@ function applyVoiceQuote(parsed, overlay) {
                 var _stZ = _ssZ1i + (_ssti/_ssNumBays)*sl;
                 grps.shed.add(mkL([new THREE.Vector3(_ssAX,ssHiH,_stZ),new THREE.Vector3(_snX,_snOuterH,_stZ)],_mSnTr));
             }
+            } // end if (!Q.noSnoot)
         }
         // ═══ END SINGLE SLOPE STANDALONE ══════════════════════════════════════
         Object.values(grps).forEach(g => { g.visible = true; });
@@ -18279,6 +18286,11 @@ function applyRouteUI() {
     showPriceBlock('ps6_');
   }
 
+  // Snoot toggle — only visible on single slope
+  var snootRow = document.getElementById('snootToggleRow');
+  if (snootRow) snootRow.style.display = (Q.roofStyle === 'single') ? '' : 'none';
+  if (Q.roofStyle !== 'single') Q.noSnoot = false; // reset when not single slope
+
   // Show/hide truss-type-specific cards
   // Open buildings can be wood or steel — respect cfgTruss selection
   var isWood  = (cfgTruss !== 'Steel');
@@ -21013,7 +21025,7 @@ window.SauceMaterials.calcSteelTrusses = function(Q) {
         quantity:    numTruss,
         detail:      "4' snoot OH  |  " + numTruss + " total (matches truss count)"
       }
-    ];
+    ].filter(function(item){ if (item.description.indexOf('Snoot') !== -1 && Q.noSnoot) return false; return true; });
     return items;
   }
 
@@ -23907,7 +23919,7 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
         metalLength: "5'",
         detail:      metalType + "  |  3' wide  |  4' snoot @ 7/12 pitch  |  1 per truss"
       }
-    ];
+    ].filter(function(item){ if (item.description.indexOf('Snoot') !== -1 && Q.noSnoot) return false; return true; });
   }
   // ─────────────────────────────────────────────────────────────────────────
   var gableExtDepth = 0;
@@ -24230,15 +24242,12 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
       });
     }
 
-    // Snoot face closure panels on gable ends: close the vertical face under the snoot OH
-    // PDF: 2@4' and 2@2'6" per gable end (both ends = ×2 qty)
-    // Snoot depth (OH in feet) drives panel width at gable face
+    // Snoot face closure panels on gable ends
+    if (!Q.noSnoot) {
     var snootFtSS = Math.round((Q.oh || 18) / 12) || 4;
     snootFtSS = snootFtSS <= 2 ? 2 : snootFtSS <= 4 ? 4 : 6;
-    // Panel 1 (outer 3' of snoot width): full snoot height ≈ snootFt
-    var snootFaceH1 = snootFtSS;                    // 4' for TSSNT4
-    // Panel 2 (remaining snoot width at gable corner): partial — ~2'6" filler
-    var snootFaceH2 = Math.max(2, snootFtSS - 1.5); // 2'6" for 4' snoot
+    var snootFaceH1 = snootFtSS;
+    var snootFaceH2 = Math.max(2, snootFtSS - 1.5);
     results.push({
       category:    'Gable Metal',
       description: 'Snoot Face — Gable End Closure',
@@ -24255,6 +24264,7 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
       metalLength: fmtIn(snootFaceH2),
       detail:      displayType + "  |  3' wide  |  snoot OH face filler"
     });
+    } // end if (!Q.noSnoot)
 
     return results;
   }
@@ -32566,10 +32576,12 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
 
   // Single slope: snoot truss labor adder — $125 per snoot truss
   if (Q.roofStyle === 'single') {
+    if (!Q.noSnoot) {
     var _snootPS = (function(){ var w=(window._WALLS||[]).find(function(x){return x.id==='left';}); return w?(w.postSpacing||Q.postSpacing||10):(Q.postSpacing||10); })();
     var _numSnoots = Math.floor((Q.l||36) / _snootPS) + 1;
     if (_numSnoots > 0) {
       lines.push({ label: 'Single Slope Snoot Trusses  |  ' + _numSnoots + ' @ $125.00', amount: _numSnoots * 125 });
+    }
     }
   }
 
