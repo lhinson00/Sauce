@@ -2946,7 +2946,13 @@ function adjDim(k,d){
 }
 function setDim(k,v){
   var n=parseInt(v); if(isNaN(n)) return;
-  Q[k] = snapToStep(k, n);
+  // Width: accept manual entry directly (only clamp to min/max), don't snap to step list
+  // Length and height still snap to valid steps
+  if (k === 'w') {
+    Q[k] = Math.max(10, Math.min(100, n));
+  } else {
+    Q[k] = snapToStep(k, n);
+  }
   document.getElementById('in'+k.toUpperCase()).value = Q[k];
   if(k==='w'||k==='l'){WALLS[0].len=WALLS[1].len=Q.w;WALLS[2].len=WALLS[3].len=Q.l;}
   if(k==='w') {
@@ -8785,6 +8791,11 @@ function applyVoiceQuote(parsed, overlay) {
                 console.log('[3D] Removing old canvas');
                 old.remove();
             }
+        } else {
+            // Renderer exists — make sure its canvas is still in the container
+            if (!c.contains(rrx.domElement)) {
+                c.appendChild(rrx.domElement);
+            }
         }
         
         // Clear any error messages
@@ -8792,7 +8803,19 @@ function applyVoiceQuote(parsed, overlay) {
         if (errorDiv) errorDiv.remove();
         
         try {
-            // 6. Initialize scene with error handling
+            // 6. Dispose previous scene geometry/textures to prevent memory leak
+            if (window._lastScene) {
+                window._lastScene.traverse(function(obj) {
+                    if (obj.geometry) obj.geometry.dispose();
+                    if (obj.material) {
+                        if (Array.isArray(obj.material)) obj.material.forEach(function(m){ if(m.map) m.map.dispose(); m.dispose(); });
+                        else { if (obj.material.map) obj.material.map.dispose(); obj.material.dispose(); }
+                    }
+                });
+                window._lastScene = null;
+            }
+
+            // Initialize scene with error handling
             console.log('[3D] Creating scene...');
             const scene = new THREE.Scene();
             
@@ -8867,13 +8890,11 @@ function applyVoiceQuote(parsed, overlay) {
             rrx.shadowMap.enabled = true;
             rrx.domElement.style.display = 'block';
             
-            // 10. Append to container with fallback detection
-            c.appendChild(rrx.domElement);
-            console.log('[3D] Renderer added to DOM');
-            
-            // 10. Append to container with context loss detection
-            c.appendChild(rrx.domElement);
-            console.log('[3D] Renderer added to DOM');
+            // 10. Append canvas to container (only if new renderer)
+            if (!c.contains(rrx.domElement)) {
+                c.appendChild(rrx.domElement);
+                console.log('[3D] Renderer added to DOM');
+            }
             
             // 11. Add WebGL context loss detection
             rrx.domElement.addEventListener('webglcontextlost', function(event) {
@@ -13306,6 +13327,7 @@ function applyVoiceQuote(parsed, overlay) {
 
         // 11. Success! Hide loading and show success message
         console.log('[3D] ✅ 3D model loaded successfully!');
+        window._lastScene = scene; // store for disposal on next build
         const loadingEl = document.getElementById('vpLoading');
         if (loadingEl) loadingEl.style.display = 'none';
 
