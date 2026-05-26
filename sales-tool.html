@@ -2901,7 +2901,7 @@ function updateSpecs() {
 // ═══════════════════════════════════════════════════════
 // Valid stepped values for width/length
 var DIM_STEPS = {
-  w: (function(){ var a=[]; for(var i=20;i<=100;i+=2) if(i%10===0||i%12===0) a.push(i); a.push(32); return [...new Set(a)].sort(function(a,b){return a-b;}); })(),
+  w: [10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,48,50,56,60],
   l: (function(){ var a=[]; for(var i=20;i<=200;i+=2) if(i%8===0||i%10===0||i%12===0) a.push(i); return [...new Set(a)].sort(function(a,b){return a-b;}); })()
 };
 function snapToStep(k, val) {
@@ -21040,41 +21040,37 @@ window.SauceMaterials.calcSteelTrusses = function(Q) {
   }
 
   // ── STANDARD GABLE ─────────────────────────────────────────────────────────
-  var skuMap = {
-    10:  'TSGT10',
-    12:  'TSGT12',
-    14:  'TSGT14',
-    16:  'TSGT1666',
-    18:  'TSGT1866',
-    20:  'TSGT2066',
-    22:  'TSGT22',
-    24:  'TSGT2466',
-    25:  'TSGT25',
-    26:  'TSGT26',
-    28:  'TSGT2866',
-    30:  'TSGT3066KBNO-O',
-    32:  'TSGT3288KB',
-    34:  'TSGT34',
-    36:  'TSGT3666KB',
-    38:  'TSGT3866KB',
-    40:  'TSGT401266KBNO-O',
-    42:  'TSGT42',
-    44:  'TSGT44',
-    46:  'TSGT46',
-    48:  'TSGT481266KB',
-    50:  'TSGT501088KB',
-    52:  'TSGT52',
-    54:  'TSGT54',
-    56:  'TSGT56',
-    60:  'TSGT601088KB',
-    70:  'TSGT70',
-    75:  'TSGT75',
-    80:  'TSGT80',
-    85:  'TSGT85',
-    100: 'TSGT100'
-  };
+  // SKU pattern:
+  //   ≤38': TSGT{w}{post}[KB][NO-O]         — no spacing in SKU
+  //   40'+: TSGT{w}{spacing}{post}[KB][NO-O] — eave spacing embedded
+  //   KB always for 24'+ widths
+  //   post: 66=6x6, 88=8x8, from gable wall post size selector
+  //   NO-O suffix when no overhang selected
 
-  var sku = skuMap[Q.w] || ('WIDTH ' + Q.w + "' — SKU NOT FOUND");
+  var _gbPost = (function() {
+    var ps = getWallPostSize('front') || getWallPostSize('back') || '6x6';
+    if (ps === '8x8')   return '88';
+    if (ps === '10x10') return '88'; // 10x10 uses 88 chord
+    return '66';
+  })();
+
+  var _gbSpacing = (function() {
+    var w = (window._WALLS||[]).find(function(x){return x.id==='left';});
+    return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+  })();
+
+  var _gbHasOH = Q.oh > 0;
+  var _gbKB    = Q.w >= 24;
+  var _gbSuffix = (_gbKB ? 'KB' : '') + (!_gbHasOH ? 'NO-O' : '');
+
+  var sku;
+  if (Q.w >= 40) {
+    sku = 'TSGT' + Q.w + _gbSpacing + _gbPost + _gbSuffix;
+  } else if (Q.w <= 14) {
+    sku = 'TSGT' + Q.w + (_gbKB ? 'KB' : '');
+  } else {
+    sku = 'TSGT' + Q.w + _gbPost + _gbSuffix;
+  }
   // Use left eave wall spacing — trusses follow eave wall
   var eaveWallT = (window._WALLS||[]).find(function(w){return w.id==='left';});
   var spacing   = eaveWallT ? (eaveWallT.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
@@ -23056,27 +23052,33 @@ window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
 window.SauceMaterials.calcGableGirts = function(Q, WALLS, shedCfgs) {
 
   function fillRuns(wallLen, ps) {
-    if (ps === 12 || ps === 24) {
-      if (wallLen % 12 === 0) return { 12: wallLen/12 };
-    }
-    // 8' spacing — 16' boards (2 bays each), final odd bay gets 10'
+    // 8' spacing — 16' boards for paired bays, 10' for final odd bay
     if (ps === 8) {
-      var bays8 = wallLen / 8;
-      var boards16 = Math.floor(bays8 / 2);
-      var rem8 = bays8 % 2;
-      var result8 = {};
+      var bays8     = Math.floor(wallLen / 8);
+      var rem8      = wallLen % 8;
+      var boards16  = Math.floor(bays8 / 2);
+      var oddBay    = bays8 % 2;
+      var result8   = {};
       if (boards16 > 0) result8[16] = boards16;
-      if (rem8 > 0) result8[10] = (result8[10]||0) + 1;
+      if (oddBay > 0 || rem8 > 0) result8[10] = (result8[10]||0) + 1;
       return result8;
     }
-    if (ps === 14) {
-      return { 16: Math.ceil(wallLen / 14) };
+    // 12' spacing — full bays get 12' boards, remainder gets 10'
+    if (ps === 12) {
+      var fullBays12 = Math.floor(wallLen / 12);
+      var rem12      = wallLen % 12;
+      var result12   = {};
+      if (fullBays12 > 0) result12[12] = fullBays12;
+      if (rem12 > 0.01)   result12[10] = (result12[10]||0) + 1;
+      return result12;
     }
-    var boards = {}, remaining = wallLen;
-    if (remaining % 20 === 0) { boards[20] = remaining/20; return boards; }
-    if (remaining >= 20) { boards[20] = Math.floor(remaining/20); remaining = remaining%20; }
-    if (remaining > 0.01) { boards[10] = (boards[10]||0) + Math.ceil(remaining/10); }
-    return boards;
+    // 10' spacing (default) — full bays get 10' boards, remainder gets 10'
+    var fullBays10 = Math.floor(wallLen / 10);
+    var rem10      = wallLen % 10;
+    var result10   = {};
+    var totalBoards = fullBays10 + (rem10 > 0.01 ? 1 : 0);
+    if (totalBoards > 0) result10[10] = totalBoards;
+    return result10;
   }
 
   var groups = {};
