@@ -21040,36 +21040,76 @@ window.SauceMaterials.calcSteelTrusses = function(Q) {
   }
 
   // ── STANDARD GABLE ─────────────────────────────────────────────────────────
-  // SKU pattern:
-  //   ≤38': TSGT{w}{post}[KB][NO-O]         — no spacing in SKU
-  //   40'+: TSGT{w}{spacing}{post}[KB][NO-O] — eave spacing embedded
-  //   KB always for 24'+ widths
-  //   post: 66=6x6, 88=8x8, from gable wall post size selector
-  //   NO-O suffix when no overhang selected
+  // Exact SKU lookup from price list — keyed by [width][post][spacing][hasOH]
+  // post: '66' or '88', spacing: eave post spacing, hasOH: Q.oh > 0
 
   var _gbPost = (function() {
     var ps = getWallPostSize('front') || getWallPostSize('back') || '6x6';
-    if (ps === '8x8')   return '88';
-    if (ps === '10x10') return '88'; // 10x10 uses 88 chord
-    return '66';
+    return (ps === '8x8' || ps === '10x10') ? '88' : '66';
   })();
-
   var _gbSpacing = (function() {
     var w = (window._WALLS||[]).find(function(x){return x.id==='left';});
     return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
   })();
-
   var _gbHasOH = Q.oh > 0;
-  var _gbKB    = Q.w >= 24;
-  var _gbSuffix = (_gbKB ? 'KB' : '') + (!_gbHasOH ? 'NO-O' : '');
+
+  // Exact SKU map from price list — [noOH_sku, OH_sku] per post size
+  // If width/post/spacing combo not in list → 'SKU NOT FOUND'
+  // 18' only offered in 66 regardless of post size selected
+  var _gbSkuMap = {
+    16: { '66': ['TSGT1666',    'TSGT1666KB'  ], '88': ['TSGT1688',    'TSGT1688KB'  ] },
+    18: { '66': ['TSGT1866',    'TSGT1866KB'  ], '88': ['TSGT1866',    'TSGT1866KB'  ] },
+    20: { '66': ['TSGT2066',    'TSGT2066KB'  ], '88': ['TSGT2088',    'TSGT2088KB'  ] },
+    24: { '66': ['TSGT2466',    'TSGT2466KB'  ], '88': ['TSGT2488',    'TSGT2488KB'  ] },
+    28: { '66': ['TSGT2866',    'TSGT2866KB'  ], '88': ['TSGT2888',    'TSGT2888'    ] },
+    30: { '66': ['TSGT3066KBNO-O','TSGT3066KB'], '88': ['TSGT3088KB',  'TSGT3088KB'  ] },
+    32: { '66': ['TSGT3266KB',  'TSGT3266KB'  ], '88': ['TSGT3288KB',  'TSGT3288KB'  ] },
+    36: { '66': ['TSGT3666KB',  'TSGT3666KB'  ], '88': ['TSGT3688KB',  'TSGT3688KB'  ] },
+    38: { '66': ['TSGT3866KB',  'TSGT3866KB'  ], '88': ['TSGT3888',    'TSGT3888'    ] },
+  };
+  var _gbSkuMap40 = {
+    40: {
+      10: { '66': ['TSGT401266KBNO-O','TSGT401266KB'], '88': ['TSGT401288KBNO-O','TSGT401288KB'] },
+      12: { '66': ['TSGT401266KBNO-O','TSGT401266KB'], '88': ['TSGT401288KBNO-O','TSGT401288KB'] }
+    },
+    48: {
+      10: { '66': ['TSGT481066KB','TSGT481066KB'], '88': ['TSGT481088KB','TSGT481088KB'] },
+      12: { '66': ['TSGT481266KB','TSGT481266KB'], '88': ['TSGT481288KB','TSGT481288KB'] }
+    },
+    50: {
+      10: { '66': ['SKU NOT FOUND','SKU NOT FOUND'], '88': ['TSGT501088',  'TSGT501088KB'] },
+      12: { '66': ['SKU NOT FOUND','SKU NOT FOUND'], '88': ['TSGT501288',  'TSGT501288KB'] }
+    },
+    56: {
+      10: { '66': ['TSGT561088',  'TSGT561088KB'], '88': ['TSGT561088',  'TSGT561088KB'] },
+      12: { '66': ['TSGT561288',  'TSGT561288KB'], '88': ['TSGT561288',  'TSGT561288KB'] }
+    },
+    60: {
+      10: { '66': ['TSGT601088',  'TSGT601088KB'], '88': ['TSGT601088',  'TSGT601088KB'] },
+      12: { '66': ['TSGT601288',  'TSGT601288KB'], '88': ['TSGT601288',  'TSGT601288KB'] }
+    }
+  };
 
   var sku;
   if (Q.w >= 40) {
-    sku = 'TSGT' + Q.w + _gbSpacing + _gbPost + _gbSuffix;
+    var _sp40 = _gbSkuMap40[Q.w];
+    if (_sp40) {
+      var _spRow = _sp40[_gbSpacing] || _sp40[10];
+      var _postRow = _spRow ? (_spRow[_gbPost] || _spRow['66']) : null;
+      sku = _postRow ? (_gbHasOH ? _postRow[1] : _postRow[0]) : ('TSGT' + Q.w + ' — SKU NOT FOUND');
+    } else {
+      sku = 'TSGT' + Q.w + ' — SKU NOT FOUND';
+    }
   } else if (Q.w <= 14) {
-    sku = 'TSGT' + Q.w + (_gbKB ? 'KB' : '');
+    sku = 'TSGT' + Q.w; // simple SKU for narrow widths
   } else {
-    sku = 'TSGT' + Q.w + _gbPost + _gbSuffix;
+    var _wRow = _gbSkuMap[Q.w];
+    if (_wRow) {
+      var _postRow2 = _wRow[_gbPost] || _wRow['66'];
+      sku = _gbHasOH ? _postRow2[1] : _postRow2[0];
+    } else {
+      sku = 'TSGT' + Q.w + ' — SKU NOT FOUND';
+    }
   }
   // Use left eave wall spacing — trusses follow eave wall
   var eaveWallT = (window._WALLS||[]).find(function(w){return w.id==='left';});
