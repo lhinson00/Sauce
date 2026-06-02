@@ -35482,7 +35482,10 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
   };
 
   // ── Save to Supabase ───────────────────────────────────
+  MB._saving = false;
   MB._save = function(overwrite) {
+    if (MB._saving) return;
+    MB._saving = true;
     var btn = document.getElementById('mb-save-btn');
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
     var cu   = window.currentUser || {};
@@ -35490,7 +35493,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     var phone= (document.getElementById('mb-cust-phone')||{}).value.trim();
     var email= (document.getElementById('mb-cust-email')||{}).value.trim();
     var addr = (document.getElementById('mb-cust-addr')||{}).value.trim();
-    if (!name) { alert('Please enter a customer name.'); if(btn){btn.disabled=false;btn.textContent='💾 Save';} return; }
+    if (!name) { alert('Please enter a customer name.'); MB._saving = false; if(btn){btn.disabled=false;btn.textContent='💾 Save';} return; }
     var id = (overwrite && MB._loadedQuoteId) ? MB._loadedQuoteId : ('MB-' + Date.now());
     var gt = grandTotal();
     var snap = {
@@ -35534,11 +35537,13 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       body: JSON.stringify(row)
     })
     .then(function(r) {
-      MB._loadedQuoteId = id; // track so next save can offer overwrite
+      MB._saving = false;
+      MB._loadedQuoteId = id;
       if (btn) { btn.disabled = false; btn.textContent = '✓ Saved!'; setTimeout(function(){ btn.textContent = '💾 Save'; }, 2000); }
       if (typeof showToast === 'function') showToast((overwrite ? 'Updated ' : 'Saved as ') + id, 'ok');
     })
     .catch(function(e) {
+      MB._saving = false;
       if (btn) { btn.disabled = false; btn.textContent = '💾 Save'; }
       alert('Save failed: ' + e.message);
     });
@@ -35559,6 +35564,13 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     _sv('mb-cust-addr',  snap.address || '');
     if (typeof renderRows === 'function') renderRows();
     if (typeof recalcShipping === 'function') recalcShipping();
+    // Trigger address lookup so mileage display and shipping update
+    if (snap.address) {
+      setTimeout(function() {
+        var addrInp = document.getElementById('mb-cust-addr');
+        if (addrInp && addrInp.value) addrInp.dispatchEvent(new Event('blur'));
+      }, 400);
+    }
     if (typeof showToast === 'function') showToast('Loaded: ' + (snap.customerName || snap.quoteId || 'Material Only'), 'ok');
   };
 
@@ -35609,18 +35621,65 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       {id:'mb-cust-name',  label:'Customer Name',  placeholder:'Full name',       src:'st_name'},
       {id:'mb-cust-phone', label:'Phone',           placeholder:'(xxx) xxx-xxxx',  src:'st_phone'},
       {id:'mb-cust-email', label:'Email',           placeholder:'email@example.com',src:'st_email'},
-      {id:'mb-cust-addr',  label:'Address / City',  placeholder:'City, ST',        src:'st_address', oninput:'if(typeof doAddressLookup===\'function\'){clearTimeout(window._addrTimer);window._addrTimer=setTimeout(function(){doAddressLookup(document.getElementById(\'mb-cust-addr\').value);},1200);}', onblur:'if(typeof doAddressLookup===\'function\')doAddressLookup(this.value)'}
+      {id:'mb-cust-addr',  label:'Address / City',  placeholder:'City, ST',        src:'st_address'}
     ];
     custFields.forEach(function(f) {
       var srcVal = (document.getElementById(f.src)||{}).value || '';
       custRow.innerHTML += '<div><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888;margin-bottom:4px;">' + f.label + '</div>'
         + '<input id="' + f.id + '" value="' + esc(srcVal) + '" placeholder="' + f.placeholder + '"'
-        + (f.oninput ? ' oninput="'+f.oninput+'"' : '')
-        + (f.onblur  ? ' onblur="'+f.onblur+'"'   : '')
-        + (f.onchange ? ' onchange="'+f.onchange+'"' : '')
         + ' style="width:100%;box-sizing:border-box;padding:7px 9px;border-radius:7px;border:1px solid rgba(255,130,0,.2);background:#2a2a3e;color:#f0f3f7;font-size:11px;font-family:Outfit,sans-serif;"></div>';
     });
     panel.appendChild(custRow);
+
+    // Mileage display row — sits below customer fields
+    var mileageRow = document.createElement('div');
+    mileageRow.id = 'mb-mileage-row';
+    mileageRow.style.cssText = 'font-size:10px;color:#666;margin-top:-6px;padding-left:2px;min-height:14px;flex-shrink:0;';
+    panel.appendChild(mileageRow);
+
+    // Wire address field after DOM insertion
+    setTimeout(function() {
+      var addrInp = document.getElementById('mb-cust-addr');
+      if (!addrInp) return;
+      function mbAddrLookup(val) {
+        var display = document.getElementById('mb-mileage-row');
+        if (display) { display.textContent = 'Calculating…'; display.style.color = '#888'; }
+        // Also sync to main tool address field so doAddressLookup reads it
+        var mainAddr = document.getElementById('st_address');
+        if (mainAddr) mainAddr.value = val;
+        if (typeof doAddressLookup === 'function') {
+          doAddressLookup(val).then(function() {
+            var miles = Math.round(parseFloat(window._cachedMileage || 0));
+            if (display) {
+              if (miles > 0) {
+                display.textContent = '📍 ' + miles + ' mi from shop  ·  $' + (miles * 6).toLocaleString('en-US') + ' est. shipping';
+                display.style.color = miles > 200 ? '#ef4444' : '#4ade80';
+              } else {
+                display.textContent = 'Distance unavailable — check address';
+                display.style.color = '#ef4444';
+              }
+            }
+            recalcShipping();
+          }).catch(function() {
+            if (display) { display.textContent = 'Address lookup failed'; display.style.color = '#ef4444'; }
+          });
+        }
+      }
+      var _mbAddrTimer;
+      addrInp.addEventListener('input', function() {
+        clearTimeout(_mbAddrTimer);
+        var v = this.value;
+        _mbAddrTimer = setTimeout(function() { if (v.length >= 3) mbAddrLookup(v); }, 1200);
+      });
+      addrInp.addEventListener('blur', function() {
+        clearTimeout(_mbAddrTimer);
+        if (this.value.length >= 3) mbAddrLookup(this.value);
+      });
+      // If address already populated (loaded quote), trigger lookup immediately
+      if (addrInp.value && addrInp.value.length >= 3) {
+        setTimeout(function() { mbAddrLookup(addrInp.value); }, 300);
+      }
+    }, 50);
 
     // SKU search bar — built with createElement so event listeners attach reliably
     var searchWrap = document.createElement('div');
@@ -35729,11 +35788,6 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
 
     renderRows();
     recalcShipping();
-    // If address already in main tool but no miles yet, trigger lookup now
-    var _stAddr = (document.getElementById('st_address')||{}).value || '';
-    if (_stAddr && !getMiles() && typeof doAddressLookup === 'function') {
-      doAddressLookup(_stAddr);
-    }
   };
 
   MB._clear = function() {
