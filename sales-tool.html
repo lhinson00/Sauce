@@ -2830,7 +2830,7 @@ function triggerBuild() {
     retryCount = retryCount || 0;
     try { 
       console.log('[3D] Attempting to build 3D model (attempt ' + (retryCount + 1) + ')');
-      build3DReplay(placed, Q.roofStyle === 'single' ? [] : window._shedConfigs, WALLS, window._stepSection.active ? window._stepSection : null); 
+      build3DReplay(placed, window._shedConfigs, WALLS, window._stepSection.active ? window._stepSection : null); 
     } catch(e) { 
       console.error('[3D] Build attempt failed:', e);
       
@@ -3071,7 +3071,13 @@ function buildPitchChips(){
   var sopts=[{val:4,label:'4/12'},{val:6,label:'6/12'}];
   var opts = cfgTruss==='Steel'?sopts:wopts;
   if(!opts.find(function(o){return o.val===Q.pitch;})){Q.pitch=opts[0].val;}
-  chips('pitchChips',opts,function(){return Q.pitch;},function(v){Q.pitch=v;});
+  chips('pitchChips',opts,function(){return Q.pitch;},function(v){
+    Q.pitch=v;
+    // Keep single slope shed ltPitch in sync with main building pitch
+    if (Q.roofStyle === 'single') {
+      (window._shedConfigs||[]).forEach(function(sc){ sc.ltPitch = v; });
+    }
+  });
 }
 function buildOHChips(){
   // Wood: none, 12", 18" soffit  |  Steel: none, 18" (no soffit)
@@ -4736,9 +4742,11 @@ function addStepShed(){
 
 function addShed(){
   if (window._shedConfigs.length >= 4) return;
+  var isSS = (Q.roofStyle === 'single');
   var idx = window._shedConfigs.length;
-  var defaultWalls = ['left','right','back','front'];
-  var defaultWall = defaultWalls[idx] || 'left';
+  // Single slope: only eave walls — default to right (low eave / non-snoot side)
+  var defaultWalls = isSS ? ['right','left','right','left'] : ['left','right','back','front'];
+  var defaultWall = defaultWalls[idx] || (isSS ? 'right' : 'left');
   var isEave = (defaultWall==='left'||defaultWall==='right');
   var defaultLen = isEave?Q.l:Q.w;
   var sc = {
@@ -4748,7 +4756,7 @@ function addShed(){
     encl:'roofonly', enclWalls:['outer','gable1','gable2'],
     position:'center', offsetFt:0,
     gablePS:10, gablePitch:4, timberFrame:'metal',
-    ltPitch:2, dropFt:0, frameStyle:'metal',
+    ltPitch: isSS ? (Q.pitch || 1) : 2, dropFt:0, frameStyle:'metal',
     noSkirt: false,
     postsOnTop: false,
     _open: true
@@ -4933,10 +4941,11 @@ function shedConcreteSqft(sc, Q) {
       return w * l + 2 * (w * ((Q ? Q.l : 0) + w));
     }
   } else if (sc.type === 'wrap') {
-    // 2-sided wrap: eave leg (w×l) + gable leg (w×wrapLeg) + corner square (w×w)
+    // 2-sided wrap: one eave leg (w×l) + one gable leg (w×wrapLeg)
+    // No corner deduction — gable leg starts at the building corner
     var wrapLeg = sc.wrapLeg || 0;
     if (!wrapLeg) return w * l;
-    return w * l + w * wrapLeg + w * w;
+    return w * l + w * wrapLeg;
   }
   // leanto — simple rectangle
   return w * l;
@@ -5073,7 +5082,12 @@ function renderSheds(){
     var isWrap=(sc.type==='wrap'||sc.type==='wrap3'||sc.type==='wrap4');
 
     var stepActive = window._stepSection && window._stepSection.active;
-    var wallOpts=['back','front','left','right'].map(function(wid){
+    var isSingleSlopeMode = (Q.roofStyle === 'single');
+    var wallOpts=['back','front','left','right'].filter(function(wid){
+      // Single slope: only allow eave walls
+      if (isSingleSlopeMode && (wid === 'front' || wid === 'back')) return false;
+      return true;
+    }).map(function(wid){
       var wl=WALLS.find(function(w){return w.id===wid;});
       return '<option value="'+wid+'"'+(sc.wall===wid?' selected':'')+'>'+wl.label+'</option>';
     }).join('');
@@ -5138,16 +5152,23 @@ function renderSheds(){
 
     var extraOptions='';
     if(isLeanto){
-      extraOptions+='<div class="shed-row"><div><div class="shed-label">Lean-to Pitch</div>'
-        +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'ltPitch\',this.value)">'
-        +'<option value="1"'+(sc.ltPitch==1?' selected':'')+'>1/12</option>'
-        +'<option value="2"'+(sc.ltPitch==2?' selected':'')+'>2/12</option>'
-        +'<option value="3"'+(sc.ltPitch==3?' selected':'')+'>3/12</option>'
-        +'<option value="4"'+(sc.ltPitch==4?' selected':'')+'>4/12</option>'
-        +'</select></div>'
-        +'<div><div class="shed-label">Drop (ft)</div>'
-        +'<input class="shed-inp" type="number" value="'+(sc.dropFt||0)+'" min="0" max="6" step="1" onchange="setShedProp('+sc.id+',\'dropFt\',this.value)"></div>'
-        +'</div>';
+      if (isSingleSlopeMode) {
+        // Single slope: pitch is locked to main building pitch
+        extraOptions+='<div class="shed-row"><div><div class="shed-label">Lean-to Pitch</div>'
+          +'<div class="shed-inp" style="padding:5px 8px;opacity:.7;cursor:default;">'+(Q.pitch||1)+'/12 — matches main</div></div>'
+          +'</div>';
+      } else {
+        extraOptions+='<div class="shed-row"><div><div class="shed-label">Lean-to Pitch</div>'
+          +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'ltPitch\',this.value)">'
+          +'<option value="1"'+(sc.ltPitch==1?' selected':'')+'>1/12</option>'
+          +'<option value="2"'+(sc.ltPitch==2?' selected':'')+'>2/12</option>'
+          +'<option value="3"'+(sc.ltPitch==3?' selected':'')+'>3/12</option>'
+          +'<option value="4"'+(sc.ltPitch==4?' selected':'')+'>4/12</option>'
+          +'</select></div>'
+          +'<div><div class="shed-label">Drop (ft)</div>'
+          +'<input class="shed-inp" type="number" value="'+(sc.dropFt||0)+'" min="0" max="6" step="1" onchange="setShedProp('+sc.id+',\'dropFt\',this.value)"></div>'
+          +'</div>';
+      }
     }
     if(isWrap){
       if(sc.type==='wrap'){
@@ -11405,11 +11426,19 @@ function applyVoiceQuote(parsed, overlay) {
         // Shed
         // Shed roofs from config
         (shedCfgs || []).forEach(sc => {
+            // On single slope buildings, only eave wall sheds are supported
+            if (isSingleSlope && (sc.wall === 'front' || sc.wall === 'back')) return;
+
             const ssw = sc.w * Sc, ssl = sc.l * Sc;
-            const ltPitchR = sc.ltPitch || 1;
+            const ltPitchR = isSingleSlope ? (Q.pitch || 1) : (sc.ltPitch || 1);
             const dropHR = (sc.dropFt || 0) * Sc;
-            // Step sheds attach at step section eave height, not main building height
-            const _scAttachH = sc._isStepShed ? (stepCfg ? stepCfg.height * Sc : sh) : sh;
+            // Single slope: attachment height depends on which eave wall
+            // Left = high eave (Q.h), Right = low eave (Q.h - Q.w*pitch/12)
+            const _ssLowEave = isSingleSlope ? sh - (Q.w * (Q.pitch / 12)) * Sc : sh;
+            const _ssSingleAttach = isSingleSlope
+                ? ((sc.wall === 'right') ? _ssLowEave : sh)
+                : sh;
+            const _scAttachH = sc._isStepShed ? (stepCfg ? stepCfg.height * Sc : sh) : _ssSingleAttach;
             const attachHR = _scAttachH - dropHR;
             const sSh = attachHR - (sc.w * (ltPitchR / 12)) * Sc;
 
@@ -11439,7 +11468,7 @@ function applyVoiceQuote(parsed, overlay) {
             }
 
             // Lean-to heights: attachment at step eave (or main eave) minus drop
-            const ltPitch = sc.ltPitch || 1;
+            const ltPitch = isSingleSlope ? (Q.pitch || 1) : (sc.ltPitch || 1);
             const dropH = (sc.dropFt || 0) * Sc;
             const attachH = _scAttachH - dropH;
             const outerH = attachH - (sc.w * (ltPitch / 12)) * Sc;
@@ -20171,7 +20200,11 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
 
     var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
     var attachPS   = wallPS(sc.wall);
-    var attachH    = Q.h - (sc.dropFt || 0);
+    // Single slope: right wall attaches at low eave, left wall at high eave
+    var _ssAttachBase = (Q.roofStyle === 'single' && sc.wall === 'right')
+      ? Math.max(8, Q.h - (Q.w * (Q.pitch || 1) / 12))
+      : Q.h;
+    var attachH    = _ssAttachBase - (sc.dropFt || 0);
     var outerH     = attachH - (sc.w * (sc.ltPitch || 1) / 12);
     var totalH     = outerH + ground;
     var postLen    = Math.ceil(totalH / 2) * 2;
@@ -32534,12 +32567,9 @@ window.SauceLabor.calcHeight = function(buildingType, h, sqft) {
 
 // ── PITCH ADDER ──────────────────────────────────────────────────────────────
 window.SauceLabor.calcPitch = function(pitch, sqft) {
-  // Steel buildings use the st_pitch612 toggle in calcExtras — not Q.pitch
-  var Q = window._Q || {};
-  if (Q.truss === 'Steel') return null;
   var adders = { 6: 0.25, 8: 0.80, 10: 1.25, 12: 1.75 };
   var adder = adders[pitch] || 0;
-  if (pitch > 4 && !adder) adder = 0.25;
+  if (pitch > 4 && !adder) adder = 0.25; // catch any pitch > 4 not listed
   if (!adder) return null;
   return { label: 'Pitch Adder  |  ' + pitch + '/12 → +$' + adder + '/sqft', amount: adder * sqft };
 };
@@ -32717,12 +32747,25 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
     if (ppCount > 0) lines.push({ label: 'Post Protectors Install  |  ' + ppCount + ' posts @ $10.00', amount: ppCount * 10 });
   }
 
-  // Steel 6/12 pitch adder — steel only offers 6/12 via toggle (wood handled by SL.calcPitch in calculate())
+  // Pitch labor adders — main building sqft only (no shed extensions)
+  // Wood: fires on Q.pitch value. Steel: fires on st_pitch612 toggle (steel only offers 6/12)
+  // Rates from labor sheet: 6/12=$0.25, 8/12=$0.80, 10/12=$1.25 per sqft
+  var _pitchSqft = (Q.w||0) * (Q.l||0); // main building only — no sheds
+  var _pitch     = parseInt(Q.pitch) || 4;
   var _isSteelLbr = (buildingType === 'steel' || buildingType === 'EnclosedSteel');
+
   if (_isSteelLbr) {
-    var _pitchSqft = (Q.w||0) * (Q.l||0);
+    // Steel: only 6/12 toggle-driven
     var pitch612On = !!(document.getElementById('st_pitch612')||{}).checked;
     if (pitch612On && _pitchSqft > 0)
+      lines.push({ label: '6/12 Pitch  |  ' + _pitchSqft + ' sqft @ $0.25', amount: _pitchSqft * 0.25 });
+  } else {
+    // Wood variants: driven by Q.pitch
+    if (_pitch >= 10 && _pitchSqft > 0)
+      lines.push({ label: '10/12 Pitch  |  ' + _pitchSqft + ' sqft @ $1.25', amount: _pitchSqft * 1.25 });
+    else if (_pitch >= 8 && _pitchSqft > 0)
+      lines.push({ label: '8/12 Pitch  |  ' + _pitchSqft + ' sqft @ $0.80', amount: _pitchSqft * 0.80 });
+    else if (_pitch >= 6 && _pitchSqft > 0)
       lines.push({ label: '6/12 Pitch  |  ' + _pitchSqft + ' sqft @ $0.25', amount: _pitchSqft * 0.25 });
   }
 
