@@ -2830,7 +2830,7 @@ function triggerBuild() {
     retryCount = retryCount || 0;
     try { 
       console.log('[3D] Attempting to build 3D model (attempt ' + (retryCount + 1) + ')');
-      build3DReplay(placed, window._shedConfigs, WALLS, window._stepSection.active ? window._stepSection : null); 
+      build3DReplay(placed, Q.roofStyle === 'single' ? [] : window._shedConfigs, WALLS, window._stepSection.active ? window._stepSection : null); 
     } catch(e) { 
       console.error('[3D] Build attempt failed:', e);
       
@@ -2852,27 +2852,24 @@ function triggerBuild() {
   // Track price calculation (debounced)
   try { logPriceCalculated(); } catch(e) {}
   // Apply smart post visibility after build (respects shed enclosure state)
-  if(window._3d && window._3d.grps) {
+  if(window._3d && window._3d.grps && Q.roofStyle !== 'single') {
     var _g = window._3d.grps;
+    // Main posts — hide if all walls enclosed AND posts toggled off
+    var _mainEncl = WALLS.every(function(w){return w.encl==='enclosed'||w.encl==='partial';});
+    if(_g.mainPosts) _g.mainPosts.visible = _mainEncl ? _postsVisible : true;
+    // Shed posts — if any shed has an open section, always show grps.posts; otherwise respect toggle
     var _sc = window._shedConfigs||[];
     var _hasOpenShed = _sc.some(function(s){
       if(s.encl==='open'||s.encl==='roofonly') return true;
       if(s.encl==='enclosed' && s.enclFt!=null && s.enclFt < s.l) return true;
+      // Partially enclosed shed (gable walls only, no outer wall) — needs posts visible
       if(s.encl==='enclosed') {
         var ew = s.enclWalls || [];
         if(!ew.includes('outer') && (ew.includes('gable1') || ew.includes('gable2'))) return true;
       }
       return false;
     });
-    if (Q.roofStyle !== 'single') {
-      // Main posts — hide if all walls enclosed AND posts toggled off
-      var _mainEncl = WALLS.every(function(w){return w.encl==='enclosed'||w.encl==='partial';});
-      if(_g.mainPosts) _g.mainPosts.visible = _mainEncl ? _postsVisible : true;
-    }
-    // Shed posts — always show if any open shed present, otherwise respect toggle
-    // Single slope: shed posts always shown when sheds are present
-    var _hasShed = _sc.some(function(s){ return s.w && s.l; });
-    if(_g.posts) _g.posts.visible = (_hasOpenShed || (Q.roofStyle === 'single' && _hasShed)) ? true : _postsVisible;
+    if(_g.posts) _g.posts.visible = _hasOpenShed ? true : _postsVisible;
   }
   document.getElementById('vpLoading').classList.add('hidden');
   updateSpecs();
@@ -3074,9 +3071,7 @@ function buildPitchChips(){
   var sopts=[{val:4,label:'4/12'},{val:6,label:'6/12'}];
   var opts = cfgTruss==='Steel'?sopts:wopts;
   if(!opts.find(function(o){return o.val===Q.pitch;})){Q.pitch=opts[0].val;}
-  chips('pitchChips',opts,function(){return Q.pitch;},function(v){
-    Q.pitch=v;
-  });
+  chips('pitchChips',opts,function(){return Q.pitch;},function(v){Q.pitch=v;});
 }
 function buildOHChips(){
   // Wood: none, 12", 18" soffit  |  Steel: none, 18" (no soffit)
@@ -4741,11 +4736,9 @@ function addStepShed(){
 
 function addShed(){
   if (window._shedConfigs.length >= 4) return;
-  var isSS = (Q.roofStyle === 'single');
   var idx = window._shedConfigs.length;
-  // Single slope: only eave walls — default to right (low eave / non-snoot side)
-  var defaultWalls = isSS ? ['right','left','right','left'] : ['left','right','back','front'];
-  var defaultWall = defaultWalls[idx] || (isSS ? 'right' : 'left');
+  var defaultWalls = ['left','right','back','front'];
+  var defaultWall = defaultWalls[idx] || 'left';
   var isEave = (defaultWall==='left'||defaultWall==='right');
   var defaultLen = isEave?Q.l:Q.w;
   var sc = {
@@ -4755,7 +4748,7 @@ function addShed(){
     encl:'roofonly', enclWalls:['outer','gable1','gable2'],
     position:'center', offsetFt:0,
     gablePS:10, gablePitch:4, timberFrame:'metal',
-    ltPitch: isSS ? 1 : 2, dropFt:0, frameStyle:'metal',
+    ltPitch:2, dropFt:0, frameStyle:'metal',
     noSkirt: false,
     postsOnTop: false,
     _open: true
@@ -5081,12 +5074,7 @@ function renderSheds(){
     var isWrap=(sc.type==='wrap'||sc.type==='wrap3'||sc.type==='wrap4');
 
     var stepActive = window._stepSection && window._stepSection.active;
-    var isSingleSlopeMode = (Q.roofStyle === 'single');
-    var wallOpts=['back','front','left','right'].filter(function(wid){
-      // Single slope: only allow eave walls
-      if (isSingleSlopeMode && (wid === 'front' || wid === 'back')) return false;
-      return true;
-    }).map(function(wid){
+    var wallOpts=['back','front','left','right'].map(function(wid){
       var wl=WALLS.find(function(w){return w.id===wid;});
       return '<option value="'+wid+'"'+(sc.wall===wid?' selected':'')+'>'+wl.label+'</option>';
     }).join('');
@@ -5151,26 +5139,16 @@ function renderSheds(){
 
     var extraOptions='';
     if(isLeanto){
-      if (isSingleSlopeMode) {
-        // Single slope: pitch is 1/12 or 2/12 — selectable but independent of Q.pitch
-        extraOptions+='<div class="shed-row"><div><div class="shed-label">Lean-to Pitch</div>'
-          +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'ltPitch\',this.value)">'
-          +'<option value="1"'+(sc.ltPitch==1?' selected':'')+'>1/12</option>'
-          +'<option value="2"'+(sc.ltPitch==2?' selected':'')+'>2/12</option>'
-          +'</select></div>'
-          +'</div>';
-      } else {
-        extraOptions+='<div class="shed-row"><div><div class="shed-label">Lean-to Pitch</div>'
-          +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'ltPitch\',this.value)">'
-          +'<option value="1"'+(sc.ltPitch==1?' selected':'')+'>1/12</option>'
-          +'<option value="2"'+(sc.ltPitch==2?' selected':'')+'>2/12</option>'
-          +'<option value="3"'+(sc.ltPitch==3?' selected':'')+'>3/12</option>'
-          +'<option value="4"'+(sc.ltPitch==4?' selected':'')+'>4/12</option>'
-          +'</select></div>'
-          +'<div><div class="shed-label">Drop (ft)</div>'
-          +'<input class="shed-inp" type="number" value="'+(sc.dropFt||0)+'" min="0" max="6" step="1" onchange="setShedProp('+sc.id+',\'dropFt\',this.value)"></div>'
-          +'</div>';
-      }
+      extraOptions+='<div class="shed-row"><div><div class="shed-label">Lean-to Pitch</div>'
+        +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'ltPitch\',this.value)">'
+        +'<option value="1"'+(sc.ltPitch==1?' selected':'')+'>1/12</option>'
+        +'<option value="2"'+(sc.ltPitch==2?' selected':'')+'>2/12</option>'
+        +'<option value="3"'+(sc.ltPitch==3?' selected':'')+'>3/12</option>'
+        +'<option value="4"'+(sc.ltPitch==4?' selected':'')+'>4/12</option>'
+        +'</select></div>'
+        +'<div><div class="shed-label">Drop (ft)</div>'
+        +'<input class="shed-inp" type="number" value="'+(sc.dropFt||0)+'" min="0" max="6" step="1" onchange="setShedProp('+sc.id+',\'dropFt\',this.value)"></div>'
+        +'</div>';
     }
     if(isWrap){
       if(sc.type==='wrap'){
@@ -9549,11 +9527,7 @@ function applyVoiceQuote(parsed, overlay) {
             const ssw = sc.w * Sc, ssl = sc.l * Sc;
             const ltPitchP = sc.ltPitch || 1;
             const dropHP = (sc.dropFt || 0) * Sc;
-            // Single slope: right wall = low eave, left wall = high eave
-            const _ssAttachBaseP = (isSingleSlope && sc.wall === 'right')
-                ? sh - (Q.w / 12) * Sc
-                : sh;
-            const attachHP = _ssAttachBaseP - dropHP;
+            const attachHP = sh - dropHP;
             const shedSh = attachHP - (sc.w * (ltPitchP / 12)) * Sc; // outer post height from pitch
             // _isMono: mono concrete OR per-shed posts-on-top toggle
             const _scIdxEarly = (window._shedConfigs||[]).indexOf(sc);
@@ -11432,20 +11406,11 @@ function applyVoiceQuote(parsed, overlay) {
         // Shed
         // Shed roofs from config
         (shedCfgs || []).forEach(sc => {
-            // On single slope buildings, only eave wall sheds are supported
-            if (isSingleSlope && (sc.wall === 'front' || sc.wall === 'back')) return;
-
             const ssw = sc.w * Sc, ssl = sc.l * Sc;
             const ltPitchR = sc.ltPitch || 1;
             const dropHR = (sc.dropFt || 0) * Sc;
-            // Single slope: attachment height depends on which eave wall
-            // The single slope geometry ALWAYS uses 1/12 pitch (Q.w/12 drop), Q.pitch is irrelevant
-            // Left = high eave (Q.h), Right = low eave (Q.h - Q.w/12)
-            const _ssLowEave = isSingleSlope ? sh - (Q.w / 12) * Sc : sh;
-            const _ssSingleAttach = isSingleSlope
-                ? ((sc.wall === 'right') ? _ssLowEave : sh)
-                : sh;
-            const _scAttachH = sc._isStepShed ? (stepCfg ? stepCfg.height * Sc : sh) : _ssSingleAttach;
+            // Step sheds attach at step section eave height, not main building height
+            const _scAttachH = sc._isStepShed ? (stepCfg ? stepCfg.height * Sc : sh) : sh;
             const attachHR = _scAttachH - dropHR;
             const sSh = attachHR - (sc.w * (ltPitchR / 12)) * Sc;
 
@@ -11475,7 +11440,6 @@ function applyVoiceQuote(parsed, overlay) {
             }
 
             // Lean-to heights: attachment at step eave (or main eave) minus drop
-            // Single slope: shed ltPitch is 1 or 2 (stored in sc.ltPitch), main building always 1/12
             const ltPitch = sc.ltPitch || 1;
             const dropH = (sc.dropFt || 0) * Sc;
             const attachH = _scAttachH - dropH;
@@ -20208,12 +20172,7 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
 
     var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
     var attachPS   = wallPS(sc.wall);
-    // Single slope: right wall attaches at low eave (Q.h - Q.w/12), left wall at high eave (Q.h)
-    // Single slope geometry always uses 1/12 drop regardless of Q.pitch
-    var _ssAttachBase = (Q.roofStyle === 'single' && sc.wall === 'right')
-      ? Math.max(8, Q.h - Q.w / 12)
-      : Q.h;
-    var attachH    = _ssAttachBase - (sc.dropFt || 0);
+    var attachH    = Q.h - (sc.dropFt || 0);
     var outerH     = attachH - (sc.w * (sc.ltPitch || 1) / 12);
     var totalH     = outerH + ground;
     var postLen    = Math.ceil(totalH / 2) * 2;
@@ -21131,8 +21090,8 @@ window.SauceMaterials.calcSteelTrusses = function(Q) {
       12: { '66': ['TSGT481266KB','TSGT481266KB'], '88': ['TSGT481288KB','TSGT481288KB'] }
     },
     50: {
-      10: { '66': ['SKU NOT FOUND','SKU NOT FOUND'], '88': ['TSGT501088',  'TSGT501088KB'] },
-      12: { '66': ['SKU NOT FOUND','SKU NOT FOUND'], '88': ['TSGT501288',  'TSGT501288KB'] }
+      10: { '66': ['TSGT501088',  'TSGT501088KB'],  '88': ['TSGT501088',  'TSGT501088KB'],  '1010': ['TSGT50101010', 'TSGT50101010KB'] },
+      12: { '66': ['TSGT501288',  'TSGT501288KB'],  '88': ['TSGT501288',  'TSGT501288KB'],  '1010': ['TSGT50121010', 'TSGT50121010KB'] }
     },
     56: {
       10: { '66': ['TSGT561088',  'TSGT561088KB'], '88': ['TSGT561088',  'TSGT561088KB'] },
