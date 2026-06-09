@@ -1904,7 +1904,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
         </div>
         <div class="toggle-row" id="rowGutters">
           <div class="toggle-info"><div class="toggle-lbl">Gutters</div></div>
-          <label class="tog"><input type="checkbox" id="st_gutters" onchange="try{var gop=document.getElementById('gutterOptions');if(gop)gop.style.display=this.checked?'block':'none';if(!window._Q&&Q)window._Q=Q;if(!window._WALLS&&WALLS)window._WALLS=WALLS;scheduleBuild();updateStripFromLocalCalc();}catch(e){console.error('[Gutters toggle]',e);}"><span class="tog-track"></span></label>
+          <label class="tog"><input type="checkbox" id="st_gutters" onchange="try{var gop=document.getElementById('gutterOptions');if(gop)gop.style.display=this.checked?'block':'none';scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
         </div>
         <div id="gutterOptions" style="display:none;padding:4px 0 6px 0;">
           <div style="display:flex;flex-direction:column;gap:3px;margin-bottom:6px;">
@@ -3170,7 +3170,7 @@ function syncOpeningVisibility() {
   var anyEnclosed = _forceEnclosed || WALLS.some(function(w){ return w.encl === 'enclosed' || w.encl === 'partial'; });
   var enclosedOnlyIds = [
     'secGarageDoors','secWalkDoors','secWindows',
-    'rowRockWainscot','rowPostProtectors'
+    'rowRockWainscot','rowPostProtectors','rowGutters'
   ];
   enclosedOnlyIds.forEach(function(id){
     var el = document.getElementById(id);
@@ -4933,11 +4933,10 @@ function shedConcreteSqft(sc, Q) {
       return w * l + 2 * (w * ((Q ? Q.l : 0) + w));
     }
   } else if (sc.type === 'wrap') {
-    // 2-sided wrap: one eave leg (w×l) + one gable leg (w×wrapLeg)
-    // No corner deduction — gable leg starts at the building corner
+    // 2-sided wrap: eave leg (w×l) + gable leg (w×wrapLeg) + corner square (w×w)
     var wrapLeg = sc.wrapLeg || 0;
     if (!wrapLeg) return w * l;
-    return w * l + w * wrapLeg;
+    return w * l + w * wrapLeg + w * w;
   }
   // leanto — simple rectangle
   return w * l;
@@ -15874,25 +15873,6 @@ async function loadSavedDesign(d){
     var _mPdf   = document.getElementById('quotePdfBtnMobile');   if (_mPdf)   _mPdf.style.display   = '';
     closeLoadDesignModal();
     setTimeout(function(){
-      // Re-enforce UI state that may get reset by intermediate event handlers
-      var _cfg2 = cfg.salesFields || {};
-      // Re-sync wall-dependent row visibility with settled WALLS state
-      try { syncOpeningVisibility(); } catch(e) {}
-      // Gutters sub-panel
-      var _gutEl = document.getElementById('gutterOptions');
-      if (_gutEl) _gutEl.style.display = _cfg2.gutters ? '' : 'none';
-      var _gutChk = document.getElementById('st_gutters');
-      if (_gutChk && _cfg2.gutters) _gutChk.checked = true;
-      // Rock wainscot sub-panel
-      if (_cfg2.rockWainscot) {
-        try { toggleRockWainscotWalls(); } catch(e) {}
-      }
-      // Bar joist sub-panel
-      var _bjRow = document.getElementById('st_barjoistRow');
-      if (_bjRow) _bjRow.style.display = _cfg2.barjoist ? '' : 'none';
-      // Widow's peak row visibility
-      var _wpRow = document.getElementById('rowWidowsPeak');
-      if (_wpRow && _cfg2.widowsPeak) _wpRow.style.display = '';
       triggerBuild();
     }, 300);
     console.log('[Load] restore complete, quoteId:', window._savedQuoteId);
@@ -32554,9 +32534,12 @@ window.SauceLabor.calcHeight = function(buildingType, h, sqft) {
 
 // ── PITCH ADDER ──────────────────────────────────────────────────────────────
 window.SauceLabor.calcPitch = function(pitch, sqft) {
+  // Steel buildings use the st_pitch612 toggle in calcExtras — not Q.pitch
+  var Q = window._Q || {};
+  if (Q.truss === 'Steel') return null;
   var adders = { 6: 0.25, 8: 0.80, 10: 1.25, 12: 1.75 };
   var adder = adders[pitch] || 0;
-  if (pitch > 4 && !adder) adder = 0.25; // catch any pitch > 4 not listed
+  if (pitch > 4 && !adder) adder = 0.25;
   if (!adder) return null;
   return { label: 'Pitch Adder  |  ' + pitch + '/12 → +$' + adder + '/sqft', amount: adder * sqft };
 };
@@ -32734,25 +32717,12 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
     if (ppCount > 0) lines.push({ label: 'Post Protectors Install  |  ' + ppCount + ' posts @ $10.00', amount: ppCount * 10 });
   }
 
-  // Pitch labor adders — main building sqft only (no shed extensions)
-  // Wood: fires on Q.pitch value. Steel: fires on st_pitch612 toggle (steel only offers 6/12)
-  // Rates from labor sheet: 6/12=$0.25, 8/12=$0.80, 10/12=$1.25 per sqft
-  var _pitchSqft = (Q.w||0) * (Q.l||0); // main building only — no sheds
-  var _pitch     = parseInt(Q.pitch) || 4;
+  // Steel 6/12 pitch adder — steel only offers 6/12 via toggle (wood handled by SL.calcPitch in calculate())
   var _isSteelLbr = (buildingType === 'steel' || buildingType === 'EnclosedSteel');
-
   if (_isSteelLbr) {
-    // Steel: only 6/12 toggle-driven
+    var _pitchSqft = (Q.w||0) * (Q.l||0);
     var pitch612On = !!(document.getElementById('st_pitch612')||{}).checked;
     if (pitch612On && _pitchSqft > 0)
-      lines.push({ label: '6/12 Pitch  |  ' + _pitchSqft + ' sqft @ $0.25', amount: _pitchSqft * 0.25 });
-  } else {
-    // Wood variants: driven by Q.pitch
-    if (_pitch >= 10 && _pitchSqft > 0)
-      lines.push({ label: '10/12 Pitch  |  ' + _pitchSqft + ' sqft @ $1.25', amount: _pitchSqft * 1.25 });
-    else if (_pitch >= 8 && _pitchSqft > 0)
-      lines.push({ label: '8/12 Pitch  |  ' + _pitchSqft + ' sqft @ $0.80', amount: _pitchSqft * 0.80 });
-    else if (_pitch >= 6 && _pitchSqft > 0)
       lines.push({ label: '6/12 Pitch  |  ' + _pitchSqft + ' sqft @ $0.25', amount: _pitchSqft * 0.25 });
   }
 
