@@ -13543,42 +13543,54 @@ function applyVoiceQuote(parsed, overlay) {
             }
 
             if (isSteel) {
-              // ── STEEL TRUSS: LineSegments — always visible regardless of orientation ──
-              const chordLen = Math.sqrt(hw*hw + (pkH-eH)*(pkH-eH));
-              const nX =  (pkH-eH)/chordLen * trussDepth;
-              const nY = -(hw/chordLen)      * trussDepth;
-              const panels = 8;
-              const panelW  = hw / panels;
+              // ── STEEL TRUSS: thin angle iron members, 18" frame depth, webs fully visible ──
+              const realTrussDepth = 1.5 * Sc; // 18" real depth — this is the frame height
+              const chordLen = Math.sqrt(hw*hw+(pkH-eH)*(pkH-eH));
+              const nX = (pkH-eH)/chordLen * realTrussDepth;
+              const nY = -(hw/chordLen)     * realTrussDepth;
+              const panels   = 6;
+              const panelW   = hw / panels;
+              const chordSz  = 0.025; // ~3" angle iron
+              const webSz    = 0.018;
+              const mS = new THREE.MeshBasicMaterial({color:0x111111});
 
-              const mLine = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 3 });
-
-              function tP(p) { return { x:-hw+p*panelW, y:eH+p*(pkH-eH)/panels }; }
-              function iP(p) { return { x:tP(p).x+nX,   y:tP(p).y+nY }; }
-
-              function trussLine(ax,ay,bx,by) {
-                const pts = [ new THREE.Vector3(ax,ay,zPos), new THREE.Vector3(bx,by,zPos) ];
-                const geo = new THREE.BufferGeometry().setFromPoints(pts);
-                grps.trusses.add(new THREE.Line(geo, mLine));
+              function sb(ax,ay,az,bx,by,bz,sz) {
+                const dx=bx-ax,dy=by-ay,dz=bz-az;
+                const len=Math.sqrt(dx*dx+dy*dy+dz*dz);
+                if(len<0.0001) return;
+                const g=new THREE.BoxGeometry(sz,sz,len);
+                const m=new THREE.Mesh(g,mS);
+                m.position.set((ax+bx)/2,(ay+by)/2,(az+bz)/2);
+                m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(dx,dy,dz).normalize());
+                grps.trusses.add(m);
               }
 
-              for (let p = 0; p < panels; p++) {
-                const t0=tP(p), t1=tP(p+1), i0=iP(p), i1=iP(p+1);
-                // Inner chord left + right
-                trussLine(i0.x,i0.y, i1.x,i1.y);
-                trussLine(-i0.x,i0.y, -i1.x,i1.y);
+              function tP(p){return{x:-hw+p*panelW,y:eH+p*(pkH-eH)/panels};}
+              function iP(p){return{x:tP(p).x+nX,y:tP(p).y+nY};}
+
+              // Top chords at roof surface
+              sb(-hw,eH,zPos, 0,pkH,zPos, chordSz);
+              sb( hw,eH,zPos, 0,pkH,zPos, chordSz);
+
+              for(let p=0;p<panels;p++){
+                const t0=tP(p),t1=tP(p+1),i0=iP(p),i1=iP(p+1);
+                // Inner chord left + right (18" below top chord)
+                sb(i0.x,i0.y,zPos, i1.x,i1.y,zPos, chordSz);
+                sb(-i0.x,i0.y,zPos,-i1.x,i1.y,zPos, chordSz);
                 // X-webs left
-                trussLine(t0.x,t0.y, i1.x,i1.y);
-                trussLine(i0.x,i0.y, t1.x,t1.y);
+                sb(t0.x,t0.y,zPos, i1.x,i1.y,zPos, webSz);
+                sb(i0.x,i0.y,zPos, t1.x,t1.y,zPos, webSz);
                 // X-webs right
-                trussLine(-t0.x,t0.y, -i1.x,i1.y);
-                trussLine(-i0.x,i0.y, -t1.x,t1.y);
+                sb(-t0.x,t0.y,zPos,-i1.x,i1.y,zPos, webSz);
+                sb(-i0.x,i0.y,zPos,-t1.x,t1.y,zPos, webSz);
+                // Verticals at panel junctions
+                sb(t0.x,t0.y,zPos, i0.x,i0.y,zPos, webSz);
+                sb(-t0.x,t0.y,zPos,-i0.x,i0.y,zPos, webSz);
               }
-              // Vertical panel junction connectors
-              for (let p = 0; p <= panels; p++) {
-                const t=tP(p), i=iP(p);
-                trussLine(t.x,t.y, i.x,i.y);
-                trussLine(-t.x,t.y, -i.x,i.y);
-              }
+              // Close last junction
+              const tL=tP(panels),iL=iP(panels);
+              sb(tL.x,tL.y,zPos, iL.x,iL.y,zPos, webSz);
+              sb(-tL.x,tL.y,zPos,-iL.x,iL.y,zPos, webSz);
             } else {
               // ── WOOD TRUSS: bottom chord + webs ──
               if (isScissor) {
