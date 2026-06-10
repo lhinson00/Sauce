@@ -13529,56 +13529,50 @@ function applyVoiceQuote(parsed, overlay) {
             const ohR = isSteel ? (Q.oh > 0 ? (18/12)*Sc : 0) : ohSc;
 
             // Top chords — always rendered for both steel and wood
-            const tcThick = isSteel ? tc * 4 : tc;
+            const tcThick = isSteel ? tc * 3 : tc;
             addBeam(-hw - ohL, eH, zPos,  0, pkH, zPos, tcThick, mChord);
             addBeam(0, pkH, zPos,  hw + ohR, eH, zPos, tcThick, mChord);
 
             if (isSteel) {
-              // ── STEEL TRUSS: flat box geometry in XY plane, no cylinder orientation issues ──
+              // ── STEEL TRUSS: tube members using BoxGeometry, offset BELOW roof ──
               const chordLen = Math.sqrt(hw*hw + (pkH-eH)*(pkH-eH));
+              // Normal perpendicular to left top chord, pointing DOWN-INWARD (below roof)
               const nX =  (pkH-eH)/chordLen * trussDepth;
               const nY = -(hw/chordLen)      * trussDepth;
               const panels = 8;
               const panelW  = hw / panels;
-              const thick   = trussDepth * 1.8; // THICK members
-              const mBlack  = new THREE.MeshBasicMaterial({ color: 0x111111, side: THREE.DoubleSide });
+              const mBlack  = new THREE.MeshBasicMaterial({ color: 0x0a0a0a, side: THREE.DoubleSide });
+              const memberW = trussDepth * 0.55; // member cross-section width
 
-              // Helper: draw a flat quad strip (box) between two XY points at zPos
-              function flatBeam(ax, ay, bx, by, w) {
-                const dx = bx-ax, dy = by-ay;
-                const len = Math.sqrt(dx*dx+dy*dy);
-                if (len < 0.001) return;
-                // Perpendicular offset for width
-                const px = -dy/len * w/2, py = dx/len * w/2;
-                const depth = 0.04; // small Z depth so geometry is visible
-                const geo = new THREE.BufferGeometry();
-                const verts = new Float32Array([
-                  ax+px,ay+py,zPos-depth,  bx+px,by+py,zPos-depth,  bx-px,by-py,zPos-depth,
-                  ax+px,ay+py,zPos-depth,  bx-px,by-py,zPos-depth,  ax-px,ay-py,zPos-depth,
-                  ax+px,ay+py,zPos+depth,  bx-px,by-py,zPos+depth,  bx+px,by+py,zPos+depth,
-                  ax+px,ay+py,zPos+depth,  ax-px,ay-py,zPos+depth,  bx-px,by-py,zPos+depth,
-                ]);
-                geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-                geo.computeVertexNormals();
-                grps.trusses.add(new THREE.Mesh(geo, mBlack));
+              // Draw a box beam between two 3D points
+              function steelBeam(ax, ay, az, bx, by, bz, w) {
+                const dx=bx-ax, dy=by-ay, dz=bz-az;
+                const len=Math.sqrt(dx*dx+dy*dy+dz*dz);
+                if(len<0.001) return;
+                const geo = new THREE.BoxGeometry(w, w, len);
+                const mesh = new THREE.Mesh(geo, mBlack);
+                mesh.position.set((ax+bx)/2,(ay+by)/2,(az+bz)/2);
+                const dir = new THREE.Vector3(dx,dy,dz).normalize();
+                mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1), dir);
+                grps.trusses.add(mesh);
               }
 
-              function tP(p) { return { x: -hw + p*panelW, y: eH + p*(pkH-eH)/panels }; }
-              function iP(p) { return { x: tP(p).x + nX,   y: tP(p).y + nY }; }
+              function tP(p) { return { x:-hw+p*panelW, y:eH+p*(pkH-eH)/panels }; }
+              // Inner chord: top chord point offset perpendicular (below roof surface)
+              function iP(p) { return { x:tP(p).x+nX, y:tP(p).y+nY }; }
 
-              // Top chords already drawn above — just inner chord and webs
+              // Draw all members — give each a tiny unique z-offset to prevent z-fighting
               for (let p = 0; p < panels; p++) {
-                const t0 = tP(p), t1 = tP(p+1);
-                const i0 = iP(p), i1 = iP(p+1);
-                // Inner chord — left and right
-                flatBeam(i0.x, i0.y, i1.x, i1.y, thick);
-                flatBeam(-i0.x, i0.y, -i1.x, i1.y, thick);
-                // X-webs — left side
-                flatBeam(t0.x, t0.y, i1.x, i1.y, thick);
-                flatBeam(i0.x, i0.y, t1.x, t1.y, thick);
-                // X-webs — right side
-                flatBeam(-t0.x, t0.y, -i1.x, i1.y, thick);
-                flatBeam(-i0.x, i0.y, -t1.x, t1.y, thick);
+                const t0=tP(p), t1=tP(p+1), i0=iP(p), i1=iP(p+1);
+                // Inner chord left + right
+                steelBeam(i0.x,i0.y,zPos,   i1.x,i1.y,zPos,   memberW);
+                steelBeam(-i0.x,i0.y,zPos,  -i1.x,i1.y,zPos,  memberW);
+                // X-webs left
+                steelBeam(t0.x,t0.y,zPos+0.001, i1.x,i1.y,zPos-0.001, memberW*0.85);
+                steelBeam(i0.x,i0.y,zPos-0.001, t1.x,t1.y,zPos+0.001, memberW*0.85);
+                // X-webs right
+                steelBeam(-t0.x,t0.y,zPos+0.001, -i1.x,i1.y,zPos-0.001, memberW*0.85);
+                steelBeam(-i0.x,i0.y,zPos-0.001, -t1.x,t1.y,zPos+0.001, memberW*0.85);
               }
             } else {
               // ── WOOD TRUSS: bottom chord + webs ──
