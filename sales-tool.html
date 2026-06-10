@@ -2893,15 +2893,27 @@ function triggerBuild() {
   }
   document.getElementById('vpLoading').classList.add('hidden');
   updateSpecs();
-  // Default: posts hidden, dims visible
-  _postsVisible = false; _dimsVisible = true;
-  var pb = document.getElementById('vpPostToggle');
-  if (pb) { pb.textContent = '🪵 Show Posts'; pb.style.color = '#888888'; pb.style.borderColor = 'rgba(255,255,255,.15)'; }
-  var db = document.getElementById('vpDimToggle');
-  if (db) { db.textContent = '📐 Hide Dims'; db.style.color = '#FF8200'; db.style.borderColor = 'rgba(255,130,0,.35)'; }
-  _wallsVisible = true;
-  var wb = document.getElementById('vpWallToggle');
-  if (wb) { wb.textContent = '🏗️ Hide Walls'; wb.style.color = '#FF8200'; wb.style.borderColor = 'rgba(255,130,0,.35)'; }
+  // Only reset defaults on first build — preserve user's toggle state on rebuilds
+  if (!window._3dHasBuiltOnce) {
+    window._3dHasBuiltOnce = true;
+    _postsVisible = false; _dimsVisible = true;
+    var pb = document.getElementById('vpPostToggle');
+    if (pb) { pb.textContent = '🪵 Show Posts'; pb.style.color = '#888888'; pb.style.borderColor = 'rgba(255,255,255,.15)'; }
+    var db = document.getElementById('vpDimToggle');
+    if (db) { db.textContent = '📐 Hide Dims'; db.style.color = '#FF8200'; db.style.borderColor = 'rgba(255,130,0,.35)'; }
+    _wallsVisible = true;
+    var wb = document.getElementById('vpWallToggle');
+    if (wb) { wb.textContent = '🏗️ Hide Walls'; wb.style.color = '#FF8200'; wb.style.borderColor = 'rgba(255,130,0,.35)'; }
+  }
+  // Re-apply current toggle states to newly rebuilt scene groups
+  if (window._3d && window._3d.grps) {
+    var _rg = window._3d.grps;
+    if (_rg.wallPanels) _rg.wallPanels.visible = _wallsVisible;
+    if (_rg.walls)      _rg.walls.visible      = _wallsVisible;
+    if (_rg.doors)      _rg.doors.visible      = _wallsVisible;
+    if (_rg.trusses)    _rg.trusses.visible    = _trussesVisible;
+    if (_rg.dims)       _rg.dims.visible       = _dimsVisible;
+  }
   // Update pricing strip from local calculators
   setTimeout(function() {
     if (!window._Q || !window.SauceMaterials || !window.SauceLabor) return;
@@ -13480,7 +13492,7 @@ function applyVoiceQuote(parsed, overlay) {
         // ── TRUSS RENDERING ───────────────────────────────────────────────────
         if (!isSingleSlope) {
           const isSteel = Q.truss === 'Steel';
-          const isScissor = !!(document.getElementById('st_scissor') && document.getElementById('st_scissor').checked);
+          const isScissor = !!(document.getElementById('st_scissorTruss') && document.getElementById('st_scissorTruss').checked);
           const ohSc = oh; // overhang in scene units (already = Q.oh/12 * Sc)
 
           // Truss dimensions
@@ -13509,48 +13521,56 @@ function applyVoiceQuote(parsed, overlay) {
             const hw  = sw/2;
             const eH  = sh;
             const pkH = sr;
-            // Steel always uses 18" OH; wood uses Q.oh
-            const ohL = isSteel ? (18/12)*Sc : ohSc;
-            const ohR = isSteel ? (18/12)*Sc : ohSc;
+            const ohL = isSteel ? (Q.oh > 0 ? (18/12)*Sc : 0) : ohSc;
+            const ohR = isSteel ? (Q.oh > 0 ? (18/12)*Sc : 0) : ohSc;
 
             // Top chords — always rendered for both steel and wood
             addBeam(-hw - ohL, eH, zPos,  0, pkH, zPos, tc, mChord);
             addBeam(0, pkH, zPos,  hw + ohR, eH, zPos, tc, mChord);
 
             if (isSteel) {
-              // ── STEEL TRUSS: collar tie (not full bottom chord) + web members ──
-              // Collar tie sits at ~45% up from eave to peak
-              const collarFrac = 0.45;
-              const collarY = eH + (pkH - eH) * collarFrac;
-              // X position where top chord is at collarY: x = (collarY - eH) / pitchFrac - hw
+              // ── STEEL TRUSS: collar tie near top (~80% up) + X webs full length of both chords ──
               const pitchFrac = (pkH - eH) / hw;
-              const collarHW  = (collarY - eH) / pitchFrac; // half-width of collar tie
+              const collarFrac = 0.80; // collar tie ~80% up from eave to peak
+              const collarY  = eH + (pkH - eH) * collarFrac;
+              const collarHW = (collarY - eH) / pitchFrac; // x-extent of collar tie
               const zo = 0.004;
 
-              // Collar tie — short horizontal member
+              // Collar tie
               addBeam(-collarHW, collarY, zPos+zo, collarHW, collarY, zPos+zo, tc, mChord);
+              // King post: peak down to collar
+              addBeam(0, pkH, zPos+zo, 0, collarY, zPos+zo, tw, mWeb);
 
-              // Web pattern: panels between eave and collar tie
-              const panels = 3; // panels per side below collar
+              // X web panels running full length of each top chord from eave to collar tie
+              const panels = 6; // triangular panels per side
               const panelW  = collarHW / panels;
               for (let p = 0; p < panels; p++) {
-                const xA = -collarHW + p     * panelW;
+                const xA = -collarHW + p     * panelW; // left side x (negative side)
                 const xB = -collarHW + (p+1) * panelW;
-                const yA = eH + (xA + hw) * pitchFrac;
-                const yB = eH + (xB + hw) * pitchFrac;
-                // Vertical at panel junction
-                if (p > 0) {
-                  addBeam(xA, yA, zPos+zo, xA, collarY - (collarY - yA) * 0.1, zPos+zo, tw, mWeb);
-                  addBeam(-xA, yA, zPos+zo, -xA, collarY - (collarY - yA) * 0.1, zPos+zo, tw, mWeb);
-                }
-                // Diagonal: from top chord point down to collar tie intersection
-                const collarAtX = collarY; // collar is flat so y = collarY
-                addBeam(xA, yA, zPos+zo, xB, collarY, zPos+zo, tw, mWeb);
-                addBeam(-xA, yA, zPos+zo, -xB, collarY, zPos+zo, tw, mWeb);
+                const yA = eH + (xA + hw) * pitchFrac; // y on top chord at xA
+                const yB = eH + (xB + hw) * pitchFrac; // y on top chord at xB
+
+                // LEFT side: X cross between consecutive top chord points
+                // Using panel below (down toward eave = left on left side)
+                // Diagonal 1: xA,yA → xB,yB already IS the top chord — webs go below it
+                // Each web panel: top chord top edge and a parallel bottom edge offset downward
+                const wd = trussDepth * 0.6; // web depth below top chord
+                // X cross within panel
+                addBeam(xA, yA,    zPos+zo, xB, yB-wd, zPos+zo, tw, mWeb);
+                addBeam(xA, yA-wd, zPos+zo, xB, yB,    zPos+zo, tw, mWeb);
+                // Verticals at panel junctions
+                addBeam(xA, yA, zPos+zo, xA, yA-wd, zPos+zo, tw*0.8, mWeb);
+
+                // RIGHT side mirror (positive x)
+                const xAr = collarHW - p     * panelW;
+                const xBr = collarHW - (p+1) * panelW;
+                const yAr = eH + (xAr + hw) * pitchFrac;
+                const yBr = eH + (xBr + hw) * pitchFrac;
+                addBeam(xAr, yAr,    zPos+zo, xBr, yBr-wd, zPos+zo, tw, mWeb);
+                addBeam(xAr, yAr-wd, zPos+zo, xBr, yBr,    zPos+zo, tw, mWeb);
+                addBeam(xAr, yAr, zPos+zo, xAr, yAr-wd, zPos+zo, tw*0.8, mWeb);
               }
-              // Center king post: peak down to collar tie center
-              addBeam(0, pkH, zPos+zo, 0, collarY, zPos+zo, tw, mWeb);
-              // Eave verticals: from eave up to first web point
+              // Bottom connecting member from eave to collar start (the long diagonal)
               addBeam(-hw, eH, zPos+zo, -collarHW, collarY, zPos+zo, tw, mWeb);
               addBeam( hw, eH, zPos+zo,  collarHW, collarY, zPos+zo, tw, mWeb);
             } else {
@@ -15742,6 +15762,7 @@ async function openLoadDesignModal(){
   }
 }
 function closeLoadDesignModal(){
+  window._3dHasBuiltOnce = false; // reset so new quote gets fresh defaults
   document.getElementById('loadDesignModal').style.display = 'none';
   var s = document.getElementById('loadDesignSearch'); if(s) s.value = '';
 }
