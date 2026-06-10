@@ -30420,6 +30420,65 @@ window.SauceMaterials.calcPitchAdder = function(Q) {
   }];
 };
 
+window.SauceMaterials.calcLoftMaterials = function(Q, loftCfgs) {
+  var items = [];
+  if (!loftCfgs || !loftCfgs.length) return items;
+  var cat = 'Interior Loft';
+
+  loftCfgs.forEach(function(l, idx) {
+    var label  = 'Loft ' + (idx + 1);
+    var depth  = parseFloat(l.depth)       || 8;
+    var len    = parseFloat(l.length)      || Q.w || 40;
+    var flH    = parseFloat(l.floorHeight) || 8;
+    var isEaveWall = (l.wall === 'left' || l.wall === 'right');
+    var ps     = isEaveWall ? (Q.eavePS || Q.postSpacing || 10) : (Q.gablePS || Q.postSpacing || 10);
+
+    // ── OSB DECK ─────────────────────────────────────────────────────────────
+    var sqft      = depth * len;
+    var osbSheets = Math.ceil(sqft * 1.1 / 32);
+    items.push({ category: cat, description: label + ' — Deck OSB (5/8")', sku: 'OSB5.8', quantity: osbSheets,
+      detail: depth + "' deep × " + len + "' long  |  " + sqft + ' sqft  |  10% waste' });
+
+    // ── JOISTS 16" OC ─────────────────────────────────────────────────────────
+    var joistCount = Math.ceil(len / (16 / 12)) + 1;
+    var joistDepth = depth <= 8 ? 8 : depth <= 12 ? 10 : 12;
+    var joistLen   = Math.ceil(depth);
+    if (joistLen % 2 !== 0) joistLen++;
+    var joistSku = 'SYP2' + joistDepth + joistLen;
+    items.push({ category: cat, description: label + ' — Joists (2×' + joistDepth + ')', sku: joistSku, quantity: joistCount,
+      detail: '16" OC  |  ' + joistLen + "' length  |  " + joistCount + ' joists', boardLen: joistLen });
+
+    // ── JOIST HANGERS ─────────────────────────────────────────────────────────
+    var jhSku = 'JH2' + (joistDepth < 10 ? '0' + joistDepth : joistDepth);
+    items.push({ category: cat, description: label + ' — Joist Hangers', sku: jhSku, quantity: joistCount * 2,
+      detail: '2 per joist (both ends)  |  ' + joistCount + ' joists' });
+
+    // ── INTERIOR POSTS ─────────────────────────────────────────────────────────
+    if (l.interiorPosts) {
+      var postsAlong    = Math.floor(len / ps) + 1;
+      var newPostsAlong = Math.max(0, postsAlong - 2);
+      var postRows      = Math.floor(depth / ps);
+      var totalPosts    = newPostsAlong * postRows;
+
+      if (totalPosts > 0) {
+        var postLen = Math.ceil(flH + 4);
+        if (postLen % 2 !== 0) postLen++;
+        var postSku = 'PT6' + (postLen < 10 ? '0' + postLen : postLen);
+        items.push({ category: cat, description: label + ' — Interior Posts', sku: postSku, quantity: totalPosts,
+          detail: flH + "' floor ht + 4' burial  |  " + postRows + ' rows × ' + newPostsAlong + ' posts', boardLen: postLen });
+        items.push({ category: cat, description: label + ' — Footing Pads', sku: 'PBFP16', quantity: totalPosts,
+          detail: '1 per post  |  ' + totalPosts + ' posts' });
+        items.push({ category: cat, description: label + ' — Sackcrete', sku: 'QCR', quantity: totalPosts * 2,
+          detail: '2 bags per post  |  ' + totalPosts + ' posts' });
+        items.push({ category: cat, description: label + ' — Lag Bolts', sku: 'LAG5', quantity: totalPosts * 2,
+          detail: '2 per post  |  ' + totalPosts + ' posts' });
+      }
+    }
+  });
+
+  return items;
+};
+
 window.SauceMaterials.calculate = function(forcedType) {
   var SM = window.SauceMaterials;
   var Q = window._Q;
@@ -31126,6 +31185,8 @@ window.SauceMaterials.calculate = function(forcedType) {
   SM.calcPostProtectors(Q, WALLS, allDoors, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcCraneFee(Q, forcedType||'woodOH').forEach(function(item) { items.push(item); });
   SM.calcCableBracing(Q).forEach(function(item) { items.push(item); });
+  // Interior Loft materials
+  SM.calcLoftMaterials(Q, window._loftConfigs||[]).forEach(function(item) { items.push(item); });
   return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "'" };
 };
 
@@ -32818,14 +32879,13 @@ window.openMaterialsModal = function(initialTab) {
 
   var CATEGORY_ORDER = [
     'Cypress Gable Extension',
+    'Interior Loft',
     'Yard',
     'Roof Metal','Side Shed Roof Metal',
     'Sidewall Metal','Gable Metal','Side Shed Gable Metal',
     'Wainscot Metal','Soffit Metal','Skirt Metal',
     'Metal','Trim','Garage Doors','Doors','Barn Doors','Walk Doors','Windows','Extras','Insulation','Hardware'
   ];
-
-  if (!window._sessionOverrides) window._sessionOverrides = {};
 
   function getEffectivePrice(sku) {
     if (window._sessionOverrides[sku] != null) return window._sessionOverrides[sku];
@@ -34429,6 +34489,7 @@ function onColorCodeChange() {
 
 // Category → CSV section header label mapping
 var CSV_SECTION_MAP = {
+  'Interior Loft':         'LOFT',
   'Yard':                  'YARD',
   'Roof Metal':            'ROOF',
   'Side Shed Roof Metal':  'ROOF-SIDE SHED',
@@ -34488,14 +34549,13 @@ function getInventoryDesc(sku) {
 function buildCSV(items) {
   var CATEGORY_ORDER = [
     'Cypress Gable Extension',
+    'Interior Loft',
     'Yard',
     'Roof Metal','Side Shed Roof Metal',
     'Sidewall Metal','Gable Metal','Side Shed Gable Metal',
     'Wainscot Metal','Soffit Metal','Skirt Metal',
     'Metal','Trim','Garage Doors','Doors','Barn Doors','Walk Doors','Windows','Extras','Insulation','Hardware'
   ];
-
-  // Group items by category, preserving order within each category
   var catMap = {};
   var catOrder = [];
   items.forEach(function(item) {
