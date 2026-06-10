@@ -13530,49 +13530,54 @@ function applyVoiceQuote(parsed, overlay) {
 
             // Top chords — always rendered for both steel and wood
             const tcThick = isSteel ? tc * 3 : tc;
-            addBeam(-hw - ohL, eH, zPos,  0, pkH, zPos, tcThick, mChord);
-            addBeam(0, pkH, zPos,  hw + ohR, eH, zPos, tcThick, mChord);
+            if (isSteel) {
+              // Use Line for steel top chords — consistent with web members
+              const mTopLine = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 4 });
+              const leftPts  = [new THREE.Vector3(-hw-ohL,eH,zPos), new THREE.Vector3(0,pkH,zPos)];
+              const rightPts = [new THREE.Vector3(0,pkH,zPos), new THREE.Vector3(hw+ohR,eH,zPos)];
+              grps.trusses.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(leftPts),  mTopLine));
+              grps.trusses.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(rightPts), mTopLine));
+            } else {
+              addBeam(-hw - ohL, eH, zPos,  0, pkH, zPos, tcThick, mChord);
+              addBeam(0, pkH, zPos,  hw + ohR, eH, zPos, tcThick, mChord);
+            }
 
             if (isSteel) {
-              // ── STEEL TRUSS: tube members using BoxGeometry, offset BELOW roof ──
+              // ── STEEL TRUSS: LineSegments — always visible regardless of orientation ──
               const chordLen = Math.sqrt(hw*hw + (pkH-eH)*(pkH-eH));
-              // Normal perpendicular to left top chord, pointing DOWN-INWARD (below roof)
               const nX =  (pkH-eH)/chordLen * trussDepth;
               const nY = -(hw/chordLen)      * trussDepth;
               const panels = 8;
               const panelW  = hw / panels;
-              const mBlack  = new THREE.MeshBasicMaterial({ color: 0x0a0a0a, side: THREE.DoubleSide });
-              const memberW = trussDepth * 0.55; // member cross-section width
 
-              // Draw a box beam between two 3D points
-              function steelBeam(ax, ay, az, bx, by, bz, w) {
-                const dx=bx-ax, dy=by-ay, dz=bz-az;
-                const len=Math.sqrt(dx*dx+dy*dy+dz*dz);
-                if(len<0.001) return;
-                const geo = new THREE.BoxGeometry(w, w, len);
-                const mesh = new THREE.Mesh(geo, mBlack);
-                mesh.position.set((ax+bx)/2,(ay+by)/2,(az+bz)/2);
-                const dir = new THREE.Vector3(dx,dy,dz).normalize();
-                mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1), dir);
-                grps.trusses.add(mesh);
-              }
+              const mLine = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 3 });
 
               function tP(p) { return { x:-hw+p*panelW, y:eH+p*(pkH-eH)/panels }; }
-              // Inner chord: top chord point offset perpendicular (below roof surface)
-              function iP(p) { return { x:tP(p).x+nX, y:tP(p).y+nY }; }
+              function iP(p) { return { x:tP(p).x+nX,   y:tP(p).y+nY }; }
 
-              // Draw all members — give each a tiny unique z-offset to prevent z-fighting
+              function trussLine(ax,ay,bx,by) {
+                const pts = [ new THREE.Vector3(ax,ay,zPos), new THREE.Vector3(bx,by,zPos) ];
+                const geo = new THREE.BufferGeometry().setFromPoints(pts);
+                grps.trusses.add(new THREE.Line(geo, mLine));
+              }
+
               for (let p = 0; p < panels; p++) {
                 const t0=tP(p), t1=tP(p+1), i0=iP(p), i1=iP(p+1);
                 // Inner chord left + right
-                steelBeam(i0.x,i0.y,zPos,   i1.x,i1.y,zPos,   memberW);
-                steelBeam(-i0.x,i0.y,zPos,  -i1.x,i1.y,zPos,  memberW);
+                trussLine(i0.x,i0.y, i1.x,i1.y);
+                trussLine(-i0.x,i0.y, -i1.x,i1.y);
                 // X-webs left
-                steelBeam(t0.x,t0.y,zPos+0.001, i1.x,i1.y,zPos-0.001, memberW*0.85);
-                steelBeam(i0.x,i0.y,zPos-0.001, t1.x,t1.y,zPos+0.001, memberW*0.85);
+                trussLine(t0.x,t0.y, i1.x,i1.y);
+                trussLine(i0.x,i0.y, t1.x,t1.y);
                 // X-webs right
-                steelBeam(-t0.x,t0.y,zPos+0.001, -i1.x,i1.y,zPos-0.001, memberW*0.85);
-                steelBeam(-i0.x,i0.y,zPos-0.001, -t1.x,t1.y,zPos+0.001, memberW*0.85);
+                trussLine(-t0.x,t0.y, -i1.x,i1.y);
+                trussLine(-i0.x,i0.y, -t1.x,t1.y);
+              }
+              // Vertical panel junction connectors
+              for (let p = 0; p <= panels; p++) {
+                const t=tP(p), i=iP(p);
+                trussLine(t.x,t.y, i.x,i.y);
+                trussLine(-t.x,t.y, -i.x,i.y);
               }
             } else {
               // ── WOOD TRUSS: bottom chord + webs ──
