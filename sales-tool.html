@@ -4837,7 +4837,7 @@ function renderLofts() {
       +'</select></div>'
       +'</div>'
       +'<div style="font-size:9px;color:#888;margin-top:4px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);">'
-      +''+loft.depth+'\'×'+loft.length+'\' deck  ·  '+sqft+' sqft  ·  '+stepCount+' steps per stair  ·  2×12 joists @ 24" OC'
+      +''+loft.depth+'\'×'+loft.length+'\' deck  ·  '+sqft+' sqft  ·  '+stepCount+' steps per stair  ·  2×12 joists @ 16" OC'
       +'</div>'
       +'</div>';
   }).join('');
@@ -13465,32 +13465,22 @@ function applyVoiceQuote(parsed, overlay) {
           var lDepth  = loft.depth  * Sc;
           var lLen    = loft.length * Sc;
           var lFlH    = loft.floorHeight * Sc;
-          var lJoist  = 0.1 * Sc;  // joist visual thickness
-          var lDeck   = 0.03 * Sc; // deck thickness visual
-
-          // Determine offset from wall
-          var isEave   = (loft.wall === 'left' || loft.wall === 'right');
-          var wallSign = (loft.wall === 'right' || loft.wall === 'back') ? 1 : -1;
-          var baseX, baseZ;
-          // Center the loft along the wall it's against
-          var loftOffset = loft.length < (isEave ? Q.l : Q.w) * 0.99
-            ? ((isEave ? Q.l : Q.w) * Sc - lLen) / 2 : 0;
+          var joistH  = 0.018 * Sc;
+          var iPostPS = (Q.eavePS || Q.postSpacing || 10) * Sc;
 
           // Materials
           var mDeck  = new THREE.MeshBasicMaterial({ color: 0x8B6914, side: THREE.DoubleSide });
           var mJoist = new THREE.MeshBasicMaterial({ color: 0xC8A464, side: THREE.DoubleSide });
           var mPost  = new THREE.MeshBasicMaterial({ color: 0xA07040, side: THREE.DoubleSide });
           var mRail  = new THREE.MeshBasicMaterial({ color: 0xC8A464, side: THREE.DoubleSide });
+          var mStair = new THREE.MeshBasicMaterial({ color: 0xA07840, side: THREE.DoubleSide });
 
-          // Position: loft attaches to the specified wall, deck extends inward
-          // wall=back → at z=+sl/2, extends toward -z
-          // wall=front → at z=-sl/2, extends toward +z
-          // wall=left → at x=-sw/2, extends toward +x
-          // wall=right → at x=+sw/2, extends toward -x
+          // Center loft along the wall
+          var isEaveWall = (loft.wall === 'left' || loft.wall === 'right');
+          var wallLen    = (isEaveWall ? Q.l : Q.w) * Sc;
+          var loftOffset = (lLen < wallLen * 0.99) ? (wallLen - lLen) / 2 : 0;
 
-          var deckGeom, deckMesh;
           var lX0, lX1, lZ0, lZ1;
-
           if (loft.wall === 'back') {
             lZ0 = sl/2 - lDepth; lZ1 = sl/2;
             lX0 = -lLen/2 + loftOffset; lX1 = lX0 + lLen;
@@ -13500,137 +13490,228 @@ function applyVoiceQuote(parsed, overlay) {
           } else if (loft.wall === 'left') {
             lX0 = -sw/2; lX1 = -sw/2 + lDepth;
             lZ0 = -lLen/2 + loftOffset; lZ1 = lZ0 + lLen;
-          } else { // right
+          } else {
             lX0 = sw/2 - lDepth; lX1 = sw/2;
             lZ0 = -lLen/2 + loftOffset; lZ1 = lZ0 + lLen;
           }
 
-          // Deck plane
-          deckGeom = new THREE.BufferGeometry();
+          var isGableWall = (loft.wall === 'front' || loft.wall === 'back');
+
+          // Deck plane — use wallPanels group so it stays visible when walls are hidden
+          var deckGeom = new THREE.BufferGeometry();
           var dv = new Float32Array([
             lX0,lFlH,lZ0, lX1,lFlH,lZ0, lX1,lFlH,lZ1,
             lX0,lFlH,lZ0, lX1,lFlH,lZ1, lX0,lFlH,lZ1
           ]);
           deckGeom.setAttribute('position', new THREE.BufferAttribute(dv,3));
           deckGeom.computeVertexNormals();
-          deckMesh = new THREE.Mesh(deckGeom, mDeck);
-          grps.walls.add(deckMesh);
+          grps.wallPanels.add(new THREE.Mesh(deckGeom, mDeck));
 
-          // Deck edge fascia boards
-          var fasW = 0.012;
+          // Fascia boards around deck perimeter
+          var fasH = 0.014;
           [[lX0,lZ0,lX1,lZ0],[lX0,lZ1,lX1,lZ1],[lX0,lZ0,lX0,lZ1],[lX1,lZ0,lX1,lZ1]].forEach(function(e){
             var eg = new THREE.BufferGeometry();
-            var ev = new Float32Array([e[0],lFlH,e[1],e[2],lFlH,e[3],e[2],lFlH-fasW,e[3],e[0],lFlH,e[1],e[2],lFlH-fasW,e[3],e[0],lFlH-fasW,e[1]]);
+            var ev = new Float32Array([e[0],lFlH,e[1],e[2],lFlH,e[3],e[2],lFlH-fasH,e[3],e[0],lFlH,e[1],e[2],lFlH-fasH,e[3],e[0],lFlH-fasH,e[1]]);
             eg.setAttribute('position',new THREE.BufferAttribute(ev,3));
-            grps.walls.add(new THREE.Mesh(eg, mJoist));
+            grps.wallPanels.add(new THREE.Mesh(eg, mJoist));
           });
 
-          // Joists — spaced every 2' (0.2*Sc along depth axis)
-          var joistSpacing = 2 * Sc;
-          var joistH = lJoist;
-          if (loft.wall === 'back' || loft.wall === 'front') {
-            for (var jz = lX0 + joistSpacing; jz < lX1 - 0.01; jz += joistSpacing) {
+          // Joists — 16" OC
+          var joistSpacing = (16/12) * Sc;
+          if (isGableWall) {
+            for (var jz = lX0 + joistSpacing; jz < lX1 - 0.005; jz += joistSpacing) {
               var jg = new THREE.BoxGeometry(0.01, joistH, lDepth);
               var jm = new THREE.Mesh(jg, mJoist);
               jm.position.set(jz, lFlH - joistH/2, (lZ0+lZ1)/2);
-              grps.walls.add(jm);
+              grps.wallPanels.add(jm);
             }
           } else {
-            for (var jx = lZ0 + joistSpacing; jx < lZ1 - 0.01; jx += joistSpacing) {
+            for (var jx = lZ0 + joistSpacing; jx < lZ1 - 0.005; jx += joistSpacing) {
               var jg2 = new THREE.BoxGeometry(lDepth, joistH, 0.01);
               var jm2 = new THREE.Mesh(jg2, mJoist);
               jm2.position.set((lX0+lX1)/2, lFlH - joistH/2, jx);
-              grps.walls.add(jm2);
+              grps.wallPanels.add(jm2);
             }
           }
 
-          // Ledger beam along the wall
-          var ledgerH = 0.015, ledgerD = 0.02;
-          if (loft.wall === 'back' || loft.wall === 'front') {
+          // Ledger beam at wall
+          var beamH = 0.022, beamD = 0.028;
+          if (isGableWall) {
             var ledgZ = loft.wall === 'back' ? sl/2 : -sl/2;
-            var lg = new THREE.BoxGeometry(lLen, ledgerH, ledgerD);
-            var lm = new THREE.Mesh(lg, mJoist);
-            lm.position.set((lX0+lX1)/2, lFlH - ledgerH/2, ledgZ);
-            grps.walls.add(lm);
+            var lg = new THREE.BoxGeometry(lLen, beamH, beamD);
+            var lgm = new THREE.Mesh(lg, mJoist);
+            lgm.position.set((lX0+lX1)/2, lFlH - beamH/2, ledgZ);
+            grps.wallPanels.add(lgm);
           } else {
             var ledgX = loft.wall === 'right' ? sw/2 : -sw/2;
-            var lg2 = new THREE.BoxGeometry(ledgerD, ledgerH, lLen);
-            var lm2 = new THREE.Mesh(lg2, mJoist);
-            lm2.position.set(ledgX, lFlH - ledgerH/2, (lZ0+lZ1)/2);
-            grps.walls.add(lm2);
+            var lg2 = new THREE.BoxGeometry(beamD, beamH, lLen);
+            var lgm2 = new THREE.Mesh(lg2, mJoist);
+            lgm2.position.set(ledgX, lFlH - beamH/2, (lZ0+lZ1)/2);
+            grps.wallPanels.add(lgm2);
           }
 
-          // Outer beam (support beam at free edge of loft)
-          var beamH = 0.02, beamD = 0.025;
-          if (loft.wall === 'back' || loft.wall === 'front') {
-            var obZ = loft.wall === 'back' ? lZ0 : lZ1;
+          // Outer rim beam
+          if (isGableWall) {
+            var obZ2 = loft.wall === 'back' ? lZ0 : lZ1;
             var obg = new THREE.BoxGeometry(lLen, beamH, beamD);
             var obm = new THREE.Mesh(obg, mJoist);
-            obm.position.set((lX0+lX1)/2, lFlH - beamH/2, obZ);
-            grps.walls.add(obm);
+            obm.position.set((lX0+lX1)/2, lFlH - beamH/2, obZ2);
+            grps.wallPanels.add(obm);
           } else {
-            var obX = loft.wall === 'right' ? lX0 : lX1;
+            var obX2 = loft.wall === 'right' ? lX0 : lX1;
             var obg2 = new THREE.BoxGeometry(beamD, beamH, lLen);
             var obm2 = new THREE.Mesh(obg2, mJoist);
-            obm2.position.set(obX, lFlH - beamH/2, (lZ0+lZ1)/2);
-            grps.walls.add(obm2);
+            obm2.position.set(obX2, lFlH - beamH/2, (lZ0+lZ1)/2);
+            grps.wallPanels.add(obm2);
           }
 
-          // Interior posts (at outer beam, spaced by eave post spacing)
+          // Interior posts — grid: outer edge + intermediate rows every postSpacing deep
           if (loft.interiorPosts) {
-            var iPostPS = (Q.eavePS || Q.postSpacing || 10) * Sc;
-            var iPostH  = lFlH;
-            var iPostW  = 0.04;
-            var onTop   = ((document.getElementById('st_postsOnTop')||{}).value||'').toLowerCase() === 'yes';
-            if (onTop) iPostH = lFlH; // posts sit on slab
-
-            if (loft.wall === 'back' || loft.wall === 'front') {
-              var pZ = loft.wall === 'back' ? lZ0 : lZ1;
-              for (var px = lX0; px <= lX1 + 0.01; px += iPostPS) {
+            var iPostW = 0.04;
+            var iPostH = lFlH;
+            // Determine outer edge line and depth direction
+            var outerCoord, innerCoord, alongStart, alongEnd, isAlongX;
+            if (isGableWall) {
+              outerCoord = loft.wall === 'back' ? lZ0 : lZ1;
+              innerCoord = loft.wall === 'back' ? lZ1 : lZ0;
+              alongStart = lX0; alongEnd = lX1; isAlongX = true;
+            } else {
+              outerCoord = loft.wall === 'right' ? lX0 : lX1;
+              innerCoord = loft.wall === 'right' ? lX1 : lX0;
+              alongStart = lZ0; alongEnd = lZ1; isAlongX = false;
+            }
+            // Post row positions: outer edge + every iPostPS toward wall
+            var postRows = [outerCoord];
+            var step = (innerCoord - outerCoord);
+            var stepSign = step > 0 ? 1 : -1;
+            var stepAbs = Math.abs(step);
+            for (var dp = iPostPS; dp < stepAbs - 0.01; dp += iPostPS) {
+              postRows.push(outerCoord + stepSign * dp);
+            }
+            postRows.forEach(function(rowCoord) {
+              for (var ap = alongStart; ap <= alongEnd + 0.01; ap += iPostPS) {
+                var actualAp = Math.min(ap, isAlongX ? lX1 : lZ1);
                 var pg = new THREE.BoxGeometry(iPostW, iPostH, iPostW);
-                var pm2 = new THREE.Mesh(pg, mPost);
-                pm2.position.set(Math.min(px, lX1), iPostH/2, pZ);
-                grps.posts.add(pm2);
+                var pmesh = new THREE.Mesh(pg, mPost);
+                if (isAlongX) pmesh.position.set(actualAp, iPostH/2, rowCoord);
+                else          pmesh.position.set(rowCoord, iPostH/2, actualAp);
+                grps.posts.add(pmesh);
               }
-            } else {
-              var pX = loft.wall === 'right' ? lX0 : lX1;
-              for (var pz2 = lZ0; pz2 <= lZ1 + 0.01; pz2 += iPostPS) {
-                var pg2 = new THREE.BoxGeometry(iPostW, iPostH, iPostW);
-                var pm3 = new THREE.Mesh(pg2, mPost);
-                pm3.position.set(pX, iPostH/2, Math.min(pz2, lZ1));
-                grps.posts.add(pm3);
-              }
-            }
+            });
           }
 
-          // Railing along open edge (thin bars)
-          var railH = 0.42 * Sc, railW = 0.008;
-          var railTop = lFlH + railH;
-          if (loft.wall === 'back' || loft.wall === 'front') {
-            var rZ = loft.wall === 'back' ? lZ0 : lZ1;
-            var rtg = new THREE.BoxGeometry(lLen, railW, railW);
+          // Railing — top rail + vertical balusters along open edge
+          var railH = 0.42 * Sc, railTopY = lFlH + railH;
+          var balW = 0.006, balSpacing = 1.5 * Sc;
+          if (isGableWall) {
+            var rZ2 = loft.wall === 'back' ? lZ0 : lZ1;
+            // Top rail
+            var rtg = new THREE.BoxGeometry(lLen, balW, balW);
             var rtm = new THREE.Mesh(rtg, mRail);
-            rtm.position.set((lX0+lX1)/2, railTop, rZ);
-            grps.walls.add(rtm);
+            rtm.position.set((lX0+lX1)/2, railTopY, rZ2);
+            grps.wallPanels.add(rtm);
+            // Bottom rail
+            var rbg = new THREE.BoxGeometry(lLen, balW, balW);
+            var rbm = new THREE.Mesh(rbg, mRail);
+            rbm.position.set((lX0+lX1)/2, lFlH + railH*0.25, rZ2);
+            grps.wallPanels.add(rbm);
+            // Balusters
+            for (var bx = lX0 + balSpacing; bx < lX1; bx += balSpacing) {
+              var bg = new THREE.BoxGeometry(balW, railH, balW);
+              var bm = new THREE.Mesh(bg, mRail);
+              bm.position.set(bx, lFlH + railH/2, rZ2);
+              grps.wallPanels.add(bm);
+            }
           } else {
-            var rX = loft.wall === 'right' ? lX0 : lX1;
-            var rtg2 = new THREE.BoxGeometry(railW, railW, lLen);
+            var rX2 = loft.wall === 'right' ? lX0 : lX1;
+            var rtg2 = new THREE.BoxGeometry(balW, balW, lLen);
             var rtm2 = new THREE.Mesh(rtg2, mRail);
-            rtm2.position.set(rX, railTop, (lZ0+lZ1)/2);
-            grps.walls.add(rtm2);
+            rtm2.position.set(rX2, railTopY, (lZ0+lZ1)/2);
+            grps.wallPanels.add(rtm2);
+            var rbg2 = new THREE.BoxGeometry(balW, balW, lLen);
+            var rbm2 = new THREE.Mesh(rbg2, mRail);
+            rbm2.position.set(rX2, lFlH + railH*0.25, (lZ0+lZ1)/2);
+            grps.wallPanels.add(rbm2);
+            for (var bz = lZ0 + balSpacing; bz < lZ1; bz += balSpacing) {
+              var bg2 = new THREE.BoxGeometry(balW, railH, balW);
+              var bm2 = new THREE.Mesh(bg2, mRail);
+              bm2.position.set(rX2, lFlH + railH/2, bz);
+              grps.wallPanels.add(bm2);
+            }
           }
 
-          // Stair box (simple visual representation)
+          // Stairs — proper stringer + tread geometry
           if (loft.stairs > 0) {
-            var stairW = 3 * Sc, stairD = lFlH * 0.85, stairH2 = lFlH;
-            var sg = new THREE.BoxGeometry(stairW, stairH2, stairD);
-            var sm2 = new THREE.Mesh(sg, new THREE.MeshBasicMaterial({color:0x8B6914,transparent:true,opacity:0.6,side:THREE.DoubleSide}));
-            if (loft.wall === 'back' || loft.wall === 'front') {
-              sm2.position.set(lX0 + stairW/2, stairH2/2, (loft.wall==='back') ? lZ0 - stairD/2 : lZ1 + stairD/2);
+            var riseIn  = 7.5 / 12;           // 7.5" rise per step in feet
+            var runIn   = 10.0 / 12;           // 10" run per step in feet
+            var stepCt  = Math.round(loft.floorHeight / riseIn);
+            var stairW2 = 3 * Sc;             // 3' wide staircase
+            var riseS   = riseIn * Sc;
+            var runS    = runIn  * Sc;
+            var totalRun = stepCt * runS;
+            var strW    = 0.015 * Sc;         // stringer thickness
+
+            // Stair placement: starts at outer edge of loft, steps down away from building
+            var sAlong, sPerp; // stair corner position
+            var perpDir, alongDir; // +1 or -1 direction away from building
+            if (isGableWall) {
+              sAlong = lX0;  // left edge of loft run
+              sPerp  = loft.wall === 'back' ? lZ0 : lZ1;
+              perpDir = loft.wall === 'back' ? -1 : 1; // away from building
             } else {
-              sm2.position.set((loft.wall==='right') ? lX0 - stairD/2 : lX1 + stairD/2, stairH2/2, lZ0 + stairW/2);
+              sAlong = lZ0;
+              sPerp  = loft.wall === 'right' ? lX0 : lX1;
+              perpDir = loft.wall === 'right' ? -1 : 1;
             }
-            grps.walls.add(sm2);
+
+            for (var si = 0; si < stepCt; si++) {
+              var stepY    = lFlH - riseS * (si + 1);
+              var stepPerp = sPerp + perpDir * runS * (si + 1);
+              // Tread
+              var tg = new THREE.BoxGeometry(
+                isGableWall ? stairW2 : strW,
+                strW,
+                isGableWall ? strW : stairW2
+              );
+              var tm = new THREE.Mesh(tg, mStair);
+              if (isGableWall) tm.position.set(sAlong + stairW2/2, stepY, stepPerp - runS/2);
+              else             tm.position.set(stepPerp - runS/2 * perpDir, stepY, sAlong + stairW2/2);
+              grps.wallPanels.add(tm);
+              // Riser
+              var rrg = new THREE.BoxGeometry(
+                isGableWall ? stairW2 : strW,
+                riseS,
+                strW
+              );
+              var rrm = new THREE.Mesh(rrg, mJoist);
+              if (isGableWall) rrm.position.set(sAlong + stairW2/2, stepY + riseS/2, stepPerp);
+              else {
+                rrg = new THREE.BoxGeometry(strW, riseS, stairW2);
+                rrm = new THREE.Mesh(rrg, mJoist);
+                rrm.position.set(stepPerp, stepY + riseS/2, sAlong + stairW2/2);
+              }
+              grps.wallPanels.add(rrm);
+            }
+
+            // Left + right stringers
+            [-1, 1].forEach(function(side) {
+              var sg = new THREE.BufferGeometry();
+              var sverts = [];
+              for (var si2 = 0; si2 < stepCt; si2++) {
+                var y0 = lFlH - riseS * si2, y1 = lFlH - riseS * (si2 + 1);
+                var p0 = sPerp + perpDir * runS * si2;
+                var p1 = sPerp + perpDir * runS * (si2 + 1);
+                if (isGableWall) {
+                  var ax = sAlong + (side === -1 ? 0 : stairW2);
+                  sverts.push(ax,y0,p0, ax,y1,p0, ax,y1,p1, ax,y0,p0, ax,y1,p1, ax,y0,p1);
+                } else {
+                  var az = sAlong + (side === -1 ? 0 : stairW2);
+                  sverts.push(p0,y0,az, p1,y1,az, p0,y0,az, p1,y1,az, p1,y0,az, p0,y1,az);
+                }
+              }
+              sg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sverts), 3));
+              grps.wallPanels.add(new THREE.Mesh(sg, mStair));
+            });
           }
         });
         // ── END LOFT 3D ─────────────────────────────────────────────────────
@@ -29504,14 +29585,14 @@ window.SauceMaterials.calcLoft = function(Q, loftCfgs) {
     var FUR_LENS = [8, 10, 12, 14, 16, 18, 20];
     function pickLen(n) { for(var i=0;i<FUR_LENS.length;i++){if(FUR_LENS[i]>=n)return FUR_LENS[i];}return 20; }
     var joistLen  = pickLen(depth);
-    var joistQty  = Math.ceil(length / 2) + 1; // 24" OC + 1
+    var joistQty  = Math.ceil(length / (16/12)) + 1; // 16" OC + 1
     var joistSku  = 'SYP212' + joistLen;
     items.push({
       category:    'Loft Materials',
       description: 'Loft Floor Joists — 2×12 @ 24" OC',
       sku:         joistSku,
       quantity:    joistQty,
-      detail:      joistQty + ' joists  |  2×12×' + joistLen + '\'  |  24" OC  |  ' + depth + '\' span'
+      detail:      joistQty + ' joists  |  2×12×' + joistLen + '\'  |  16" OC  |  ' + depth + '\' span'
     });
 
     // ── Ledger board — SYP212xx at loft length ──
