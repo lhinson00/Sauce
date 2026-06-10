@@ -1892,6 +1892,8 @@ body.customer-mode #custColorChartLink { display: block !important; }
         <input type="hidden" id="sf_trussSpacing" value="5">
         <input type="hidden" id="sf_pitch612" value="">
         <input type="hidden" id="sf_postSize" value="">
+        <button id="interiorWallsBtn" class="act-btn secondary" style="width:100%;margin-top:8px;display:none;" onclick="openInteriorWallsModal()">Interior Walls / Room Layout <span style="font-size:9px;opacity:.7;">BETA</span></button>
+        <div id="interiorWallsSummary" style="margin-top:6px;font-size:10px;color:var(--muted);font-weight:600;min-height:16px;"></div>
       </div>
 
       <!-- ─── UPGRADES ─── -->
@@ -5760,6 +5762,7 @@ function serializeConfig() {
     windows: window._windows,
     sheds: window._shedConfigs||[],
     lofts: window._loftConfigs||[],
+    interiorWalls: window._interiorWalls||[],
     colors: {roof:selRoof,wall:selWall,trim:selTrim,wainscot:selWainscot}, colorCodes: {roof:(window._selectedColors||{}).roofCode,wall:(window._selectedColors||{}).wallCode,trim:(window._selectedColors||{}).trimCode,wainscot:(window._selectedColors||{}).wainscotCode},
     extras: {
       wainscot:!!(document.getElementById('qgWainscot')||{}).checked,
@@ -5938,6 +5941,10 @@ function restoreConfig(cfg) {
     if (cfg.lofts) cfg.lofts.forEach(function(l){ window._loftConfigs.push(l); });
     nextLoftId = (window._loftConfigs).reduce(function(mx,l){ return Math.max(mx, (l.id||0)+1); }, 1);
     renderLofts();
+    // Restore interior walls
+    window._interiorWalls = cfg.interiorWalls || [];
+    _iwNextId = (window._interiorWalls).reduce(function(mx,w){ return Math.max(mx,(w.id||0)+1); },1);
+    iwUpdateSummary();
     if(cfg.comparisonSlots && cfg.comparisonSlots.length && window.CMP) {
       CMP.slots = JSON.parse(JSON.stringify(cfg.comparisonSlots));
       if(typeof updateBtn === 'function') try { updateBtn(); } catch(e) {}
@@ -13762,7 +13769,78 @@ function applyVoiceQuote(parsed, overlay) {
             grps.framing.add(pmR);
           }
         }
-        // ── END GIRTS + PURLINS ──────────────────────────────────────────────
+        // ── INTERIOR STUD WALLS 3D ───────────────────────────────────────
+        if (window._interiorWalls && window._interiorWalls.length) {
+          var mPlate = new THREE.MeshBasicMaterial({ color: 0xC8A030 });
+          var mStud2 = new THREE.MeshBasicMaterial({ color: 0xD4A840 });
+          var mHdr   = new THREE.MeshBasicMaterial({ color: 0xB89020 });
+          var studSpacing = (16/12) * Sc; // 16" OC
+          var plateH  = 0.015;  // plate thickness visual
+          var studW   = 0.015;  // stud cross-section
+
+          window._interiorWalls.forEach(function(iw) {
+            var wallH  = (iw.height || Q.h || 14) * Sc;
+            var dx = (iw.x2 - iw.x1) * Sc;
+            var dz = (iw.y2 - iw.y1) * Sc;  // y in plan = z in 3D
+            var len = Math.sqrt(dx*dx + dz*dz);
+            if (len < 0.05) return;
+            // Wall center in 3D: x1→x2 in plan, y is always height axis
+            // Plan X = 3D X offset from center; Plan Y = 3D Z offset from center
+            var wx1 = (iw.x1 - (Q.w||40)/2) * Sc;
+            var wz1 = (iw.y1 - (Q.l||60)/2) * Sc;
+            var wx2 = (iw.x2 - (Q.w||40)/2) * Sc;
+            var wz2 = (iw.y2 - (Q.l||60)/2) * Sc;
+
+            // Direction unit vector along wall
+            var ux = dx/len, uz = dz/len;
+
+            function addStudBox(ax,ay,az, bx,by,bz, sw2, mat) {
+              var ddx=bx-ax,ddy=by-ay,ddz=bz-az;
+              var ll=Math.sqrt(ddx*ddx+ddy*ddy+ddz*ddz);
+              if(ll<0.001) return;
+              var g=new THREE.BoxGeometry(sw2,sw2,ll);
+              var m=new THREE.Mesh(g,mat);
+              m.position.set((ax+bx)/2,(ay+by)/2,(az+bz)/2);
+              m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(ddx,ddy,ddz).normalize());
+              grps.interior.add(m);
+            }
+
+            // Bottom plate
+            addStudBox(wx1,plateH/2,wz1, wx2,plateH/2,wz2, plateH*2, mPlate);
+            // Top plate (double)
+            addStudBox(wx1,wallH-plateH,wz1, wx2,wallH-plateH,wz2, plateH*2, mPlate);
+            addStudBox(wx1,wallH,wz1, wx2,wallH,wz2, plateH*2, mPlate);
+
+            // Build list of stud positions excluding openings
+            var openingGaps = (iw.openings||[]).map(function(op) {
+              return { start: op.pos - op.width/2, end: op.pos + op.width/2 };
+            });
+
+            var numStuds = Math.floor(len/Sc / (16/12)) + 1;
+            for (var si2=0; si2<=numStuds; si2++) {
+              var t = (si2/numStuds) * (len/Sc); // feet along wall
+              // Check if in opening gap
+              var inGap = openingGaps.some(function(g2){ return t>g2.start && t<g2.end; });
+              if (inGap) continue;
+              var sx = wx1 + ux * (si2/numStuds) * len;
+              var sz = wz1 + uz * (si2/numStuds) * len;
+              addStudBox(sx, plateH, sz,  sx, wallH-plateH, sz,  studW, mStud2);
+            }
+
+            // Headers over openings
+            openingGaps.forEach(function(gap) {
+              var t1 = gap.start / (len/Sc), t2 = gap.end / (len/Sc);
+              var hx1 = wx1+ux*t1*len, hz1 = wz1+uz*t1*len;
+              var hx2 = wx1+ux*t2*len, hz2 = wz1+uz*t2*len;
+              var headerY = wallH * 0.7; // header at ~84" / door height
+              addStudBox(hx1, headerY, hz1, hx2, headerY, hz2, plateH*2.5, mHdr);
+              // King studs at opening sides
+              addStudBox(hx1, plateH, hz1, hx1, wallH-plateH, hz1, studW, mStud2);
+              addStudBox(hx2, plateH, hz2, hx2, wallH-plateH, hz2, studW, mStud2);
+            });
+          });
+        }
+        // ── END INTERIOR WALLS 3D ────────────────────────────────────────
 
         // ── END TRUSS RENDERING ───────────────────────────────────────────────
         // Re-apply visibility state (trusses may have been hidden before rebuild)
@@ -14089,6 +14167,39 @@ function applyVoiceQuote(parsed, overlay) {
 </div>
 
 <!-- Load Quote Modal (lain only) -->
+
+<!-- ═══ INTERIOR WALLS MODAL ═══ -->
+<div id="interiorWallsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#1a1a2e;border-radius:14px;width:90vw;max-width:960px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(255,130,0,.3);">
+    <!-- Header -->
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid rgba(255,255,255,.08);">
+      <div>
+        <div style="font-size:15px;font-weight:800;color:#FF8200;font-family:Outfit,sans-serif;">Interior Wall Layout</div>
+        <div style="font-size:10px;color:#888;margin-top:2px;">Click to start wall · Click again to finish · Click wall to select · ESC to cancel</div>
+      </div>
+      <button onclick="closeInteriorWallsModal()" style="background:none;border:none;color:#888;font-size:22px;cursor:pointer;padding:0 4px;">×</button>
+    </div>
+    <!-- Body -->
+    <div style="display:flex;flex:1;overflow:hidden;min-height:0;">
+      <!-- Canvas area -->
+      <div style="flex:1;position:relative;overflow:hidden;background:#0f0f1a;display:flex;align-items:center;justify-content:center;">
+        <canvas id="iwCanvas" style="cursor:crosshair;display:block;"></canvas>
+        <div id="iwHint" style="position:absolute;bottom:10px;left:50%;transform:translateX(-50%);font-size:10px;color:#666;font-family:Outfit,sans-serif;pointer-events:none;">Click to place wall start point</div>
+      </div>
+      <!-- Properties panel -->
+      <div id="iwProps" style="width:220px;background:#141428;border-left:1px solid rgba(255,255,255,.06);padding:16px;overflow-y:auto;font-family:Outfit,sans-serif;">
+        <div style="font-size:11px;font-weight:700;color:#FF8200;margin-bottom:12px;">WALL PROPERTIES</div>
+        <div id="iwPropsContent" style="color:#666;font-size:11px;">Select a wall to edit</div>
+      </div>
+    </div>
+    <!-- Footer -->
+    <div style="padding:12px 20px;border-top:1px solid rgba(255,255,255,.08);display:flex;gap:8px;align-items:center;">
+      <div id="iwStats" style="font-size:10px;color:#888;flex:1;font-family:Outfit,sans-serif;"></div>
+      <button onclick="iwClearAll()" style="padding:7px 16px;background:rgba(255,50,50,.15);border:1px solid rgba(255,50,50,.3);border-radius:8px;color:#ef4444;font-size:11px;font-weight:700;font-family:Outfit,sans-serif;cursor:pointer;">Clear All</button>
+      <button onclick="closeInteriorWallsModal()" style="padding:7px 20px;background:#FF8200;border:none;border-radius:8px;color:#fff;font-size:11px;font-weight:700;font-family:Outfit,sans-serif;cursor:pointer;">Done</button>
+    </div>
+  </div>
+</div>
 
 <div id="loadDesignModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center;">
   <div style="background:#4B4B4B;border:1px solid #5e5e5e;border-radius:14px;padding:24px;width:96%;max-width:780px;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.4);">
@@ -15741,6 +15852,440 @@ async function sbDeleteQuote(quoteId) {
                  'Content-Type': 'application/json', 'Prefer': 'return=minimal' } });
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// INTERIOR WALLS FLOOR PLAN EDITOR
+// ═══════════════════════════════════════════════════════════════════════
+window._interiorWalls = [];  // [{id, x1,y1,x2,y2, studSize:'2x4'|'2x6', height, openings:[{id,pos,width}], flagged}]
+var _iwNextId = 1;
+var _iwDrawing = false;       // currently drawing a wall
+var _iwStart = null;          // {x,y} in feet
+var _iwSelected = null;       // selected wall id
+var _iwDragOpening = null;    // {wallId, openingId}
+var _iwScale = 20;            // px per foot
+var _iwPadPx = 40;            // canvas padding px
+var _iwCanvas, _iwCtx;
+
+function openInteriorWallsModal() {
+  var modal = document.getElementById('interiorWallsModal');
+  modal.style.display = 'flex';
+  setTimeout(function(){ iwInit(); }, 50);
+}
+
+function closeInteriorWallsModal() {
+  document.getElementById('interiorWallsModal').style.display = 'none';
+  _iwDrawing = false; _iwStart = null; _iwSelected = null;
+  iwUpdateSummary();
+  scheduleBuild();
+}
+
+function iwInit() {
+  _iwCanvas = document.getElementById('iwCanvas');
+  _iwCtx    = _iwCanvas.getContext('2d');
+  var container = _iwCanvas.parentElement;
+  var cw = container.clientWidth  - 4;
+  var ch = container.clientHeight - 4;
+  // Scale to fit building
+  var bw = Q.w || 40, bl = Q.l || 60;
+  var scaleX = (cw - _iwPadPx*2) / bw;
+  var scaleY = (ch - _iwPadPx*2) / bl;
+  _iwScale = Math.min(scaleX, scaleY, 30);
+  _iwCanvas.width  = Math.round(bw * _iwScale + _iwPadPx*2);
+  _iwCanvas.height = Math.round(bl * _iwScale + _iwPadPx*2);
+  iwValidateWalls();
+  iwDraw();
+  iwUpdateStats();
+  iwUpdatePropsPanel();
+}
+
+function iwFtToCanvas(fx, fy) {
+  return { x: _iwPadPx + fx * _iwScale, y: _iwPadPx + fy * _iwScale };
+}
+
+function iwCanvasToFt(cx, cy) {
+  return {
+    x: Math.round((cx - _iwPadPx) / _iwScale),
+    y: Math.round((cy - _iwPadPx) / _iwScale)
+  };
+}
+
+function iwSnapToGrid(cx, cy) {
+  var ft = iwCanvasToFt(cx, cy);
+  ft.x = Math.max(0, Math.min(Q.w||40, ft.x));
+  ft.y = Math.max(0, Math.min(Q.l||60, ft.y));
+  return ft;
+}
+
+function iwDraw() {
+  if (!_iwCtx) return;
+  var ctx = _iwCtx;
+  var bw = Q.w||40, bl = Q.l||60;
+  ctx.clearRect(0, 0, _iwCanvas.width, _iwCanvas.height);
+
+  // Background
+  ctx.fillStyle = '#0f0f1a';
+  ctx.fillRect(0, 0, _iwCanvas.width, _iwCanvas.height);
+
+  // Grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 0.5;
+  for (var gx = 0; gx <= bw; gx++) {
+    var p = iwFtToCanvas(gx, 0);
+    ctx.beginPath(); ctx.moveTo(p.x, _iwPadPx); ctx.lineTo(p.x, _iwPadPx + bl*_iwScale); ctx.stroke();
+  }
+  for (var gy = 0; gy <= bl; gy++) {
+    var p2 = iwFtToCanvas(0, gy);
+    ctx.beginPath(); ctx.moveTo(_iwPadPx, p2.y); ctx.lineTo(_iwPadPx + bw*_iwScale, p2.y); ctx.stroke();
+  }
+
+  // 10' grid emphasis
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = 1;
+  for (var gx2 = 0; gx2 <= bw; gx2 += 10) {
+    var p3 = iwFtToCanvas(gx2, 0);
+    ctx.beginPath(); ctx.moveTo(p3.x, _iwPadPx); ctx.lineTo(p3.x, _iwPadPx + bl*_iwScale); ctx.stroke();
+  }
+  for (var gy2 = 0; gy2 <= bl; gy2 += 10) {
+    var p4 = iwFtToCanvas(0, gy2);
+    ctx.beginPath(); ctx.moveTo(_iwPadPx, p4.y); ctx.lineTo(_iwPadPx + bw*_iwScale, p4.y); ctx.stroke();
+  }
+
+  // Building footprint
+  ctx.strokeStyle = '#FF8200';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(_iwPadPx, _iwPadPx, bw*_iwScale, bl*_iwScale);
+
+  // Dimension labels
+  ctx.fillStyle = '#FF8200';
+  ctx.font = 'bold 11px Outfit,sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(bw+"'", _iwPadPx + bw*_iwScale/2, _iwPadPx - 10);
+  ctx.textAlign = 'right';
+  ctx.fillText(bl+"'", _iwPadPx - 8, _iwPadPx + bl*_iwScale/2 + 4);
+
+  // Interior walls
+  window._interiorWalls.forEach(function(w) {
+    var p1 = iwFtToCanvas(w.x1, w.y1);
+    var p2 = iwFtToCanvas(w.x2, w.y2);
+    var isSelected = (w.id === _iwSelected);
+    var isFlagged  = w.flagged;
+
+    // Wall line
+    ctx.strokeStyle = isFlagged ? '#ef4444' : (isSelected ? '#ffffff' : (w.studSize === '2x6' ? '#60a5fa' : '#c8a030'));
+    ctx.lineWidth   = isSelected ? 3.5 : 2.5;
+    ctx.beginPath();
+
+    // Draw wall with openings as gaps
+    if (w.openings && w.openings.length > 0) {
+      var dx = w.x2-w.x1, dy = w.y2-w.y1;
+      var len = Math.sqrt(dx*dx+dy*dy);
+      w.openings.forEach(function(op) {
+        var gapStart = (op.pos - op.width/2) / len;
+        var gapEnd   = (op.pos + op.width/2) / len;
+        var sp = iwFtToCanvas(w.x1+dx*gapStart, w.y1+dy*gapStart);
+        var ep = iwFtToCanvas(w.x1+dx*gapEnd,   w.y1+dy*gapEnd);
+        ctx.moveTo(p1.x, p1.y); ctx.lineTo(sp.x, sp.y);
+        ctx.moveTo(ep.x, ep.y); ctx.lineTo(p2.x, p2.y);
+        // Opening markers
+        ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 2;
+        ctx.moveTo(sp.x, sp.y); ctx.lineTo(ep.x, ep.y);
+        ctx.strokeStyle = isFlagged ? '#ef4444' : (isSelected ? '#ffffff' : (w.studSize === '2x6' ? '#60a5fa' : '#c8a030'));
+        ctx.lineWidth   = isSelected ? 3.5 : 2.5;
+      });
+    } else {
+      ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y);
+    }
+    ctx.stroke();
+
+    // Length label
+    var mx = (p1.x+p2.x)/2, my = (p1.y+p2.y)/2;
+    var dx2 = p2.x-p1.x, dy2 = p2.y-p1.y;
+    var wlen = Math.round(Math.sqrt((w.x2-w.x1)**2+(w.y2-w.y1)**2));
+    var off = isSelected ? -14 : -10;
+    var nx = -dy2/Math.sqrt(dx2*dx2+dy2*dy2)*off;
+    var ny =  dx2/Math.sqrt(dx2*dx2+dy2*dy2)*off;
+    ctx.fillStyle = isSelected ? '#fff' : '#aaa';
+    ctx.font = (isSelected ? 'bold ' : '') + '10px Outfit,sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(wlen+"'", mx+nx, my+ny);
+    if (w.studSize === '2x6') {
+      ctx.fillStyle = '#60a5fa';
+      ctx.font = '9px Outfit,sans-serif';
+      ctx.fillText('2×6', mx+nx, my+ny+11);
+    }
+    if (isFlagged) {
+      ctx.fillStyle = '#ef4444';
+      ctx.font = '9px Outfit,sans-serif';
+      ctx.fillText('⚠ outside bounds', mx+nx, my+ny+11);
+    }
+
+    // Endpoint dots
+    ctx.fillStyle = isSelected ? '#fff' : '#FF8200';
+    ctx.beginPath(); ctx.arc(p1.x, p1.y, 4, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(p2.x, p2.y, 4, 0, Math.PI*2); ctx.fill();
+  });
+
+  // Drawing preview line
+  if (_iwDrawing && _iwStart && _iwPreviewEnd) {
+    var sp = iwFtToCanvas(_iwStart.x, _iwStart.y);
+    var ep = iwFtToCanvas(_iwPreviewEnd.x, _iwPreviewEnd.y);
+    ctx.strokeStyle = 'rgba(255,130,0,0.6)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6,4]);
+    ctx.beginPath(); ctx.moveTo(sp.x, sp.y); ctx.lineTo(ep.x, ep.y); ctx.stroke();
+    ctx.setLineDash([]);
+    // Length preview
+    var dx3 = _iwPreviewEnd.x-_iwStart.x, dy3 = _iwPreviewEnd.y-_iwStart.y;
+    var plen = Math.round(Math.sqrt(dx3*dx3+dy3*dy3));
+    if (plen > 0) {
+      var pmx = (sp.x+ep.x)/2, pmy = (sp.y+ep.y)/2;
+      ctx.fillStyle = '#FF8200';
+      ctx.font = 'bold 11px Outfit,sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(plen+"'", pmx, pmy-10);
+    }
+    // Start dot
+    ctx.fillStyle = '#FF8200';
+    ctx.beginPath(); ctx.arc(sp.x, sp.y, 5, 0, Math.PI*2); ctx.fill();
+  }
+}
+
+var _iwPreviewEnd = null;
+
+function iwGetCanvasPos(e) {
+  var rect = _iwCanvas.getBoundingClientRect();
+  var scaleX = _iwCanvas.width / rect.width;
+  var scaleY = _iwCanvas.height / rect.height;
+  return { cx: (e.clientX-rect.left)*scaleX, cy: (e.clientY-rect.top)*scaleY };
+}
+
+function iwCanvasMouseMove(e) {
+  var pos = iwGetCanvasPos(e);
+  var ft = iwSnapToGrid(pos.cx, pos.cy);
+  _iwPreviewEnd = ft;
+  // Update hint
+  var hint = document.getElementById('iwHint');
+  if (hint) hint.textContent = _iwDrawing
+    ? 'Click to finish wall at (' + ft.x + "', " + ft.y + "')"
+    : 'Click to start wall';
+  if (_iwDragOpening) {
+    iwDragOpeningMove(ft);
+    return;
+  }
+  iwDraw();
+}
+
+function iwCanvasMouseDown(e) {
+  if (e.button !== 0) return;
+  var pos = iwGetCanvasPos(e);
+  var ft  = iwSnapToGrid(pos.cx, pos.cy);
+
+  // Check if clicking an opening handle
+  if (!_iwDrawing) {
+    for (var i=0; i<window._interiorWalls.length; i++) {
+      var w = window._interiorWalls[i];
+      if (!w.openings) continue;
+      for (var j=0; j<w.openings.length; j++) {
+        var op = w.openings[j];
+        var dx = w.x2-w.x1, dy = w.y2-w.y1, len = Math.sqrt(dx*dx+dy*dy);
+        var opFt = { x: w.x1+dx*op.pos/len, y: w.y1+dy*op.pos/len };
+        var opPx = iwFtToCanvas(opFt.x, opFt.y);
+        var cPos = iwGetCanvasPos(e);
+        if (Math.abs(cPos.cx-opPx.x)<12 && Math.abs(cPos.cy-opPx.y)<12) {
+          _iwDragOpening = { wallId: w.id, openingId: op.id };
+          return;
+        }
+      }
+    }
+  }
+
+  if (_iwDrawing) {
+    // Finish wall
+    if (_iwStart.x === ft.x && _iwStart.y === ft.y) { _iwDrawing=false; _iwStart=null; iwDraw(); return; }
+    var wlen = Math.sqrt(Math.pow(ft.x-_iwStart.x,2)+Math.pow(ft.y-_iwStart.y,2));
+    if (wlen < 1) { _iwDrawing=false; _iwStart=null; iwDraw(); return; }
+    window._interiorWalls.push({
+      id: _iwNextId++,
+      x1: _iwStart.x, y1: _iwStart.y,
+      x2: ft.x,       y2: ft.y,
+      studSize: '2x4',
+      height: Q.h || 14,
+      openings: [],
+      flagged: false
+    });
+    _iwDrawing = false; _iwStart = null;
+    _iwSelected = window._interiorWalls[window._interiorWalls.length-1].id;
+    iwDraw(); iwUpdateStats(); iwUpdatePropsPanel();
+  } else {
+    // Check if clicking existing wall
+    var hit = iwHitTest(pos.cx, pos.cy);
+    if (hit) {
+      _iwSelected = hit; iwDraw(); iwUpdatePropsPanel();
+    } else {
+      // Start new wall
+      _iwSelected = null;
+      _iwDrawing = true;
+      _iwStart = ft;
+      iwDraw(); iwUpdatePropsPanel();
+    }
+  }
+}
+
+function iwCanvasMouseUp(e) {
+  if (_iwDragOpening) { _iwDragOpening = null; iwDraw(); iwUpdateStats(); }
+}
+
+function iwDragOpeningMove(ft) {
+  if (!_iwDragOpening) return;
+  var w = window._interiorWalls.find(function(ww){return ww.id===_iwDragOpening.wallId;});
+  if (!w) return;
+  var op = w.openings.find(function(o){return o.id===_iwDragOpening.openingId;});
+  if (!op) return;
+  var dx = w.x2-w.x1, dy = w.y2-w.y1, len = Math.sqrt(dx*dx+dy*dy);
+  // Project ft onto wall line
+  var t = ((ft.x-w.x1)*dx+(ft.y-w.y1)*dy)/(len*len);
+  var clampedPos = Math.max(op.width/2+0.5, Math.min(len-op.width/2-0.5, t*len));
+  op.pos = Math.round(clampedPos);
+  iwDraw();
+}
+
+function iwHitTest(cx, cy) {
+  var threshold = 8;
+  for (var i=window._interiorWalls.length-1; i>=0; i--) {
+    var w = window._interiorWalls[i];
+    var p1 = iwFtToCanvas(w.x1,w.y1), p2 = iwFtToCanvas(w.x2,w.y2);
+    var dx=p2.x-p1.x, dy=p2.y-p1.y, len2=dx*dx+dy*dy;
+    if (len2===0) continue;
+    var t=((cx-p1.x)*dx+(cy-p1.y)*dy)/len2;
+    t=Math.max(0,Math.min(1,t));
+    var px=p1.x+t*dx-cx, py=p1.y+t*dy-cy;
+    if (Math.sqrt(px*px+py*py)<threshold) return w.id;
+  }
+  return null;
+}
+
+function iwUpdatePropsPanel() {
+  var panel = document.getElementById('iwPropsContent');
+  if (!panel) return;
+  var w = _iwSelected ? window._interiorWalls.find(function(ww){return ww.id===_iwSelected;}) : null;
+  if (!w) { panel.innerHTML = '<div style="color:#555;">Select a wall to edit</div>'; return; }
+  var wlen = Math.round(Math.sqrt(Math.pow(w.x2-w.x1,2)+Math.pow(w.y2-w.y1,2)));
+  panel.innerHTML =
+    '<div style="margin-bottom:10px;">'
+    +'<div style="font-size:10px;color:#888;margin-bottom:3px;">Length</div>'
+    +'<div style="font-size:16px;font-weight:800;color:#fff;">'+wlen+"' LF</div>"
+    +'</div>'
+    +'<div style="margin-bottom:10px;">'
+    +'<div style="font-size:10px;color:#888;margin-bottom:3px;">Stud Size</div>'
+    +'<div style="display:flex;gap:6px;">'
+    +'<button onclick="iwSetProp('+w.id+',\'studSize\',\'2x4\')" style="flex:1;padding:6px;border-radius:6px;border:1px solid '+(w.studSize==='2x4'?'#FF8200':'rgba(255,255,255,.15)')+';background:'+(w.studSize==='2x4'?'rgba(255,130,0,.2)':'rgba(255,255,255,.05)')+';color:'+(w.studSize==='2x4'?'#FF8200':'#888')+';font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">2×4</button>'
+    +'<button onclick="iwSetProp('+w.id+',\'studSize\',\'2x6\')" style="flex:1;padding:6px;border-radius:6px;border:1px solid '+(w.studSize==='2x6'?'#60a5fa':'rgba(255,255,255,.15)')+';background:'+(w.studSize==='2x6'?'rgba(96,165,250,.2)':'rgba(255,255,255,.05)')+';color:'+(w.studSize==='2x6'?'#60a5fa':'#888')+';font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">2×6</button>'
+    +'</div>'
+    +'<div style="font-size:9px;color:#555;margin-top:4px;">Use 2×6 for plumbing walls</div>'
+    +'</div>'
+    +'<div style="margin-bottom:10px;">'
+    +'<div style="font-size:10px;color:#888;margin-bottom:3px;">Wall Height (ft)</div>'
+    +'<input type="number" value="'+w.height+'" min="7" max="'+(Q.h||14)+'" step="1" onchange="iwSetProp('+w.id+',\'height\',this.value)" style="width:100%;padding:6px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:13px;font-family:Outfit,sans-serif;">'
+    +'</div>'
+    +'<div style="margin-bottom:12px;">'
+    +'<div style="font-size:10px;color:#888;margin-bottom:6px;">Walk Door Openings</div>'
+    +(w.openings.map(function(op,idx){
+      return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;background:rgba(255,255,255,.04);padding:6px;border-radius:6px;">'
+        +'<span style="font-size:10px;color:#22c55e;flex:1;">3\' opening @ '+op.pos+"' from start</span>"
+        +'<button onclick="iwRemoveOpening('+w.id+','+op.id+')" style="background:none;border:none;color:#ef4444;font-size:14px;cursor:pointer;padding:0;">×</button>'
+        +'</div>';
+    }).join(''))
+    +'<button onclick="iwAddOpening('+w.id+')" style="width:100%;padding:6px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);border-radius:6px;color:#22c55e;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">+ Walk Door Opening</button>'
+    +'</div>'
+    +'<button onclick="iwDeleteWall('+w.id+')" style="width:100%;padding:7px;background:rgba(255,50,50,.1);border:1px solid rgba(255,50,50,.25);border-radius:6px;color:#ef4444;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Delete Wall</button>';
+}
+
+function iwSetProp(id, key, val) {
+  var w = window._interiorWalls.find(function(ww){return ww.id===id;});
+  if (!w) return;
+  if (key === 'height') val = parseFloat(val)||8;
+  w[key] = val;
+  iwDraw(); iwUpdatePropsPanel(); iwUpdateStats();
+}
+
+function iwAddOpening(wallId) {
+  var w = window._interiorWalls.find(function(ww){return ww.id===wallId;});
+  if (!w) return;
+  var len = Math.sqrt(Math.pow(w.x2-w.x1,2)+Math.pow(w.y2-w.y1,2));
+  var pos = Math.round(len/2);
+  w.openings.push({ id: _iwNextId++, pos: pos, width: 3 });
+  iwDraw(); iwUpdatePropsPanel(); iwUpdateStats();
+}
+
+function iwRemoveOpening(wallId, openingId) {
+  var w = window._interiorWalls.find(function(ww){return ww.id===wallId;});
+  if (!w) return;
+  w.openings = w.openings.filter(function(o){return o.id!==openingId;});
+  iwDraw(); iwUpdatePropsPanel(); iwUpdateStats();
+}
+
+function iwDeleteWall(id) {
+  window._interiorWalls = window._interiorWalls.filter(function(w){return w.id!==id;});
+  _iwSelected = null;
+  iwDraw(); iwUpdatePropsPanel(); iwUpdateStats();
+}
+
+function iwClearAll() {
+  if (!confirm('Clear all interior walls?')) return;
+  window._interiorWalls = [];
+  _iwSelected = null;
+  _iwDrawing = false; _iwStart = null;
+  iwDraw(); iwUpdatePropsPanel(); iwUpdateStats();
+}
+
+function iwUpdateStats() {
+  var el = document.getElementById('iwStats');
+  if (!el) return;
+  var total = window._interiorWalls.reduce(function(s,w){
+    return s + Math.round(Math.sqrt(Math.pow(w.x2-w.x1,2)+Math.pow(w.y2-w.y1,2)));
+  }, 0);
+  var openings = window._interiorWalls.reduce(function(s,w){ return s+(w.openings||[]).length; },0);
+  var flagged  = window._interiorWalls.filter(function(w){ return w.flagged; }).length;
+  el.textContent = window._interiorWalls.length + ' walls  ·  ' + total + " LF total"
+    + (openings ? '  ·  ' + openings + ' opening(s)' : '')
+    + (flagged  ? '  ·  ⚠ ' + flagged + ' wall(s) outside bounds' : '');
+}
+
+function iwUpdateSummary() {
+  var el = document.getElementById('interiorWallsSummary');
+  if (!el) return;
+  if (!window._interiorWalls.length) { el.textContent = ''; return; }
+  var total = window._interiorWalls.reduce(function(s,w){
+    return s + Math.round(Math.sqrt(Math.pow(w.x2-w.x1,2)+Math.pow(w.y2-w.y1,2)));
+  }, 0);
+  var flagged = window._interiorWalls.filter(function(w){return w.flagged;}).length;
+  el.textContent = window._interiorWalls.length + ' interior walls · ' + total + ' LF'
+    + (flagged ? ' · ⚠ ' + flagged + ' wall(s) need adjustment' : '');
+}
+
+function iwValidateWalls() {
+  var bw = Q.w||40, bl = Q.l||60;
+  window._interiorWalls.forEach(function(w) {
+    w.flagged = (w.x1<0||w.x1>bw||w.y1<0||w.y1>bl||w.x2<0||w.x2>bw||w.y2<0||w.y2>bl);
+  });
+}
+
+// Wire canvas events after DOM ready
+document.addEventListener('DOMContentLoaded', function() {
+  var c = document.getElementById('iwCanvas');
+  if (!c) return;
+  c.addEventListener('mousemove', iwCanvasMouseMove);
+  c.addEventListener('mousedown', iwCanvasMouseDown);
+  c.addEventListener('mouseup',   iwCanvasMouseUp);
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && document.getElementById('interiorWallsModal').style.display==='flex') {
+      _iwDrawing=false; _iwStart=null; if(_iwCtx) iwDraw();
+    }
+    if ((e.key==='Delete'||e.key==='Backspace') && _iwSelected && document.getElementById('interiorWallsModal').style.display==='flex') {
+      iwDeleteWall(_iwSelected);
+    }
+  });
+});
 
 async function openLoadDesignModal(){
   document.getElementById('loadDesignModal').style.display = 'flex';
@@ -18250,10 +18795,10 @@ function initSalesAuth() {
         // Load follow-ups for this salesman
       // Show activity log button for lain.hinson on login
       var _ab2 = document.getElementById('vpActivityBtn');
-      if (_ab2) _ab2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none'; var _bfBtn2 = document.getElementById('vpBackfillBtn'); if (_bfBtn2) _bfBtn2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none'; var _fuBtn2 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn2) _fuBtn2.style.display = ''; var _mbBtnA = document.getElementById('matBuilderBtn'); if (_mbBtnA) _mbBtnA.style.display = ''; var _mbRowA=document.getElementById('matBuilderBtnRow'); if(_mbRowA) _mbRowA.style.display = ''; var _loftSecA=document.getElementById('secLoft'); if(_loftSecA) _loftSecA.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none';
+      if (_ab2) _ab2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none'; var _bfBtn2 = document.getElementById('vpBackfillBtn'); if (_bfBtn2) _bfBtn2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none'; var _fuBtn2 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn2) _fuBtn2.style.display = ''; var _mbBtnA = document.getElementById('matBuilderBtn'); if (_mbBtnA) _mbBtnA.style.display = ''; var _mbRowA=document.getElementById('matBuilderBtnRow'); if(_mbRowA) _mbRowA.style.display = ''; var _loftSecA=document.getElementById('secLoft'); if(_loftSecA) _loftSecA.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none'; var _iwBtnA=document.getElementById('interiorWallsBtn'); if(_iwBtnA) _iwBtnA.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none';
         // Show activity log button for lain.hinson on login
         var _ab = document.getElementById('vpActivityBtn');
-        if (_ab) _ab.style.display = (u.username === 'lain.hinson') ? '' : 'none'; var _bfBtn3 = document.getElementById('vpBackfillBtn'); if (_bfBtn3) _bfBtn3.style.display = (u.username === 'lain.hinson') ? '' : 'none'; var _fuBtn3 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn3) _fuBtn3.style.display = ''; var _mbBtnB = document.getElementById('matBuilderBtn'); if (_mbBtnB) _mbBtnB.style.display = ''; var _mbRowB=document.getElementById('matBuilderBtnRow'); if(_mbRowB) _mbRowB.style.display = ''; var _loftSecB=document.getElementById('secLoft'); if(_loftSecB) _loftSecB.style.display = (u.username === 'lain.hinson') ? '' : 'none';
+        if (_ab) _ab.style.display = (u.username === 'lain.hinson') ? '' : 'none'; var _bfBtn3 = document.getElementById('vpBackfillBtn'); if (_bfBtn3) _bfBtn3.style.display = (u.username === 'lain.hinson') ? '' : 'none'; var _fuBtn3 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn3) _fuBtn3.style.display = ''; var _mbBtnB = document.getElementById('matBuilderBtn'); if (_mbBtnB) _mbBtnB.style.display = ''; var _mbRowB=document.getElementById('matBuilderBtnRow'); if(_mbRowB) _mbRowB.style.display = ''; var _loftSecB=document.getElementById('secLoft'); if(_loftSecB) _loftSecB.style.display = (u.username === 'lain.hinson') ? '' : 'none'; var _iwBtnB=document.getElementById('interiorWallsBtn'); if(_iwBtnB) _iwBtnB.style.display = (u.username === 'lain.hinson') ? '' : 'none';
         // Fire address lookup immediately so shipping/mileage is ready
         setTimeout(function() {
           var addr = (document.getElementById('st_address')||{}).value || '';
@@ -29883,6 +30428,59 @@ async function generateChecklist() {
 // All items go to Hardware category, labeled as Gutter.
 
 // ── LOFT / MEZZANINE MATERIALS ───────────────────────────────────────────────
+// ── INTERIOR WALLS MATERIALS ─────────────────────────────────────────────────
+window.SauceMaterials.calcInteriorWalls = function(Q, walls) {
+  if (!walls || !walls.length) return [];
+  var items = [];
+  var FUR_LENS = [8,10,12,14,16,18,20];
+  function pickLen(n){ for(var i=0;i<FUR_LENS.length;i++){if(FUR_LENS[i]>=n)return FUR_LENS[i];}return 20; }
+
+  walls.forEach(function(w) {
+    var len      = Math.round(Math.sqrt(Math.pow(w.x2-w.x1,2)+Math.pow(w.y2-w.y1,2)));
+    if (len < 1) return;
+    var wallH    = w.height || Q.h || 14;
+    var studSize = w.studSize || '2x4';
+    var studSku  = studSize === '2x6' ? 'SYP26' : 'SYP24';
+    var openings = (w.openings || []).length;
+    // Studs: 16" OC = 0.75/LF + 1, minus space for openings
+    var studQty  = Math.ceil(len * 0.75) + 1 + (openings * 2); // +2 king studs per opening
+    var studLen  = pickLen(wallH);
+    // Plates: bottom (1×LF) + double top (2×LF)
+    var plateLen = pickLen(len <= 16 ? len : 16);
+    var platePcs = Math.ceil(len/16) * 3; // 3 runs (1 bottom + 2 top)
+    // Headers: 2× opening width + 4" each side
+    var headerItems = (w.openings||[]).map(function(op){
+      return { width: op.width + 1, sku: studSku + pickLen(op.width+1) };
+    });
+
+    items.push({
+      category: 'Interior Framing',
+      description: studSize + ' Studs — Interior Wall (' + len + '\' LF)',
+      sku: studSku + studLen,
+      quantity: studQty,
+      detail: studQty + ' studs  |  ' + studSize + '×' + studLen + '\'  |  16" OC  |  ' + len + '\' wall'
+    });
+    items.push({
+      category: 'Interior Framing',
+      description: studSize + ' Plates — Interior Wall (' + len + '\' LF)',
+      sku: studSku + plateLen,
+      quantity: platePcs,
+      detail: platePcs + ' pieces  |  1 bottom plate + 2 top plates'
+    });
+    headerItems.forEach(function(h) {
+      items.push({
+        category: 'Interior Framing',
+        description: studSize + ' Header — Walk Door Opening',
+        sku: h.sku,
+        quantity: 2,
+        detail: '2 pieces  |  ' + h.width + '\' header  |  doubled'
+      });
+    });
+  });
+
+  return items;
+};
+
 window.SauceMaterials.calcLoft = function(Q, loftCfgs) {
   if (!loftCfgs || !loftCfgs.length) return [];
   var SM = window.SauceMaterials;
@@ -31246,8 +31844,11 @@ window.SauceMaterials.calculate = function(forcedType) {
   // ── LOFT MATERIALS — prepend to top of results ──
   var loftItems = SM.calcLoft(Q, window._loftConfigs || []);
   if (loftItems.length) {
-    // Insert at beginning so loft shows at top of Yard group
     items = loftItems.concat(items);
+  }
+  var iwItems = SM.calcInteriorWalls(Q, window._interiorWalls || []);
+  if (iwItems.length) {
+    items = iwItems.concat(items);
   }
   return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "'" };
 };
@@ -34562,6 +35163,7 @@ var CSV_SECTION_MAP = {
   'Soffit Metal':          'SOFFIT',
   'Skirt Metal':           'SKIRTS',
   'Metal':                 'SIDEWALL',
+  'Interior Framing':      'INTERIOR',
   'Loft Materials':        'LOFT',
   'Trim':                  'Trim',
   'Extras':                'Trim',
