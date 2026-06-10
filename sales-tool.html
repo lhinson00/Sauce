@@ -3084,6 +3084,7 @@ function buildFrameChips(){
     function(){return currentFrameType;},function(v){
       currentFrameType=v;Q.frameType=v;
       document.getElementById('psRow').style.display=v==='post'?'':'none';
+      _iwShowHide();
       if(window._customerMode) custUpdateConcreteOptions();
       applyRouteUI();
       scheduleBuild();
@@ -5614,6 +5615,7 @@ function serializeConfig() {
     windows: window._windows,
     sheds: window._shedConfigs||[],
     lofts: window._loftConfigs||[],
+    interiorWalls: window._interiorWalls||[],
     colors: {roof:selRoof,wall:selWall,trim:selTrim,wainscot:selWainscot}, colorCodes: {roof:(window._selectedColors||{}).roofCode,wall:(window._selectedColors||{}).wallCode,trim:(window._selectedColors||{}).trimCode,wainscot:(window._selectedColors||{}).wainscotCode},
     extras: {
       wainscot:!!(document.getElementById('qgWainscot')||{}).checked,
@@ -5791,6 +5793,10 @@ function restoreConfig(cfg) {
     if (cfg.lofts) cfg.lofts.forEach(function(l) { window._loftConfigs.push(l); });
     _nextLoftId = (window._loftConfigs).reduce(function(mx,l){ return Math.max(mx, (l.id||0)+1); }, 1);
     renderLofts();
+    window._interiorWalls = cfg.interiorWalls || [];
+    _nextIWallId = (window._interiorWalls).reduce(function(mx,w){ return Math.max(mx,(w.id||0)+1); }, 1);
+    renderInteriorWalls();
+    _iwShowHide();
     if(cfg.comparisonSlots && cfg.comparisonSlots.length && window.CMP) {
       CMP.slots = JSON.parse(JSON.stringify(cfg.comparisonSlots));
       if(typeof updateBtn === 'function') try { updateBtn(); } catch(e) {}
@@ -6767,6 +6773,85 @@ function renderLofts() {
   }).join('');
 }
 
+
+// ═══════════════════════════════════════════════════════
+// INTERIOR WALLS (stud frame)
+// ═══════════════════════════════════════════════════════
+window._interiorWalls = window._interiorWalls || [];
+var _nextIWallId = 1;
+
+function _iwShowHide() {
+  var sec = document.getElementById('secInteriorWalls');
+  if (sec) sec.style.display = (currentFrameType === 'stud') ? '' : 'none';
+}
+
+function addInteriorWall() {
+  var w = Q.w || 40, l = Q.l || 60;
+  window._interiorWalls.push({
+    id: _nextIWallId++,
+    x1: Math.round(w * 0.25), y1: Math.round(l * 0.5),
+    x2: Math.round(w * 0.75), y2: Math.round(l * 0.5),
+    height: Q.h || 14,
+    door: false,
+    _open: true
+  });
+  renderInteriorWalls();
+  scheduleBuild();
+}
+
+function removeInteriorWall(id) {
+  window._interiorWalls = window._interiorWalls.filter(function(w) { return w.id !== id; });
+  renderInteriorWalls();
+  scheduleBuild();
+}
+
+function setIWallProp(id, prop, val) {
+  var iw = window._interiorWalls.find(function(w) { return w.id === id; });
+  if (!iw) return;
+  if (prop === 'door' || prop === '_open') { iw[prop] = val; }
+  else { var n = parseFloat(val); iw[prop] = isNaN(n) ? val : n; }
+  renderInteriorWalls();
+  scheduleBuild();
+}
+
+function toggleIWallOpen(id) {
+  var iw = window._interiorWalls.find(function(w) { return w.id === id; });
+  if (iw) { iw._open = !iw._open; renderInteriorWalls(); }
+}
+
+function renderInteriorWalls() {
+  var el = document.getElementById('interiorWallList');
+  if (!el) return;
+  if (!window._interiorWalls.length) { el.innerHTML = ''; return; }
+  el.innerHTML = window._interiorWalls.map(function(iw, idx) {
+    var wallLen = Math.round(Math.sqrt(Math.pow(iw.x2-iw.x1,2)+Math.pow(iw.y2-iw.y1,2)) * 10) / 10;
+    var body = '<div class="shed-row">'
+      +'<div><div class="shed-label">Start X (ft)</div><input class="shed-inp" type="number" value="'+iw.x1+'" min="0" max="'+(Q.w||40)+'" step="1" onchange="setIWallProp('+iw.id+',\'x1\',this.value)"></div>'
+      +'<div><div class="shed-label">Start Y (ft)</div><input class="shed-inp" type="number" value="'+iw.y1+'" min="0" max="'+(Q.l||60)+'" step="1" onchange="setIWallProp('+iw.id+',\'y1\',this.value)"></div>'
+      +'</div>'
+      +'<div class="shed-row">'
+      +'<div><div class="shed-label">End X (ft)</div><input class="shed-inp" type="number" value="'+iw.x2+'" min="0" max="'+(Q.w||40)+'" step="1" onchange="setIWallProp('+iw.id+',\'x2\',this.value)"></div>'
+      +'<div><div class="shed-label">End Y (ft)</div><input class="shed-inp" type="number" value="'+iw.y2+'" min="0" max="'+(Q.l||60)+'" step="1" onchange="setIWallProp('+iw.id+',\'y2\',this.value)"></div>'
+      +'</div>'
+      +'<div class="shed-row">'
+      +'<div><div class="shed-label">Height (ft)</div><input class="shed-inp" type="number" value="'+iw.height+'" min="7" max="20" step="1" onchange="setIWallProp('+iw.id+',\'height\',this.value)"></div>'
+      +'<div><div class="shed-label" style="margin-bottom:6px;">Door Opening</div><label class="tog"><input type="checkbox" '+(iw.door?'checked':'')+' onchange="setIWallProp('+iw.id+',\'door\',this.checked)"><span class="tog-track"></span></label></div>'
+      +'</div>'
+      +'<div style="font-size:9px;color:var(--muted);margin-top:2px;">Length: ~'+wallLen+" ft  |  X=width, Y=length axis</div>";
+    return '<div class="shed-card">'
+      +'<div class="shed-card-hdr" onclick="toggleIWallOpen('+iw.id+')">'
+      +'<span class="shed-card-icon">🧱</span>'
+      +'<span class="shed-card-lbl">Wall '+(idx+1)+'</span>'
+      +'<button class="shed-card-rm" onclick="event.stopPropagation();removeInteriorWall('+iw.id+')">✕</button>'
+      +'<span class="shed-card-toggle'+(iw._open?' open':'')+'">▼</span>'
+      +'</div>'
+      +'<div class="shed-body'+(iw._open?' open':'')+'">'
+      +body
+      +'</div>'
+      +'</div>';
+  }).join('');
+}
+
 // ═══════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════
@@ -6776,6 +6861,7 @@ function renderLofts() {
   try { buildPitchChips(); } catch(e) { console.error('buildPitchChips',e); }
   try { buildOHChips(); } catch(e) { console.error('buildOHChips',e); }
   try { buildFrameChips(); } catch(e) { console.error('buildFrameChips',e); }
+  try { _iwShowHide(); } catch(e) {}
   try { buildPSChips(); } catch(e) { console.error('buildPSChips',e); }
   try { buildWallGrid(); } catch(e) { console.error('buildWallGrid',e); }
   syncRendererColors();
@@ -13715,8 +13801,8 @@ function applyVoiceQuote(parsed, overlay) {
         // ── INTERIOR STUD WALLS 3D ───────────────────────────────────────
         if (window._interiorWalls && window._interiorWalls.length) {
           var mPlate = new THREE.MeshLambertMaterial({ color: 0xC4A46A });
-          var mStud2 = new THREE.MeshBasicMaterial({ color: 0xD4A840 });
-          var mHdr   = new THREE.MeshBasicMaterial({ color: 0xB89020 });
+          var mStud2 = new THREE.MeshLambertMaterial({ color: 0xC8A878 });
+          var mHdr   = new THREE.MeshLambertMaterial({ color: 0xA07840 });
           var studSpacing = (16/12) * Sc; // 16" OC
           var plateH  = 0.015;  // plate thickness visual
           var studW   = 0.015;  // stud cross-section
@@ -30548,7 +30634,40 @@ window.SauceMaterials.calcLoftMaterials = function(Q, loftCfgs) {
   return items;
 };
 
-window.SauceMaterials.calculate = function(forcedType) {
+window.SauceMaterials.calcInteriorWallMaterials = function(Q, walls) {
+  var items = [];
+  if (!walls || !walls.length) return items;
+  var cat = 'Interior Walls';
+
+  walls.forEach(function(iw, idx) {
+    var label  = 'Wall ' + (idx + 1);
+    var wallLen = Math.sqrt(Math.pow(iw.x2-iw.x1,2) + Math.pow(iw.y2-iw.y1,2));
+    var wallH   = parseFloat(iw.height) || Q.h || 14;
+    if (wallLen < 0.5) return;
+
+    // Studs: 2×6 @ 16" OC — SYP26xx (nearest even ft to wallH)
+    var studCount = Math.ceil(wallLen / (16/12)) + 1;
+    var studLen   = Math.ceil(wallH);
+    if (studLen % 2 !== 0) studLen++;
+    items.push({ category: cat, description: label + ' — Studs (2×6)', sku: 'SYP26' + (studLen < 10 ? '0'+studLen : studLen),
+      quantity: studCount, detail: '16" OC  |  ' + Math.round(wallLen*10)/10 + "' long  |  " + studCount + ' studs', boardLen: studLen });
+
+    // Plates: 3 plates (bottom + double top) × wall length → round up to even ft boards
+    var plateBoards = Math.ceil(wallLen / 16) * 3; // 16' boards
+    items.push({ category: cat, description: label + ' — Plates (2×6×16)', sku: 'SYP2616',
+      quantity: plateBoards, detail: '3 plates (bottom + double top)  |  ' + Math.round(wallLen*10)/10 + "' wall", boardLen: 16 });
+
+    // Door opening: 1 header (2×10×10) + 2 king studs + 2 jack studs + cripples
+    if (iw.door) {
+      items.push({ category: cat, description: label + ' — Door Header (2×10×10)', sku: 'SYP21010', quantity: 2,
+        detail: 'doubled header  |  3-0 opening', boardLen: 10 });
+      items.push({ category: cat, description: label + ' — Door Framing Studs', sku: 'SYP26' + (studLen < 10 ? '0'+studLen : studLen),
+        quantity: 4, detail: '2 king + 2 jack studs', boardLen: studLen });
+    }
+  });
+
+  return items;
+};
   var SM = window.SauceMaterials;
   var Q = window._Q;
   var WALLS = window._WALLS;
@@ -31256,6 +31375,10 @@ window.SauceMaterials.calculate = function(forcedType) {
   SM.calcCableBracing(Q).forEach(function(item) { items.push(item); });
   // Interior Loft materials
   SM.calcLoftMaterials(Q, window._loftConfigs||[]).forEach(function(item) { items.push(item); });
+  // Interior Wall materials (stud frame)
+  if (typeof SM.calcInteriorWallMaterials === 'function') {
+    SM.calcInteriorWallMaterials(Q, window._interiorWalls||[]).forEach(function(item) { items.push(item); });
+  }
   return { items: items, building: Q.w + "' x " + Q.l + "' x " + Q.h + "'" };
 };
 
@@ -32949,6 +33072,7 @@ window.openMaterialsModal = function(initialTab) {
   var CATEGORY_ORDER = [
     'Cypress Gable Extension',
     'Interior Loft',
+    'Interior Walls',
     'Yard',
     'Roof Metal','Side Shed Roof Metal',
     'Sidewall Metal','Gable Metal','Side Shed Gable Metal',
@@ -34567,6 +34691,7 @@ function onColorCodeChange() {
 // Category → CSV section header label mapping
 var CSV_SECTION_MAP = {
   'Interior Loft':         'LOFT',
+  'Interior Walls':        'INT-WALLS',
   'Yard':                  'YARD',
   'Roof Metal':            'ROOF',
   'Side Shed Roof Metal':  'ROOF-SIDE SHED',
@@ -34627,6 +34752,7 @@ function buildCSV(items) {
   var CATEGORY_ORDER = [
     'Cypress Gable Extension',
     'Interior Loft',
+    'Interior Walls',
     'Yard',
     'Roof Metal','Side Shed Roof Metal',
     'Sidewall Metal','Gable Metal','Side Shed Gable Metal',
