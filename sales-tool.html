@@ -6641,6 +6641,7 @@ function vpToggleRoof() {
   if (!d || !d.grps) return;
   _roofVisible = !_roofVisible;
   d.grps.roof.visible = _roofVisible;
+  if (d.grps.shed) d.grps.shed.visible = _roofVisible;
   var btn = document.getElementById('vpRoofToggle');
   if (btn) { btn.style.color = _roofVisible ? '#FF8200' : '#888'; btn.style.borderColor = _roofVisible ? 'rgba(255,130,0,.5)' : 'rgba(255,255,255,.15)'; }
 }
@@ -14111,78 +14112,99 @@ function applyVoiceQuote(parsed, overlay) {
 
             // ── WOOD RAFTERS 2' OC ─────────────────────────────────────────
             if (!isMainSteel) {
-              var rafterSpacing = 2 * Sc; // 2' OC
-              var numRafters = Math.round(ssl / rafterSpacing) + 1;
+              var rafterSpacing = 2 * Sc;
               var rafterSz = 0.022;
-
-              for (var ri = 0; ri <= numRafters; ri++) {
-                var along = -ssl/2 + (ri/numRafters)*ssl; // position along shed length
+              // Rafters at 2' OC starting from shed start, aligned with 2' grid
+              var shedStartFt = shedOffFt;
+              var shedEndFt   = shedOffFt + shedLen;
+              var mainHalfFt  = mainWallLen / 2;
+              for (var rft = shedStartFt; rft <= shedEndFt + 0.01; rft += 2) {
+                var along = (rft - mainHalfFt) * Sc;
                 if (isEaveWall) {
-                  var zr = shedCOff + along;
-                  if (sc.wall === 'left') {
-                    sBeam(-sw/2,     attachH, zr,  -sw/2-ssw, outerH, zr, rafterSz, sWoodMat);
-                  } else {
-                    sBeam( sw/2,     attachH, zr,   sw/2+ssw, outerH, zr, rafterSz, sWoodMat);
-                  }
+                  var zr = along;
+                  if (sc.wall==='left')  sBeam(-sw/2,attachH,zr, -sw/2-ssw,outerH,zr, rafterSz,sWoodMat);
+                  else                   sBeam( sw/2,attachH,zr,  sw/2+ssw,outerH,zr, rafterSz,sWoodMat);
                 } else {
-                  var xr = shedCOff + along;
-                  if (sc.wall === 'front') {
-                    sBeam(xr, attachH, -sl/2,  xr, outerH, -sl/2-ssw, rafterSz, sWoodMat);
-                  } else {
-                    sBeam(xr, attachH,  sl/2,  xr, outerH,  sl/2+ssw, rafterSz, sWoodMat);
-                  }
+                  var xr = along;
+                  if (sc.wall==='front') sBeam(xr,attachH,-sl/2, xr,outerH,-sl/2-ssw, rafterSz,sWoodMat);
+                  else                   sBeam(xr,attachH, sl/2, xr,outerH, sl/2+ssw, rafterSz,sWoodMat);
                 }
               }
             }
 
-            // ── STEEL TRUSSES (same geometry as main steel trusses) ─────────
+            // ── STEEL TRUSSES — aligned with main building post spacing ─────
             if (isMainSteel) {
-              var shedPS = (Q.eavePS || Q.postSpacing || 10) * Sc;
-              var numShedTrusses = Math.round(ssl / shedPS) + 1;
+              var sPS = (Q.eavePS || Q.postSpacing || 10);  // feet
               var chordSz = 0.025, webSz = 0.018;
-              // Rafter chord length for normal offset calculation
               var rLen = Math.sqrt(ssw*ssw + Math.pow(attachH-outerH,2));
               var nX2 = (attachH-outerH)/rLen * 1.5*Sc;
               var nY2 = -(ssw/rLen) * 1.5*Sc;
               var panels = 4;
-
-              for (var ti = 0; ti <= numShedTrusses; ti++) {
-                var tz = -ssl/2 + (ti/numShedTrusses)*ssl;
-                var zp = shedCOff + tz; // world Z position along shed
-                if (isEaveWall) {
-                  var ax = sc.wall==='left' ? -sw/2    : sw/2;
-                  var bx = sc.wall==='left' ? -sw/2-ssw: sw/2+ssw;
-                  // Top chord
-                  sSb(ax,attachH,zp, bx,outerH,zp, chordSz, sSteelMat);
-                  // Inner chord + X-webs
-                  var panelW2 = ssw/panels;
-                  for (var pp=0; pp<panels; pp++) {
-                    var frac0=pp/panels, frac1=(pp+1)/panels;
-                    var tx0=ax+(bx-ax)*frac0, ty0=attachH+(outerH-attachH)*frac0;
-                    var tx1=ax+(bx-ax)*frac1, ty1=attachH+(outerH-attachH)*frac1;
-                    var ix0=tx0+nX2, iy0=ty0+nY2;
-                    var ix1=tx1+nX2, iy1=ty1+nY2;
-                    sSb(ix0,iy0,zp, ix1,iy1,zp, chordSz, sSteelMat);
-                    sSb(tx0,ty0,zp, ix1,iy1,zp, webSz, sSteelMat);
-                    sSb(ix0,iy0,zp, tx1,ty1,zp, webSz, sSteelMat);
-                    sSb(tx0,ty0,zp, ix0,iy0,zp, webSz, sSteelMat);
+              // Place trusses at same Z positions as main building trusses
+              // Main building: z0=-sl/2, step=sPS*Sc
+              var tZ0 = -sl/2;
+              var tCount = Math.round(Q.l / sPS);
+              for (var ti = 0; ti <= tCount; ti++) {
+                var zp = tZ0 + ti * sPS * Sc;
+                // Only render if within shed Z extents
+                var shedZmin = shedCOff - ssl/2 - 0.01;
+                var shedZmax = shedCOff + ssl/2 + 0.01;
+                if (!isEaveWall) {
+                  // Gable shed: truss per X position, use X spacing
+                  var xPS = (Q.gablePS || Q.postSpacing || 10);
+                  var xCount = Math.round(Q.w / xPS);
+                  for (var xi = 0; xi <= xCount; xi++) {
+                    var xp = -sw/2 + xi * xPS * Sc;
+                    var shedXmin = shedCOff - ssl/2 - 0.01;
+                    var shedXmax = shedCOff + ssl/2 + 0.01;
+                    if (xp < shedXmin || xp > shedXmax) continue;
+                    var az2 = sc.wall==='front' ? -sl/2     : sl/2;
+                    var bz2 = sc.wall==='front' ? -sl/2-ssw : sl/2+ssw;
+                    sSb(xp,attachH,az2, xp,outerH,bz2, chordSz, sSteelMat);
+                    var rLen2=Math.sqrt(Math.pow(bz2-az2,2)+Math.pow(outerH-attachH,2));
+                    var nZ2=(attachH-outerH)/rLen2*1.5*Sc;
+                    var nY3=-(Math.abs(bz2-az2)/rLen2)*1.5*Sc;
+                    for (var pp=0;pp<panels;pp++){
+                      var f0=pp/panels,f1=(pp+1)/panels;
+                      var tz0b=az2+(bz2-az2)*f0,ty0b=attachH+(outerH-attachH)*f0;
+                      var tz1b=az2+(bz2-az2)*f1,ty1b=attachH+(outerH-attachH)*f1;
+                      var iz0=tz0b+nZ2,iy0b=ty0b+nY3;
+                      var iz1=tz1b+nZ2,iy1b=ty1b+nY3;
+                      sSb(xp,iy0b,iz0, xp,iy1b,iz1, chordSz,sSteelMat);
+                      sSb(xp,ty0b,tz0b, xp,iy1b,iz1, webSz,sSteelMat);
+                      sSb(xp,iy0b,iz0, xp,ty1b,tz1b, webSz,sSteelMat);
+                      sSb(xp,ty0b,tz0b, xp,iy0b,iz0, webSz,sSteelMat);
+                    }
                   }
-                  sSb(ax+(bx-ax),outerH,zp, ax+(bx-ax)+nX2,outerH+nY2,zp, webSz, sSteelMat);
-                } else {
-                  // Gable wall shed — swap axes
-                  var xp = shedCOff + tz;
-                  var az2 = sc.wall==='front' ? -sl/2     : sl/2;
-                  var bz2 = sc.wall==='front' ? -sl/2-ssw : sl/2+ssw;
-                  sSb(xp,attachH,az2, xp,outerH,bz2, chordSz, sSteelMat);
+                  break; // gable shed handled above, exit Z loop
                 }
+                if (zp < shedZmin || zp > shedZmax) continue;
+                var ax = sc.wall==='left' ? -sw/2     : sw/2;
+                var bx = sc.wall==='left' ? -sw/2-ssw : sw/2+ssw;
+                // Top chord
+                sSb(ax,attachH,zp, bx,outerH,zp, chordSz,sSteelMat);
+                // Inner chord + X-webs
+                for (var pp2=0;pp2<panels;pp2++){
+                  var f02=pp2/panels,f12=(pp2+1)/panels;
+                  var tx02=ax+(bx-ax)*f02, ty02=attachH+(outerH-attachH)*f02;
+                  var tx12=ax+(bx-ax)*f12, ty12=attachH+(outerH-attachH)*f12;
+                  var ix02=tx02+nX2, iy02=ty02+nY2;
+                  var ix12=tx12+nX2, iy12=ty12+nY2;
+                  sSb(ix02,iy02,zp, ix12,iy12,zp, chordSz,sSteelMat);
+                  sSb(tx02,ty02,zp, ix12,iy12,zp, webSz,sSteelMat);
+                  sSb(ix02,iy02,zp, tx12,ty12,zp, webSz,sSteelMat);
+                  sSb(tx02,ty02,zp, ix02,iy02,zp, webSz,sSteelMat);
+                }
+                sSb(bx,outerH,zp, bx+nX2,outerH+nY2,zp, webSz,sSteelMat);
               }
             }
 
             // ── PURLINS on shed roof — 2' OC along slope ───────────────────
             var sPurW = isMainSteel ? 0.015 : 0.05;
-            var sPurH = isMainSteel ? 0.05  : 0.015 * 1.5;
+            var sPurH = isMainSteel ? 0.05  : 0.022;
             var slopeLen2 = Math.sqrt(ssw*ssw + Math.pow(attachH-outerH,2));
-            var numSPurlins = Math.floor(slopeLen2 / (2*Sc));
+            var numSPurlins = Math.floor(slopeLen2 / (2*Sc)) - 1;
+            if (numSPurlins < 0) numSPurlins = 0;
             var purlinLen2 = ssl + 2*shedOh;
 
             for (var spi=0; spi<=numSPurlins; spi++) {
@@ -14641,7 +14663,7 @@ function applyVoiceQuote(parsed, overlay) {
           grps.framing.visible = _framingVisible;
         }
         if (typeof _wallsVisible    !== 'undefined') { grps.wallPanels.visible = _wallsVisible; grps.walls.visible = _wallsVisible; grps.doors.visible = _wallsVisible; }
-        if (typeof _roofVisible     !== 'undefined') { grps.roof.visible = _roofVisible; }
+        if (typeof _roofVisible     !== 'undefined') { grps.roof.visible = _roofVisible; if (grps.shed) grps.shed.visible = _roofVisible; }
         if (typeof _trussesVisible  !== 'undefined') { grps.trusses.visible = _trussesVisible; }
         if (typeof _postsVisible    !== 'undefined') {
           var _mainEncl2 = WALLS.every(function(w){return w.encl==='enclosed'||w.encl==='partial';});
