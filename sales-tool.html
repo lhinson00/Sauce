@@ -11370,30 +11370,32 @@ function applyVoiceQuote(parsed, overlay) {
         // === EAVE TRIM — thin fascia board at wall/roof junction ===
         const eaveH = 0.015;
         const mFascia = new THREE.MeshBasicMaterial({ color: pc(trimColorName), transparent: true, opacity: 0.7, side: THREE.DoubleSide });
-        if (!_wOpen('left'))
+        if (!isSingleSlope) {
+          if (!_wOpen('left'))
             grps.walls.add(mkQ([-sw/2 - co, sh - eaveH, -sl/2, -sw/2 - co, sh - eaveH, sl/2, -sw/2 - co, sh, sl/2, -sw/2 - co, sh, -sl/2], mFascia));
-        if (!_wOpen('right'))
+          if (!_wOpen('right'))
             grps.walls.add(mkQ([sw/2 + co, sh - eaveH, sl/2, sw/2 + co, sh, sl/2, sw/2 + co, sh, -sl/2, sw/2 + co, sh - eaveH, -sl/2], mFascia));
+        }
 
         // === Open wall lookup (used by base trim, textures, etc.) ===
         // (leftOpen/rightOpen/frontOpen/backOpen declared early at top of build function)
 
         // === BASE TRIM — trim strip along the bottom of walls (partial walls: at bottom of metal, not ground) ===
         const baseH = 0.03;
+        if (!isSingleSlope) {
         [-1,1].forEach(s => {
-            // Eave walls
             const eaveId = s === -1 ? 'left' : 'right';
             const eaveWc = wallCfgs.find(w => w.id === eaveId);
             const eavePartialY = (eaveWc && eaveWc.encl === 'partial') ? sh - (eaveWc.partialH || Math.min(4, Q.h)) * Sc : 0;
             if (!(s === -1 && leftOpen) && !(s === 1 && rightOpen))
                 grps.wallPanels.add(mkQ([s*sw/2 + s*co, eavePartialY, -sl/2, s*sw/2 + s*co, eavePartialY + baseH, -sl/2, s*sw/2 + s*co, eavePartialY + baseH, sl/2, s*sw/2 + s*co, eavePartialY, sl/2], mTrimPanel));
-            // Gable walls
             const gableId = s === -1 ? 'front' : 'back';
             const gableWc = wallCfgs.find(w => w.id === gableId);
             const gablePartialY = (gableWc && gableWc.encl === 'partial') ? sh - (gableWc.partialH || Math.min(4, Q.h)) * Sc : 0;
             if (!(s === -1 && frontOpen) && !(s === 1 && backOpen))
                 grps.wallPanels.add(mkQ([-sw/2, gablePartialY, s*sl/2 + s*co, sw/2, gablePartialY, s*sl/2 + s*co, sw/2, gablePartialY + baseH, s*sl/2 + s*co, -sw/2, gablePartialY + baseH, s*sl/2 + s*co], mTrimPanel));
         });
+        } // end !isSingleSlope base trim
 
         // === GROUND SHADOW — soft shadow plane under the building ===
         const shadowPad = 0.5;
@@ -13579,6 +13581,41 @@ function applyVoiceQuote(parsed, overlay) {
             grps.slab.visible      = false;
             grps.doors.visible     = false;
             grps.shed.visible      = true;
+
+            // ── SINGLE SLOPE TRUSSES — steel, shown under Trusses toggle ──────
+            var _ssTrussCount = Math.round(Q.l / (Q.eavePS || Q.postSpacing || 10));
+            var _ssTChord = 0.025, _ssTWeb = 0.018;
+            var _ssTMat = new THREE.MeshLambertMaterial({ color: 0x444444 });
+            var _ssSlope = Math.sqrt(sw*sw + Math.pow(ssHiH-ssLoH, 2));
+            var _ssNx = (ssHiH-ssLoH)/_ssSlope * 1.5*Sc;
+            var _ssNy = -(sw/_ssSlope) * 1.5*Sc;
+            var _ssPanels = 4;
+            function ssTruss(zp) {
+              function sb2(ax,ay,bx,by,sz) {
+                var dx=bx-ax,dy=by-ay,len=Math.sqrt(dx*dx+dy*dy);
+                if(len<0.0001) return;
+                var g=new THREE.BoxGeometry(sz,sz,len);
+                var m=new THREE.Mesh(g,_ssTMat);
+                m.position.set((ax+bx)/2,(ay+by)/2,zp);
+                m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(dx,dy,0).normalize());
+                grps.trusses.add(m);
+              }
+              sb2(_ssAX,ssHiH,_ssRX,ssLoH,_ssTChord);
+              for(var _tp=0;_tp<_ssPanels;_tp++){
+                var f0=_tp/_ssPanels,f1=(_tp+1)/_ssPanels;
+                var tx0=_ssAX+(_ssRX-_ssAX)*f0,ty0=ssHiH+(ssLoH-ssHiH)*f0;
+                var tx1=_ssAX+(_ssRX-_ssAX)*f1,ty1=ssHiH+(ssLoH-ssHiH)*f1;
+                var ix0=tx0+_ssNx,iy0=ty0+_ssNy,ix1=tx1+_ssNx,iy1=ty1+_ssNy;
+                sb2(ix0,iy0,ix1,iy1,_ssTChord);
+                sb2(tx0,ty0,ix1,iy1,_ssTWeb);
+                sb2(ix0,iy0,tx1,ty1,_ssTWeb);
+                sb2(tx0,ty0,ix0,iy0,_ssTWeb);
+              }
+              sb2(_ssRX,ssLoH,_ssRX+_ssNx,ssLoH+_ssNy,_ssTWeb);
+            }
+            for(var _sti=1;_sti<_ssTrussCount;_sti++){
+              ssTruss(_ssZ1i+(_sti/_ssTrussCount)*sl);
+            }
 
             // ── SINGLE SLOPE GIRTS + PURLINS ─────────────────────────────────
             var _ssGirtMat   = new THREE.MeshLambertMaterial({ color: 0xC4A46A, side: THREE.DoubleSide });
