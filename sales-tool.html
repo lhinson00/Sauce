@@ -6660,6 +6660,7 @@ function vpToggleInterior() {
   _interiorVisible = !_interiorVisible;
   if (d.grps.loft)     d.grps.loft.visible     = _interiorVisible;
   if (d.grps.interior) d.grps.interior.visible  = _interiorVisible;
+  if (d.grps.framing)  d.grps.framing.visible   = _interiorVisible;
   var btn = document.getElementById('vpInteriorToggle');
   if (btn) { btn.style.color = _interiorVisible ? '#FF8200' : '#888'; btn.style.borderColor = _interiorVisible ? 'rgba(255,130,0,.5)' : 'rgba(255,255,255,.15)'; }
 }
@@ -14101,16 +14102,13 @@ function applyVoiceQuote(parsed, overlay) {
 
         // ── RE-APPLY ALL TOGGLE STATES (survive every rebuild) ───────────────
         grps.framing.visible = false; // framing off by default
-        if (typeof _framingVisible  !== 'undefined') {
+        if (typeof _framingVisible !== 'undefined') {
           grps.framing.visible = _framingVisible;
-          // Loft deck/joists also follow framing toggle
-          if (grps.loft) grps.loft.visible = _framingVisible && (_interiorVisible !== false);
         }
         if (typeof _wallsVisible    !== 'undefined') { grps.wallPanels.visible = _wallsVisible; grps.walls.visible = _wallsVisible; grps.doors.visible = _wallsVisible; }
         if (typeof _roofVisible     !== 'undefined') { grps.roof.visible = _roofVisible; }
         if (typeof _trussesVisible  !== 'undefined') { grps.trusses.visible = _trussesVisible; }
         if (typeof _postsVisible    !== 'undefined') {
-          // Smart post visibility: respect toggle but always show posts on open walls/sheds
           var _mainEncl2 = WALLS.every(function(w){return w.encl==='enclosed'||w.encl==='partial';});
           grps.mainPosts.visible = _mainEncl2 ? _postsVisible : true;
           var _hasOpenShed2 = (window._shedConfigs||[]).some(function(s){
@@ -14121,7 +14119,11 @@ function applyVoiceQuote(parsed, overlay) {
           });
           grps.posts.visible = _hasOpenShed2 ? true : _postsVisible;
         }
-        if (typeof _interiorVisible !== 'undefined') { grps.loft.visible = _interiorVisible; grps.interior.visible = _interiorVisible; }
+        if (typeof _interiorVisible !== 'undefined') {
+          grps.loft.visible     = _interiorVisible;
+          grps.interior.visible = _interiorVisible;
+          grps.framing.visible  = _interiorVisible;
+        }
         if (typeof _dimsVisible     !== 'undefined') { grps.dims.visible = _dimsVisible; }
         // Sync toggle button appearances
         (function() {
@@ -31061,6 +31063,7 @@ window.SauceMaterials.calcLoftMaterials = function(Q, loftCfgs) {
   var items = [];
   if (!loftCfgs || !loftCfgs.length) return items;
   var cat = 'Interior Loft';
+  var SM = window.SauceMaterials;
 
   loftCfgs.forEach(function(l, idx) {
     var label  = 'Loft ' + (idx + 1);
@@ -31076,65 +31079,73 @@ window.SauceMaterials.calcLoftMaterials = function(Q, loftCfgs) {
     items.push({ category: cat, description: label + ' — Deck OSB (5/8")', sku: 'OSB5.8', quantity: osbSheets,
       detail: depth + "' deep × " + len + "' long  |  " + sqft + ' sqft  |  10% waste' });
 
-    // ── SUB FLOOR GLUE: 1 tube per 4 sheets ──────────────────────────────────
-    var sfgQty = Math.ceil(osbSheets / 4);
-    items.push({ category: cat, description: label + ' — Sub Floor Glue', sku: 'SFG', quantity: sfgQty,
-      detail: '1 tube per 4 sheets  |  ' + osbSheets + ' sheets' });
+    // ── SUB FLOOR GLUE ────────────────────────────────────────────────────────
+    items.push({ category: cat, description: label + ' — Sub Floor Glue', sku: 'SFG', quantity: Math.ceil(osbSheets / 4),
+      detail: '1 tube per 4 sheets' });
 
-    // ── JOISTS 2×12 @ 16" OC ─────────────────────────────────────────────────
+    // ── JOISTS 2×12 @ 16" OC — span = depth ──────────────────────────────────
     var joistCount = Math.ceil(len / (16 / 12)) + 1;
-    var joistLen   = Math.ceil(depth);
-    if (joistLen % 2 !== 0) joistLen++;
-    var joistSku = 'SYP212' + (joistLen < 10 ? '0' + joistLen : joistLen);
+    var joistLen   = SM.stockedSYP212Len ? SM.stockedSYP212Len(Math.ceil(depth)) : (Math.ceil(depth) % 2 === 0 ? Math.ceil(depth) : Math.ceil(depth) + 1);
+    var joistSku   = 'SYP212' + (joistLen < 10 ? '0' + joistLen : joistLen);
     items.push({ category: cat, description: label + ' — Joists (2×12)', sku: joistSku, quantity: joistCount,
-      detail: '16" OC  |  ' + joistLen + "' length  |  " + joistCount + ' joists'});
+      detail: '16" OC  |  ' + joistLen + "' length  |  " + joistCount + ' joists' });
 
-    // ── JOIST HANGERS (2×12) ─────────────────────────────────────────────────
-    items.push({ category: cat, description: label + ' — Joist Hangers', sku: 'JH212', quantity: joistCount * 2,
-      detail: '2 per joist (both ends)  |  ' + joistCount + ' joists' });
+    // ── JOIST HANGERS ─────────────────────────────────────────────────────────
+    // Both ends: ledger side (wall) + rim beam side
+    items.push({ category: cat, description: label + ' — Joist Hangers (2×12)', sku: 'JH212', quantity: joistCount * 2,
+      detail: '2 per joist (ledger end + rim end)  |  ' + joistCount + ' joists' });
+
+    // ── LEDGER BOARD — wall-side, full loft length ────────────────────────────
+    // Bolted to main building posts/wall; joists hang from it
+    var ledgerLen  = SM.stockedSYP212Len ? SM.stockedSYP212Len(Math.ceil(len)) : Math.ceil(len);
+    var ledgerQty  = Math.ceil(len / ledgerLen);   // boards needed to span len
+    var ledgerSku  = 'SYP212' + (ledgerLen < 10 ? '0' + ledgerLen : ledgerLen);
+    items.push({ category: cat, description: label + ' — Ledger Board (2×12)', sku: ledgerSku, quantity: ledgerQty,
+      detail: "Bolted to building wall  |  " + len + "' run  |  " + ledgerQty + ' pc × ' + ledgerLen + "'" });
+
+    // ── RIM/HEADER BEAM — outer free edge, full loft length ───────────────────
+    // Sits on top of interior posts; opposite end of joists
+    items.push({ category: cat, description: label + ' — Rim Beam (2×12)', sku: ledgerSku, quantity: ledgerQty,
+      detail: "Outer free edge  |  " + len + "' run  |  " + ledgerQty + ' pc × ' + ledgerLen + "'" });
+
+    // ── LAG BOLTS — ledger to wall ────────────────────────────────────────────
+    // 2 lags per post spacing along ledger (into main posts)
+    var lagsNeeded = (Math.floor(len / ps) + 1) * 2;
+    items.push({ category: cat, description: label + ' — Ledger Lag Bolts', sku: 'LAG5', quantity: lagsNeeded,
+      detail: '2 per post location  |  ' + (Math.floor(len/ps)+1) + ' post locations' });
 
     // ── NAILS ─────────────────────────────────────────────────────────────────
     items.push({ category: cat, description: label + ' — Nails (10d)', sku: 'HDGRS10D30', quantity: 1, detail: '1 box' });
     items.push({ category: cat, description: label + ' — Nails (8d)',  sku: 'HDGRS8D30',  quantity: 1, detail: '1 box' });
 
-    // ── INTERIOR POSTS 6×6 ───────────────────────────────────────────────────
+    // ── INTERIOR POSTS 6×6 — outer free edge only ────────────────────────────
+    // The building wall handles the inner edge. Posts only needed on the outer edge.
+    // Posts at every ps interval along the outer edge length.
     if (l.interiorPosts) {
-      var postsAlong    = Math.floor(len / ps) + 1;
-      var newPostsAlong = Math.max(0, postsAlong - 2);
-      var postRows      = Math.floor(depth / ps);
-      var totalPosts    = newPostsAlong * postRows;
+      var outerPosts = Math.floor(len / ps) + 1;
+      // Corner posts at both ends (0 and len) are always included
+      // No subtraction — the building wall posts are on the WALL side, not the outer edge
 
-      if (totalPosts > 0) {
-        var postLen = Math.ceil(flH + 4);
-        if (postLen % 2 !== 0) postLen++;
-        var postSku = 'PT66' + (postLen < 10 ? '0' + postLen : postLen);
-        items.push({ category: cat, description: label + ' — Interior Posts (6×6)', sku: postSku, quantity: totalPosts,
-          detail: flH + "' floor ht + 4' burial  |  " + postRows + ' rows × ' + newPostsAlong + ' posts'});
-        items.push({ category: cat, description: label + ' — Footing Pads', sku: 'PBFP16', quantity: totalPosts,
-          detail: '1 per post  |  ' + totalPosts + ' posts' });
-        items.push({ category: cat, description: label + ' — Sackcrete', sku: 'QCR', quantity: totalPosts * 2,
-          detail: '2 bags per post  |  ' + totalPosts + ' posts' });
-        items.push({ category: cat, description: label + ' — Lag Bolts', sku: 'LAG5', quantity: totalPosts * 2,
-          detail: '2 per post  |  ' + totalPosts + ' posts' });
-      }
+      var postLen = Math.ceil(flH + 4);
+      if (postLen % 2 !== 0) postLen++;
+      var postSku = 'PT66' + (postLen < 10 ? '0' + postLen : postLen);
+      items.push({ category: cat, description: label + ' — Interior Posts (6×6)', sku: postSku, quantity: outerPosts,
+        detail: flH + "' floor ht + 4' burial  |  " + outerPosts + ' posts @ ' + ps + "' OC on outer edge  |  wall side uses building posts" });
+      items.push({ category: cat, description: label + ' — Footing Pads', sku: 'PBFP16', quantity: outerPosts,
+        detail: '1 per post  |  ' + outerPosts + ' posts' });
+      items.push({ category: cat, description: label + ' — Sackcrete', sku: 'QCR', quantity: outerPosts * 2,
+        detail: '2 bags per post  |  ' + outerPosts + ' posts' });
     }
 
     // ── STAIRS ───────────────────────────────────────────────────────────────
     if (l.stairs > 0) {
-      var riseIn  = 7.5 / 12;                          // 7.5" rise per step in feet
-      var stepCt  = Math.round(flH / riseIn);          // number of steps
-
-      // Stringers: 2× SYP21224 (one per side)
+      var stepCt = Math.round(flH / (7.5 / 12));
       items.push({ category: cat, description: label + ' — Stair Stringers (2×12×24)', sku: 'SYP21224', quantity: 2,
-        detail: '1 per side  |  2 stringers'});
-
-      // Treads: SYP21012 — one per step, 3' wide stair fits 1 per tread
+        detail: '1 per side  |  2 stringers' });
       items.push({ category: cat, description: label + ' — Stair Treads (2×10×12)', sku: 'SYP21012', quantity: stepCt,
-        detail: '1 per step  |  ' + stepCt + ' steps @ 7.5" rise  |  ' + flH + "' floor height"});
-
-      // Header: 2× SYP21212
+        detail: '1 per step  |  ' + stepCt + ' steps @ 7.5" rise  |  ' + flH + "' floor height" });
       items.push({ category: cat, description: label + ' — Stair Header (2×12×12)', sku: 'SYP21212', quantity: 2,
-        detail: 'stair header  |  2 boards'});
+        detail: 'stair header  |  2 boards' });
     }
   });
 
