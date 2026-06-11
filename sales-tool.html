@@ -2507,7 +2507,7 @@ function updateStripFromLocalCalc() {
             var ftM = (item.metalLength||'').match(/(\d+)'/), inM = (item.metalLength||'').match(/(\d+(?:\.\d+)?)"/) ;
             var lf = (ftM?parseFloat(ftM[1]):0)+(inM?parseFloat(inM[1])/12:0);
             total += up * item.quantity * lf;
-          } else if (item.boardLen) {
+          } else if (item.boardLen && item.isLVL) {
             total += up * item.quantity * item.boardLen;
           } else {
             total += up * item.quantity;
@@ -2543,7 +2543,7 @@ function updateStripFromLocalCalc() {
             if (item.category === 'Yard' && item.description && item.description.indexOf('Eave Post') >= 0) {
               var skuKey = (item.sku||'').toUpperCase();
               var up = _pt[skuKey] || 0;
-              if (up > 0 && item.boardLen) {
+              if (up > 0 && item.boardLen && item.isLVL) {
                 stepTotal -= up * Math.min(2, item.quantity) * item.boardLen;
               } else if (up > 0) {
                 stepTotal -= up * Math.min(2, item.quantity);
@@ -5800,6 +5800,7 @@ function restoreConfig(cfg) {
     _nextIWallId = (window._interiorWalls).reduce(function(mx,w){ return Math.max(mx,(w.id||0)+1); }, 1);
     window._levelConfigs = cfg.levelConfigs || [];
     _nextLevelId = (window._levelConfigs).reduce(function(mx,l){ return Math.max(mx,(l.id||0)+1); }, 1);
+    _nextZoneId  = (window._levelConfigs).reduce(function(mx,l){ return (l.floorZones||[]).reduce(function(m,z){ return Math.max(m,(z.id||0)+1); }, mx); }, 1);
     window._floorDrains = cfg.floorDrains || [];
     renderInteriorWalls();
     renderLevelManager();
@@ -6798,7 +6799,7 @@ var LEVEL_COLORS = ['#60a5fa','#a78bfa','#34d399','#fbbf24','#f87171'];
 function _defaultLevels() {
   var eaveH = Q.h || 14;
   return [
-    { id: 1, name: 'Ground Floor', floorElevFt: 0,     wallHeightFt: Math.min(9, eaveH), joistDir: 'auto', bearing: false, color: LEVEL_COLORS[0] },
+    { id: 1, name: 'Ground Floor', floorElevFt: 0, wallHeightFt: Math.min(9, eaveH), joistDir: 'auto', bearing: false, color: LEVEL_COLORS[0], floorMode: 'partial', floorZones: [] },
   ];
 }
 
@@ -6808,6 +6809,8 @@ function _ensureLevels() {
     _nextLevelId = 2;
   }
 }
+
+var _nextZoneId = 1;
 
 function addLevel() {
   _ensureLevels();
@@ -6821,16 +6824,17 @@ function addLevel() {
     wallHeightFt: 9,
     joistDir: 'auto',
     bearing: false,
-    color: LEVEL_COLORS[Math.min(window._levelConfigs.length, LEVEL_COLORS.length-1)]
+    color: LEVEL_COLORS[Math.min(window._levelConfigs.length, LEVEL_COLORS.length-1)],
+    floorMode: 'partial',
+    floorZones: []
   });
   renderLevelManager();
   scheduleBuild();
 }
 
 function removeLevel(id) {
-  if (window._levelConfigs.length <= 1) return; // always keep ground
+  if (window._levelConfigs.length <= 1) return;
   window._levelConfigs = window._levelConfigs.filter(function(l){ return l.id !== id; });
-  // Remove walls on this level
   window._interiorWalls = window._interiorWalls.filter(function(w){ return w.levelId !== id; });
   renderLevelManager();
   renderInteriorWalls();
@@ -6840,11 +6844,55 @@ function removeLevel(id) {
 function setLevelProp(id, prop, val) {
   var lv = window._levelConfigs.find(function(l){ return l.id === id; });
   if (!lv) return;
-  if (prop === 'bearing') { lv[prop] = val; }
+  if (prop === 'bearing' || prop === 'floorMode') { lv[prop] = val; }
   else if (prop === 'joistDir' || prop === 'name') { lv[prop] = val; }
   else { var n = parseFloat(val); lv[prop] = isNaN(n) ? val : n; }
   renderLevelManager();
   scheduleBuild();
+}
+
+function addFloorZone(levelId, x, y, w, d) {
+  var lv = window._levelConfigs.find(function(l){ return l.id === levelId; });
+  if (!lv) return;
+  if (!lv.floorZones) lv.floorZones = [];
+  lv.floorZones.push({ id: _nextZoneId++, x: x, y: y, w: w, d: d });
+  renderLevelManager();
+  scheduleBuild();
+}
+
+function removeFloorZone(levelId, zoneId) {
+  var lv = window._levelConfigs.find(function(l){ return l.id === levelId; });
+  if (!lv || !lv.floorZones) return;
+  lv.floorZones = lv.floorZones.filter(function(z){ return z.id !== zoneId; });
+  renderLevelManager();
+  scheduleBuild();
+}
+
+function autoFillFloorZone(levelId) {
+  // Bounding box of all walls on the level below this one
+  var lvIdx = window._levelConfigs.findIndex(function(l){ return l.id === levelId; });
+  var belowId = lvIdx > 0 ? window._levelConfigs[lvIdx - 1].id : null;
+  var walls = (window._interiorWalls||[]).filter(function(w){
+    // Use walls on level below, or all ground floor walls if no specific level
+    return belowId ? w.levelId === belowId : (!w.levelId || w.levelId === (window._levelConfigs[0]||{}).id);
+  });
+  if (!walls.length) {
+    alert('Draw walls on the level below first, then use Auto-fill.');
+    return;
+  }
+  var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  walls.forEach(function(w) {
+    minX = Math.min(minX, w.x1, w.x2);
+    minY = Math.min(minY, w.y1, w.y2);
+    maxX = Math.max(maxX, w.x1, w.x2);
+    maxY = Math.max(maxY, w.y1, w.y2);
+  });
+  // Pad 0.5' on each side so the deck covers the wall thickness
+  minX = Math.max(0, Math.round(minX - 0.5));
+  minY = Math.max(0, Math.round(minY - 0.5));
+  maxX = Math.min(Q.w||40, Math.round(maxX + 0.5));
+  maxY = Math.min(Q.l||60, Math.round(maxY + 0.5));
+  addFloorZone(levelId, minX, minY, maxX - minX, maxY - minY);
 }
 
 function renderLevelManager() {
@@ -6853,10 +6901,49 @@ function renderLevelManager() {
   if (!el) return;
   el.innerHTML = window._levelConfigs.map(function(lv, idx) {
     var joistOpts = ['auto','width','length'].map(function(d){
-      var lbl = d==='auto'?'Auto (short span)':d==='width'?"Width ("+( Q.w||40)+"')":"Length ("+(Q.l||60)+"')";
+      var lbl = d==='auto'?'Auto (short span)':d==='width'?"Width ("+(Q.w||40)+"')":"Length ("+(Q.l||60)+"')";
       return '<option value="'+d+'"'+(lv.joistDir===d?' selected':'')+'>'+lbl+'</option>';
     }).join('');
-    var ridgePt = idx>0?'<div style="font-size:9px;color:var(--muted);margin-bottom:2px;">Floor starts at '+lv.floorElevFt.toFixed(1)+"'</div>":'';
+    var ridgePt = idx>0?'<div style="font-size:9px;color:var(--muted);margin-bottom:4px;">Floor elevation: '+lv.floorElevFt.toFixed(1)+"'</div>":'';
+
+    // Floor zone controls (only for elevated levels)
+    var zoneHTML = '';
+    if (idx > 0) {
+      var isPartial = lv.floorMode !== 'full';
+      zoneHTML = '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);">'
+        +'<div class="shed-label" style="margin-bottom:6px;">Floor Deck</div>'
+        +'<div style="display:flex;gap:4px;margin-bottom:6px;">'
+        +'<button onclick="setLevelProp('+lv.id+',\'floorMode\',\'partial\')" style="flex:1;padding:4px 6px;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;border:1px solid '+(isPartial?'#FF8200':'rgba(255,255,255,.15)')+';background:'+(isPartial?'rgba(255,130,0,.15)':'rgba(0,0,0,.2)')+';color:'+(isPartial?'#FF8200':'#888')+';">Partial / Custom</button>'
+        +'<button onclick="setLevelProp('+lv.id+',\'floorMode\',\'full\')" style="flex:1;padding:4px 6px;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;border:1px solid '+(!isPartial?'#FF8200':'rgba(255,255,255,.15)')+';background:'+(!isPartial?'rgba(255,130,0,.15)':'rgba(0,0,0,.2)')+';color:'+(!isPartial?'#FF8200':'#888')+';">Full Building</button>'
+        +'</div>';
+
+      if (isPartial) {
+        var zones = lv.floorZones || [];
+        // Zone list
+        if (zones.length) {
+          zoneHTML += '<div style="margin-bottom:6px;">';
+          zones.forEach(function(z) {
+            zoneHTML += '<div style="display:flex;align-items:center;gap:6px;padding:4px 8px;background:rgba(255,255,255,.05);border-radius:6px;margin-bottom:3px;">'
+              +'<div style="width:8px;height:8px;border-radius:2px;background:'+lv.color+';opacity:.7;flex-shrink:0;"></div>'
+              +'<span style="flex:1;font-size:10px;color:#ccc;">'+Math.round(z.w)+"' \u00d7 "+Math.round(z.d)+"'  @ ("+Math.round(z.x)+"', "+Math.round(z.y)+"')</span>"
+              +'<button onclick="removeFloorZone('+lv.id+','+z.id+')" style="background:rgba(255,60,60,.15);border:1px solid rgba(255,60,60,.3);color:#ff6b6b;border-radius:4px;padding:0 5px;font-size:10px;cursor:pointer;">✕</button>'
+              +'</div>';
+          });
+          zoneHTML += '</div>';
+        } else {
+          zoneHTML += '<div style="font-size:10px;color:#666;margin-bottom:6px;padding:4px 0;">No floor zones defined — add one below</div>';
+        }
+        // Action buttons
+        zoneHTML += '<div style="display:flex;gap:4px;">'
+          +'<button onclick="openFloorPlanModal('+lv.id+')" style="flex:1;padding:5px 6px;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;border:1px solid rgba(96,165,250,.4);background:rgba(96,165,250,.1);color:#60a5fa;">✏ Draw Zone</button>'
+          +'<button onclick="autoFillFloorZone('+lv.id+')" style="flex:1;padding:5px 6px;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;border:1px solid rgba(52,211,153,.4);background:rgba(52,211,153,.1);color:#34d399;">⬡ Auto-fill</button>'
+          +'</div>';
+      } else {
+        zoneHTML += '<div style="font-size:10px;color:#888;padding:4px 0;">Full '+(Q.w||40)+"' × "+(Q.l||60)+"' deck will be generated</div>";
+      }
+      zoneHTML += '</div>';
+    }
+
     return '<div style="border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px 10px;margin-bottom:6px;border-left:3px solid '+lv.color+';">'
       +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">'
       +'<div style="width:8px;height:8px;border-radius:50%;background:'+lv.color+';flex-shrink:0;"></div>'
@@ -6873,6 +6960,7 @@ function renderLevelManager() {
       +'<select class="shed-sel" onchange="setLevelProp('+lv.id+',\'joistDir\',this.value)">'+joistOpts+'</select></div>'
       +(idx>0?'<div><div class="shed-label" style="margin-bottom:4px;">Bearing</div><label class="tog"><input type="checkbox" '+(lv.bearing?'checked':'')+' onchange="setLevelProp('+lv.id+',\'bearing\',this.checked)"><span class="tog-track"></span></label></div>':'')
       +'</div>'
+      +zoneHTML
       +'</div>';
   }).join('')
   +'<button class="opening-add-btn" style="width:100%;" onclick="addLevel()">+ Add Level</button>';
@@ -13885,54 +13973,60 @@ function applyVoiceQuote(parsed, overlay) {
             return lvs.find(function(l){ return l.id === iw.levelId; }) || lvs[0] || { floorElevFt: 0, wallHeightFt: Q.h || 9 };
           }
 
-          // Floor decks for levels above ground
+          // Floor decks for levels above ground — per zone
           (window._levelConfigs||[]).forEach(function(lv) {
-            if (lv.floorElevFt <= 0) return; // no deck at grade
-            // Check if any wall is on this level or the level below
-            var hasWalls = (window._interiorWalls||[]).some(function(w){ return w.levelId === lv.id; });
-            if (!hasWalls) return;
-
+            if (lv.floorElevFt <= 0) return;
             var yDeck = lv.floorElevFt * Sc;
             var deckThk = 0.018;
-            var halfW2 = (Q.w||40)/2 * Sc;
-            var halfL2 = (Q.l||60)/2 * Sc;
-
-            // Deck sheathing
-            var deckGeo = new THREE.BoxGeometry((Q.w||40)*Sc, deckThk, (Q.l||60)*Sc);
-            var deckMesh = new THREE.Mesh(deckGeo, mDeck);
-            deckMesh.position.set(0, yDeck, 0);
-            grps.framing.add(deckMesh);
-
-            // Joists 16" OC
-            var joistW = 0.015, joistH = 0.05;
-            var joistSpacing = (16/12) * Sc;
-
-            // Determine joist direction from level config
-            var jDir = lv.joistDir || 'auto';
+            var joistW2 = 0.015, joistH2 = 0.05;
+            var jDir2 = lv.joistDir || 'auto';
             var bw2 = Q.w||40, bl2 = Q.l||60;
-            var spanWidth = (jDir === 'auto') ? (bw2 <= bl2) : (jDir === 'width');
+            var spanWidth2 = (jDir2==='auto')?(bw2<=bl2):(jDir2==='width');
 
-            if (spanWidth) {
-              // Joists span width (X axis), spaced along length (Z axis)
-              var nJoists = Math.floor(bl2 / (16/12)) + 1;
-              for (var ji = 0; ji <= nJoists; ji++) {
-                var jz = -halfL2 + (ji / nJoists) * (Q.l||60) * Sc;
-                var jGeo = new THREE.BoxGeometry((Q.w||40)*Sc, joistH, joistW);
-                var jMesh = new THREE.Mesh(jGeo, mJoist);
-                jMesh.position.set(0, yDeck - joistH/2 - deckThk/2, jz);
-                grps.framing.add(jMesh);
+            // Resolve zones
+            var zones2 = (lv.floorMode === 'full')
+              ? [{ x:0, y:0, w:bw2, d:bl2 }]
+              : (lv.floorZones||[]);
+            if (!zones2.length) return;
+
+            zones2.forEach(function(z) {
+              var halfW3 = (Q.w||40)/2 * Sc;
+              var halfL3 = (Q.l||60)/2 * Sc;
+              // Zone 3D position: plan x=0 is left edge (3D x=-halfW), plan y=0 is front (3D z=-halfL)
+              var zCx = (z.x + z.w/2 - (Q.w||40)/2) * Sc;
+              var zCz = (z.y + z.d/2 - (Q.l||60)/2) * Sc;
+              var zWPt = z.w * Sc;
+              var zDPt = z.d * Sc;
+
+              // Deck sheathing
+              var deckGeo = new THREE.BoxGeometry(zWPt, deckThk, zDPt);
+              var deckMesh = new THREE.Mesh(deckGeo, mDeck);
+              deckMesh.position.set(zCx, yDeck, zCz);
+              grps.framing.add(deckMesh);
+
+              // Joists 16" OC within this zone
+              if (spanWidth2) {
+                // Span width (X), space along depth (Z)
+                var nJ3 = Math.floor(z.d / (16/12)) + 1;
+                for (var ji3=0; ji3<=nJ3; ji3++) {
+                  var jz3 = (z.y + (ji3/nJ3)*z.d - (Q.l||60)/2) * Sc;
+                  var jg3 = new THREE.BoxGeometry(zWPt, joistH2, joistW2);
+                  var jm3 = new THREE.Mesh(jg3, mJoist);
+                  jm3.position.set(zCx, yDeck - joistH2/2 - deckThk/2, jz3);
+                  grps.framing.add(jm3);
+                }
+              } else {
+                // Span depth (Z), space along width (X)
+                var nJ4 = Math.floor(z.w / (16/12)) + 1;
+                for (var ji4=0; ji4<=nJ4; ji4++) {
+                  var jx4 = (z.x + (ji4/nJ4)*z.w - (Q.w||40)/2) * Sc;
+                  var jg4 = new THREE.BoxGeometry(joistW2, joistH2, zDPt);
+                  var jm4 = new THREE.Mesh(jg4, mJoist);
+                  jm4.position.set(jx4, yDeck - joistH2/2 - deckThk/2, zCz);
+                  grps.framing.add(jm4);
+                }
               }
-            } else {
-              // Joists span length (Z axis), spaced along width (X axis)
-              var nJoists2 = Math.floor(bw2 / (16/12)) + 1;
-              for (var ji2 = 0; ji2 <= nJoists2; ji2++) {
-                var jx = -halfW2 + (ji2 / nJoists2) * (Q.w||40) * Sc;
-                var jGeo2 = new THREE.BoxGeometry(joistW, joistH, (Q.l||60)*Sc);
-                var jMesh2 = new THREE.Mesh(jGeo2, mJoist);
-                jMesh2.position.set(jx, yDeck - joistH/2 - deckThk/2, 0);
-                grps.framing.add(jMesh2);
-              }
-            }
+            });
           });
 
           function addStudBox(ax,ay,az, bx,by,bz, sw2, mat, isPlate) {
@@ -22032,6 +22126,7 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
     var item = { category:'Yard', description:desc, sku:isLVL ? 'CLVL1178' : sku, quantity:qty };
     if (isLVL) {
       item.boardLen = boardLength;
+      item.isLVL = true;
       item.detail = 'LVL 11 7/8  |  ' + boardLength + "' board  |  qty " + qty + '  |  priced per linear ft';
     } else {
       item.detail = '2x12  |  ' + boardLength + "'";
@@ -24868,7 +24963,7 @@ window.SauceMaterials.calcDrumDoorHeaders = function(allDoors) {
       quantity:    g.qty,
       detail:      "2 per door  |  door width + 2'" + (g.boardLen ? '  |  ' + g.boardLen + "' LVL — priced per linear ft" : '')
     };
-    if (g.boardLen) item.boardLen = g.boardLen;
+    if (g.boardLen) { item.boardLen = g.boardLen; item.isLVL = true; }
     return item;
   });
 };
@@ -25042,7 +25137,7 @@ window.SauceMaterials.calcGarageDoorHeaders = function(allDoors) {
       quantity:    g.qty,
       detail:      "2 per door  |  door width + 2'" + (g.boardLen ? '  |  ' + g.boardLen + "' LVL — priced per linear ft" : '')
     };
-    if (g.boardLen) item.boardLen = g.boardLen;
+    if (g.boardLen) { item.boardLen = g.boardLen; item.isLVL = true; }
     return item;
   });
 };
@@ -30992,7 +31087,7 @@ window.SauceMaterials.calcLoftMaterials = function(Q, loftCfgs) {
     if (joistLen % 2 !== 0) joistLen++;
     var joistSku = 'SYP212' + (joistLen < 10 ? '0' + joistLen : joistLen);
     items.push({ category: cat, description: label + ' — Joists (2×12)', sku: joistSku, quantity: joistCount,
-      detail: '16" OC  |  ' + joistLen + "' length  |  " + joistCount + ' joists', boardLen: joistLen });
+      detail: '16" OC  |  ' + joistLen + "' length  |  " + joistCount + ' joists'});
 
     // ── JOIST HANGERS (2×12) ─────────────────────────────────────────────────
     items.push({ category: cat, description: label + ' — Joist Hangers', sku: 'JH212', quantity: joistCount * 2,
@@ -31014,7 +31109,7 @@ window.SauceMaterials.calcLoftMaterials = function(Q, loftCfgs) {
         if (postLen % 2 !== 0) postLen++;
         var postSku = 'PT66' + (postLen < 10 ? '0' + postLen : postLen);
         items.push({ category: cat, description: label + ' — Interior Posts (6×6)', sku: postSku, quantity: totalPosts,
-          detail: flH + "' floor ht + 4' burial  |  " + postRows + ' rows × ' + newPostsAlong + ' posts', boardLen: postLen });
+          detail: flH + "' floor ht + 4' burial  |  " + postRows + ' rows × ' + newPostsAlong + ' posts'});
         items.push({ category: cat, description: label + ' — Footing Pads', sku: 'PBFP16', quantity: totalPosts,
           detail: '1 per post  |  ' + totalPosts + ' posts' });
         items.push({ category: cat, description: label + ' — Sackcrete', sku: 'QCR', quantity: totalPosts * 2,
@@ -31031,15 +31126,15 @@ window.SauceMaterials.calcLoftMaterials = function(Q, loftCfgs) {
 
       // Stringers: 2× SYP21224 (one per side)
       items.push({ category: cat, description: label + ' — Stair Stringers (2×12×24)', sku: 'SYP21224', quantity: 2,
-        detail: '1 per side  |  2 stringers', boardLen: 24 });
+        detail: '1 per side  |  2 stringers'});
 
       // Treads: SYP21012 — one per step, 3' wide stair fits 1 per tread
       items.push({ category: cat, description: label + ' — Stair Treads (2×10×12)', sku: 'SYP21012', quantity: stepCt,
-        detail: '1 per step  |  ' + stepCt + ' steps @ 7.5" rise  |  ' + flH + "' floor height", boardLen: 12 });
+        detail: '1 per step  |  ' + stepCt + ' steps @ 7.5" rise  |  ' + flH + "' floor height"});
 
       // Header: 2× SYP21212
       items.push({ category: cat, description: label + ' — Stair Header (2×12×12)', sku: 'SYP21212', quantity: 2,
-        detail: 'stair header  |  2 boards', boardLen: 12 });
+        detail: 'stair header  |  2 boards'});
     }
   });
 
@@ -31076,58 +31171,61 @@ window.SauceMaterials.calcInteriorWallMaterials = function(Q, walls, levels) {
       var studLen = Math.ceil(wallH); if(studLen%2!==0) studLen++;
       var studSku = 'SYP26'+(studLen<10?'0'+studLen:studLen);
       items.push({ category:cat, description:label+' — Studs (2×6)', sku:studSku,
-        quantity:studCount, detail:'16" OC  |  '+Math.round(wallLen*10)/10+"' long  |  "+studCount+' studs', boardLen:studLen });
+        quantity:studCount, detail:'16" OC  |  '+Math.round(wallLen*10)/10+"' long  |  "+studCount+' studs'});
 
       // Plates: 3 standard, 4 if bearing (double top plate = 2 top + 1 bottom + 1 cap plate)
       var plateCt = Math.ceil(wallLen/16) * (bearing ? 4 : 3);
       items.push({ category:cat, description:label+' — Plates (2×6×16)'+(bearing?' [BEARING]':''), sku:'SYP2616',
-        quantity:plateCt, detail:(bearing?'4':'3')+' plates  |  '+Math.round(wallLen*10)/10+"' wall", boardLen:16 });
+        quantity:plateCt, detail:(bearing?'4':'3')+' plates  |  '+Math.round(wallLen*10)/10+"' wall"});
 
       // Door openings
       (iw.openings||[]).forEach(function(op, oi){
         var dw = op.width||3;
         var hdrLen = Math.ceil(dw+0.5); if(hdrLen%2!==0) hdrLen++;
         items.push({ category:cat, description:label+' Door '+(oi+1)+' — Header (2×10)', sku:'SYP210'+hdrLen, quantity:2,
-          detail:'doubled header  |  '+dw+"' opening", boardLen:hdrLen });
+          detail:'doubled header  |  '+dw+"' opening"});
         items.push({ category:cat, description:label+' Door '+(oi+1)+' — Framing Studs', sku:studSku, quantity:4,
-          detail:'2 king + 2 jack studs', boardLen:studLen });
+          detail:'2 king + 2 jack studs'});
       });
     });
 
-    // Floor deck if elevated level
+    // Floor deck — per zone
     if(lv.floorElevFt > 0) {
       var jDir = lv.joistDir||'auto';
       var bw2=Q.w||40, bl2=Q.l||60;
       var spanW = (jDir==='auto')?(bw2<=bl2):(jDir==='width');
-      var spanFt = spanW ? bw2 : bl2;
-      var lengthFt = spanW ? bl2 : bw2;
-      var sqft = bw2*bl2;
 
-      // OSB deck
-      var osbSheets = Math.ceil(sqft*1.1/32);
-      items.push({ category:cat, description:'Floor Deck OSB (5/8")', sku:'OSB5.8', quantity:osbSheets,
-        detail:bw2+"'×"+bl2+"'  |  "+sqft+' sqft  |  10% waste' });
+      var zones3 = (lv.floorMode === 'full')
+        ? [{ x:0, y:0, w:bw2, d:bl2 }]
+        : (lv.floorZones||[]);
+      if(!zones3.length) return;
 
-      // Sub floor glue
-      items.push({ category:cat, description:'Sub Floor Glue', sku:'SFG', quantity:Math.ceil(osbSheets/4),
-        detail:'1 tube per 4 sheets' });
+      zones3.forEach(function(z, zi) {
+        var zLabel = zones3.length > 1 ? ' Zone '+(zi+1)+' ('+Math.round(z.w)+"'×"+Math.round(z.d)+"')" : '';
+        var sqft = z.w * z.d;
+        var spanFt = spanW ? z.w : z.d;
+        var lengthFt = spanW ? z.d : z.w;
 
-      // Joists 2×12 @ 16" OC — size by span
-      var joistDepth = spanFt <= 12 ? 10 : 12;
-      var joistLen = Math.ceil(spanFt); if(joistLen%2!==0) joistLen++;
-      var joistCount = Math.ceil(lengthFt/(16/12)) + 1;
-      var joistSku = 'SYP2'+joistDepth+(joistLen<10?'0'+joistLen:joistLen);
-      items.push({ category:cat, description:'Floor Joists (2×'+joistDepth+')', sku:joistSku, quantity:joistCount,
-        detail:'16" OC  |  '+spanFt+"' span ("+( spanW?'width':'length')+")  |  "+joistCount+' joists  |  Joist dir: '+(spanW?'spans width':'spans length'), boardLen:joistLen });
+        var osbSheets = Math.ceil(sqft*1.1/32);
+        items.push({ category:cat, description:'Floor Deck OSB (5/8")'+zLabel, sku:'OSB5.8', quantity:osbSheets,
+          detail:Math.round(z.w)+"'×"+Math.round(z.d)+"'  |  "+Math.round(sqft)+' sqft  |  10% waste' });
 
-      // Joist hangers
-      var jhSku='JH2'+(joistDepth<10?'0'+joistDepth:joistDepth);
-      items.push({ category:cat, description:'Joist Hangers', sku:jhSku, quantity:joistCount*2,
-        detail:'2 per joist' });
+        items.push({ category:cat, description:'Sub Floor Glue'+zLabel, sku:'SFG', quantity:Math.ceil(osbSheets/4),
+          detail:'1 tube per 4 sheets' });
 
-      // Nails
-      items.push({ category:cat, description:'Nails (10d)', sku:'HDGRS10D30', quantity:1, detail:'deck nailing' });
-      items.push({ category:cat, description:'Nails (8d)',  sku:'HDGRS8D30',  quantity:1, detail:'framing' });
+        var joistDepth = spanFt <= 12 ? 10 : 12;
+        var joistLen = window.SauceMaterials.stockedSYP212Len(Math.ceil(spanFt));
+        var joistCount = Math.ceil(lengthFt/(16/12)) + 1;
+        var joistSku = 'SYP2'+joistDepth+(joistLen<10?'0'+joistLen:joistLen);
+        items.push({ category:cat, description:'Floor Joists (2×'+joistDepth+')'+zLabel, sku:joistSku, quantity:joistCount,
+          detail:'16" OC  |  '+Math.round(spanFt)+"' span  |  "+joistCount+' joists'});
+
+        var jhSku='JH2'+(joistDepth<10?'0'+joistDepth:joistDepth);
+        items.push({ category:cat, description:'Joist Hangers'+zLabel, sku:jhSku, quantity:joistCount*2, detail:'2 per joist' });
+
+        items.push({ category:cat, description:'Nails (10d)', sku:'HDGRS10D30', quantity:1, detail:'deck nailing' });
+        items.push({ category:cat, description:'Nails (8d)',  sku:'HDGRS8D30',  quantity:1, detail:'framing' });
+      });
     }
   });
 
@@ -32351,14 +32449,16 @@ window.openKitsModal = function() {
 // ═══════════════════════════════════════════════════════
 // FLOOR PLAN MODAL — interior wall designer
 // ═══════════════════════════════════════════════════════
-window.openFloorPlanModal = function() {
+window.openFloorPlanModal = function(drawZoneLevelId) {
   var existing = document.getElementById('floorPlanModal');
   if (existing) existing.remove();
   _ensureLevels();
 
   var bw = Q.w || 40, bl = Q.l || 60;
   var SNAP = 1;
-  var activeLevelId = (window._levelConfigs[0]||{}).id || 1;
+  // If called from "Draw Zone" button, switch to that level and activate zone tool
+  var activeLevelId = drawZoneLevelId || (window._levelConfigs[0]||{}).id || 1;
+  var _initialTool = drawZoneLevelId ? 'zone' : 'wall';
 
   (window._interiorWalls||[]).forEach(function(iw){
     if(!iw.openings) iw.openings=[];
@@ -32413,8 +32513,9 @@ window.openFloorPlanModal = function() {
   // Tool bar
   var modeBar = document.createElement('div');
   modeBar.style.cssText = 'display:flex;gap:6px;align-items:center;flex-shrink:0;flex-wrap:wrap;';
-  var drawState = { tool: 'wall', startFt: null };
+  var drawState = { tool: _initialTool, startFt: null, zonePt1: null };
   var selectedIdx = -1;
+  var selectedZoneId = -1;
 
   function mkTool(id, label, color, fn) {
     var b = document.createElement('button');
@@ -32427,29 +32528,30 @@ window.openFloorPlanModal = function() {
   var doorToolBtn  = mkTool('door',  'Door',    '#fbbf24', function(){ setTool('door'); });
   var bearToolBtn  = mkTool('bear',  'Bearing', '#f87171', function(){ setTool('bearing'); });
   var drainToolBtn = mkTool('drain', 'Drain',   '#22d3ee', function(){ setTool('drain'); });
+  var zoneToolBtn  = mkTool('zone',  '⬡ Floor Zone', '#34d399', function(){ setTool('zone'); });
 
   var instEl = document.createElement('div');
   instEl.style.cssText = 'font-size:10px;color:#64748b;flex:1;';
-  instEl.textContent = 'Click start → click end to draw wall on active level';
 
-  [wallToolBtn, doorToolBtn, bearToolBtn, drainToolBtn, instEl].forEach(function(el){ modeBar.appendChild(el); });
+  [wallToolBtn, doorToolBtn, bearToolBtn, drainToolBtn, zoneToolBtn, instEl].forEach(function(el){ modeBar.appendChild(el); });
   panel.appendChild(modeBar);
 
   function setTool(t) {
-    drawState.tool=t; drawState.startFt=null; selectedIdx=-1;
+    drawState.tool=t; drawState.startFt=null; drawState.zonePt1=null; selectedIdx=-1; selectedZoneId=-1;
     var instMap = {
       wall:'Click start → click end to draw wall on active level',
       door:'Click a wall to add a 3-ft door opening',
       bearing:'Click a wall to toggle load-bearing (double top plate)',
-      drain:'Click anywhere to place a drain/fixture'
+      drain:'Click anywhere to place a drain/fixture',
+      zone:'Click two corners to draw a floor zone on the active elevated level'
     };
     instEl.textContent = instMap[t]||'';
-    [wallToolBtn,doorToolBtn,bearToolBtn,drainToolBtn].forEach(function(b){ b.style.background='rgba(0,0,0,.25)'; });
-    var map={wall:wallToolBtn,door:doorToolBtn,bearing:bearToolBtn,drain:drainToolBtn};
+    [wallToolBtn,doorToolBtn,bearToolBtn,drainToolBtn,zoneToolBtn].forEach(function(b){ b.style.background='rgba(0,0,0,.25)'; });
+    var map={wall:wallToolBtn,door:doorToolBtn,bearing:bearToolBtn,drain:drainToolBtn,zone:zoneToolBtn};
     if(map[t]) map[t].style.background='rgba(255,255,255,.12)';
     if(ctx) redraw(null);
   }
-  setTool('wall');
+  setTool(_initialTool);
 
   // Canvas
   var PAD = 44;
@@ -32511,7 +32613,36 @@ window.openFloorPlanModal = function() {
     ctx.fillText(bw+"'",(tl.x+br.x)/2,tl.y-14);
     ctx.save();ctx.translate(tl.x-18,(tl.y+br.y)/2);ctx.rotate(-Math.PI/2);ctx.fillText(bl+"'",0,0);ctx.restore();
 
-    // Joist direction lines for active level
+    // Draw floor zones for all elevated levels
+    (window._levelConfigs||[]).forEach(function(lv){
+      if(lv.floorElevFt <= 0) return;
+      var zones = lv.floorMode === 'full'
+        ? [{ id:-1, x:0, y:0, w:bw, d:bl }]
+        : (lv.floorZones||[]);
+      zones.forEach(function(z){
+        var za = ftToCanvas(z.x, z.y);
+        var zb = ftToCanvas(z.x+z.w, z.y+z.d);
+        var isSel = (z.id === selectedZoneId && lv.id === activeLevelId);
+        // Fill
+        ctx.globalAlpha = 0.18;
+        ctx.fillStyle = lv.color;
+        ctx.fillRect(za.x, za.y, zb.x-za.x, zb.y-za.y);
+        ctx.globalAlpha = 1.0;
+        // Border
+        ctx.strokeStyle = isSel ? '#ef4444' : lv.color;
+        ctx.lineWidth = isSel ? 2 : 1.5;
+        ctx.setLineDash([5, 3]);
+        ctx.strokeRect(za.x, za.y, zb.x-za.x, zb.y-za.y);
+        ctx.setLineDash([]);
+        // Label
+        ctx.fillStyle = lv.color; ctx.font = 'bold 10px Outfit,sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(Math.round(z.w)+"'×"+Math.round(z.d)+"'", (za.x+zb.x)/2, (za.y+zb.y)/2 - 4);
+        ctx.font = '9px Outfit,sans-serif';
+        ctx.fillText(lv.name, (za.x+zb.x)/2, (za.y+zb.y)/2 + 8);
+      });
+    });
+
+    // Joist direction lines for active level (within its zones)
     var activeLv = (window._levelConfigs||[]).find(function(l){return l.id===activeLevelId;});
     if (activeLv && activeLv.floorElevFt > 0) {
       var jDir = activeLv.joistDir||'auto';
@@ -32519,18 +32650,31 @@ window.openFloorPlanModal = function() {
       ctx.strokeStyle='rgba(255,255,255,.07)'; ctx.lineWidth=0.8;
       ctx.setLineDash([3,4]);
       if (spanW2) {
-        // Joist lines horizontal (spanning width X), spaced along Y
         var nJ=Math.floor(bl/(16/12));
         for(var ji=0;ji<=nJ;ji++){var jy=ji*(16/12); var jp1=ftToCanvas(0,jy),jp2=ftToCanvas(bw,jy); ctx.beginPath();ctx.moveTo(jp1.x,jp1.y);ctx.lineTo(jp2.x,jp2.y);ctx.stroke();}
       } else {
-        // Joist lines vertical (spanning length Z), spaced along X
         var nJ2=Math.floor(bw/(16/12));
         for(var ji2=0;ji2<=nJ2;ji2++){var jx2=ji2*(16/12); var jp3=ftToCanvas(jx2,0),jp4=ftToCanvas(jx2,bl); ctx.beginPath();ctx.moveTo(jp3.x,jp3.y);ctx.lineTo(jp4.x,jp4.y);ctx.stroke();}
       }
       ctx.setLineDash([]);
-      // Label
       ctx.fillStyle='rgba(255,255,255,.25)'; ctx.font='9px Outfit,sans-serif'; ctx.textAlign='left';
       ctx.fillText(spanW2?'joists span width →':'joists span length ↕', tl.x+4, br.y-6);
+    }
+
+    // Zone draw preview
+    if(drawState.tool==='zone' && drawState.zonePt1 && mousePos){
+      var zp1=ftToCanvas(drawState.zonePt1.x, drawState.zonePt1.y);
+      var zpe=clampFt(canvasToFt(mousePos.x, mousePos.y));
+      var zp2=ftToCanvas(zpe.x, zpe.y);
+      var zrx=Math.min(zp1.x,zp2.x), zry=Math.min(zp1.y,zp2.y);
+      var zrw=Math.abs(zp2.x-zp1.x), zrh=Math.abs(zp2.y-zp1.y);
+      ctx.globalAlpha=0.25; ctx.fillStyle='#34d399'; ctx.fillRect(zrx,zry,zrw,zrh);
+      ctx.globalAlpha=1.0;
+      ctx.strokeStyle='#34d399'; ctx.lineWidth=1.5; ctx.setLineDash([4,3]);
+      ctx.strokeRect(zrx,zry,zrw,zrh); ctx.setLineDash([]);
+      var zwFt=Math.abs(zpe.x-drawState.zonePt1.x), zdFt=Math.abs(zpe.y-drawState.zonePt1.y);
+      ctx.fillStyle='#34d399'; ctx.font='bold 11px Outfit,sans-serif'; ctx.textAlign='center';
+      ctx.fillText(Math.round(zwFt)+"' × "+Math.round(zdFt)+"'", (zrx+zrx+zrw)/2, (zry+zry+zrh)/2);
     }
 
     // Draw all walls — active level full, others dimmed
@@ -32636,6 +32780,32 @@ window.openFloorPlanModal = function() {
     var cx2=(e.clientX-r.left)*sx, cy2=(e.clientY-r.top)*sy;
     var ft=clampFt(canvasToFt(cx2,cy2));
 
+    // Zone draw tool
+    if(drawState.tool==='zone'){
+      var lv2 = (window._levelConfigs||[]).find(function(l){ return l.id===activeLevelId; });
+      if(!lv2 || lv2.floorElevFt <= 0){
+        instEl.textContent = 'Switch to an elevated level (2nd Floor, etc.) to draw a floor zone';
+        return;
+      }
+      if(!drawState.zonePt1){
+        drawState.zonePt1 = ft;
+        instEl.textContent = 'Now click the opposite corner of the floor zone';
+      } else {
+        var zx = Math.min(drawState.zonePt1.x, ft.x);
+        var zy = Math.min(drawState.zonePt1.y, ft.y);
+        var zw = Math.abs(ft.x - drawState.zonePt1.x);
+        var zd = Math.abs(ft.y - drawState.zonePt1.y);
+        if(zw >= 1 && zd >= 1){
+          // Auto-switch level to partial mode
+          if(lv2.floorMode !== 'partial') lv2.floorMode = 'partial';
+          addFloorZone(activeLevelId, zx, zy, zw, zd);
+        }
+        drawState.zonePt1 = null;
+        instEl.textContent = 'Click two corners to draw another floor zone, or switch tools';
+      }
+      redraw(lastMouse); return;
+    }
+
     if(drawState.tool==='drain'){
       var drType=prompt('Drain type: sink | toilet | washer | floor | other','floor');
       if(!drType) return;
@@ -32717,6 +32887,10 @@ window.openFloorPlanModal = function() {
     if((e.key==='Delete'||e.key==='Backspace')&&selectedIdx>=0){
       window._interiorWalls.splice(selectedIdx,1);selectedIdx=-1;
       renderInteriorWalls();scheduleBuild();redraw(lastMouse);
+    }
+    if((e.key==='Delete'||e.key==='Backspace')&&selectedZoneId>=0){
+      var lv3=(window._levelConfigs||[]).find(function(l){return l.id===activeLevelId;});
+      if(lv3) { removeFloorZone(lv3.id, selectedZoneId); selectedZoneId=-1; redraw(lastMouse); }
     }
   });
 
