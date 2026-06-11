@@ -16446,145 +16446,16 @@ async function openLoadDesignModal(){
   var s = document.getElementById('loadDesignSearch');
   if(s) {
     s.value = '';
-    // Remove old listener to avoid duplicates, then re-add
-    s.oninput = function() { filterLoadDesigns(this.value); };
+    s.oninput = function() {
+      clearTimeout(window._searchHistoryTimer);
+      var term = this.value.trim();
+      if (!term) { searchAllHistory(); return; }
+      // Search locally first for instant feedback, then full history after short debounce
+      filterLoadDesigns(term);
+    };
   }
-  var list = document.getElementById('savedDesignList');
-  list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">Loading...</div>';
-  try {
-    var quotes = null;
-    var _salesman = (window.currentUser||{}).username || '';
-
-    // Try Supabase first (fast) -- fall back to GAS if unavailable
-    try {
-      quotes = await sbGetQuotes(_salesman);
-      if (quotes && quotes.length) { console.log('[Modal] Supabase: loaded', quotes.length, 'quotes'); window._sbListDirty = false; }
-    } catch(sbErr) { console.warn('[SB] list failed:', sbErr); quotes = null; }
-
-    // GAS fallback
-    if (!quotes || !quotes.length) {
-      console.log('[Modal] falling back to GAS');
-      var resp = await fetchWithTimeout(API_URL, {
-        method: 'POST', headers: {'Content-Type': 'text/plain'},
-        body: JSON.stringify({
-          action: 'getConfiguratorQuotes',
-          username: _salesman, token: getToken(), salesman: _salesman
-        })
-      }, 55000);
-      var data = await safeJson(resp);
-      quotes = data.quotes || data.designs || [];
-      console.log('[Modal] GAS fallback:', quotes.length, 'quotes');
-    }
-
-    if (!quotes || !quotes.length) {
-      list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">No saved quotes yet</div>';
-      return;
-    }
-    // Sort newest first
-    quotes.sort(function(a,b){ return (b.date||'').localeCompare(a.date||''); });
-    // Enrich each quote from configEncoded synchronously before rendering
-    function enrichFromConfig(d) {
-      if (d._cfgDecoded) return;
-      // First try displaySummary (new saves) — instant, no decode needed
-      var ds = d.displaySummary || {};
-      var ff = d.formFields || {};
-      if (ds.roofColor) {
-        ff.roofColor      = ff.roofColor      || ds.roofColor;
-        ff.wallColor      = ff.wallColor      || ds.wallColor;
-        ff.trimColor      = ff.trimColor      || ds.trimColor;
-        ff.wainscotColor  = ff.wainscotColor  || ds.wainscotColor;
-        ff.roofMetal      = ff.roofMetal      || ds.roofMetal;
-        ff.wallMetal      = ff.wallMetal      || ds.wallMetal;
-        ff.insulation     = ff.insulation     || ds.insulation;
-        ff.insulationRoof = ff.insulationRoof || (ds.insulRoof ? 'Yes' : '');
-        ff.insulationWalls= ff.insulationWalls|| (ds.insulWalls ? 'Yes' : '');
-        ff.concrete       = ff.concrete       || ds.concrete;
-        ff.wainscot       = ff.wainscot       || ds.wainscot;
-        ff.barjoist       = ff.barjoist       || (ds.barjoist ? 'Yes' : '');
-        ff.postWraps      = ff.postWraps      || (ds.postWraps ? 'Yes' : '');
-        ff.gutters        = ff.gutters        || (ds.gutters   ? 'Yes' : '');
-        ff.cupolaOn       = ff.cupolaOn       || (ds.cupolaOn  ? 'Yes' : '');
-        ff.cupolaSize     = ff.cupolaSize     || ds.cupolaSize || '';
-        ff.cupolaQty      = ff.cupolaQty      || ds.cupolaQty  || '';
-        ff.gutterType     = ff.gutterType     || ds.gutterType  || '';
-        ff.gutterGuard    = ff.gutterGuard    || (ds.gutterGuard ? 'Yes' : '');
-        ff.wetSetPosts    = ff.wetSetPosts    || (ds.wetSetPosts ? 'Yes' : '');
-        ff.postsOnTop     = ff.postsOnTop     || ds.postsOnTop  || '';
-        ff.lvlHeaders     = ff.lvlHeaders     || (ds.lvlHeaders ? 'Yes' : '');
-        ff.wainscotHt     = ff.wainscotHt     || ds.wainscotHt  || '';
-        ff.oh             = ff.oh             || ds.oh           || '';
-        ff.wallEnclosure  = ff.wallEnclosure  || ds.wallEnclosure || '';
-        ff.wdAwning       = ff.wdAwning       || ds.wdAwning      || '';
-        ff.wdAwningQty    = ff.wdAwningQty    || ds.wdAwningQty   || '';
-        ff.winAwning      = ff.winAwning      || ds.winAwning     || '';
-        ff.winAwningQty   = ff.winAwningQty   || ds.winAwningQty  || '';
-        ff.ssAwning       = ff.ssAwning       || ds.ssAwning      || '';
-        ff.ssAwningQty    = ff.ssAwningQty    || ds.ssAwningQty   || '';
-        ff.roofPitch      = ff.roofPitch      || ds.pitch;
-        ff.truss          = ff.truss          || ds.truss;
-        ff.mbPostSize     = ff.mbPostSize     || ds.mbPostSize;
-        ff.eavePostSpacing= ff.eavePostSpacing|| ds.eavePostSpacing;
-        ff.trussSpacing   = ff.trussSpacing   || ds.trussSpacing;
-        d.formFields = ff;
-        d._cfgDecoded = true;
-        return;
-      }
-      // Fall back to decoding configEncoded (old saves)
-      if (!d.configEncoded) return;
-      try {
-        var cfg = safeDecode(d.configEncoded);
-        if (!cfg) return;
-        var sf   = cfg.salesFields || {};
-        var Q2   = cfg.Q           || {};
-        var cols = cfg.colors      || {};
-        var doors= cfg.doors       || [];
-        var wds  = cfg.walkDoors   || [];
-        var wins = cfg.windows     || [];
-        var sheds= cfg.sheds       || [];
-        ff.roofColor      = ff.roofColor      || sf.roofColor      || cols.roof      || '';
-        ff.wallColor      = ff.wallColor      || sf.wallColor      || cols.wall      || '';
-        ff.trimColor      = ff.trimColor      || sf.trimColor      || cols.trim      || '';
-        ff.wainscotColor  = ff.wainscotColor  || sf.wainscotColor  || cols.wainscot  || '';
-        ff.roofMetal      = ff.roofMetal      || sf.roofMetal      || '';
-        ff.wallMetal      = ff.wallMetal      || sf.wallMetal      || '';
-        ff.insulation     = ff.insulation     || sf.insulation     || '';
-        ff.insulationRoof = ff.insulationRoof || (sf.insulRoof  ? 'Yes' : '');
-        ff.insulationWalls= ff.insulationWalls|| (sf.insulWalls ? 'Yes' : '');
-        ff.concrete       = ff.concrete       || (sf.mainConcrete !== 'None' ? (sf.mainConcrete||'') : '');
-        ff.wainscot       = ff.wainscot       || sf.wainscot       || '';
-        ff.barjoist       = ff.barjoist       || (sf.barjoist   ? 'Yes' : '');
-        ff.postWraps      = ff.postWraps      || (sf.postWraps  ? 'Yes' : '');
-        ff.gutters        = ff.gutters        || (sf.gutters    ? 'Yes' : '');
-        var _cupExtras = cfg.extras || {};
-        ff.cupolaOn       = ff.cupolaOn       || (_cupExtras.cupolaOn ? 'Yes' : '');
-        ff.cupolaSize     = ff.cupolaSize     || _cupExtras.cupolaSize || '';
-        ff.cupolaQty      = ff.cupolaQty      || String(_cupExtras.cupolaQty||'') || '';
-        ff.roofPitch      = ff.roofPitch      || String(Q2.pitch||'');
-        ff.truss          = ff.truss          || Q2.truss          || '';
-        ff.mbPostSize     = ff.mbPostSize     || sf.mbPostSize     || '';
-        ff.eavePostSpacing= ff.eavePostSpacing|| sf.eavePS         || '';
-        ff.trussSpacing   = ff.trussSpacing   || sf.trussSpacing   || '';
-        var gdIdx = 1;
-        doors.filter(function(x){return x.type==='garage';}).forEach(function(gd){
-          if (!ff['garageDoor'+gdIdx+'Type']) ff['garageDoor'+gdIdx+'Type'] = gd.w+'x'+gd.h+(gd.insulated?'IN':'');
-          gdIdx++;
-        });
-        wds.forEach(function(wd,i){ if(!ff['walkDoor'+(i+1)+'Type']) ff['walkDoor'+(i+1)+'Type'] = wd.type||'3/0'; });
-        wins.forEach(function(w,i){ if(!ff['window'+(i+1)+'Type'])   ff['window'+(i+1)+'Type']   = w.type||'VW33'; });
-        if (sheds[0] && !ff.ssWidth)  { ff.ssWidth=String(sheds[0].w||''); ff.ssLength=String(sheds[0].l||''); }
-        if (sheds[1] && !ff.ss2Width) { ff.ss2Width=String(sheds[1].w||''); ff.ss2Length=String(sheds[1].l||''); }
-        d.formFields = ff;
-        d._cfgDecoded = true;
-      } catch(e) { console.warn('[enrich]', d.quoteId, e.message); }
-    }
-    quotes.forEach(enrichFromConfig);
-    window._savedDesigns = quotes;
-    var curSearch = (document.getElementById('loadDesignSearch')||{}).value||'';
-    if (curSearch) { filterLoadDesigns(curSearch); return; }
-    _renderDesignList(quotes, list);
-  } catch(err){
-    list.innerHTML = '<div style="color:#ef4444;font-size:13px;text-align:center;padding:20px;">Error: '+err.message+'</div>';
-  }
+  // Load full history immediately on open
+  await searchAllHistory();
 }
 function closeLoadDesignModal(){
   document.getElementById('loadDesignModal').style.display = 'none';
@@ -16647,11 +16518,7 @@ async function searchAllHistory() {
   var term = ((document.getElementById('loadDesignSearch')||{}).value||'').trim();
   var list = document.getElementById('savedDesignList');
   if (!list) return;
-  if (!term) {
-    list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">Enter a name, phone, or quote ID to search all history</div>';
-    return;
-  }
-  list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">Search Searching all history for <strong style="color:#f0f3f7;">' + term + '</strong>…</div>';
+  list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">' + (term ? 'Searching all history for <strong style="color:#f0f3f7;">' + term + '</strong>…' : 'Loading full history…') + '</div>';
   try {
     var resp = await fetchWithTimeout(API_URL, {
       method: 'POST', headers: {'Content-Type':'text/plain'},
@@ -16670,8 +16537,8 @@ async function searchAllHistory() {
     var results = data.quotes || [];
     if (!results.length) {
       list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">'
-        + 'No quotes found for <strong style="color:#f0f3f7;">' + term + '</strong>'
-        + '<div style="font-size:11px;margin-top:6px;color:#666;">Try a different name, phone number, city, or quote ID</div></div>';
+        + (term ? 'No quotes found for <strong style="color:#f0f3f7;">' + term + '</strong><div style="font-size:11px;margin-top:6px;color:#666;">Try a different name, phone number, city, or quote ID</div>' : 'No quotes found')
+        + '</div>';
       return;
     }
     // Merge into _savedDesigns so load works correctly
@@ -16679,7 +16546,10 @@ async function searchAllHistory() {
       var exists = (window._savedDesigns||[]).find(function(x){ return x.quoteId===r.quoteId; });
       if (!exists) { if (!window._savedDesigns) window._savedDesigns=[]; window._savedDesigns.push(r); }
     });
-    list.innerHTML = '<div style="font-size:10px;color:#FF8200;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:6px 4px 8px;text-align:center;">Full History — ' + results.length + ' result' + (results.length!==1?'s':'') + ' for "' + term + '"</div>';
+    var header = term
+      ? '<div style="font-size:10px;color:#FF8200;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:6px 4px 8px;text-align:center;">Full History — ' + results.length + ' result' + (results.length!==1?'s':'') + ' for "' + term + '"</div>'
+      : '<div style="font-size:10px;color:#FF8200;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:6px 4px 8px;text-align:center;">All History — ' + results.length + ' quote' + (results.length!==1?'s':'') + '</div>';
+    list.innerHTML = header;
     _renderDesignList(results, list, true);
   } catch(err) {
     list.innerHTML = '<div style="color:#ef4444;font-size:13px;text-align:center;padding:20px;">Search error: ' + err.message + '</div>';
