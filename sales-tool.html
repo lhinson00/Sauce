@@ -15671,6 +15671,413 @@ function generatePostLayout() {
         doc.text('Sauce Estimator  |  \u00A9 '+new Date().getFullYear(),PW-MG,PH-MG,{align:'right'});
     }
 
+    // === PAGES 3-4: BUILDING ELEVATIONS ===
+    (function drawElevations(){
+        // ── shared helpers ──────────────────────────────────────────────────
+        var oh     = parseFloat(Q.oh||0)/12;                 // overhang in feet
+        var ohIn   = oh*12;                                  // overhang in inches
+        var ridgeH = bh + (bw/2)*(pitch/12);                // ridge height in feet
+        // Feet-to-string formatter (reuse F from outer scope)
+        // Door lookup helpers
+        function doorsOn(wall){ return allDoors.filter(function(d){return d.wall===wall;}); }
+
+        // shed configs that face a given wall (appear on that elevation)
+        var shedCfgs = window._shedConfigs||[];
+        function shedsOn(wall){ return shedCfgs.filter(function(s){return s.wall===wall;}); }
+
+        // ── title block ─────────────────────────────────────────────────────
+        var custName = (document.getElementById('st_name')||{}).value||'';
+        var dateStr  = new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+        var bldgDesc = bw+"' \xD7 "+bl+"' \xD7 "+bh+"'  |  "+pitch+"/12  |  "+(oh>0?oh+"\u2019 OH  |  ":"")+truss+" Truss";
+
+        // ── page layout constants ────────────────────────────────────────────
+        var PW=792,PH=612,MG=24;
+        var TB=28; // title block height at top
+        var FB=22; // footer height at bottom
+
+        function drawTitleBlock(doc,pageTitle,pageNum){
+            // top rule
+            doc.setDrawColor(60);doc.setLineWidth(1.0);doc.line(MG,MG+TB-2,PW-MG,MG+TB-2);
+            // company / project info
+            doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(0);
+            doc.text('BUILDING ELEVATION — '+pageTitle,MG,MG+12);
+            doc.setFont('helvetica','normal');doc.setFontSize(7);doc.setTextColor(80);
+            doc.text(bldgDesc,MG,MG+21);
+            if(custName){doc.setFont('helvetica','bold');doc.setFontSize(7);doc.setTextColor(0);doc.text('CUSTOMER: '+custName.toUpperCase(),PW/2,MG+12,{align:'center'});}
+            doc.setFont('helvetica','normal');doc.setFontSize(7);doc.setTextColor(80);
+            doc.text('DATE: '+dateStr,PW-MG,MG+12,{align:'right'});
+            doc.text('SHEET '+pageNum,PW-MG,MG+21,{align:'right'});
+            // bottom rule
+            doc.setDrawColor(60);doc.setLineWidth(0.5);doc.line(MG,PH-FB,PW-MG,PH-FB);
+        }
+
+        // ── drawing area ─────────────────────────────────────────────────────
+        var DA_L=MG+6, DA_R=PW-MG-6;
+        var DA_T=MG+TB+8, DA_B=PH-FB-8;
+        var DA_W=DA_R-DA_L, DA_H=DA_B-DA_T;
+
+        // ── arrow helper ─────────────────────────────────────────────────────
+        function arrowH(doc,x1,x2,y,label,above){
+            var d=above?-1:1;
+            doc.setLineWidth(0.4);doc.setDrawColor(100);
+            // shaft
+            if(Math.abs(x2-x1)>6){
+                doc.line(x1,y,x2,y);
+                var aw=3.5,ah=1.6;
+                // arrowheads
+                doc.triangle(x1,y,x1+aw,y-ah,x1+aw,y+ah,'F');
+                doc.triangle(x2,y,x2-aw,y-ah,x2-aw,y+ah,'F');
+            }
+            // tick marks
+            doc.setLineWidth(0.3);
+            doc.line(x1,y-2.5,x1,y+2.5);doc.line(x2,y-2.5,x2,y+2.5);
+            doc.setFont('helvetica','normal');doc.setFontSize(6.5);doc.setTextColor(40);
+            doc.text(label,(x1+x2)/2,y+d*6.5,{align:'center'});
+        }
+        function arrowV(doc,x,y1,y2,label,left){
+            var d=left?-1:1;
+            doc.setLineWidth(0.4);doc.setDrawColor(100);
+            if(Math.abs(y2-y1)>6){
+                doc.line(x,y1,x,y2);
+                var aw=1.6,ah=3.5;
+                doc.triangle(x,y1,x-aw,y1+ah,x+aw,y1+ah,'F');
+                doc.triangle(x,y2,x-aw,y2-ah,x+aw,y2-ah,'F');
+            }
+            doc.setLineWidth(0.3);
+            doc.line(x-2.5,y1,x+2.5,y1);doc.line(x-2.5,y2,x+2.5,y2);
+            doc.setFont('helvetica','normal');doc.setFontSize(6.5);doc.setTextColor(40);
+            doc.text(label,x+d*8,(y1+y2)/2,{align:'center',angle:left?90:270});
+        }
+
+        // ── draw one elevation ───────────────────────────────────────────────
+        // wallId: 'front','back','left','right'
+        // buildingFaceFt: face width in feet (gable=bw, eave=bl)
+        // isGable: true for front/back, false for left/right
+        function drawElevation(doc,wallId){
+            var isGable=(wallId==='front'||wallId==='back');
+            var faceFt = isGable ? bw : bl;   // width of this face in feet
+            var ohTot  = oh;                   // one-side overhang in feet (same both ends for gable)
+
+            // ── scale: fit face + both overhangs + dim space into drawing area ──
+            var dimSpace=54;  // pt reserved for dimension lines on both sides
+            var maxH = DA_H - 60; // headroom for height dims + labels
+            var maxW = DA_W - dimSpace*2;
+            // Building extent: face + 2*overhang (eave extends both ends for gable view)
+            var totalFaceFt = isGable ? (faceFt+2*oh) : (faceFt+2*oh);
+            var totalHFt    = ridgeH + 1.5; // ridge + some air
+            var sc = Math.min(maxW/totalFaceFt, maxH/totalHFt);
+            // Max 18pt/ft to keep it from being tiny on wide buildings
+            sc = Math.min(sc, 18);
+
+            var facePt    = faceFt*sc;
+            var ohPt      = oh*sc;
+            var totalWPt  = facePt+2*ohPt;
+            var eavePt    = bh*sc;
+            var ridgePt   = ridgeH*sc;
+
+            // Origin: bottom-left of building face (excluding overhang) on drawing area
+            // Center horizontally
+            var cx = (DA_L+DA_R)/2;
+            var x0 = cx - totalWPt/2 + ohPt;  // building left wall X
+            var x1 = x0 + facePt;              // building right wall X
+            var xL = x0 - ohPt;                // overhang left tip
+            var xR = x1 + ohPt;                // overhang right tip
+            // Bottom of building = grade line, placed 45pt above DA_B
+            var yGrd = DA_B - 42;
+            var yEave = yGrd - eavePt;
+            var yRidge = yGrd - ridgePt;
+
+            // ── doors on this face ──────────────────────────────────────────
+            var faceDoors = doorsOn(wallId);
+
+            // For gable faces: door offsets run left→right along building width
+            // For eave faces: door offsets run left→right along building length
+            // PBQ convention: offset = feet from left end of wall (left eave: front→back)
+            function doorX(d){
+                var off=d.offset||0;
+                if(wallId==='back') off=faceFt-off-d.w; // mirror for rear view
+                return x0+off*sc;
+            }
+
+            // ── sheds on this face ──────────────────────────────────────────
+            var faceShedsRaw = shedsOn(wallId);
+            // Compute shed screen extents
+            function shedExtent(s){
+                var isE2=(s.wall==='left'||s.wall==='right');
+                var mainFt=isE2?bl:bw;
+                var sLft=Math.min(s.l||10,mainFt);
+                var off2=0,sp=s.position||'center';
+                if(sp==='start')off2=0;
+                else if(sp==='end')off2=mainFt-sLft;
+                else if(sp==='custom')off2=Math.max(0,Math.min((s.offsetFt||0),mainFt-sLft));
+                else off2=(mainFt-sLft)/2;
+                // for eave elevations the shed runs perpendicular — show as depth
+                // for gable elevations a side shed appears as a rectangle on the side
+                return {off:off2,len:sLft,w:s.w||10};
+            }
+
+            // ── grade line ──────────────────────────────────────────────────
+            doc.setDrawColor(140);doc.setLineWidth(0.5);doc.setLineDashPattern([4,2.5],0);
+            doc.line(DA_L+4,yGrd,DA_R-4,yGrd);doc.setLineDashPattern([],0);
+            doc.setFont('helvetica','normal');doc.setFontSize(6);doc.setTextColor(140);
+            doc.text('GRADE LINE (GL)',DA_L+6,yGrd-2);
+
+            // ── hatch fill: building walls (light gray) ─────────────────────
+            doc.setFillColor(242);doc.setDrawColor(0);
+            doc.rect(x0,yEave,facePt,eavePt,'F');
+
+            // ── shed profiles ───────────────────────────────────────────────
+            faceShedsRaw.forEach(function(s){
+                if(!isGable) return; // eave elevations: side sheds show as lean-to profile
+                // on gable views: shed appears on one side or other — skip for now
+                // (handled in eave view section below)
+            });
+
+            // Lean-to / side sheds visible on eave elevations
+            if(!isGable){
+                var wallSide=(wallId==='left');
+                shedCfgs.forEach(function(s){
+                    if(s.wall!=='left'&&s.wall!=='right') return; // gable-attached skips on eave view
+                    if(s.wall===wallId) return; // the shed on THIS eave wall shows as extended profile
+                    // Show sheds on OPPOSITE eave as partial outline
+                });
+                // Sheds directly on this eave wall — extend the building profile outward
+                shedsOn(wallId).forEach(function(s){
+                    var se=shedExtent(s);
+                    var sx0=x0+se.off*sc;
+                    var sx1=sx0+se.len*sc;
+                    var sWPt=s.w*sc;
+                    var sHFt=s.h||bh*0.8;
+                    var sPitch=s.ltPitch||1;
+                    var sEaveFt=sHFt;
+                    var sRidgeFt=sEaveFt+(s.w/2)*(sPitch/12);
+                    var sEavePt2=sEaveFt*sc;
+                    var sRidgePt2=sRidgeFt*sc;
+                    // Lean-to: show as rectangle extending outward from building
+                    // On a LEFT wall elevation looking east: shed extends to viewer's left
+                    var sDir=wallId==='left'?-1:1;
+                    var sxBase=wallId==='left'?x0:x1;
+                    // Shed body (depth = s.w, height = s.h or shed eave)
+                    var sxO=sxBase+sDir*sWPt;
+                    doc.setFillColor(235);doc.setDrawColor(0);doc.setLineWidth(0.5);
+                    doc.rect(Math.min(sxBase,sxO),yGrd-sEavePt2,sWPt,sEavePt2,'FD');
+                    // Lean-to roofline (mono-pitch from building wall down to outer edge)
+                    var sRoofHigh=yGrd-sRidgePt2;
+                    var sRoofLow=yGrd-sEavePt2;
+                    doc.setLineWidth(1.0);
+                    doc.line(sxBase,sRoofHigh,sxO,sRoofLow);
+                    // Overhang tip
+                    var sOhPt=Math.min(oh,0.5)*sc;
+                    doc.line(sxO,sRoofLow,sxO+sDir*sOhPt,sRoofLow);
+                });
+                shedsOn(wallId).forEach(function(s){
+                    // On this wall's OWN elevation: show the face of the shed as a building-width profile
+                    var se=shedExtent(s);
+                    // The shed's face (same length as building) — appears as lean-to roof above portion
+                    var sHFt=s.h||bh*0.8;
+                    var sPitch=s.ltPitch||1;
+                    var sRidgeFtS=sHFt+(s.w/2)*(sPitch/12);
+                    // annotation only — shed label
+                    doc.setFont('helvetica','italic');doc.setFontSize(6);doc.setTextColor(120);
+                    doc.text('LEAN-TO ATTACHMENT ('+(s.l||10)+"' \xD7 "+s.w+"')",x0+facePt/2,yEave-10,{align:'center'});
+                });
+            }
+
+            // Gable elevations: show side sheds as rectangular projections on eave sides
+            if(isGable){
+                ['left','right'].forEach(function(side){
+                    shedsOn(side).forEach(function(s){
+                        var sHFt=s.h||bh*0.8;
+                        var sWPt=s.w*sc;
+                        var sEavePt2=sHFt*sc;
+                        var xSide=side==='left'?x0:x1;
+                        var xSideO=side==='left'?x0-sWPt:x1+sWPt;
+                        // overhang
+                        var sOh=Math.min(oh,0.5)*sc;
+                        doc.setFillColor(232);doc.setDrawColor(120);doc.setLineWidth(0.5);
+                        doc.rect(Math.min(xSide,xSideO),yGrd-sEavePt2,sWPt,sEavePt2,'FD');
+                        // shed roofline (lean-to from building wall down to outer)
+                        var sPitch=s.ltPitch||1;
+                        var sRidgeFtS=sHFt+(s.w/2)*(sPitch/12);
+                        doc.setDrawColor(60);doc.setLineWidth(1.0);
+                        doc.line(xSide,yGrd-sRidgeFtS*sc,xSideO,yGrd-sEavePt2);
+                        doc.line(xSideO,yGrd-sEavePt2,xSideO+(side==='right'?sOh:-sOh),yGrd-sEavePt2);
+                        // shed label
+                        doc.setFont('helvetica','italic');doc.setFontSize(5.5);doc.setTextColor(100);
+                        var lx=(xSide+xSideO)/2,ly=yGrd-sEavePt2-6;
+                        doc.text("SHED "+s.l+"'\xD710'",lx,ly,{align:'center'});
+                    });
+                });
+            }
+
+            // ── door openings ──────────────────────────────────────────────
+            faceDoors.forEach(function(d){
+                var dxL=doorX(d);
+                var dxR=dxL+d.w*sc;
+                var dHPt=(d.h||0)*sc;
+                if(dHPt<2)dHPt=Math.min((bh*0.75)*sc, eavePt*0.85);
+                var dyT=yGrd-dHPt;
+                // white-out opening
+                doc.setFillColor(255);doc.rect(dxL,dyT,d.w*sc,dHPt,'F');
+                // door frame lines
+                doc.setDrawColor(80);doc.setLineWidth(0.6);
+                doc.line(dxL,yGrd,dxL,dyT);
+                doc.line(dxR,yGrd,dxR,dyT);
+                doc.line(dxL,dyT,dxR,dyT);
+                // header hatch (2 lines to suggest header)
+                doc.setLineWidth(0.3);doc.setDrawColor(140);
+                var hT=dHPt>20?10:6;
+                doc.rect(dxL,dyT,d.w*sc,hT);
+                // door label below grade
+                doc.setFont('helvetica','bold');doc.setFontSize(5.5);doc.setTextColor(40);
+                var dtype=d.type==='garage'?'OHD':'WD';
+                doc.text(dtype+' '+d.w+"'x"+d.h+"'",(dxL+dxR)/2,yGrd+9,{align:'center'});
+            });
+
+            // ── main wall outline (over fills) ──────────────────────────────
+            doc.setDrawColor(0);doc.setLineWidth(1.5);
+            doc.line(x0,yGrd,x0,yEave);
+            doc.line(x1,yGrd,x1,yEave);
+            doc.line(x0,yEave,x1,yEave);
+
+            // ── roof outline ────────────────────────────────────────────────
+            var xMid=(x0+x1)/2;
+            // Eave overhangs
+            doc.setFillColor(228);
+            // Roof fill (gable triangle from eave to ridge)
+            var pts=[[xL,yEave],[xMid,yRidge],[xR,yEave]];
+            // jsPDF triangle
+            doc.setLineWidth(1.2);doc.setDrawColor(0);
+            doc.line(xL,yEave,xMid,yRidge);
+            doc.line(xMid,yRidge,xR,yEave);
+            // eave line (top of wall)
+            doc.line(xL,yEave,xR,yEave);
+            // ridge cap tick
+            doc.setLineWidth(0.6);doc.line(xMid-4,yRidge,xMid+4,yRidge);
+
+            // ── posts (subtle vertical ticks on the wall face) ─────────────
+            var wallPosts=wp[wallId]||[];
+            doc.setDrawColor(100);doc.setLineWidth(0.5);
+            wallPosts.forEach(function(p){
+                var px;
+                if(isGable){
+                    // gable: posts at p.ft from left edge of bw
+                    px=x0+p.ft*sc;
+                } else {
+                    // eave: posts at p.ft from front of bl
+                    px=x0+p.ft*sc;
+                }
+                // Don't draw if inside a door opening
+                var inDoor=faceDoors.some(function(d){
+                    var off=d.offset||0;
+                    if(wallId==='back') off=faceFt-off-d.w;
+                    return p.ft>off+0.2 && p.ft<off+d.w-0.2;
+                });
+                if(inDoor) return;
+                doc.setLineWidth(p.jamb?0.8:0.4);
+                doc.setDrawColor(p.jamb?40:130);
+                // short tick from eave down — subtle, not full height
+                var tickH=Math.min(eavePt*0.18, 12);
+                doc.line(px,yEave,px,yEave+tickH);
+                doc.line(px,yGrd,px,yGrd-tickH);
+                // dashed center line suggesting post
+                if(!p.jamb){
+                    doc.setLineDashPattern([1.5,2],0);
+                    doc.line(px,yEave+tickH,px,yGrd-tickH);
+                    doc.setLineDashPattern([],0);
+                }
+            });
+
+            // ── pitch marker ────────────────────────────────────────────────
+            var pmX=xR+16,pmY=yEave;
+            var pmW=18,pmH=pmW*(pitch/12);
+            doc.setDrawColor(80);doc.setLineWidth(0.5);
+            doc.rect(pmX,pmY-pmH,pmW,pmH);
+            doc.setLineWidth(1.0);doc.line(pmX,pmY,pmX+pmW,pmY-pmH);
+            doc.setFont('helvetica','bold');doc.setFontSize(7);doc.setTextColor(60);
+            doc.text(String(pitch),(pmX+pmX+pmW)/2,pmY-pmH-2,{align:'center'});
+            doc.setFillColor(0);
+            doc.text('12',pmX+pmW-3,pmY+6,{align:'center'});
+            doc.setLineWidth(0.6);
+            doc.line(pmX,pmY+1,pmX+pmW,pmY+1);// horizontal reference
+
+            // ── dimension lines ─────────────────────────────────────────────
+            // Width (along bottom, below grade)
+            var dimY=yGrd+22;
+            arrowH(doc,x0,x1,dimY,F(faceFt*12),false);
+            // Total with overhang (if oh>0)
+            if(oh>0.01){
+                arrowH(doc,xL,xR,dimY+14,F((faceFt+2*oh)*12)+' w/oh',false);
+            }
+            // Eave height (left side)
+            var dimXL=x0-dimSpace+10;
+            arrowV(doc,dimXL,yGrd,yEave,F(bh*12)+'  EH',true);
+            // Ridge height (right side, only on gable)
+            if(isGable){
+                var dimXR=x1+dimSpace-14;
+                arrowV(doc,dimXR,yGrd,yRidge,F(ridgeH*12)+'  RH',false);
+            }
+            // Post spacing callout (small, near bottom on eave walls)
+            if(!isGable){
+                var ps=((WALLS||[]).find(function(w){return w.id===wallId;})||{}).postSpacing||Q.postSpacing||10;
+                doc.setFont('helvetica','normal');doc.setFontSize(6);doc.setTextColor(120);
+                doc.text('POST SPACING: '+ps+"' O.C.",x0,DA_B-6);
+            }
+
+            // ── compass direction label ──────────────────────────────────────
+            var dirs={front:'(LOOKING SOUTH)',back:'(LOOKING NORTH)',left:'(LOOKING EAST)',right:'(LOOKING WEST)'};
+            doc.setFont('helvetica','normal');doc.setFontSize(6.5);doc.setTextColor(100);
+            doc.text(dirs[wallId]||'',cx,DA_T+10,{align:'center'});
+        }
+
+        // ── PAGE 3: FRONT + REAR ────────────────────────────────────────────
+        doc.addPage('letter','landscape');
+        drawTitleBlock(doc,'FRONT & REAR ELEVATIONS','3 OF 5');
+        // Split page into left and right halves
+        var halfW=(DA_R-DA_L)/2-6;
+        var savedL=DA_L,savedR=DA_R;
+
+        // Left half: Front
+        DA_R=DA_L+halfW;
+        doc.setFont('helvetica','bold');doc.setFontSize(7.5);doc.setTextColor(0);
+        doc.text('FRONT ELEVATION',(DA_L+DA_R)/2,DA_T+2,{align:'center'});
+        drawElevation(doc,'front');
+
+        // divider
+        doc.setDrawColor(200);doc.setLineWidth(0.3);
+        doc.line((DA_L+DA_L+halfW*2+12)/2,MG+TB+4,(DA_L+DA_L+halfW*2+12)/2,PH-FB-4);
+
+        // Right half: Rear
+        DA_L=savedL+halfW+12;DA_R=savedR;
+        doc.setFont('helvetica','bold');doc.setFontSize(7.5);doc.setTextColor(0);
+        doc.text('REAR ELEVATION',(DA_L+DA_R)/2,DA_T+2,{align:'center'});
+        drawElevation(doc,'back');
+
+        DA_L=savedL;DA_R=savedR;
+
+        // ── PAGE 4: LEFT + RIGHT ────────────────────────────────────────────
+        doc.addPage('letter','landscape');
+        drawTitleBlock(doc,'LEFT & RIGHT SIDE ELEVATIONS','4 OF 5');
+
+        // Left half: Left Eave
+        DA_R=DA_L+halfW;
+        doc.setFont('helvetica','bold');doc.setFontSize(7.5);doc.setTextColor(0);
+        doc.text('LEFT SIDE ELEVATION (EAVE)',(DA_L+DA_R)/2,DA_T+2,{align:'center'});
+        drawElevation(doc,'left');
+
+        // divider
+        doc.setDrawColor(200);doc.setLineWidth(0.3);
+        doc.line((savedL+savedL+halfW*2+12)/2,MG+TB+4,(savedL+savedL+halfW*2+12)/2,PH-FB-4);
+
+        // Right half: Right Eave
+        DA_L=savedL+halfW+12;DA_R=savedR;
+        doc.setFont('helvetica','bold');doc.setFontSize(7.5);doc.setTextColor(0);
+        doc.text('RIGHT SIDE ELEVATION (EAVE)',(DA_L+DA_R)/2,DA_T+2,{align:'center'});
+        drawElevation(doc,'right');
+
+        DA_L=savedL;DA_R=savedR;
+    })();
+
     // Mobile-safe PDF output: open in new tab instead of triggering download
     var pdfBlob = doc.output('blob');
     var blobUrl = URL.createObjectURL(pdfBlob);
