@@ -1577,8 +1577,8 @@ body.customer-mode #custColorChartLink { display: block !important; }
       <!-- INTERIOR WALLS (stud frame only) -->
       <div class="sec" id="secInteriorWalls" style="display:none;">
         <div class="sec-title"><span class="icon">🧱</span>Interior Walls</div>
-        <div id="interiorWallList"></div>
-        <button class="opening-add-btn" onclick="addInteriorWall()">+ Add Interior Wall</button>
+        <button class="act-btn secondary" style="width:100%;" onclick="openFloorPlanModal()">✏️ Design Floor Plan</button>
+        <div id="interiorWallList" style="margin-top:6px;"></div>
       </div>
 
 
@@ -30668,6 +30668,8 @@ window.SauceMaterials.calcInteriorWallMaterials = function(Q, walls) {
 
   return items;
 };
+
+window.SauceMaterials.calculate = function(forcedType) {
   var SM = window.SauceMaterials;
   var Q = window._Q;
   var WALLS = window._WALLS;
@@ -31880,6 +31882,255 @@ window.openKitsModal = function() {
 // ====================================================================
 // LABOR MODAL
 // ====================================================================
+
+// ═══════════════════════════════════════════════════════
+// FLOOR PLAN MODAL — interior wall designer
+// ═══════════════════════════════════════════════════════
+window.openFloorPlanModal = function() {
+  var existing = document.getElementById('floorPlanModal');
+  if (existing) existing.remove();
+
+  var bw = Q.w || 40, bl = Q.l || 60;
+  var SNAP = 1; // snap to 1ft grid
+
+  var overlay = document.createElement('div');
+  overlay.id = 'floorPlanModal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
+
+  var panel = document.createElement('div');
+  panel.style.cssText = 'background:#1e293b;border:1px solid rgba(255,130,0,.3);border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:12px;max-width:96vw;max-height:92vh;font-family:Outfit,sans-serif;';
+
+  // Header
+  var hdr = document.createElement('div');
+  hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;';
+  hdr.innerHTML = '<div style="font-size:15px;font-weight:800;color:#f0f3f7;">🧱 Interior Wall Designer <span style="font-size:10px;color:#888;font-weight:400;margin-left:8px;">'+bw+"'×"+bl+"'</span></div>";
+  var xBtn = document.createElement('button');
+  xBtn.textContent='×'; xBtn.style.cssText='background:none;border:none;color:#888;font-size:22px;cursor:pointer;line-height:1;';
+  xBtn.onclick = function(){ overlay.remove(); };
+  hdr.appendChild(xBtn);
+  panel.appendChild(hdr);
+
+  // Instructions
+  var inst = document.createElement('div');
+  inst.style.cssText = 'font-size:11px;color:#aaa;display:flex;gap:16px;flex-wrap:wrap;';
+  inst.innerHTML = '<span>🖱 Click → set start</span><span>🖱 Click again → draw wall</span><span>🗑 Click wall → delete</span><span>⌨ Esc → cancel drawing</span>';
+  panel.appendChild(inst);
+
+  // Canvas
+  var PAD = 40;
+  var maxW = Math.min(window.innerWidth * 0.88, 860) - 40;
+  var maxH = Math.min(window.innerHeight * 0.72, 640) - 40;
+  var scale = Math.min((maxW - PAD*2) / bw, (maxH - PAD*2) / bl);
+  var cw = Math.round(bw * scale + PAD*2);
+  var ch = Math.round(bl * scale + PAD*2);
+
+  var canvas = document.createElement('canvas');
+  canvas.width = cw; canvas.height = ch;
+  canvas.style.cssText = 'border-radius:8px;cursor:crosshair;display:block;max-width:100%;';
+  panel.appendChild(canvas);
+
+  var ctx = canvas.getContext('2d');
+  var drawState = { mode: 'idle', startFt: null }; // mode: idle | drawing
+  var selectedIdx = -1;
+
+  function ftToCanvas(fx, fy) {
+    return { x: PAD + fx * scale, y: PAD + fy * scale };
+  }
+  function canvasToFt(cx2, cy2) {
+    return {
+      x: Math.round((cx2 - PAD) / scale / SNAP) * SNAP,
+      y: Math.round((cy2 - PAD) / scale / SNAP) * SNAP
+    };
+  }
+  function clampFt(p) {
+    return { x: Math.max(0, Math.min(bw, p.x)), y: Math.max(0, Math.min(bl, p.y)) };
+  }
+
+  function redraw(mousePos) {
+    ctx.clearRect(0, 0, cw, ch);
+
+    // Grid
+    ctx.strokeStyle = 'rgba(255,255,255,.06)'; ctx.lineWidth = 0.5;
+    for (var gx = 0; gx <= bw; gx++) { var p=ftToCanvas(gx,0),p2=ftToCanvas(gx,bl); ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(p2.x,p2.y); ctx.stroke(); }
+    for (var gy = 0; gy <= bl; gy++) { var q=ftToCanvas(0,gy),q2=ftToCanvas(bw,gy); ctx.beginPath(); ctx.moveTo(q.x,q.y); ctx.lineTo(q2.x,q2.y); ctx.stroke(); }
+
+    // Building outline
+    var tl=ftToCanvas(0,0), br=ftToCanvas(bw,bl);
+    ctx.strokeStyle='#FF8200'; ctx.lineWidth=2;
+    ctx.strokeRect(tl.x, tl.y, br.x-tl.x, br.y-tl.y);
+
+    // Dimension labels
+    ctx.fillStyle='#888'; ctx.font='11px Outfit,sans-serif'; ctx.textAlign='center';
+    ctx.fillText(bw+"'", (tl.x+br.x)/2, tl.y-6);
+    ctx.textAlign='right';
+    ctx.save(); ctx.translate(tl.x-8, (tl.y+br.y)/2); ctx.rotate(-Math.PI/2);
+    ctx.fillText(bl+"'", 0, 0); ctx.restore();
+
+    // Existing walls
+    (window._interiorWalls||[]).forEach(function(iw, i) {
+      var a=ftToCanvas(iw.x1,iw.y1), b=ftToCanvas(iw.x2,iw.y2);
+      var isSelected = (i === selectedIdx);
+      ctx.strokeStyle = isSelected ? '#ef4444' : '#60a5fa';
+      ctx.lineWidth = isSelected ? 3 : 2.5;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+
+      // Door indicator
+      if (iw.door) {
+        var mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+        ctx.fillStyle='#fbbf24'; ctx.font='bold 11px Outfit,sans-serif'; ctx.textAlign='center';
+        ctx.fillText('D', mx, my-4);
+      }
+      // Length label
+      var wallLen = Math.round(Math.sqrt(Math.pow(iw.x2-iw.x1,2)+Math.pow(iw.y2-iw.y1,2))*10)/10;
+      ctx.fillStyle='#94a3b8'; ctx.font='10px Outfit,sans-serif'; ctx.textAlign='center';
+      ctx.fillText(wallLen+"'", (a.x+b.x)/2, (a.y+b.y)/2 + 12);
+
+      // Endpoints
+      [a,b].forEach(function(pt) {
+        ctx.fillStyle=isSelected?'#ef4444':'#60a5fa';
+        ctx.beginPath(); ctx.arc(pt.x,pt.y,4,0,Math.PI*2); ctx.fill();
+      });
+    });
+
+    // Drawing preview
+    if (drawState.mode==='drawing' && drawState.startFt && mousePos) {
+      var sa=ftToCanvas(drawState.startFt.x,drawState.startFt.y);
+      var ep=clampFt(canvasToFt(mousePos.x,mousePos.y));
+      var ea=ftToCanvas(ep.x,ep.y);
+      ctx.strokeStyle='rgba(255,130,0,.7)'; ctx.lineWidth=2;
+      ctx.setLineDash([5,4]);
+      ctx.beginPath(); ctx.moveTo(sa.x,sa.y); ctx.lineTo(ea.x,ea.y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle='#FF8200';
+      ctx.beginPath(); ctx.arc(sa.x,sa.y,5,0,Math.PI*2); ctx.fill();
+      // Snap indicator at end
+      ctx.strokeStyle='#FF8200'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.arc(ea.x,ea.y,5,0,Math.PI*2); ctx.stroke();
+      // Length preview
+      var pLen = Math.round(Math.sqrt(Math.pow(ep.x-drawState.startFt.x,2)+Math.pow(ep.y-drawState.startFt.y,2))*10)/10;
+      ctx.fillStyle='#FF8200'; ctx.font='bold 11px Outfit,sans-serif'; ctx.textAlign='center';
+      ctx.fillText(pLen+"'", (sa.x+ea.x)/2, (sa.y+ea.y)/2-8);
+    }
+
+    // Start dot in idle mode with mouse
+    if (drawState.mode==='idle' && mousePos) {
+      var sp=clampFt(canvasToFt(mousePos.x,mousePos.y));
+      var sc=ftToCanvas(sp.x,sp.y);
+      ctx.strokeStyle='rgba(255,130,0,.5)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.arc(sc.x,sc.y,4,0,Math.PI*2); ctx.stroke();
+    }
+  }
+
+  // Interaction
+  var lastMouse = null;
+  canvas.addEventListener('mousemove', function(e) {
+    var r=canvas.getBoundingClientRect();
+    var scaleX=canvas.width/r.width, scaleY=canvas.height/r.height;
+    lastMouse={x:(e.clientX-r.left)*scaleX, y:(e.clientY-r.top)*scaleY};
+    redraw(lastMouse);
+  });
+  canvas.addEventListener('mouseleave', function() { lastMouse=null; redraw(null); });
+
+  canvas.addEventListener('click', function(e) {
+    var r=canvas.getBoundingClientRect();
+    var scaleX=canvas.width/r.width, scaleY=canvas.height/r.height;
+    var cx2=(e.clientX-r.left)*scaleX, cy2=(e.clientY-r.top)*scaleY;
+    var ft=clampFt(canvasToFt(cx2,cy2));
+
+    // Check if clicking near an existing wall to select/delete
+    if (drawState.mode==='idle') {
+      var hitIdx=-1;
+      (window._interiorWalls||[]).forEach(function(iw,i) {
+        var a=ftToCanvas(iw.x1,iw.y1),b=ftToCanvas(iw.x2,iw.y2);
+        // Distance from point to line segment
+        var dx=b.x-a.x,dy=b.y-a.y,len2=dx*dx+dy*dy;
+        var t=len2>0?Math.max(0,Math.min(1,((cx2-a.x)*dx+(cy2-a.y)*dy)/len2)):0;
+        var px=a.x+t*dx-cx2,py=a.y+t*dy-cy2;
+        if(Math.sqrt(px*px+py*py)<10) hitIdx=i;
+      });
+      if(hitIdx>=0) { selectedIdx=(selectedIdx===hitIdx)?-1:hitIdx; redraw(lastMouse); return; }
+      selectedIdx=-1;
+    }
+
+    if (drawState.mode==='idle') {
+      drawState.mode='drawing'; drawState.startFt=ft;
+    } else {
+      var endFt=ft;
+      var dx=endFt.x-drawState.startFt.x, dy=endFt.y-drawState.startFt.y;
+      if(Math.sqrt(dx*dx+dy*dy)>0.5) {
+        window._interiorWalls.push({
+          id: _nextIWallId++,
+          x1:drawState.startFt.x, y1:drawState.startFt.y,
+          x2:endFt.x, y2:endFt.y,
+          height: Q.h||14, door:false, _open:false
+        });
+        renderInteriorWalls();
+        scheduleBuild();
+      }
+      drawState.mode='idle'; drawState.startFt=null;
+    }
+    redraw(lastMouse);
+  });
+
+  document.addEventListener('keydown', function escHandler(e) {
+    if(e.key==='Escape') {
+      if(drawState.mode==='drawing'){ drawState.mode='idle'; drawState.startFt=null; redraw(lastMouse); }
+      else { overlay.remove(); document.removeEventListener('keydown',escHandler); }
+    }
+    if((e.key==='Delete'||e.key==='Backspace') && selectedIdx>=0) {
+      window._interiorWalls.splice(selectedIdx,1); selectedIdx=-1;
+      renderInteriorWalls(); scheduleBuild(); redraw(lastMouse);
+    }
+  });
+
+  // Bottom toolbar
+  var toolbar = document.createElement('div');
+  toolbar.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;';
+
+  function mkBtn(label, color, fn) {
+    var b=document.createElement('button');
+    b.textContent=label;
+    b.style.cssText='padding:8px 14px;border-radius:8px;border:1px solid '+color+';background:rgba(0,0,0,.2);color:'+color+';font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+    b.onclick=fn; return b;
+  }
+
+  // Delete selected
+  var delBtn = mkBtn('🗑 Delete Selected','#ef4444',function(){
+    if(selectedIdx<0) return;
+    window._interiorWalls.splice(selectedIdx,1); selectedIdx=-1;
+    renderInteriorWalls(); scheduleBuild(); redraw(lastMouse);
+  });
+
+  // Door toggle on selected
+  var doorBtn = mkBtn('🚪 Toggle Door','#fbbf24',function(){
+    if(selectedIdx<0||!window._interiorWalls[selectedIdx]) return;
+    window._interiorWalls[selectedIdx].door=!window._interiorWalls[selectedIdx].door;
+    renderInteriorWalls(); scheduleBuild(); redraw(lastMouse);
+  });
+
+  // Clear all
+  var clearBtn = mkBtn('✕ Clear All','#888',function(){
+    if(!confirm('Clear all interior walls?')) return;
+    window._interiorWalls=[]; selectedIdx=-1;
+    renderInteriorWalls(); scheduleBuild(); redraw(lastMouse);
+  });
+
+  var wallCountEl = document.createElement('span');
+  wallCountEl.style.cssText='margin-left:auto;font-size:11px;color:#888;';
+
+  var doneBtn = mkBtn('✓ Done','#22c55e',function(){ overlay.remove(); });
+  doneBtn.style.marginLeft='auto';
+
+  toolbar.appendChild(delBtn);
+  toolbar.appendChild(doorBtn);
+  toolbar.appendChild(clearBtn);
+  toolbar.appendChild(doneBtn);
+  panel.appendChild(toolbar);
+
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  redraw(null);
+};
 
 window.closeLaborModal = function() {
   var el = document.getElementById('sauceLaborModal');
