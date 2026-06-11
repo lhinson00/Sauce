@@ -6826,7 +6826,9 @@ function addLevel() {
     bearing: false,
     color: LEVEL_COLORS[Math.min(window._levelConfigs.length, LEVEL_COLORS.length-1)],
     floorMode: 'partial',
-    floorZones: []
+    floorZones: [],
+    stairs: false,
+    stairPos: 'left'
   });
   renderLevelManager();
   scheduleBuild();
@@ -6844,7 +6846,7 @@ function removeLevel(id) {
 function setLevelProp(id, prop, val) {
   var lv = window._levelConfigs.find(function(l){ return l.id === id; });
   if (!lv) return;
-  if (prop === 'bearing' || prop === 'floorMode') { lv[prop] = val; }
+  if (prop === 'bearing' || prop === 'floorMode' || prop === 'stairs') { lv[prop] = val; }
   else if (prop === 'joistDir' || prop === 'name') { lv[prop] = val; }
   else { var n = parseFloat(val); lv[prop] = isNaN(n) ? val : n; }
   renderLevelManager();
@@ -6942,6 +6944,18 @@ function renderLevelManager() {
         zoneHTML += '<div style="font-size:10px;color:#888;padding:4px 0;">Full '+(Q.w||40)+"' × "+(Q.l||60)+"' deck will be generated</div>";
       }
       zoneHTML += '</div>';
+
+      // ── Stairs ──────────────────────────────────────────────────────────
+      var stairPosOpts = ['left','center','right'].map(function(p){
+        return '<option value="'+p+'"'+(lv.stairPos===p?' selected':'')+'>'+p.charAt(0).toUpperCase()+p.slice(1)+'</option>';
+      }).join('');
+      zoneHTML += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);">'
+        +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
+        +'<div class="shed-label" style="margin:0;">Stairs</div>'
+        +'<label class="tog"><input type="checkbox" '+(lv.stairs?'checked':'')+' onchange="setLevelProp('+lv.id+',\'stairs\',this.checked);scheduleBuild()"><span class="tog-track"></span></label>'
+        +'</div>'
+        +(lv.stairs ? '<div><div class="shed-label">Position</div><select class="shed-sel" onchange="setLevelProp('+lv.id+',\'stairPos\',this.value);scheduleBuild()">'+stairPosOpts+'</select></div>' : '')
+        +'</div>';
     }
 
     return '<div style="border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px 10px;margin-bottom:6px;border-left:3px solid '+lv.color+';">'
@@ -14103,53 +14117,150 @@ function applyVoiceQuote(parsed, overlay) {
         }
         // ── FIXTURES (drains/plumbing) 3D ────────────────────────────────────
         if (window._floorDrains && window._floorDrains.length) {
-          var mFixt  = new THREE.MeshLambertMaterial({ color: 0xCCEEFF, side: THREE.DoubleSide });
-          var mFixtD = new THREE.MeshLambertMaterial({ color: 0x4488AA });
-          var mPorce = new THREE.MeshLambertMaterial({ color: 0xF0F4F8 });
+          var mWhite  = new THREE.MeshLambertMaterial({ color: 0xF5F5F5 });  // porcelain white
+          var mChrome = new THREE.MeshLambertMaterial({ color: 0xAAAAAA });  // chrome/metal
+          var mGlass  = new THREE.MeshLambertMaterial({ color: 0x88BBCC, transparent: true, opacity: 0.5 });
+          var mGrey   = new THREE.MeshLambertMaterial({ color: 0x778899 });  // washer body
 
           window._floorDrains.forEach(function(dr) {
-            // Y elevation: use active level's floor elevation, or 0
             var lvDr = (window._levelConfigs||[]).find(function(l){ return l.id === (dr.levelId||(window._levelConfigs[0]||{}).id); });
-            var yBase = lvDr ? lvDr.floorElevFt * Sc : 0;
+            var yFloor = lvDr ? lvDr.floorElevFt * Sc : 0;
+            // Add slab offset if concrete on ground floor
+            if ((!lvDr || lvDr.floorElevFt === 0) && conAreas && conAreas.main) yFloor += slabH;
             var ox = (dr.x - (Q.w||40)/2) * Sc;
             var oz = (dr.y - (Q.l||60)/2) * Sc;
-            var h  = 0.025; // fixture height in scene units (~3")
 
-            function box(w,d,mat,xOff,zOff,yOff){ var g=new THREE.BoxGeometry(w*Sc,h,d*Sc); var m=new THREE.Mesh(g,mat); m.position.set(ox+(xOff||0)*Sc,yBase+(yOff||h/2),oz+(zOff||0)*Sc); grps.interior.add(m); }
-            function cyl(r,yH,mat){ var g=new THREE.CylinderGeometry(r*Sc,r*Sc,yH,16); var m=new THREE.Mesh(g,mat); m.position.set(ox,yBase+yH/2,oz); grps.interior.add(m); }
+            function addBox(w, h, d, mat, dx, dy, dz) {
+              var g = new THREE.BoxGeometry(w*Sc, h*Sc, d*Sc);
+              var m = new THREE.Mesh(g, mat);
+              m.position.set(ox + (dx||0)*Sc, yFloor + (dy||0)*Sc + h*Sc/2, oz + (dz||0)*Sc);
+              m.castShadow = true;
+              grps.interior.add(m);
+            }
+            function addCyl(r, h, mat, dx, dy, dz) {
+              var g = new THREE.CylinderGeometry(r*Sc, r*Sc, h*Sc, 16);
+              var m = new THREE.Mesh(g, mat);
+              m.position.set(ox + (dx||0)*Sc, yFloor + (dy||0)*Sc + h*Sc/2, oz + (dz||0)*Sc);
+              grps.interior.add(m);
+            }
 
-            if(dr.type==='toilet'){
-              box(1.5,1.5,mPorce,0,0.5);       // bowl
-              box(1.4,0.6,mPorce,0,-0.6,0.012); // tank (slightly higher)
-            } else if(dr.type==='shower'){
-              // Base pan with low curb walls
-              box(3,3,mFixt);
-              var curbH=0.06, curbT=0.15;
-              [[-1.5,0,curbT,3],[-1.5+3-curbT,0,curbT,3],[0,-1.5,3,curbT],[0,1.5,3,curbT]].forEach(function(c){
-                var g=new THREE.BoxGeometry(c[2]*Sc,curbH,c[3]*Sc);
-                var m=new THREE.Mesh(g,mFixtD);
-                m.position.set(ox+c[0]*Sc,yBase+curbH/2,oz+c[1]*Sc);
-                grps.interior.add(m);
-              });
-            } else if(dr.type==='tub'){
-              box(2.5,5,mPorce);
-              // Rim
-              var rimH=0.08;
-              var rg=new THREE.BoxGeometry(2.5*Sc,rimH,5*Sc);
-              var rm=new THREE.Mesh(new THREE.BoxGeometry(2.5*Sc,rimH,5*Sc),mFixtD);
-              rm.position.set(ox,yBase+rimH/2,oz);
-              grps.interior.add(rm);
-            } else if(dr.type==='sink'){
-              box(1.5,2,mPorce);
-            } else if(dr.type==='washer'){
-              box(2,2,mFixtD);
-              cyl(0.75,0.06,mFixt);
+            if (dr.type === 'toilet') {
+              // Base/pedestal
+              addBox(1.2, 0.25, 1.4,  mWhite, 0, 0, 0);
+              // Bowl — wider, rounded via cylinder
+              addCyl(0.5, 0.18, mWhite, 0, 0.25, 0.2);
+              // Tank — rectangular behind bowl
+              addBox(1.0, 0.8, 0.5, mWhite, 0, 0, -0.55);
+              // Lid
+              addBox(1.0, 0.06, 0.5, mChrome, 0, 0.8, -0.55);
+
+            } else if (dr.type === 'shower') {
+              // Pan — low flat base
+              addBox(3, 0.1, 3, mGrey, 0, 0, 0);
+              // Curb walls (4 sides, 4" high)
+              addBox(3, 0.33, 0.15, mGrey,  0,    0.1,  1.425); // front
+              addBox(3, 0.33, 0.15, mGrey,  0,    0.1, -1.425); // back
+              addBox(0.15, 0.33, 3, mGrey,  1.425,0.1,  0);     // right
+              addBox(0.15, 0.33, 3, mGrey, -1.425,0.1,  0);     // left
+              // Glass door panel (front-right quarter open)
+              addBox(0.04, 7.0/12, 2.0, mGlass, 1.425, 0.43, -0.5);
+              // Showerhead pipe
+              addCyl(0.04, 6.5/12, mChrome, -1.2, 0.43, -1.2);
+              addCyl(0.04, 0.5/12, mChrome, -1.2, 0.43+6.5/12, -1.2);
+
+            } else if (dr.type === 'tub') {
+              // Outer shell
+              addBox(2.5, 1.5/12*5, 5, mWhite, 0, 0, 0);
+              // Inner basin (hollow effect — slightly smaller, slightly raised)
+              addBox(2.1, 0.1, 4.4, mGrey, 0, 0.25, 0);
+              // Rim edge
+              addBox(2.5, 0.1, 5, mWhite, 0, 5*1.5/12, 0);
+              // Faucet end detail
+              addBox(0.3, 0.6, 0.3, mChrome, 0.5, 5*1.5/12, -2.2);
+              addBox(0.3, 0.6, 0.3, mChrome,-0.5, 5*1.5/12, -2.2);
+
+            } else if (dr.type === 'sink') {
+              // Vanity cabinet
+              addBox(2, 2.8/12*9, 1.5, mWhite, 0, 0, 0);
+              // Basin
+              addBox(1.4, 0.1, 1.0, mGrey, 0, 2.8/12*9, 0.1);
+              // Faucet
+              addCyl(0.04, 0.4, mChrome, 0, 2.8/12*9+0.1, -0.2);
+
+            } else if (dr.type === 'washer') {
+              // Main body
+              addBox(2, 3.0, 2, mGrey, 0, 0, 0);
+              // Control panel top
+              addBox(2, 0.2, 2, mChrome, 0, 3.0, 0);
+              // Door porthole
+              addCyl(0.55, 0.12, mGlass, 0, 1.5, 1.01);
+              addCyl(0.45, 0.06, mChrome, 0, 1.5, 1.05);
+
             } else {
-              // Floor drain — small disc
-              cyl(0.15,0.015,mFixtD);
+              // Floor drain — small disc flush with floor
+              addCyl(0.2, 0.04, mChrome, 0, 0, 0);
+              // Crosshatch
+              addBox(0.4, 0.02, 0.05, mGrey, 0, 0.04, 0);
+              addBox(0.05, 0.02, 0.4, mGrey, 0, 0.04, 0);
             }
           });
         }
+        // ── LEVEL STAIRS 3D ──────────────────────────────────────────────────
+        (window._levelConfigs||[]).forEach(function(lv) {
+          if (!lv.stairs || lv.floorElevFt <= 0) return;
+          var lFlH   = lv.floorElevFt * Sc;
+          var riseIn = 7.5/12, runIn = 10.0/12;
+          var stepCt = Math.round(lv.floorElevFt / riseIn);
+          var stairW2 = 3 * Sc;
+          var riseS   = riseIn * Sc;
+          var runS    = runIn  * Sc;
+          var treadThk = 0.018 * Sc;
+          var riserThk = 0.012 * Sc;
+          var mStairL = new THREE.MeshLambertMaterial({ color: 0xA07840 });
+          var mJoistL = new THREE.MeshLambertMaterial({ color: 0xBE9A5A });
+
+          // Place stairs along the front gable wall (z = -sl/2) by default
+          // stairPos: left/center/right along building width
+          var bwSc = (Q.w||40) * Sc;
+          var blSc = (Q.l||60) * Sc;
+          var stairPos = lv.stairPos || 'left';
+          var alongOffset = stairPos === 'center' ? (bwSc/2 - stairW2/2)
+                          : stairPos === 'right'  ? (bwSc - stairW2 - 0.1*Sc)
+                          : 0.1*Sc; // left
+          var sAlongX = -bwSc/2 + alongOffset;
+          var sBaseZ  = -blSc/2;   // front wall, stairs go inward (+Z)
+          var totalRun = stepCt * runS;
+
+          for (var si = 0; si < stepCt; si++) {
+            var stepY    = lFlH - riseS * (si + 1);
+            var stepZ    = sBaseZ + runS * (si + 1);
+            // Tread
+            var tg = new THREE.BoxGeometry(stairW2, treadThk, runS);
+            var tm = new THREE.Mesh(tg, mStairL);
+            tm.position.set(sAlongX + stairW2/2, stepY + treadThk/2, stepZ - runS/2);
+            grps.interior.add(tm);
+            // Riser
+            var rrg = new THREE.BoxGeometry(stairW2, riseS, riserThk);
+            var rrm = new THREE.Mesh(rrg, mJoistL);
+            rrm.position.set(sAlongX + stairW2/2, stepY + riseS/2, stepZ);
+            grps.interior.add(rrm);
+          }
+
+          // Stringers (left and right)
+          [-1, 1].forEach(function(side) {
+            var sx = sAlongX + (side === -1 ? 0 : stairW2);
+            var sg = new THREE.BufferGeometry();
+            var sv = [];
+            for (var si2 = 0; si2 < stepCt; si2++) {
+              var y0 = lFlH - riseS * si2,  y1 = lFlH - riseS * (si2+1);
+              var z0 = sBaseZ + runS * si2,  z1 = sBaseZ + runS * (si2+1);
+              sv.push(sx,y0,z0, sx,y1,z0, sx,y1,z1, sx,y0,z0, sx,y1,z1, sx,y0,z1);
+            }
+            sg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sv), 3));
+            sg.computeVertexNormals();
+            grps.interior.add(new THREE.Mesh(sg, new THREE.MeshLambertMaterial({ color: 0xA07840, side: THREE.DoubleSide })));
+          });
+        });
         // ── END INTERIOR WALLS 3D ────────────────────────────────────────
 
         // ── RE-APPLY ALL TOGGLE STATES (survive every rebuild) ───────────────
@@ -31300,6 +31411,15 @@ window.SauceMaterials.calcInteriorWallMaterials = function(Q, walls, levels) {
         items.push({ category:cat, description:'Nails (8d)',  sku:'HDGRS8D30',  quantity:1, detail:'framing' });
       });
     }
+
+    // Stairs for this elevated level
+    if (lv.stairs && lv.floorElevFt > 0) {
+      var flH = lv.floorElevFt;
+      var stepCt = Math.round(flH / (7.5/12));
+      items.push({ category:cat, description:'Stair Stringers (2×12×24)', sku:'SYP21224', quantity:2, detail:'1 per side  |  2 stringers' });
+      items.push({ category:cat, description:'Stair Treads (2×10×12)',    sku:'SYP21012', quantity:stepCt, detail:stepCt+' steps @ 7.5" rise  |  '+flH+"' floor ht" });
+      items.push({ category:cat, description:'Stair Header (2×12×12)',    sku:'SYP21212', quantity:2, detail:'stair header' });
+    }
   });
 
   return items;
@@ -32613,7 +32733,7 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
     drawState.tool=t; drawState.startFt=null; drawState.zonePt1=null; selectedIdx=-1; selectedZoneId=-1;
     var instMap = {
       wall:'Click start → click end to draw wall on active level',
-      door:'Click a wall to add a 3-ft door opening',
+      door:'Click a wall to add a door opening  |  Click an existing door to remove it',
       bearing:'Click a wall to toggle load-bearing (double top plate)',
       drain:'Click anywhere to place a drain/fixture',
       zone:'Click two corners to draw a floor zone on the active elevated level'
@@ -32784,6 +32904,14 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
         var rad=Math.sqrt(Math.pow(g2.x-g1.x,2)+Math.pow(g2.y-g1.y,2));
         ctx.beginPath();ctx.arc(g1.x,g1.y,rad,ang,ang+Math.PI/2);ctx.stroke();
         ctx.beginPath();ctx.moveTo(g1.x,g1.y);ctx.lineTo(g2.x,g2.y);ctx.stroke();
+        // Small ✕ at midpoint when in door tool — shows it's removable
+        if(drawState.tool==='door' && isActive){
+          var mx2=(g1.x+g2.x)/2, my2=(g1.y+g2.y)/2;
+          ctx.fillStyle='rgba(251,191,36,.9)';
+          ctx.beginPath();ctx.arc(mx2,my2,7,0,Math.PI*2);ctx.fill();
+          ctx.fillStyle='#0f172a'; ctx.font='bold 9px Outfit,sans-serif'; ctx.textAlign='center';
+          ctx.fillText('×',mx2,my2+3);
+        }
       });
 
       // Wall length + level label
@@ -32994,8 +33122,17 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
         if(!iw.openings) iw.openings=[];
         var wLen=Math.sqrt(Math.pow(iw.x2-iw.x1,2)+Math.pow(iw.y2-iw.y1,2));
         var posInFt=hit.t*wLen;
-        var already=iw.openings.some(function(op){return Math.abs(op.pos-posInFt)<2;});
-        if(!already){iw.openings.push({pos:posInFt,width:3,type:'door'});iw.door=true;renderInteriorWalls();scheduleBuild();redraw(lastMouse);}
+        // Check if clicking near an existing opening — if so, remove it
+        var existIdx=-1;
+        iw.openings.forEach(function(op,oi){ if(Math.abs(op.pos-posInFt)<2) existIdx=oi; });
+        if(existIdx>=0){
+          iw.openings.splice(existIdx,1);
+          if(!iw.openings.length) iw.door=false;
+        } else {
+          iw.openings.push({pos:posInFt,width:3,type:'door'});
+          iw.door=true;
+        }
+        renderInteriorWalls();scheduleBuild();redraw(lastMouse);
       }
       return;
     }
@@ -33060,15 +33197,8 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
     b.onclick=fn;return b;
   }
   toolbar.appendChild(mkBtn2('Delete Wall','#ef4444',function(){
-    if(selectedIdx<0)return;
+    if(selectedIdx<0){ instEl.textContent='Select a wall first (click it), then delete.'; return; }
     window._interiorWalls.splice(selectedIdx,1);selectedIdx=-1;
-    renderInteriorWalls();scheduleBuild();redraw(lastMouse);
-  }));
-  toolbar.appendChild(mkBtn2('Remove Last Door','#fbbf24',function(){
-    if(selectedIdx<0||!window._interiorWalls[selectedIdx])return;
-    var iw=window._interiorWalls[selectedIdx];
-    if(iw.openings&&iw.openings.length>0){iw.openings.pop();}
-    if(!iw.openings||!iw.openings.length) iw.door=false;
     renderInteriorWalls();scheduleBuild();redraw(lastMouse);
   }));
   toolbar.appendChild(mkBtn2('Clear All','#64748b',function(){
