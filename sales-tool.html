@@ -13922,56 +13922,129 @@ function applyVoiceQuote(parsed, overlay) {
           const mbW       = 0.015;   // girt thickness ~1.5" (face)
           const mbH       = 0.05;    // girt depth ~5.5" (a 2x6)
 
-          // ── WALL GIRTS — post frame only (stud frame shows studs instead) ──
-          if (!isStudFrame) {
-          var numGirts = Math.floor(sh / spacing2);
-          for (var g = 1; g <= numGirts; g++) {
-            var gy = g * spacing2;
-            if (gy > sh + 0.01) break;
-            // Eave walls (left/right) — girt lies flat against wall, depth faces inward
-            [{id:'left',x:-hw2},{id:'right',x:hw2}].forEach(function(ew) {
-              var wall = WALLS.find(function(w){return w.id===ew.id;});
-              if (!wall || wall.encl === 'open') return;
-              var gm = new THREE.Mesh(new THREE.BoxGeometry(mbW, mbH, sl), girtMat);
-              gm.position.set(ew.x, gy, 0);
-              grps.framing.add(gm);
+          // Helper: collect opening gaps for a wall (doors + windows) as [start, end] in scene Z or X
+          function wallGaps(wallId) {
+            var gaps = [];
+            var allD = window._allDoors || [];
+            // Gather door/window openings on this wall
+            allD.forEach(function(d) {
+              if ((d.wall||d.wallId) !== wallId) return;
+              var wFt = d.w || d.width || 3;
+              var offFt = typeof d.offset !== 'undefined' ? d.offset : 0;
+              var wallLen = (wallId==='left'||wallId==='right') ? (Q.l||60) : (Q.w||40);
+              var cFt = offFt + wFt/2; // center from left edge of wall
+              var halfW = wFt/2 + 0.25; // add a bit of slop
+              gaps.push([( cFt - halfW - wallLen/2)*Sc, (cFt + halfW - wallLen/2)*Sc]);
             });
-            // Gable walls (front/back) — girt runs across width, depth faces inward
-            [{id:'front',z:-sl/2},{id:'back',z:sl/2}].forEach(function(gw) {
-              var wall = WALLS.find(function(w){return w.id===gw.id;});
-              if (!wall || wall.encl === 'open') return;
-              var gm = new THREE.Mesh(new THREE.BoxGeometry(sw, mbH, mbW), girtMat);
-              gm.position.set(0, gy, gw.z);
+            // Windows
+            var sc2 = (window._wallWindowCfgs||[]);
+            sc2.forEach(function(wc) {
+              if ((wc.wall||wc.wallId) !== wallId) return;
+              var wFt = wc.w || wc.width || 3;
+              var offFt = typeof wc.offset !== 'undefined' ? wc.offset : 0;
+              var wallLen = (wallId==='left'||wallId==='right') ? (Q.l||60) : (Q.w||40);
+              var cFt = offFt + wFt/2;
+              var halfW = wFt/2 + 0.25;
+              gaps.push([(cFt - halfW - wallLen/2)*Sc, (cFt + halfW - wallLen/2)*Sc]);
+            });
+            return gaps;
+          }
+
+          // Helper: draw a girt/horizontal member along an axis, skipping gaps
+          // axis='z': BoxGeometry(mbW,mbH,segLen) at x=xPos, y=gy, z=center of each segment
+          // axis='x': BoxGeometry(segLen,mbH,mbW) at x=center, y=gy, z=zPos
+          function drawGirtSegmented(axis, fixedCoord, gy, halfLen, gaps, mat) {
+            // Build segment list from -halfLen to +halfLen excluding gaps
+            var segs = [[-halfLen, halfLen]];
+            gaps.forEach(function(gap) {
+              var newSegs = [];
+              segs.forEach(function(seg) {
+                if (gap[1] <= seg[0] || gap[0] >= seg[1]) {
+                  newSegs.push(seg);
+                } else {
+                  if (gap[0] > seg[0]) newSegs.push([seg[0], gap[0]]);
+                  if (gap[1] < seg[1]) newSegs.push([gap[1], seg[1]]);
+                }
+              });
+              segs = newSegs;
+            });
+            segs.forEach(function(seg) {
+              var len = seg[1] - seg[0];
+              if (len < 0.01) return;
+              var center = (seg[0] + seg[1]) / 2;
+              var gm;
+              if (axis === 'z') {
+                gm = new THREE.Mesh(new THREE.BoxGeometry(mbW, mbH, len), mat);
+                gm.position.set(fixedCoord, gy, center);
+              } else {
+                gm = new THREE.Mesh(new THREE.BoxGeometry(len, mbH, mbW), mat);
+                gm.position.set(center, gy, fixedCoord);
+              }
               grps.framing.add(gm);
             });
           }
+
+          // ── WALL GIRTS — post frame only ──
+          if (!isStudFrame) {
+            var numGirts = Math.floor(sh / spacing2);
+            for (var g = 1; g <= numGirts; g++) {
+              var gy = g * spacing2;
+              if (gy > sh + 0.01) break;
+              // Eave walls
+              [{id:'left',x:-hw2},{id:'right',x:hw2}].forEach(function(ew) {
+                var wall = WALLS.find(function(w){return w.id===ew.id;});
+                if (!wall || wall.encl === 'open') return;
+                var gaps = wallGaps(ew.id);
+                drawGirtSegmented('z', ew.x, gy, sl/2, gaps, girtMat);
+              });
+              // Gable walls
+              [{id:'front',z:-sl/2},{id:'back',z:sl/2}].forEach(function(gw) {
+                var wall = WALLS.find(function(w){return w.id===gw.id;});
+                if (!wall || wall.encl === 'open') return;
+                var gaps = wallGaps(gw.id);
+                drawGirtSegmented('x', gw.z, gy, sw/2, gaps, girtMat);
+              });
+            }
           } // end !isStudFrame girts
 
-          // ── ROOF PURLINS — run along Z (length), spaced 2' OC along slope ──
-          // Steel: 2x6 on edge (tall) — Wood: 2x4 laid flat (wide)
-          var purlinW = isSteel ? mbW  : mbH;   // cross-slope: steel=thin, wood=wide
-          var purlinH = isSteel ? mbH  : mbW * 1.5; // height: steel=tall on edge, wood=flat
-          var slopeLen  = Math.sqrt(hw2*hw2 + (sr-sh)*(sr-sh));
+          // ── ROOF PURLINS — extend full rafter length including overhang ──
+          var purlinW  = isSteel ? mbW  : mbH;
+          var purlinH  = isSteel ? mbH  : mbW * 1.5;
+          // Rafter runs from eave wall face (x=±hw2) outward by oh, up to ridge
+          // Full half-span horizontally: hw2 + oh
+          var halfSpanH = hw2 + oh;  // horizontal distance from center to rafter tip
+          var slopeLen  = Math.sqrt(halfSpanH*halfSpanH + (sr-sh)*(sr-sh));
+          // Purlin length: building length + 2 gable overhangs
+          var purlinLen = sl + 2*oh;
           var numPurlins = Math.floor(slopeLen / spacing2) - 1;
           for (var p = 1; p <= numPurlins; p++) {
             var frac = p / (numPurlins + 1);
-            var px   = -hw2 + hw2 * frac;
-            var py   = sh + (sr - sh) * frac;
-            var pmL = new THREE.Mesh(new THREE.BoxGeometry(purlinW, purlinH, sl), purlinMat);
-            pmL.position.set(px, py, 0);
+            // Interpolate from eave-tip outward to ridge along slope
+            // At frac=0: x=±halfSpanH, y=sh  |  at frac=1: x=0, y=sr
+            var px = halfSpanH * (1 - frac);  // horizontal distance from center
+            var py = sh + (sr - sh) * frac;
+            var pmL = new THREE.Mesh(new THREE.BoxGeometry(purlinW, purlinH, purlinLen), purlinMat);
+            pmL.position.set(-px, py, 0);
             grps.framing.add(pmL);
-            var pmR = new THREE.Mesh(new THREE.BoxGeometry(purlinW, purlinH, sl), purlinMat);
-            pmR.position.set(-px, py, 0);
+            var pmR = new THREE.Mesh(new THREE.BoxGeometry(purlinW, purlinH, purlinLen), purlinMat);
+            pmR.position.set( px, py, 0);
             grps.framing.add(pmR);
           }
-          // ── RIDGE PURLINS — one each side of peak, full building length ──
-          var ridgeOffset = purlinW * 0.6; // sit just off the centerline
-          var prL = new THREE.Mesh(new THREE.BoxGeometry(purlinW, purlinH, sl), purlinMat);
+          // Ridge purlins
+          var ridgeOffset = purlinW * 0.6;
+          var prL = new THREE.Mesh(new THREE.BoxGeometry(purlinW, purlinH, purlinLen), purlinMat);
           prL.position.set(-ridgeOffset, sr, 0);
           grps.framing.add(prL);
-          var prR = new THREE.Mesh(new THREE.BoxGeometry(purlinW, purlinH, sl), purlinMat);
+          var prR = new THREE.Mesh(new THREE.BoxGeometry(purlinW, purlinH, purlinLen), purlinMat);
           prR.position.set( ridgeOffset, sr, 0);
           grps.framing.add(prR);
+          // Eave purlins — at the very bottom of each slope (at eave wall, eave height)
+          var epL = new THREE.Mesh(new THREE.BoxGeometry(purlinW, purlinH, purlinLen), purlinMat);
+          epL.position.set(-hw2, sh, 0);
+          grps.framing.add(epL);
+          var epR = new THREE.Mesh(new THREE.BoxGeometry(purlinW, purlinH, purlinLen), purlinMat);
+          epR.position.set( hw2, sh, 0);
+          grps.framing.add(epR);
         }
         // ── INTERIOR STUD WALLS 3D ───────────────────────────────────────
         if (window._interiorWalls && window._interiorWalls.length) {
@@ -14115,155 +14188,206 @@ function applyVoiceQuote(parsed, overlay) {
             });
           });
         }
-        // ── FIXTURES (drains/plumbing) 3D ────────────────────────────────────
+        // ── FIXTURES 3D ── professional geometry ──────────────────────────────
         if (window._floorDrains && window._floorDrains.length) {
-          // Material palette
-          var mPorcelain = new THREE.MeshLambertMaterial({ color: 0xEEEEEC });           // warm white porcelain
-          var mPorcelainDk = new THREE.MeshLambertMaterial({ color: 0xD8D8D6 });         // shaded porcelain inner
-          var mChrome  = new THREE.MeshLambertMaterial({ color: 0xBBBDBF });             // brushed chrome
-          var mChromeBt= new THREE.MeshLambertMaterial({ color: 0xD4D8DC });             // bright chrome highlight
-          var mGlass   = new THREE.MeshLambertMaterial({ color: 0x9FC8D4, transparent:true, opacity:0.35, side:THREE.DoubleSide });
-          var mGlassFr = new THREE.MeshLambertMaterial({ color: 0xC8DCE4, transparent:true, opacity:0.25, side:THREE.DoubleSide });
-          var mCabinet = new THREE.MeshLambertMaterial({ color: 0xC8B89A });             // wood-tone cabinet
-          var mWasherB = new THREE.MeshLambertMaterial({ color: 0xE0E2E4 });             // appliance white
-          var mTile    = new THREE.MeshLambertMaterial({ color: 0xA8B4BC });             // shower pan tile
-          var mDrain   = new THREE.MeshLambertMaterial({ color: 0x8C9098 });             // floor drain
+
+          var fMat = {
+            porcelain:    new THREE.MeshPhongMaterial({ color:0xF2F2F0, specular:0x888888, shininess:120 }),
+            porcelainInner:new THREE.MeshPhongMaterial({ color:0xD8D8D6, specular:0x444444, shininess:60 }),
+            chrome:       new THREE.MeshPhongMaterial({ color:0xC8CCCE, specular:0xFFFFFF, shininess:200 }),
+            chromeDk:     new THREE.MeshPhongMaterial({ color:0x9AA0A6, specular:0xCCCCCC, shininess:160 }),
+            glass:        new THREE.MeshPhongMaterial({ color:0xA8C8D8, specular:0xFFFFFF, shininess:300, transparent:true, opacity:0.28, side:THREE.DoubleSide }),
+            glassFr:      new THREE.MeshPhongMaterial({ color:0xC0D8E4, specular:0xFFFFFF, shininess:200, transparent:true, opacity:0.18, side:THREE.DoubleSide }),
+            cabinet:      new THREE.MeshPhongMaterial({ color:0xBEA882, specular:0x222222, shininess:30 }),
+            cabinetDk:    new THREE.MeshPhongMaterial({ color:0xA8926A, specular:0x111111, shininess:20 }),
+            appliance:    new THREE.MeshPhongMaterial({ color:0xE8EAEC, specular:0x666666, shininess:80 }),
+            tile:         new THREE.MeshPhongMaterial({ color:0xB0BCC4, specular:0x555555, shininess:60 }),
+            drain:        new THREE.MeshPhongMaterial({ color:0x7C848C, specular:0x888888, shininess:100 }),
+          };
 
           window._floorDrains.forEach(function(dr) {
-            var lvDr = (window._levelConfigs||[]).find(function(l){ return l.id === (dr.levelId||(window._levelConfigs[0]||{}).id); });
-            var yFloor = lvDr ? lvDr.floorElevFt * Sc : 0;
-            if ((!lvDr || lvDr.floorElevFt === 0) && conAreas && conAreas.main) yFloor += slabH;
-            var ox = (dr.x - (Q.w||40)/2) * Sc;
-            var oz = (dr.y - (Q.l||60)/2) * Sc;
+            var lvDr = (window._levelConfigs||[]).find(function(l){
+              return l.id === (dr.levelId||(window._levelConfigs[0]||{}).id);
+            });
+            var yF = lvDr ? lvDr.floorElevFt * Sc : 0;
+            if ((!lvDr||lvDr.floorElevFt===0) && conAreas && conAreas.main) yF += slabH;
+            var ox = (dr.x-(Q.w||40)/2)*Sc, oz = (dr.y-(Q.l||60)/2)*Sc;
 
-            // Place a box: w/h/d in feet, dx/dy/dz offset from fixture center in feet
-            // Box Y-center = yFloor + dy*Sc + h*Sc/2
-            function B(w,h,d,mat,dx,dy,dz){
-              var g=new THREE.BoxGeometry(w*Sc,h*Sc,d*Sc);
-              var m=new THREE.Mesh(g,mat);
-              m.position.set(ox+(dx||0)*Sc, yFloor+(dy||0)*Sc+h*Sc/2, oz+(dz||0)*Sc);
-              m.castShadow=true; grps.interior.add(m);
+            function fmesh(geo,mat){ var m=new THREE.Mesh(geo,mat); m.castShadow=true; return m; }
+            function fadd(m,dx,dy,dz){ m.position.set(ox+(dx||0)*Sc,yF+(dy||0)*Sc,oz+(dz||0)*Sc); grps.interior.add(m); }
+            function B(w,h,d,mat,dx,dy,dz){ var m=fmesh(new THREE.BoxGeometry(w*Sc,h*Sc,d*Sc),mat); fadd(m,dx,(dy||0)+h/2,dz); }
+            function C(rt,rb,h,mat,dx,dy,dz,seg){ var m=fmesh(new THREE.CylinderGeometry(rt*Sc,rb*Sc,h*Sc,seg||24),mat); fadd(m,dx,(dy||0)+h/2,dz); }
+            function Sph(r,mat,dx,dy,dz){ var m=fmesh(new THREE.SphereGeometry(r*Sc,16,12),mat); fadd(m,dx,dy,dz); }
+            function Tor(R,r,mat,dx,dy,dz,rx){ var m=fmesh(new THREE.TorusGeometry(R*Sc,r*Sc,12,32),mat); if(rx) m.rotation.x=rx; fadd(m,dx,dy,dz); }
+            function lathe(pts2D,mat,segs){
+              var pts=pts2D.map(function(p){ return new THREE.Vector2(p[0]*Sc,p[1]*Sc); });
+              return fmesh(new THREE.LatheGeometry(pts,segs||32),mat);
             }
-            // Place a cylinder: r/h in feet
-            function C(r,h,mat,dx,dy,dz,segs){
-              var g=new THREE.CylinderGeometry(r*Sc,r*Sc,h*Sc,segs||20);
-              var m=new THREE.Mesh(g,mat);
-              m.position.set(ox+(dx||0)*Sc, yFloor+(dy||0)*Sc+h*Sc/2, oz+(dz||0)*Sc);
-              grps.interior.add(m);
-            }
+            function tube(curve,mat){ return fmesh(new THREE.TubeGeometry(curve,8,0.028*Sc,8,false),mat); }
 
-            if (dr.type === 'toilet') {
-              // Real toilet: ~14"W × 28"D × 29"H
-              // Base skirt — tapered look via two boxes
-              B(1.1, 0.10, 2.20, mPorcelain,  0,  0,     0);      // floor skirt
-              B(1.0, 0.55, 1.65, mPorcelain,  0,  0.10,  0.275);  // bowl body, front-biased
-              // Bowl seat rim
-              B(1.02,0.04, 1.35, mChrome,     0,  0.65,  0.275);  // seat hinge/rim
-              // Bowl opening — darker inset cylinder
-              C(0.40, 0.06, mPorcelainDk,     0,  0.59,  0.32, 24);
-              // Tank — sits behind bowl
-              B(1.0,  0.85, 0.55, mPorcelain, 0,  0,    -0.825); // tank body
-              B(1.02, 0.04, 0.57, mChrome,    0,  0.85, -0.825); // tank lid
+            if (dr.type==='toilet') {
+              // Bowl lathe profile — narrow base, wide body, tapered top
+              var bowlPts=[[0.05,0],[0.40,0.05],[0.52,0.16],[0.54,0.28],[0.50,0.46],[0.42,0.60],[0.28,0.68],[0.10,0.72]];
+              var bowl=lathe(bowlPts,fMat.porcelain,32);
+              bowl.position.set(ox,yF,oz+0.33*Sc); grps.interior.add(bowl);
+              // Seat ring torus
+              Tor(0.39,0.055,fMat.chrome,0,0.74,0.33,Math.PI/2);
+              // Seat lid
+              B(0.88,0.045,0.84,fMat.porcelain,0,0.78,0.33);
+              // Tank
+              B(0.95,0.80,0.50,fMat.porcelain,0,0,-0.43);
+              B(0.97,0.045,0.52,fMat.chrome,0,0.84,-0.43);
               // Flush button
-              C(0.07, 0.03, mChrome,          0,  0.90, -0.65, 12);
-              // Bolt caps at base
-              C(0.05, 0.07, mChrome,          0.35, 0, 0.9, 8);
-              C(0.05, 0.07, mChrome,         -0.35, 0, 0.9, 8);
+              C(0.065,0.065,0.038,fMat.chrome,0,0.89,-0.22);
+              // Pedestal / base skirt
+              C(0.32,0.40,0.14,fMat.porcelain,0,0,0.33);
+              // Supply line
+              C(0.022,0.022,0.38,fMat.chromeDk,-0.35,0.06,-0.43);
+              // Bolt caps
+              C(0.05,0.04,0.055,fMat.chrome, 0.28,0,0.56);
+              C(0.05,0.04,0.055,fMat.chrome,-0.28,0,0.56);
 
-            } else if (dr.type === 'shower') {
-              // 36"×36" shower stall, 7' tall walls
-              var sw=3.0, sd=3.0, sh=7.0, curbH=0.25, wallT=0.1;
-              // Pan with slight curb
-              B(sw, 0.06, sd, mTile,    0, 0, 0);                                   // pan floor
-              B(sw, curbH, wallT, mTile, 0, 0.06, sd/2-wallT/2);                   // front curb
-              B(sw, curbH, wallT, mTile, 0, 0.06, -sd/2+wallT/2);                  // back curb
-              B(wallT, curbH, sd, mTile, sw/2-wallT/2, 0.06, 0);                   // right curb
-              B(wallT, curbH, sd, mTile, -sw/2+wallT/2, 0.06, 0);                  // left curb
-              // Three solid walls (back + two sides)
-              B(wallT, sh, sd, mPorcelain,  -sw/2+wallT/2, curbH+0.06, 0);         // left wall
-              B(wallT, sh, sd, mPorcelain,   sw/2-wallT/2, curbH+0.06, 0);         // right wall
-              B(sw, sh, wallT, mPorcelain,   0, curbH+0.06, -sd/2+wallT/2);        // back wall
-              // Glass door (front, hinged right — slightly ajar)
-              B(wallT*0.4, sh*0.92, sd*0.85, mGlass, sw/2-sd*0.43, curbH+0.06, sd*0.065); // door panel
-              B(wallT*0.4, sh*0.92, sd*0.10, mGlassFr, sw/2-0.04, curbH+0.06, sd/2-sd*0.05); // sidelite
-              // Showerhead arm + head
-              C(0.03, 5.5, mChrome,   -sw/2+0.25, curbH+0.06, -sd/2+0.25);        // vertical pipe
-              B(0.5, 0.04, 0.04, mChrome, -sw/2+0.50, curbH+0.06+5.5, -sd/2+0.25); // horizontal arm
-              C(0.14, 0.04, mChrome,  -sw/2+0.72, curbH+0.06+5.46, -sd/2+0.25, 16); // showerhead disc
+            } else if (dr.type==='shower') {
+              var sw=3,sd=3,shH=7.5,wT=0.10,cH=0.25;
+              B(sw,0.08,sd,fMat.tile,0,0,0);
+              B(sw,cH,wT,fMat.tile,0,0.08, sd/2-wT/2);
+              B(sw,cH,wT,fMat.tile,0,0.08,-sd/2+wT/2);
+              B(wT,cH,sd,fMat.tile, sw/2-wT/2,0.08,0);
+              B(wT,cH,sd,fMat.tile,-sw/2+wT/2,0.08,0);
+              // Three tile walls
+              B(wT,shH,sd,fMat.tile,-sw/2+wT/2,cH+0.08,0);
+              B(wT,shH,sd,fMat.tile, sw/2-wT/2,cH+0.08,0);
+              B(sw,shH,wT,fMat.tile,0,cH+0.08,-sd/2+wT/2);
+              // Glass door slightly open
+              var dg=new THREE.BoxGeometry(0.032*Sc,shH*0.93*Sc,sd*0.83*Sc);
+              var dm=fmesh(dg,fMat.glass); dm.rotation.y=0.25;
+              dm.position.set(ox+sw/2*Sc*0.84,yF+(cH+0.08+shH*0.465)*Sc,oz+sd*0.095*Sc);
+              grps.interior.add(dm);
+              // Door frame chrome strips
+              B(0.06,shH,0.06,fMat.chrome, sw/2-0.03,cH+0.08, sd/2-0.03);
+              B(0.06,shH,0.06,fMat.chrome, sw/2-0.03,cH+0.08,-sd/2+0.03);
+              B(sw*0.84,0.06,0.06,fMat.chrome,sw/2-sw*0.42,cH+0.08+shH,sd/2-0.03);
+              // Vertical supply pipe
+              C(0.026,0.026,5.9,fMat.chrome,-sw/2+0.22,cH+0.08,-sd/2+0.22);
+              // Curved arm via TubeGeometry
+              var ac=new THREE.QuadraticBezierCurve3(
+                new THREE.Vector3((-sw/2+0.22)*Sc,(cH+0.08+5.9)*Sc,(-sd/2+0.22)*Sc),
+                new THREE.Vector3((-sw/2+0.22)*Sc,(cH+0.08+6.25)*Sc,(-sd/2+0.58)*Sc),
+                new THREE.Vector3((-sw/2+0.22)*Sc,(cH+0.08+6.05)*Sc,(-sd/2+0.92)*Sc)
+              );
+              var at=fmesh(new THREE.TubeGeometry(ac,10,0.026*Sc,8,false),fMat.chrome);
+              at.position.set(ox,yF,oz); grps.interior.add(at);
+              Tor(0.155,0.026,fMat.chrome,-sw/2+0.22,cH+0.08+6.05,-sd/2+0.94,Math.PI/2);
+              C(0.13,0.13,0.038,fMat.chromeDk,-sw/2+0.22,cH+0.08+6.01,-sd/2+0.94);
 
-            } else if (dr.type === 'tub') {
-              // Standard 30"W × 60"L × 14" rim height
-              var tw=2.5, tl=5.0, trH=1.17;
-              // Outer apron shell
-              B(tw, trH, tl, mPorcelain, 0, 0, 0);
-              // Rim surround (4 edges, slightly proud)
-              B(tw+0.04, 0.06, 0.06, mPorcelain, 0, trH-0.06, tl/2);   // front rim
-              B(tw+0.04, 0.06, 0.06, mPorcelain, 0, trH-0.06, -tl/2);  // back rim
-              B(0.06, 0.06, tl+0.04, mPorcelain, tw/2, trH-0.06, 0);   // right rim
-              B(0.06, 0.06, tl+0.04, mPorcelain, -tw/2, trH-0.06, 0);  // left rim
-              // Inner basin — recessed, darker
-              B(tw-0.28, 0.06, tl-0.28, mPorcelainDk, 0, trH-0.08, 0);
-              // Drain circle
-              C(0.10, 0.03, mDrain, 0, trH-0.05, tl/2-0.35, 12);
-              // Overflow plate
-              B(0.18, 0.10, 0.03, mChrome, 0, trH-0.45, -tl/2+0.10);
-              // Faucet spout
-              B(0.06, 0.50, 0.06, mChrome, 0.20, trH-0.06, -tl/2+0.18);  // spout riser
-              B(0.06, 0.06, 0.30, mChrome, 0.20, trH+0.44, -tl/2+0.18);  // spout arm
+            } else if (dr.type==='tub') {
+              var tw=2.5,tl=5.0,trH=1.17,wk=0.12;
+              // Outer apron
+              B(tw,trH,tl,fMat.porcelain,0,0,0);
+              // Rim ledge
+              B(tw+0.07,0.06,tl+0.07,fMat.porcelain,0,trH-0.01,0);
+              // Inner basin floor
+              B(tw-wk*2,0.06,tl-wk*2,fMat.porcelainInner,0,trH-0.06,0);
+              // Inner walls (4)
+              B(wk,trH*0.74,tl-wk*2,fMat.porcelainInner,-(tw/2-wk/2),trH*0.13,0);
+              B(wk,trH*0.74,tl-wk*2,fMat.porcelainInner, (tw/2-wk/2),trH*0.13,0);
+              B(tw-wk*2,trH*0.74,wk,fMat.porcelainInner,0,trH*0.13,-(tl/2-wk/2));
+              B(tw-wk*2,trH*0.74,wk,fMat.porcelainInner,0,trH*0.13, (tl/2-wk/2));
+              // Drain
+              C(0.09,0.09,0.032,fMat.drain,0,trH-0.04,tl/2-0.28);
+              // Overflow
+              B(0.19,0.13,0.04,fMat.chrome,0,trH-0.40,-tl/2+wk+0.01);
+              // Spout riser + arm
+              C(0.030,0.030,0.50,fMat.chrome,0.18,trH,-tl/2+wk+0.04);
+              var sc2=new THREE.QuadraticBezierCurve3(
+                new THREE.Vector3(0.18*Sc,(trH+0.50)*Sc,(-tl/2+wk+0.04)*Sc),
+                new THREE.Vector3(0.18*Sc,(trH+0.56)*Sc,(-tl/2+wk+0.20)*Sc),
+                new THREE.Vector3(0.18*Sc,(trH+0.42)*Sc,(-tl/2+wk+0.32)*Sc)
+              );
+              var st=fmesh(new THREE.TubeGeometry(sc2,8,0.028*Sc,8,false),fMat.chrome);
+              st.position.set(ox,yF,oz); grps.interior.add(st);
               // Two handles
-              C(0.05, 0.18, mChrome,  0.45, trH-0.06, -tl/2+0.22, 8);
-              C(0.05, 0.18, mChrome, -0.05, trH-0.06, -tl/2+0.22, 8);
+              C(0.042,0.042,0.22,fMat.chrome, 0.44,trH+0.01,-tl/2+wk+0.04);
+              C(0.042,0.042,0.22,fMat.chrome,-0.08,trH+0.01,-tl/2+wk+0.04);
+              B(0.20,0.026,0.026,fMat.chrome, 0.44,trH+0.22,-tl/2+wk+0.04);
+              B(0.20,0.026,0.026,fMat.chrome,-0.08,trH+0.22,-tl/2+wk+0.04);
 
-            } else if (dr.type === 'sink') {
-              // 24"W vanity cabinet, 20"D, 34"H — standard bathroom vanity
-              var cW=2.0, cD=1.67, cH=2.83;
-              // Cabinet body
-              B(cW, cH-0.1, cD, mCabinet, 0, 0, 0);
-              // Cabinet toe kick (recessed base)
-              B(cW-0.12, 0.25, 0.1, mPorcelainDk, 0, 0, cD/2);
-              // Counter top — slightly overhanging
-              B(cW+0.06, 0.08, cD+0.06, mPorcelain, 0, cH-0.10, 0);
-              // Basin inset
-              B(1.30, 0.06, 1.10, mPorcelainDk, 0, cH-0.06, 0.10);
-              C(0.08, 0.03, mDrain, 0, cH-0.04, 0.15, 12);
-              // Faucet body
-              B(0.06, 0.06, 0.22, mChrome, 0, cH+0.04, -0.12);  // body
-              B(0.04, 0.28, 0.04, mChrome, 0, cH+0.04, -0.02);  // spout riser
-              B(0.04, 0.04, 0.18, mChrome, 0, cH+0.32, -0.02);  // spout arm
-              // Two drawer pulls (center of cabinet)
-              B(0.35, 0.04, 0.04, mChrome, -0.35, cH*0.55, cD/2+0.01);
-              B(0.35, 0.04, 0.04, mChrome,  0.35, cH*0.55, cD/2+0.01);
-              // Mirror above (subtle box)
-              B(cW+0.06, 2.5, 0.06, mGlass, 0, cH+0.08, -cD/2+0.03);
+            } else if (dr.type==='sink') {
+              var cW=2.0,cD=1.67,cH=2.83;
+              // Cabinet
+              B(cW,cH*0.88,cD,fMat.cabinet,0,0,0);
+              B(cW-0.08,0.28,0.09,fMat.cabinetDk,0,0,cD/2);
+              // Face rails
+              B(cW,0.055,0.04,fMat.cabinetDk,0,cH*0.44,cD/2);
+              B(cW,0.055,0.04,fMat.cabinetDk,0,cH*0.78,cD/2);
+              // Door panels
+              B(cW*0.88,cH*0.32,0.032,fMat.cabinet,0,cH*0.25,cD/2-0.01);
+              B(cW*0.88,cH*0.32,0.032,fMat.cabinet,0,cH*0.58,cD/2-0.01);
+              // Drawer pulls
+              B(0.26,0.04,0.04,fMat.chrome,-0.40,cH*0.60,cD/2+0.022);
+              B(0.26,0.04,0.04,fMat.chrome, 0.40,cH*0.60,cD/2+0.022);
+              // Stone countertop
+              B(cW+0.07,0.09,cD+0.07,fMat.porcelain,0,cH*0.88,0);
+              // Drop-in basin via nested cylinders
+              C(0.54,0.54,0.065,fMat.porcelainInner,0,cH*0.88+0.012,0.10);
+              C(0.46,0.46,0.20,fMat.porcelainInner,0,cH*0.88-0.10,0.10);
+              C(0.078,0.078,0.028,fMat.drain,0,cH*0.88-0.055,0.16);
+              // Faucet
+              C(0.040,0.040,0.40,fMat.chrome,0,cH*0.88+0.09,-0.09);
+              var fc=new THREE.QuadraticBezierCurve3(
+                new THREE.Vector3(0,(cH*0.88+0.49)*Sc,-0.09*Sc),
+                new THREE.Vector3(0,(cH*0.88+0.55)*Sc, 0.06*Sc),
+                new THREE.Vector3(0,(cH*0.88+0.42)*Sc, 0.18*Sc)
+              );
+              var ft2=fmesh(new THREE.TubeGeometry(fc,8,0.026*Sc,8,false),fMat.chrome);
+              ft2.position.set(ox,yF,oz); grps.interior.add(ft2);
+              C(0.038,0.038,0.18,fMat.chrome, 0.28,cH*0.88+0.09,-0.08);
+              C(0.038,0.038,0.18,fMat.chrome,-0.28,cH*0.88+0.09,-0.08);
+              B(0.17,0.026,0.026,fMat.chrome, 0.28,cH*0.88+0.28,-0.08);
+              B(0.17,0.026,0.026,fMat.chrome,-0.28,cH*0.88+0.28,-0.08);
+              // Frameless mirror
+              B(cW+0.05,2.55,0.042,fMat.glassFr,0,cH*0.88+0.14,-cD/2+0.022);
+              B(cW+0.12,0.042,0.042,fMat.chrome,0,cH*0.88+0.12,-cD/2+0.022);
+              B(cW+0.12,0.042,0.042,fMat.chrome,0,cH*0.88+2.70,-cD/2+0.022);
 
-            } else if (dr.type === 'washer') {
-              // 27"W × 27"D × 43"H front-load washer
-              var wW=2.25, wD=2.25, wH=3.58;
-              // Body
-              B(wW, wH-0.25, wD, mWasherB, 0, 0, 0);
-              // Control panel — angled top
-              B(wW, 0.28, wD, mChrome, 0, wH-0.25, 0);
-              // Door frame ring
-              C(0.72, 0.08, mChrome, 0, wH*0.42, wD/2+0.01, 24);
-              // Glass porthole
-              C(0.65, 0.06, mGlass,  0, wH*0.42, wD/2+0.01, 24);
-              // Inner drum (darker)
-              C(0.55, 0.04, mPorcelainDk, 0, wH*0.42, wD/2+0.01, 24);
-              // Door handle
-              B(0.08, 0.08, 0.32, mChrome, 0.55, wH*0.42, wD/2+0.05);
-              // Control knob
-              C(0.12, 0.08, mChromeBt, -0.6, wH-0.10, wD/2+0.01, 16);
+            } else if (dr.type==='washer') {
+              var wW=2.25,wD=2.25,wH=3.58;
+              B(wW,wH-0.22,wD-0.04,fMat.appliance,0,0,0);
+              B(wW,0.065,wD,fMat.appliance,0,wH-0.22,0);
+              B(wW,0.30,wD*0.14,fMat.chromeDk,0,wH-0.04,wD/2-wD*0.07);
+              B(wW,wH-0.22,0.042,fMat.appliance,0,0,wD/2);
+              // Porthole rings
+              Tor(0.70,0.065,fMat.chromeDk,0,wH*0.38,wD/2+0.012,Math.PI/2);
+              Tor(0.62,0.048,fMat.chrome,0,wH*0.38,wD/2+0.012,Math.PI/2);
+              C(0.56,0.56,0.058,fMat.glass,0,wH*0.38,wD/2+0.016);
+              C(0.47,0.47,0.042,fMat.appliance,0,wH*0.38,wD/2+0.012);
+              // Drum fins (3 blades)
+              [0,2.09,4.19].forEach(function(ang){
+                var fin=fmesh(new THREE.BoxGeometry(0.055*Sc,0.055*Sc,0.36*Sc),fMat.chromeDk);
+                fin.rotation.z=ang;
+                fin.position.set(ox,yF+wH*0.38*Sc,oz+wD/2*Sc+0.012*Sc);
+                grps.interior.add(fin);
+              });
+              // Door handle arc
+              B(0.075,0.075,0.34,fMat.chrome,0.64,wH*0.38,wD/2+0.065);
+              // Knob
+              C(0.105,0.105,0.072,fMat.chrome,-0.72,wH-0.11,wD/2+0.028,20);
+              Sph(0.060,fMat.chromeDk,-0.72,wH-0.075,wD/2+0.042);
+              // LCD display
+              B(0.46,0.22,0.030,fMat.glass,0.20,wH-0.15,wD/2+0.032);
               // Detergent drawer
-              B(0.60, 0.14, 0.20, mChrome, 0.55, wH-0.14, wD/2+0.01);
+              B(0.62,0.14,0.24,fMat.appliance,0.62,wH-0.16,wD/2+0.010);
+              B(0.64,0.030,0.04,fMat.chrome,0.62,wH-0.09,wD/2+0.033);
 
             } else {
-              // Floor drain — chrome grate, recessed
-              C(0.22, 0.02, mDrain,  0, 0, 0, 20);  // outer ring
-              C(0.16, 0.02, mChrome, 0, 0.01, 0, 20); // inner grate
-              B(0.30, 0.01, 0.04, mDrain, 0, 0.02, 0);  // grate bar 1
-              B(0.30, 0.01, 0.04, mDrain, 0, 0.02, 0.08); // grate bar 2
-              B(0.30, 0.01, 0.04, mDrain, 0, 0.02,-0.08); // grate bar 3
-              B(0.04, 0.01, 0.30, mDrain, 0, 0.02, 0);  // grate bar cross
+              // Floor drain — recessed chrome grate
+              C(0.26,0.24,0.042,fMat.chromeDk,0,0,0);
+              C(0.23,0.23,0.028,fMat.chrome,0,0.014,0);
+              [-0.12,-0.04,0.04,0.12].forEach(function(off){
+                B(0.40,0.016,0.030,fMat.drain,0,0.028,off);
+                B(0.030,0.016,0.40,fMat.drain,off,0.028,0);
+              });
+              C(0.038,0.038,0.036,fMat.chromeDk,0,0.028,0,8);
             }
           });
         }
