@@ -10640,27 +10640,24 @@ function applyVoiceQuote(parsed, overlay) {
 
         // Corner trim PANELS (visible trim strips at all 4 corners, like real J-channel)
         const co = 0.01;
-        const trimW = 0.06; // trim strip width
+        const trimW = 0.06;
         const mTrimPanel = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
-        // Helper: is wall open by id?
         const _wOpen = (id) => { const wc = wallCfgs.find(w => w.id === id); return wc && wc.encl === 'open'; };
-        // Each corner gets two strips (one per wall face) — skip if that face's wall is open
-        // Also skip corners covered by lean-to shed gable end caps
+        if (!isSingleSlope) {
         [[-1,-1],[-1,1],[1,-1],[1,1]].forEach(([sx,sz]) => {
             const cx = sx * sw / 2, cz = sz * sl / 2;
             const gableId = sz === -1 ? 'front' : 'back';
             const eaveId = sx === -1 ? 'left' : 'right';
             const cornerKey = Math.round(cx*1000) + ',' + Math.round(cz*1000);
             const shedCovers = _shedCoveredCorners.has(cornerKey);
-            // Strip on gable face (skip if gable wall is open or shed covers this corner)
             if (!_wOpen(gableId) && !shedCovers) {
                 grps.wallPanels.add(mkQ([cx, 0, cz + sz*co, cx - sx*trimW, 0, cz + sz*co, cx - sx*trimW, sh, cz + sz*co, cx, sh, cz + sz*co], mTrimPanel));
             }
-            // Strip on eave face (skip if eave wall is open or shed covers this corner)
             if (!_wOpen(eaveId) && !shedCovers) {
                 grps.wallPanels.add(mkQ([cx + sx*co, 0, cz, cx + sx*co, 0, cz - sz*trimW, cx + sx*co, sh, cz - sz*trimW, cx + sx*co, sh, cz], mTrimPanel));
             }
         });
+        } // end !isSingleSlope corner trim
 
         // Doors (with trim-colored frames)
         placed.forEach(d => {
@@ -13567,12 +13564,6 @@ function applyVoiceQuote(parsed, overlay) {
             var _mSnRoof = new THREE.MeshBasicMaterial({color:pc(roofColorName),side:THREE.DoubleSide});
             grps.shed.add(mkQ([_snX,_snOuterH-.008,_ssZ2, _ssAX,ssHiH-.008,_ssZ2,
                                 _ssAX,ssHiH-.008,_ssZ1,   _snX,_snOuterH-.008,_ssZ1],_mSnRoof));
-            // Snoot interior rib lines
-            var _mSnTr = new THREE.LineBasicMaterial({color:0x333333,transparent:true,opacity:0.45});
-            for (var _ssti=1; _ssti<_ssNumBays; _ssti++) {
-                var _stZ = _ssZ1i + (_ssti/_ssNumBays)*sl;
-                grps.shed.add(mkL([new THREE.Vector3(_ssAX,ssHiH,_stZ),new THREE.Vector3(_snX,_snOuterH,_stZ)],_mSnTr));
-            }
             } // end if (!Q.noSnoot)
         }
         // ═══ END SINGLE SLOPE STANDALONE ══════════════════════════════════════
@@ -13588,51 +13579,6 @@ function applyVoiceQuote(parsed, overlay) {
             grps.slab.visible      = false;
             grps.doors.visible     = false;
             grps.shed.visible      = true;
-
-            // ── SINGLE SLOPE TRUSSES (steel only — always steel for single slope) ──
-            var _ssTrussPS  = (Q.eavePS || Q.postSpacing || 10) * Sc;
-            var _ssTrussCount = Math.round(Q.l / (Q.eavePS || Q.postSpacing || 10));
-            var _ssTChord = 0.025, _ssTWeb = 0.018;
-            var _ssTMat  = new THREE.MeshLambertMaterial({ color: 0x555555 }); // steel grey — not black
-            // Truss depth: 18" normal to the slope
-            var _ssSlope = Math.sqrt(sw*sw + Math.pow(ssHiH-ssLoH, 2));
-            var _ssNx = (ssHiH-ssLoH)/_ssSlope * 1.5*Sc; // normal offset x
-            var _ssNy = -(sw/_ssSlope) * 1.5*Sc;          // normal offset y
-            var _ssPanels = 4;
-
-            function ssTruss(zp) {
-              function sb2(ax,ay,bx,by,sz) {
-                var dx=bx-ax,dy=by-ay;
-                var len=Math.sqrt(dx*dx+dy*dy);
-                if(len<0.0001) return;
-                var g=new THREE.BoxGeometry(sz,sz,len);
-                var m=new THREE.Mesh(g,_ssTMat);
-                m.position.set((ax+bx)/2,(ay+by)/2,zp);
-                m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(dx,dy,0).normalize());
-                grps.framing.add(m);
-              }
-              // Top chord: high eave left to low eave right
-              sb2(_ssAX,ssHiH, _ssRX,ssLoH, _ssTChord);
-              // Inner chord + X-webs
-              for (var _tp=0; _tp<_ssPanels; _tp++) {
-                var f0=_tp/_ssPanels, f1=(_tp+1)/_ssPanels;
-                var tx0=_ssAX+(_ssRX-_ssAX)*f0, ty0=ssHiH+(ssLoH-ssHiH)*f0;
-                var tx1=_ssAX+(_ssRX-_ssAX)*f1, ty1=ssHiH+(ssLoH-ssHiH)*f1;
-                var ix0=tx0+_ssNx, iy0=ty0+_ssNy;
-                var ix1=tx1+_ssNx, iy1=ty1+_ssNy;
-                sb2(ix0,iy0, ix1,iy1, _ssTChord); // inner chord segment
-                sb2(tx0,ty0, ix1,iy1, _ssTWeb);   // X-web forward
-                sb2(ix0,iy0, tx1,ty1, _ssTWeb);   // X-web back
-                sb2(tx0,ty0, ix0,iy0, _ssTWeb);   // vertical
-              }
-              // Close last vertical
-              var _tpL=_ssAX+(_ssRX-_ssAX), _tyL=ssLoH;
-              sb2(_tpL,_tyL, _tpL+_ssNx,_tyL+_ssNy, _ssTWeb);
-            }
-
-            for (var _sti=1; _sti<_ssTrussCount; _sti++) {
-              ssTruss(_ssZ1i + (_sti/_ssTrussCount)*sl);
-            }
 
             // ── SINGLE SLOPE GIRTS + PURLINS ─────────────────────────────────
             var _ssGirtMat   = new THREE.MeshLambertMaterial({ color: 0xC4A46A, side: THREE.DoubleSide });
