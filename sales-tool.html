@@ -13380,9 +13380,10 @@ function applyVoiceQuote(parsed, overlay) {
         // Low eave  = right (X=+sw/2).
         // Wall open/enclosed driven by existing wallCfgs (left/right/front/back).
         if (isSingleSlope) {
-            // Q.h = HIGH eave height. Low eave = Q.h - (Q.w/12) per 1/12 pitch.
+            // Q.h = HIGH eave height. Low eave = Q.h - (Q.w * pitch/12).
             var ssHiH = sh;                                          // high eave = Q.h
-            var ssLoH = Math.max(0, Math.ceil(Q.h - Q.w/12)) * Sc;             // low eave  = Q.h - width/12
+            var _ssPitch = Q.pitch || 1;
+            var ssLoH = Math.max(0, Q.h - Q.w * (_ssPitch/12)) * Sc;  // low eave uses actual pitch
             var ssOh  = ohE;                   // eave overhang
 
             // Key X coordinates
@@ -13583,11 +13584,95 @@ function applyVoiceQuote(parsed, overlay) {
             grps.walls.visible     = false;
             grps.wallPanels.visible= false;
             grps.dims.visible      = false;
-            grps.mainPosts.visible = false;  // gable building posts (wrong heights)
-            grps.posts.visible     = false;  // gable building shed posts
-            grps.slab.visible      = false;  // shadow/slab from gable building
+            grps.mainPosts.visible = false;
+            grps.posts.visible     = false;
+            grps.slab.visible      = false;
             grps.doors.visible     = false;
-            grps.shed.visible      = true;   // our entire single slope render lives here
+            grps.shed.visible      = true;
+
+            // ── SINGLE SLOPE TRUSSES (steel only — always steel for single slope) ──
+            var _ssTrussPS  = (Q.eavePS || Q.postSpacing || 10) * Sc;
+            var _ssTrussCount = Math.round(Q.l / (Q.eavePS || Q.postSpacing || 10));
+            var _ssTChord = 0.025, _ssTWeb = 0.018;
+            var _ssTMat  = new THREE.MeshLambertMaterial({ color: 0x2a2a2a });
+            // Truss depth: 18" normal to the slope
+            var _ssSlope = Math.sqrt(sw*sw + Math.pow(ssHiH-ssLoH, 2));
+            var _ssNx = (ssHiH-ssLoH)/_ssSlope * 1.5*Sc; // normal offset x
+            var _ssNy = -(sw/_ssSlope) * 1.5*Sc;          // normal offset y
+            var _ssPanels = 4;
+
+            function ssTruss(zp) {
+              function sb2(ax,ay,bx,by,sz) {
+                var dx=bx-ax,dy=by-ay;
+                var len=Math.sqrt(dx*dx+dy*dy);
+                if(len<0.0001) return;
+                var g=new THREE.BoxGeometry(sz,sz,len);
+                var m=new THREE.Mesh(g,_ssTMat);
+                m.position.set((ax+bx)/2,(ay+by)/2,zp);
+                m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(dx,dy,0).normalize());
+                grps.trusses.add(m);
+              }
+              // Top chord: high eave left to low eave right
+              sb2(_ssAX,ssHiH, _ssRX,ssLoH, _ssTChord);
+              // Inner chord + X-webs
+              for (var _tp=0; _tp<_ssPanels; _tp++) {
+                var f0=_tp/_ssPanels, f1=(_tp+1)/_ssPanels;
+                var tx0=_ssAX+(_ssRX-_ssAX)*f0, ty0=ssHiH+(ssLoH-ssHiH)*f0;
+                var tx1=_ssAX+(_ssRX-_ssAX)*f1, ty1=ssHiH+(ssLoH-ssHiH)*f1;
+                var ix0=tx0+_ssNx, iy0=ty0+_ssNy;
+                var ix1=tx1+_ssNx, iy1=ty1+_ssNy;
+                sb2(ix0,iy0, ix1,iy1, _ssTChord); // inner chord segment
+                sb2(tx0,ty0, ix1,iy1, _ssTWeb);   // X-web forward
+                sb2(ix0,iy0, tx1,ty1, _ssTWeb);   // X-web back
+                sb2(tx0,ty0, ix0,iy0, _ssTWeb);   // vertical
+              }
+              // Close last vertical
+              var _tpL=_ssAX+(_ssRX-_ssAX), _tyL=ssLoH;
+              sb2(_tpL,_tyL, _tpL+_ssNx,_tyL+_ssNy, _ssTWeb);
+            }
+
+            for (var _sti=0; _sti<=_ssTrussCount; _sti++) {
+              ssTruss(_ssZ1i + (_sti/_ssTrussCount)*sl);
+            }
+
+            // ── SINGLE SLOPE GIRTS + PURLINS ─────────────────────────────────
+            var _ssGirtMat   = new THREE.MeshLambertMaterial({ color: 0xC4A46A, side: THREE.DoubleSide });
+            var _ssGirtSp    = 2 * Sc; // 2' OC
+            var _ssGW        = 0.015, _ssGH = 0.05;
+
+            // Girts on left (high) eave wall — vertical girts at 2' OC up to ssHiH
+            if (!_ssLeftOpen) {
+              var _ssNgL = Math.floor(ssHiH / _ssGirtSp);
+              for (var _gi=1; _gi<=_ssNgL; _gi++) {
+                var _gy = _gi * _ssGirtSp;
+                if (_gy > ssHiH + 0.01) break;
+                var _gm = new THREE.Mesh(new THREE.BoxGeometry(_ssGW, _ssGH, sl), _ssGirtMat);
+                _gm.position.set(_ssAX, _gy, 0); grps.framing.add(_gm);
+              }
+            }
+            // Girts on right (low) eave wall — up to ssLoH
+            if (!_ssRightOpen) {
+              var _ssNgR = Math.floor(ssLoH / _ssGirtSp);
+              for (var _gi2=1; _gi2<=_ssNgR; _gi2++) {
+                var _gy2 = _gi2 * _ssGirtSp;
+                if (_gy2 > ssLoH + 0.01) break;
+                var _gm2 = new THREE.Mesh(new THREE.BoxGeometry(_ssGW, _ssGH, sl), _ssGirtMat);
+                _gm2.position.set(_ssRX, _gy2, 0); grps.framing.add(_gm2);
+              }
+            }
+            // Purlins along the slope: run full building length, 2' OC along slope
+            var _ssSlopeLen = Math.sqrt(sw*sw + Math.pow(ssHiH-ssLoH, 2));
+            var _ssNumPurlins = Math.floor(_ssSlopeLen / (2*Sc)) - 1;
+            var _ssPurLen = sl;
+            var _ssPurW = 0.015, _ssPurH = 0.05; // steel-style tall-on-edge
+            for (var _pi=0; _pi<=_ssNumPurlins+1; _pi++) {
+              var _pf = _pi / (_ssNumPurlins + 1);
+              var _px = _ssAX + (_ssRX - _ssAX) * _pf;
+              var _py = ssHiH + (ssLoH - ssHiH) * _pf;
+              var _pmg = new THREE.BoxGeometry(_ssPurW, _ssPurH, _ssPurLen);
+              var _pmm = new THREE.Mesh(_pmg, _ssGirtMat);
+              _pmm.position.set(_px, _py, 0); grps.framing.add(_pmm);
+            }
         }
 
         // ── STEP-DOWN SECTION GEOMETRY ────────────────────────────────────
@@ -14134,7 +14219,7 @@ function applyVoiceQuote(parsed, overlay) {
           var isMainSteel = Q.truss === 'Steel';
 
           // Beam helper — cylinder oriented along beam direction
-          function sBeam(ax,ay,az,bx,by,bz,sz,mat){
+          function sBeam(ax,ay,az,bx,by,bz,sz,mat,grp){
             var dx=bx-ax,dy=by-ay,dz=bz-az;
             var len=Math.sqrt(dx*dx+dy*dy+dz*dz);
             if(len<0.001) return;
@@ -14142,17 +14227,17 @@ function applyVoiceQuote(parsed, overlay) {
             var m=new THREE.Mesh(g,mat);
             m.position.set((ax+bx)/2,(ay+by)/2,(az+bz)/2);
             m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),new THREE.Vector3(dx,dy,dz).normalize());
-            grps.framing.add(m);
+            (grp||grps.framing).add(m);
           }
           // Box beam helper for thin members along Z
-          function sPurlin(x,y,lenZ,w,h,mat){
+          function sPurlin(x,y,lenZ,w,h,mat,grp){
             var g=new THREE.BoxGeometry(w,h,lenZ);
             var m=new THREE.Mesh(g,mat);
             m.position.set(x,y,0);
-            grps.framing.add(m);
+            (grp||grps.framing).add(m);
           }
           // Steel truss web helper (box along arbitrary direction)
-          function sSb(ax,ay,az,bx,by,bz,sz,mat){
+          function sSb(ax,ay,az,bx,by,bz,sz,mat,grp){
             var dx=bx-ax,dy=by-ay,dz=bz-az;
             var len=Math.sqrt(dx*dx+dy*dy+dz*dz);
             if(len<0.0001) return;
@@ -14160,7 +14245,7 @@ function applyVoiceQuote(parsed, overlay) {
             var m=new THREE.Mesh(g,mat);
             m.position.set((ax+bx)/2,(ay+by)/2,(az+bz)/2);
             m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(dx,dy,dz).normalize());
-            grps.framing.add(m);
+            (grp||grps.framing).add(m);
           }
 
           shedCfgs.forEach(function(sc) {
@@ -14201,12 +14286,12 @@ function applyVoiceQuote(parsed, overlay) {
                 var along = (rft - mainHalfFt) * Sc;
                 if (isEaveWall) {
                   var zr = along;
-                  if (sc.wall==='left')  sBeam(-sw/2,attachH,zr, -sw/2-ssw,outerH,zr, rafterSz,sWoodMat);
-                  else                   sBeam( sw/2,attachH,zr,  sw/2+ssw,outerH,zr, rafterSz,sWoodMat);
+                  if (sc.wall==='left')  sBeam(-sw/2,attachH,zr, -sw/2-ssw,outerH,zr, rafterSz, sWoodMat, grps.trusses);
+                  else                   sBeam( sw/2,attachH,zr,  sw/2+ssw,outerH,zr, rafterSz, sWoodMat, grps.trusses);
                 } else {
                   var xr = along;
-                  if (sc.wall==='front') sBeam(xr,attachH,-sl/2, xr,outerH,-sl/2-ssw, rafterSz,sWoodMat);
-                  else                   sBeam(xr,attachH, sl/2, xr,outerH, sl/2+ssw, rafterSz,sWoodMat);
+                  if (sc.wall==='front') sBeam(xr,attachH,-sl/2, xr,outerH,-sl/2-ssw, rafterSz, sWoodMat, grps.trusses);
+                  else                   sBeam(xr,attachH, sl/2, xr,outerH, sl/2+ssw, rafterSz, sWoodMat, grps.trusses);
                 }
               }
             }
@@ -14239,7 +14324,7 @@ function applyVoiceQuote(parsed, overlay) {
                     if (xp < shedXmin || xp > shedXmax) continue;
                     var az2 = sc.wall==='front' ? -sl/2     : sl/2;
                     var bz2 = sc.wall==='front' ? -sl/2-ssw : sl/2+ssw;
-                    sSb(xp,attachH,az2, xp,outerH,bz2, chordSz, sSteelMat);
+                    sSb(xp,attachH,az2, xp,outerH,bz2, chordSz, sSteelMat, grps.trusses);
                     var rLen2=Math.sqrt(Math.pow(bz2-az2,2)+Math.pow(outerH-attachH,2));
                     var nZ2=(attachH-outerH)/rLen2*1.5*Sc;
                     var nY3=-(Math.abs(bz2-az2)/rLen2)*1.5*Sc;
@@ -14249,10 +14334,10 @@ function applyVoiceQuote(parsed, overlay) {
                       var tz1b=az2+(bz2-az2)*f1,ty1b=attachH+(outerH-attachH)*f1;
                       var iz0=tz0b+nZ2,iy0b=ty0b+nY3;
                       var iz1=tz1b+nZ2,iy1b=ty1b+nY3;
-                      sSb(xp,iy0b,iz0, xp,iy1b,iz1, chordSz,sSteelMat);
-                      sSb(xp,ty0b,tz0b, xp,iy1b,iz1, webSz,sSteelMat);
-                      sSb(xp,iy0b,iz0, xp,ty1b,tz1b, webSz,sSteelMat);
-                      sSb(xp,ty0b,tz0b, xp,iy0b,iz0, webSz,sSteelMat);
+                      sSb(xp,iy0b,iz0, xp,iy1b,iz1, chordSz, sSteelMat, grps.trusses);
+                      sSb(xp,ty0b,tz0b, xp,iy1b,iz1, webSz, sSteelMat, grps.trusses);
+                      sSb(xp,iy0b,iz0, xp,ty1b,tz1b, webSz, sSteelMat, grps.trusses);
+                      sSb(xp,ty0b,tz0b, xp,iy0b,iz0, webSz, sSteelMat, grps.trusses);
                     }
                   }
                   break; // gable shed handled above, exit Z loop
@@ -14261,7 +14346,7 @@ function applyVoiceQuote(parsed, overlay) {
                 var ax = sc.wall==='left' ? -sw/2     : sw/2;
                 var bx = sc.wall==='left' ? -sw/2-ssw : sw/2+ssw;
                 // Top chord
-                sSb(ax,attachH,zp, bx,outerH,zp, chordSz,sSteelMat);
+                sSb(ax,attachH,zp, bx,outerH,zp, chordSz, sSteelMat, grps.trusses);
                 // Inner chord + X-webs
                 for (var pp2=0;pp2<panels;pp2++){
                   var f02=pp2/panels,f12=(pp2+1)/panels;
@@ -14269,12 +14354,12 @@ function applyVoiceQuote(parsed, overlay) {
                   var tx12=ax+(bx-ax)*f12, ty12=attachH+(outerH-attachH)*f12;
                   var ix02=tx02+nX2, iy02=ty02+nY2;
                   var ix12=tx12+nX2, iy12=ty12+nY2;
-                  sSb(ix02,iy02,zp, ix12,iy12,zp, chordSz,sSteelMat);
-                  sSb(tx02,ty02,zp, ix12,iy12,zp, webSz,sSteelMat);
-                  sSb(ix02,iy02,zp, tx12,ty12,zp, webSz,sSteelMat);
-                  sSb(tx02,ty02,zp, ix02,iy02,zp, webSz,sSteelMat);
+                  sSb(ix02,iy02,zp, ix12,iy12,zp, chordSz, sSteelMat, grps.trusses);
+                  sSb(tx02,ty02,zp, ix12,iy12,zp, webSz, sSteelMat, grps.trusses);
+                  sSb(ix02,iy02,zp, tx12,ty12,zp, webSz, sSteelMat, grps.trusses);
+                  sSb(tx02,ty02,zp, ix02,iy02,zp, webSz, sSteelMat, grps.trusses);
                 }
-                sSb(bx,outerH,zp, bx+nX2,outerH+nY2,zp, webSz,sSteelMat);
+                sSb(bx,outerH,zp, bx+nX2,outerH+nY2,zp, webSz, sSteelMat, grps.trusses);
               }
             }
 
