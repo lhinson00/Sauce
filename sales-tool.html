@@ -14046,6 +14046,192 @@ function applyVoiceQuote(parsed, overlay) {
           epR.position.set( hw2, sh, 0);
           grps.framing.add(epR);
         }
+        // ── SHED FRAMING — rafters/trusses + purlins on side sheds ──────────
+        if (shedCfgs && shedCfgs.length) {
+          var sSteelMat  = new THREE.MeshLambertMaterial({ color: 0x2a2a2a });
+          var sWoodMat   = new THREE.MeshLambertMaterial({ color: 0xC8A878 });
+          var sPurlinMat = new THREE.MeshLambertMaterial({ color: 0xC4A46A, side: THREE.DoubleSide });
+          var isMainSteel = Q.truss === 'Steel';
+
+          // Beam helper — cylinder oriented along beam direction
+          function sBeam(ax,ay,az,bx,by,bz,sz,mat){
+            var dx=bx-ax,dy=by-ay,dz=bz-az;
+            var len=Math.sqrt(dx*dx+dy*dy+dz*dz);
+            if(len<0.001) return;
+            var g=new THREE.CylinderGeometry(sz/2,sz/2,len,4);
+            var m=new THREE.Mesh(g,mat);
+            m.position.set((ax+bx)/2,(ay+by)/2,(az+bz)/2);
+            m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),new THREE.Vector3(dx,dy,dz).normalize());
+            grps.framing.add(m);
+          }
+          // Box beam helper for thin members along Z
+          function sPurlin(x,y,lenZ,w,h,mat){
+            var g=new THREE.BoxGeometry(w,h,lenZ);
+            var m=new THREE.Mesh(g,mat);
+            m.position.set(x,y,0);
+            grps.framing.add(m);
+          }
+          // Steel truss web helper (box along arbitrary direction)
+          function sSb(ax,ay,az,bx,by,bz,sz,mat){
+            var dx=bx-ax,dy=by-ay,dz=bz-az;
+            var len=Math.sqrt(dx*dx+dy*dy+dz*dz);
+            if(len<0.0001) return;
+            var g=new THREE.BoxGeometry(sz,sz,len);
+            var m=new THREE.Mesh(g,mat);
+            m.position.set((ax+bx)/2,(ay+by)/2,(az+bz)/2);
+            m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(dx,dy,dz).normalize());
+            grps.framing.add(m);
+          }
+
+          shedCfgs.forEach(function(sc) {
+            if (sc.type !== 'leanto' && sc.type !== 'wrap' && sc.type !== 'wrap4') return;
+            var ssw = sc.w * Sc, ssl = sc.l * Sc;
+            var ltPitch = sc.ltPitch || 1;
+            var dropH = (sc.dropFt || 0) * Sc;
+            var attachH = sh - dropH;          // where shed attaches to building (y)
+            var outerH  = attachH - (sc.w * (ltPitch / 12)) * Sc; // outer post top (y)
+            var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
+            var mainWallLen = isEaveWall ? Q.l : Q.w;
+            var shedLen = sc.l;
+            var shedPos = sc.position || 'center';
+            var shedOffFt = 0;
+            if (shedLen >= mainWallLen) shedOffFt = 0;
+            else if (shedPos === 'start') shedOffFt = 0;
+            else if (shedPos === 'end')   shedOffFt = mainWallLen - shedLen;
+            else if (shedPos === 'custom') shedOffFt = Math.max(0, Math.min(sc.offsetFt||0, mainWallLen-shedLen));
+            else shedOffFt = (mainWallLen - shedLen) / 2;
+            var shedCOff = (shedOffFt + shedLen/2 - mainWallLen/2) * Sc;
+
+            // Shed wall attachment coordinate and outer edge coordinate
+            // wall=left:  attach x=-sw/2, outer x=-sw/2-ssw
+            // wall=right: attach x=+sw/2, outer x=+sw/2+ssw
+            // wall=front: attach z=-sl/2, outer z=-sl/2-ssw
+            // wall=back:  attach z=+sl/2, outer z=+sl/2+ssw
+            var shedOh = (Q.oh / 12) * Sc; // overhang
+
+            // ── WOOD RAFTERS 2' OC ─────────────────────────────────────────
+            if (!isMainSteel) {
+              var rafterSpacing = 2 * Sc; // 2' OC
+              var numRafters = Math.round(ssl / rafterSpacing) + 1;
+              var rafterSz = 0.022;
+
+              for (var ri = 0; ri <= numRafters; ri++) {
+                var along = -ssl/2 + (ri/numRafters)*ssl; // position along shed length
+                if (isEaveWall) {
+                  var zr = shedCOff + along;
+                  if (sc.wall === 'left') {
+                    sBeam(-sw/2,     attachH, zr,  -sw/2-ssw, outerH, zr, rafterSz, sWoodMat);
+                  } else {
+                    sBeam( sw/2,     attachH, zr,   sw/2+ssw, outerH, zr, rafterSz, sWoodMat);
+                  }
+                } else {
+                  var xr = shedCOff + along;
+                  if (sc.wall === 'front') {
+                    sBeam(xr, attachH, -sl/2,  xr, outerH, -sl/2-ssw, rafterSz, sWoodMat);
+                  } else {
+                    sBeam(xr, attachH,  sl/2,  xr, outerH,  sl/2+ssw, rafterSz, sWoodMat);
+                  }
+                }
+              }
+            }
+
+            // ── STEEL TRUSSES (same geometry as main steel trusses) ─────────
+            if (isMainSteel) {
+              var shedPS = (Q.eavePS || Q.postSpacing || 10) * Sc;
+              var numShedTrusses = Math.round(ssl / shedPS) + 1;
+              var chordSz = 0.025, webSz = 0.018;
+              // Rafter chord length for normal offset calculation
+              var rLen = Math.sqrt(ssw*ssw + Math.pow(attachH-outerH,2));
+              var nX2 = (attachH-outerH)/rLen * 1.5*Sc;
+              var nY2 = -(ssw/rLen) * 1.5*Sc;
+              var panels = 4;
+
+              for (var ti = 0; ti <= numShedTrusses; ti++) {
+                var tz = -ssl/2 + (ti/numShedTrusses)*ssl;
+                var zp = shedCOff + tz; // world Z position along shed
+                if (isEaveWall) {
+                  var ax = sc.wall==='left' ? -sw/2    : sw/2;
+                  var bx = sc.wall==='left' ? -sw/2-ssw: sw/2+ssw;
+                  // Top chord
+                  sSb(ax,attachH,zp, bx,outerH,zp, chordSz, sSteelMat);
+                  // Inner chord + X-webs
+                  var panelW2 = ssw/panels;
+                  for (var pp=0; pp<panels; pp++) {
+                    var frac0=pp/panels, frac1=(pp+1)/panels;
+                    var tx0=ax+(bx-ax)*frac0, ty0=attachH+(outerH-attachH)*frac0;
+                    var tx1=ax+(bx-ax)*frac1, ty1=attachH+(outerH-attachH)*frac1;
+                    var ix0=tx0+nX2, iy0=ty0+nY2;
+                    var ix1=tx1+nX2, iy1=ty1+nY2;
+                    sSb(ix0,iy0,zp, ix1,iy1,zp, chordSz, sSteelMat);
+                    sSb(tx0,ty0,zp, ix1,iy1,zp, webSz, sSteelMat);
+                    sSb(ix0,iy0,zp, tx1,ty1,zp, webSz, sSteelMat);
+                    sSb(tx0,ty0,zp, ix0,iy0,zp, webSz, sSteelMat);
+                  }
+                  sSb(ax+(bx-ax),outerH,zp, ax+(bx-ax)+nX2,outerH+nY2,zp, webSz, sSteelMat);
+                } else {
+                  // Gable wall shed — swap axes
+                  var xp = shedCOff + tz;
+                  var az2 = sc.wall==='front' ? -sl/2     : sl/2;
+                  var bz2 = sc.wall==='front' ? -sl/2-ssw : sl/2+ssw;
+                  sSb(xp,attachH,az2, xp,outerH,bz2, chordSz, sSteelMat);
+                }
+              }
+            }
+
+            // ── PURLINS on shed roof — 2' OC along slope ───────────────────
+            var sPurW = isMainSteel ? 0.015 : 0.05;
+            var sPurH = isMainSteel ? 0.05  : 0.015 * 1.5;
+            var slopeLen2 = Math.sqrt(ssw*ssw + Math.pow(attachH-outerH,2));
+            var numSPurlins = Math.floor(slopeLen2 / (2*Sc));
+            var purlinLen2 = ssl + 2*shedOh;
+
+            for (var spi=0; spi<=numSPurlins; spi++) {
+              var sfrac = spi / (numSPurlins + 1);
+              if (isEaveWall) {
+                var spx = (sc.wall==='left' ? -sw/2 : sw/2) + (sc.wall==='left'?-1:1)*ssw*sfrac;
+                var spy = attachH + (outerH - attachH) * sfrac;
+                // Purlin runs along Z (building length direction)
+                var pg = new THREE.BoxGeometry(sPurW, sPurH, purlinLen2);
+                var pm = new THREE.Mesh(pg, sPurlinMat);
+                pm.position.set(spx, spy, shedCOff);
+                grps.framing.add(pm);
+              } else {
+                // Gable wall shed — purlin runs along X
+                var spz = (sc.wall==='front' ? -sl/2 : sl/2) + (sc.wall==='front'?-1:1)*ssw*sfrac;
+                var spy2 = attachH + (outerH - attachH) * sfrac;
+                var pg2 = new THREE.BoxGeometry(purlinLen2, sPurH, sPurW);
+                var pm2 = new THREE.Mesh(pg2, sPurlinMat);
+                pm2.position.set(shedCOff, spy2, spz);
+                grps.framing.add(pm2);
+              }
+            }
+            // Eave purlin at outer edge
+            if (isEaveWall) {
+              var epx = sc.wall==='left' ? -sw/2-ssw : sw/2+ssw;
+              var epg = new THREE.BoxGeometry(sPurW, sPurH, purlinLen2);
+              var epm = new THREE.Mesh(epg, sPurlinMat);
+              epm.position.set(epx, outerH, shedCOff);
+              grps.framing.add(epm);
+              // Ridge/attach purlin
+              var apx = sc.wall==='left' ? -sw/2 : sw/2;
+              var apg = new THREE.BoxGeometry(sPurW, sPurH, purlinLen2);
+              var apm = new THREE.Mesh(apg, sPurlinMat);
+              apm.position.set(apx, attachH, shedCOff);
+              grps.framing.add(apm);
+            } else {
+              var epz = sc.wall==='front' ? -sl/2-ssw : sl/2+ssw;
+              var epg2 = new THREE.BoxGeometry(purlinLen2, sPurH, sPurW);
+              var epm2 = new THREE.Mesh(epg2, sPurlinMat);
+              epm2.position.set(shedCOff, outerH, epz);
+              grps.framing.add(epm2);
+              var apz = sc.wall==='front' ? -sl/2 : sl/2;
+              var apg2 = new THREE.BoxGeometry(purlinLen2, sPurH, sPurW);
+              var apm2 = new THREE.Mesh(apg2, sPurlinMat);
+              apm2.position.set(shedCOff, attachH, apz);
+              grps.framing.add(apm2);
+            }
+          });
+        }
         // ── INTERIOR STUD WALLS 3D ───────────────────────────────────────
         if (window._interiorWalls && window._interiorWalls.length) {
           var mPlate = new THREE.MeshLambertMaterial({ color: 0xC4A46A });
