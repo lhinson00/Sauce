@@ -6512,7 +6512,7 @@ async function submitQuote(){
 var _postsVisible    = true;
 var _dimsVisible     = true;
 var _roofVisible     = true;
-var _trussesVisible  = true;
+var _trussesVisible  = false;
 var _interiorVisible = true;
 
 function vpTogglePosts() {
@@ -9632,14 +9632,7 @@ function applyVoiceQuote(parsed, overlay) {
                 }
             });
 
-            // Corner posts (king studs — slightly beefier at corners)
-            // Skip corners where a lean-to shed gable end cap covers the post
-            const cornerPS = .04;
-            [[-sw/2, -sl/2], [-sw/2, sl/2], [sw/2, -sl/2], [sw/2, sl/2]].forEach(([x, z]) => {
-                const key = Math.round(x*1000) + ',' + Math.round(z*1000);
-                if (_shedCoveredCorners.has(key)) return; // hidden behind shed gable cap
-                addMainPost(x, z, postsOnTop ? sh - slabH : sh, mPencl);
-            });
+            // Corner king studs are already included in the stud loops above — no separate posts needed
 
         } else {
             // POST FRAME: Standard posts at configurable spacing from corners
@@ -13825,22 +13818,25 @@ function applyVoiceQuote(parsed, overlay) {
             // Direction unit vector along wall
             var ux = dx/len, uz = dz/len;
 
-            function addStudBox(ax,ay,az, bx,by,bz, sw2, mat) {
+            function addStudBox(ax,ay,az, bx,by,bz, sw2, mat, isPlate) {
               var ddx=bx-ax,ddy=by-ay,ddz=bz-az;
               var ll=Math.sqrt(ddx*ddx+ddy*ddy+ddz*ddz);
               if(ll<0.001) return;
-              var g=new THREE.BoxGeometry(sw2,sw2,ll);
+              // Plates: wide+flat; studs: narrow face × deep
+              var faceW = isPlate ? sw2*3 : sw2;
+              var faceD = isPlate ? sw2   : sw2*2.5;
+              var g=new THREE.BoxGeometry(faceW, faceD, ll);
               var m=new THREE.Mesh(g,mat);
               m.position.set((ax+bx)/2,(ay+by)/2,(az+bz)/2);
               m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(ddx,ddy,ddz).normalize());
-              grps.framing.add(m);  // framing toggle controls interior walls
+              grps.framing.add(m);
             }
 
             // Bottom plate
-            addStudBox(wx1,plateH/2,wz1, wx2,plateH/2,wz2, plateH*2, mPlate);
+            addStudBox(wx1,plateH/2,wz1, wx2,plateH/2,wz2, plateH*2, mPlate, true);
             // Top plate (double)
-            addStudBox(wx1,wallH-plateH,wz1, wx2,wallH-plateH,wz2, plateH*2, mPlate);
-            addStudBox(wx1,wallH,wz1, wx2,wallH,wz2, plateH*2, mPlate);
+            addStudBox(wx1,wallH-plateH,wz1, wx2,wallH-plateH,wz2, plateH*2, mPlate, true);
+            addStudBox(wx1,wallH,wz1, wx2,wallH,wz2, plateH*2, mPlate, true);
 
             // Build list of stud positions excluding openings
             var openingGaps = (iw.openings||[]).map(function(op) {
@@ -13881,7 +13877,11 @@ function applyVoiceQuote(parsed, overlay) {
 
         // ── RE-APPLY ALL TOGGLE STATES (survive every rebuild) ───────────────
         grps.framing.visible = false; // framing off by default
-        if (typeof _framingVisible  !== 'undefined') { grps.framing.visible = _framingVisible; }
+        if (typeof _framingVisible  !== 'undefined') {
+          grps.framing.visible = _framingVisible;
+          // Loft deck/joists also follow framing toggle
+          if (grps.loft) grps.loft.visible = _framingVisible && (_interiorVisible !== false);
+        }
         if (typeof _wallsVisible    !== 'undefined') { grps.wallPanels.visible = _wallsVisible; grps.walls.visible = _wallsVisible; grps.doors.visible = _wallsVisible; }
         if (typeof _roofVisible     !== 'undefined') { grps.roof.visible = _roofVisible; }
         if (typeof _trussesVisible  !== 'undefined') { grps.trusses.visible = _trussesVisible; }
@@ -32191,35 +32191,42 @@ window.openFloorPlanModal = function() {
     }
 
     // Wall tool
-    if(drawState.mode==='idle'||!drawState.startFt){
-      // Try to select existing wall first
-      var hitIdx=-1;
-      (window._interiorWalls||[]).forEach(function(iw,i){
-        var a=ftToCanvas(iw.x1,iw.y1),b=ftToCanvas(iw.x2,iw.y2);
-        var ddx2=b.x-a.x,ddy2=b.y-a.y,len22=ddx2*ddx2+ddy2*ddy2;
-        var t2=len22>0?Math.max(0,Math.min(1,((cx2-a.x)*ddx2+(cy2-a.y)*ddy2)/len22)):0;
-        var px2=a.x+t2*ddx2-cx2,py2=a.y+t2*ddy2-cy2;
-        if(Math.sqrt(px2*px2+py2*py2)<8) hitIdx=i;
-      });
-      if(hitIdx>=0){ selectedIdx=(selectedIdx===hitIdx)?-1:hitIdx; redraw(lastMouse); return; }
-      selectedIdx=-1;
-      drawState.startFt=ft;
-    } else {
-      var dx2=ft.x-drawState.startFt.x,dy2=ft.y-drawState.startFt.y;
-      if(Math.sqrt(dx2*dx2+dy2*dy2)>0.5){
-        window._interiorWalls.push({
-          id:_nextIWallId++, x1:drawState.startFt.x,y1:drawState.startFt.y,
-          x2:ft.x,y2:ft.y, height:drawState.defaultH, level:drawState.defaultLvl,
-          openings:[], drains:[], door:false, _open:false
+    if(drawState.tool==='wall'||!drawState.startFt){
+      // Only try to select if we don't have a wall in progress
+      if(!drawState.startFt) {
+        var hitIdx=-1;
+        (window._interiorWalls||[]).forEach(function(iw,i){
+          var a=ftToCanvas(iw.x1,iw.y1),b=ftToCanvas(iw.x2,iw.y2);
+          var ddx2=b.x-a.x,ddy2=b.y-a.y,len22=ddx2*ddx2+ddy2*ddy2;
+          var t2=len22>0?Math.max(0,Math.min(1,((cx2-a.x)*ddx2+(cy2-a.y)*ddy2)/len22)):0;
+          var px2=a.x+t2*ddx2-cx2,py2=a.y+t2*ddy2-cy2;
+          if(Math.sqrt(px2*px2+py2*py2)<8) hitIdx=i;
         });
-        renderInteriorWalls(); scheduleBuild();
+        if(hitIdx>=0){ selectedIdx=(selectedIdx===hitIdx)?-1:hitIdx; redraw(lastMouse); return; }
+        selectedIdx=-1;
+        drawState.startFt=ft;
+      } else {
+        var dx2=ft.x-drawState.startFt.x,dy2=ft.y-drawState.startFt.y;
+        if(Math.sqrt(dx2*dx2+dy2*dy2)>0.5){
+          window._interiorWalls.push({
+            id:_nextIWallId++, x1:drawState.startFt.x,y1:drawState.startFt.y,
+            x2:ft.x,y2:ft.y, height:drawState.defaultH, level:drawState.defaultLvl,
+            openings:[], drains:[], door:false, _open:false
+          });
+          renderInteriorWalls(); scheduleBuild();
+        }
+        drawState.startFt=null;
       }
-      drawState.startFt=null;
     }
     redraw(lastMouse);
   });
 
-  document.addEventListener('keydown',function escH(e){
+  canvas.addEventListener('contextmenu', function(e){
+    e.preventDefault();
+    drawState.startFt=null; selectedIdx=-1; redraw(lastMouse);
+  });
+
+  document.addEventListener('keydown', function escH(e){
     if(e.key==='Escape'){
       if(drawState.startFt){drawState.startFt=null;redraw(lastMouse);}
       else{overlay.remove();document.removeEventListener('keydown',escH);}
