@@ -6853,6 +6853,7 @@ function addLevel() {
     floorElevFt:  newFloor,
     wallHeightFt: 9,
     joistDir: 'auto',
+    joistType: 'sawn',   // 'sawn' | 'ij117' | 'ij14' | 'ij162h' | 'ij163h'
     bearing: false,
     color: LEVEL_COLORS[Math.min(window._levelConfigs.length, LEVEL_COLORS.length-1)],
     floorMode: 'partial',
@@ -6877,7 +6878,7 @@ function setLevelProp(id, prop, val) {
   var lv = window._levelConfigs.find(function(l){ return l.id === id; });
   if (!lv) return;
   if (prop === 'bearing' || prop === 'floorMode' || prop === 'stairs') { lv[prop] = val; }
-  else if (prop === 'joistDir' || prop === 'name') { lv[prop] = val; }
+  else if (prop === 'joistDir' || prop === 'joistType' || prop === 'name') { lv[prop] = val; }
   else { var n = parseFloat(val); lv[prop] = isNaN(n) ? val : n; }
   renderLevelManager();
   scheduleBuild();
@@ -7004,6 +7005,20 @@ function renderLevelManager() {
       +'<select class="shed-sel" onchange="setLevelProp('+lv.id+',\'joistDir\',this.value)">'+joistOpts+'</select></div>'
       +(idx>0?'<div><div class="shed-label" style="margin-bottom:4px;">Bearing</div><label class="tog"><input type="checkbox" '+(lv.bearing?'checked':'')+' onchange="setLevelProp('+lv.id+',\'bearing\',this.checked)"><span class="tog-track"></span></label></div>':'')
       +'</div>'
+      +(idx>0 ? (function(){
+        var jt = lv.joistType || 'sawn';
+        var jtOpts = [
+          {v:'sawn',    l:'Sawn 2×10 / 2×12'},
+          {v:'ij117',   l:'11 7/8" I-Joist (2½" flange)'},
+          {v:'ij14',    l:'14" I-Joist (2½" flange)'},
+          {v:'ij162h',  l:'16" I-Joist (2½" flange)'},
+          {v:'ij163h',  l:'16" I-Joist (3½" flange)'},
+        ].map(function(o){ return '<option value="'+o.v+'"'+(jt===o.v?' selected':'')+'>'+o.l+'</option>'; }).join('');
+        return '<div style="margin-top:6px;">'
+          +'<div class="shed-label">Joist Type</div>'
+          +'<select class="shed-sel" style="width:100%;" onchange="setLevelProp('+lv.id+',\'joistType\',this.value);scheduleBuild()">'+jtOpts+'</select>'
+          +'</div>';
+      })() : '')
       +zoneHTML
       +'</div>';
   }).join('')
@@ -32010,6 +32025,22 @@ window.SauceMaterials.calcInteriorWallMaterials = function(Q, walls, levels) {
       items.push({ category:cat, description:label+' — Plates (2×6×16)'+(bearing?' [BEARING]':''), sku:'SYP2616',
         quantity:plateCt, detail:(bearing?'4':'3')+' plates  |  '+Math.round(wallLen*10)/10+"' wall"});
 
+      // Mid-height blocking — 1 row at ~4' off floor, same qty as one plate run
+      var blockCt = Math.ceil(wallLen/16);
+      items.push({ category:cat, description:label+' — Blocking (2×6×16)', sku:'SYP2616',
+        quantity:blockCt, detail:'mid-height fire block  |  1 row @ ~4\'  |  '+Math.round(wallLen*10)/10+"' wall"});
+
+      // Corner/T-intersection backing — 3 extra studs per opening or wall end
+      // Count openings + 2 ends = intersections
+      var intersections = 2 + (iw.openings||[]).length;
+      items.push({ category:cat, description:label+' — Corner/Backing Studs (2×6)', sku:studSku,
+        quantity:intersections*3, detail:'3 studs per intersection/end  |  '+intersections+' locations'});
+
+      // Framing nails (16d sinker — 1 lb per 100 LF of wall)
+      var nailLbs = Math.ceil(wallLen / 50);
+      items.push({ category:cat, description:label+' — Framing Nails (16d)', sku:'NAIL16D5LB',
+        quantity:nailLbs, detail:'~1 lb per 50 LF  |  '+Math.round(wallLen*10)/10+"' wall"});
+
       // Door openings
       (iw.openings||[]).forEach(function(op, oi){
         var dw = op.width||3;
@@ -32041,19 +32072,38 @@ window.SauceMaterials.calcInteriorWallMaterials = function(Q, walls, levels) {
         var osbSheets = Math.ceil(sqft*1.1/32);
         items.push({ category:cat, description:'Floor Deck OSB (5/8")'+zLabel, sku:'OSB5.8', quantity:osbSheets,
           detail:Math.round(z.w)+"'×"+Math.round(z.d)+"'  |  "+Math.round(sqft)+' sqft  |  10% waste' });
-
         items.push({ category:cat, description:'Sub Floor Glue'+zLabel, sku:'SFG', quantity:Math.ceil(osbSheets/4),
           detail:'1 tube per 4 sheets' });
 
-        var joistDepth = spanFt <= 12 ? 10 : 12;
-        var joistLen = window.SauceMaterials.stockedSYP212Len(Math.ceil(spanFt));
         var joistCount = Math.ceil(lengthFt/(16/12)) + 1;
-        var joistSku = 'SYP2'+joistDepth+(joistLen<10?'0'+joistLen:joistLen);
-        items.push({ category:cat, description:'Floor Joists (2×'+joistDepth+')'+zLabel, sku:joistSku, quantity:joistCount,
-          detail:'16" OC  |  '+Math.round(spanFt)+"' span  |  "+joistCount+' joists'});
+        var jType = lv.joistType || 'sawn';
 
-        var jhSku='JH2'+(joistDepth<10?'0'+joistDepth:joistDepth);
-        items.push({ category:cat, description:'Joist Hangers'+zLabel, sku:jhSku, quantity:joistCount*2, detail:'2 per joist' });
+        if (jType === 'sawn') {
+          // Traditional sawn lumber joists — depth by span
+          var joistDepth = spanFt <= 12 ? 10 : 12;
+          var joistLen = window.SauceMaterials.stockedSYP212Len(Math.ceil(spanFt));
+          var joistSku = 'SYP2'+joistDepth+(joistLen<10?'0'+joistLen:joistLen);
+          items.push({ category:cat, description:'Floor Joists (2×'+joistDepth+')'+zLabel, sku:joistSku, quantity:joistCount,
+            detail:'16" OC  |  '+Math.round(spanFt)+"' span  |  "+joistCount+' joists'});
+          var jhSku='JH2'+(joistDepth<10?'0'+joistDepth:joistDepth);
+          items.push({ category:cat, description:'Joist Hangers'+zLabel, sku:jhSku, quantity:joistCount*2, detail:'2 per joist' });
+        } else {
+          // I-Joist — priced per linear foot like LVL
+          var ijSkuMap = {
+            ij117:  { sku:'CIJ1178',   hSku:'IJH117/8', label:'11 7/8" I-Joist (2½" flange)' },
+            ij14:   { sku:'CIJ14',     hSku:'IJH117/8', label:'14" I-Joist (2½" flange)' },
+            ij162h: { sku:'CIJ162.5',  hSku:'IJH16',    label:'16" I-Joist (2½" flange)' },
+            ij163h: { sku:'CIJ163.5',  hSku:'IJH16',    label:'16" I-Joist (3½" flange)' },
+          };
+          var ijInfo = ijSkuMap[jType] || ijSkuMap['ij117'];
+          // Per-ft pricing: qty = joistCount × span in ft (same as LVL pattern)
+          var totalLinFt = joistCount * Math.ceil(spanFt);
+          items.push({ category:cat, description:ijInfo.label+zLabel, sku:ijInfo.sku,
+            quantity:totalLinFt, boardLen:true, isLVL:true,
+            detail:'16" OC  |  '+joistCount+' joists × '+Math.ceil(spanFt)+"' = "+totalLinFt+' LF' });
+          items.push({ category:cat, description:'I-Joist Hangers'+zLabel, sku:ijInfo.hSku,
+            quantity:joistCount*2, detail:'2 per joist  |  '+joistCount+' joists' });
+        }
 
         items.push({ category:cat, description:'Nails (10d)', sku:'HDGRS10D30', quantity:1, detail:'deck nailing' });
         items.push({ category:cat, description:'Nails (8d)',  sku:'HDGRS8D30',  quantity:1, detail:'framing' });
@@ -32324,6 +32374,11 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcRockWainscot(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcPostProtectors(sfQ, WALLS, allDoors, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcCraneFee(sfQ, 'stud').forEach(function(item) { items.push(item); });
+
+    // ── INTERIOR WALLS (stud frame) ──
+    if (typeof SM.calcInteriorWallMaterials === 'function') {
+      SM.calcInteriorWallMaterials(sfQ, window._interiorWalls||[], window._levelConfigs||[]).forEach(function(item) { items.push(item); });
+    }
 
     return { items: items, building: sfQ.w + "' x " + sfQ.l + "' x " + sfQ.h + "' (STUD FRAME)" };
   }
