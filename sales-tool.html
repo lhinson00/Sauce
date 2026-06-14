@@ -1836,7 +1836,14 @@ body.customer-mode #custColorChartLink { display: block !important; }
             <div class="toggle-lbl">Scissor Truss</div>
             <div class="toggle-sub">+$30/truss material adder</div>
           </div>
-          <label class="tog"><input type="checkbox" id="st_scissorTruss" onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+          <label class="tog"><input type="checkbox" id="st_scissorTruss" onchange="try{_onAtticScissorChange('scissor');scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+        </div>
+        <div class="toggle-row" id="rowAtticTruss">
+          <div class="toggle-info">
+            <div class="toggle-lbl">Attic Truss</div>
+            <div class="toggle-sub" id="atticTrussSubLbl">+$40/truss · usable attic room inside</div>
+          </div>
+          <label class="tog"><input type="checkbox" id="st_atticTruss" onchange="try{_onAtticScissorChange('attic');scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
         </div>
         <div class="toggle-row">
           <div class="toggle-info">
@@ -2469,6 +2476,39 @@ function logPriceCalculated() {
   }, 3000);
 }
 
+function _onAtticScissorChange(which) {
+  // Scissor and Attic are mutually exclusive
+  var scissorEl = document.getElementById('st_scissorTruss');
+  var atticEl   = document.getElementById('st_atticTruss');
+  if (!scissorEl || !atticEl) return;
+  if (which === 'scissor' && scissorEl.checked) atticEl.checked = false;
+  if (which === 'attic'   && atticEl.checked)   scissorEl.checked = false;
+  // Update attic sub-label with room size estimate
+  _updateAtticLabel();
+}
+function _updateAtticLabel() {
+  var el = document.getElementById('atticTrussSubLbl');
+  if (!el) return;
+  var w = parseFloat((document.getElementById('qgWidth')||{}).value||'0') || 0;
+  var p = parseFloat((document.getElementById('qgPitch')||{}).value||'0') || 4;
+  if (w < 24) { el.textContent = '+$40/truss · usable attic room inside'; return; }
+  // Attic room sizing:
+  // Knee wall height ≈ 7' (standard)
+  // Knee wall runs from bottom chord up at 6/12 equivalent from each heel
+  // Room width = span - 2 × (knee wall horizontal run)
+  // Knee wall horizontal run at pitch: kneeH / (pitch/12)
+  var kneeH    = 7.0;                          // standard 7' knee wall
+  var kneeRun  = kneeH / (p / 12);            // horizontal ft per side
+  var roomW    = Math.max(0, w - 2 * kneeRun);
+  var peakH    = w/2 * (p/12);                // peak height above chord
+  var roomH    = peakH - kneeH;               // clear height at center
+  if (roomW < 4 || roomH < 4) {
+    el.textContent = '+$40/truss · pitch too low for usable attic room';
+    return;
+  }
+  var roomSqFt = Math.round(roomW);
+  el.textContent = '+$40/truss · ~' + Math.round(roomW) + '\' wide × ' + Math.round(roomH*10)/10 + '\' tall attic room';
+}
 function scheduleBuild() {
   clearTimeout(_buildTimer);
   _buildTimer = setTimeout(triggerBuild, 320);
@@ -2481,6 +2521,7 @@ function scheduleBuildAndPrice() {
 // ── LOCAL STRIP UPDATER ───────────────────────────────────────────────────────
 function updateStripFromLocalCalc() {
   if (!window.SauceMaterials || !window.SauceLabor || !window._Q) return;
+  try { _updateAtticLabel(); } catch(e) {}
 
   var Q        = window._Q;
   var WALLS    = window._WALLS || [];
@@ -5739,6 +5780,7 @@ function serializeConfig() {
       mbConcreteAdder:(document.getElementById('sf_mbConcreteAdder')||{}).value||'None',
       sfPitch612:    !!(document.getElementById('sf_pitch612')||{}).checked,
       scissorTruss:  !!(document.getElementById('st_scissorTruss')||{}).checked,
+      atticTruss:    !!(document.getElementById('st_atticTruss')||{}).checked,
       standingSeam:  !!(document.getElementById('st_standingSeam')||{}).checked,
       noRoofMetal:   !!(document.getElementById('st_noRoofMetal')||{}).checked,
       noWallMetal:   !!(document.getElementById('st_noWallMetal')||{}).checked,
@@ -6015,6 +6057,7 @@ function restoreConfig(cfg) {
       _sv('sf_mbConcreteAdder',sf.mbConcreteAdder);
       _sv('sf_pitch612',       sf.sfPitch612);
       (function(){ var el=document.getElementById('st_scissorTruss'); if(el) el.checked=!!sf.scissorTruss; })();
+      (function(){ var el=document.getElementById('st_atticTruss');   if(el) el.checked=!!sf.atticTruss;   })();
       _sv('st_standingSeam',    sf.standingSeam);
       _sv('st_noRoofMetal',     sf.noRoofMetal);
       _sv('st_noWallMetal',     sf.noWallMetal);
@@ -6859,7 +6902,8 @@ function addLevel() {
     floorMode: 'partial',
     floorZones: [],
     stairs: false,
-    stairPos: 'left'
+    stairPos: 'left',
+    stairRot: 'front'   // which wall stairs run toward: front | back | left | right
   });
   renderLevelManager();
   scheduleBuild();
@@ -6878,7 +6922,7 @@ function setLevelProp(id, prop, val) {
   var lv = window._levelConfigs.find(function(l){ return l.id === id; });
   if (!lv) return;
   if (prop === 'bearing' || prop === 'floorMode' || prop === 'stairs') { lv[prop] = val; }
-  else if (prop === 'joistDir' || prop === 'joistType' || prop === 'name') { lv[prop] = val; }
+  else if (prop === 'joistDir' || prop === 'joistType' || prop === 'stairPos' || prop === 'stairRot' || prop === 'name') { lv[prop] = val; }
   else { var n = parseFloat(val); lv[prop] = isNaN(n) ? val : n; }
   renderLevelManager();
   scheduleBuild();
@@ -6980,12 +7024,18 @@ function renderLevelManager() {
       var stairPosOpts = ['left','center','right'].map(function(p){
         return '<option value="'+p+'"'+(lv.stairPos===p?' selected':'')+'>'+p.charAt(0).toUpperCase()+p.slice(1)+'</option>';
       }).join('');
+      var stairRotOpts = ['front','back','left','right'].map(function(r){
+        return '<option value="'+r+'"'+(lv.stairRot===r?' selected':'')+'>Toward '+r.charAt(0).toUpperCase()+r.slice(1)+'</option>';
+      }).join('');
       zoneHTML += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);">'
         +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
         +'<div class="shed-label" style="margin:0;">Stairs</div>'
         +'<label class="tog"><input type="checkbox" '+(lv.stairs?'checked':'')+' onchange="setLevelProp('+lv.id+',\'stairs\',this.checked);scheduleBuild()"><span class="tog-track"></span></label>'
         +'</div>'
-        +(lv.stairs ? '<div><div class="shed-label">Position</div><select class="shed-sel" onchange="setLevelProp('+lv.id+',\'stairPos\',this.value);scheduleBuild()">'+stairPosOpts+'</select></div>' : '')
+        +(lv.stairs ? '<div class="shed-row">'
+          +'<div><div class="shed-label">Direction</div><select class="shed-sel" onchange="setLevelProp('+lv.id+',\'stairRot\',this.value);scheduleBuild()">'+stairRotOpts+'</select></div>'
+          +'<div><div class="shed-label">Position</div><select class="shed-sel" onchange="setLevelProp('+lv.id+',\'stairPos\',this.value);scheduleBuild()">'+stairPosOpts+'</select></div>'
+          +'</div>' : '')
         +'</div>';
     }
 
@@ -13907,6 +13957,7 @@ function applyVoiceQuote(parsed, overlay) {
         if (!isSingleSlope) {
           const isSteel = Q.truss === 'Steel';
           const isScissor = !!(document.getElementById('st_scissorTruss') && document.getElementById('st_scissorTruss').checked);
+          const isAttic   = !!(document.getElementById('st_atticTruss')   && document.getElementById('st_atticTruss').checked);
           const ohSc = oh; // overhang in scene units (already = Q.oh/12 * Sc)
 
           // Truss dimensions
@@ -14031,8 +14082,52 @@ function applyVoiceQuote(parsed, overlay) {
                 }
                 // Center king post
                 addBeam(0, pkH, zPos+wo, 0, scPkH, zPos+wo, tc, mWeb);
+              } else if (isAttic) {
+                // ── ATTIC TRUSS: top chords + raised bottom chord + knee walls + room ──
+                // Knee wall height = 7' (standard), horizontal run = kneeH / (pitch/12)
+                const kneeH    = 7 * Sc;
+                const pitch12  = (pkH - eH) / hw;  // rise/run of top chord
+                const kneeRun  = kneeH / pitch12;   // horizontal run to reach knee wall height
+                const roomY    = eH + kneeH;         // Y of raised floor (= knee wall top)
+                const roomHW   = hw - kneeRun;       // half-width of room
+                const wo2      = -0.004;
+
+                // Top chords (same as standard)
+                addBeam(-hw, eH, zPos, 0, pkH, zPos, tc, mChord);
+                addBeam( hw, eH, zPos, 0, pkH, zPos, tc, mChord);
+
+                // Bottom chord (full span, flat at eH)
+                addBeam(-hw, eH, zPos+wo2, hw, eH, zPos+wo2, tc, mChord);
+
+                // Raised floor chord (flat section inside room)
+                addBeam(-roomHW, roomY, zPos+wo2, roomHW, roomY, zPos+wo2, tc, mChord);
+
+                // Knee wall verticals (left and right)
+                addBeam(-roomHW, eH, zPos+wo2, -roomHW, roomY, zPos+wo2, tc, mChord);
+                addBeam( roomHW, eH, zPos+wo2,  roomHW, roomY, zPos+wo2, tc, mChord);
+
+                // Diagonal from bottom chord heel to knee wall top (W2 member)
+                addBeam(-hw, eH, zPos+wo2, -roomHW, roomY, zPos+wo2, tw, mWeb);
+                addBeam( hw, eH, zPos+wo2,  roomHW, roomY, zPos+wo2, tw, mWeb);
+
+                // Short vertical at heel (W1 — connects bottom chord to top chord start)
+                const heelTopY = eH + hw * pitch12 * 0.04;  // tiny rise at heel
+                addBeam(-hw, eH, zPos+wo2, -hw, heelTopY, zPos+wo2, tw, mWeb);
+                addBeam( hw, eH, zPos+wo2,  hw, heelTopY, zPos+wo2, tw, mWeb);
+
+                // Center king post from peak to raised floor
+                addBeam(0, pkH, zPos+wo2, 0, roomY, zPos+wo2, tc, mWeb);
+
+                // Interior webs — from raised floor up to top chord (W4 diagonals)
+                const midX     = roomHW * 0.5;
+                const topMidY  = eH + (hw - midX) * pitch12;
+                addBeam(-roomHW, roomY, zPos+wo2, -midX, topMidY, zPos+wo2, tw, mWeb);
+                addBeam( roomHW, roomY, zPos+wo2,  midX, topMidY, zPos+wo2, tw, mWeb);
+
+                // Short center vertical W5
+                addBeam(0, pkH, zPos+wo2, 0, roomY, zPos+wo2, tw, mWeb);
+
               } else {
-                // Flat bottom chord
                 addBeam(-hw, eH, zPos, hw, eH, zPos, tc, mChord);
                 // Fink/W web pattern
                 // King post: center top to center bottom
@@ -14532,11 +14627,57 @@ function applyVoiceQuote(parsed, overlay) {
               var zWPt = z.w * Sc;
               var zDPt = z.d * Sc;
 
-              // Deck sheathing
-              var deckGeo = new THREE.BoxGeometry(zWPt, deckThk, zDPt);
-              var deckMesh = new THREE.Mesh(deckGeo, mDeck);
-              deckMesh.position.set(zCx, yDeck, zCz);
-              grps.interior.add(deckMesh);
+              // Deck sheathing — render as 4 panels around stair hole if stairs exist
+              var hole = lv._stairHole;
+              if (!hole) {
+                // No stairs — single solid deck
+                var deckGeo = new THREE.BoxGeometry(zWPt, deckThk, zDPt);
+                var deckMesh = new THREE.Mesh(deckGeo, mDeck);
+                deckMesh.position.set(zCx, yDeck, zCz);
+                grps.interior.add(deckMesh);
+              } else {
+                // Stair hole in plan space
+                var hz = z, hRot = hole.rot;
+                // Hole bounds in plan coords (feet from 0,0)
+                var hx0 = hole.x, hy0 = hole.y;
+                var hx1 = hx0 + (hRot==='left'||hRot==='right' ? hole.d : hole.w);
+                var hy1 = hy0 + (hRot==='left'||hRot==='right' ? hole.w : hole.d);
+                // Clamp to zone
+                hx0 = Math.max(hx0, z.x); hy0 = Math.max(hy0, z.y);
+                hx1 = Math.min(hx1, z.x+z.w); hy1 = Math.min(hy1, z.y+z.d);
+                if (hx1 <= hx0 || hy1 <= hy0) {
+                  // Hole outside zone — solid deck
+                  var dg2 = new THREE.BoxGeometry(zWPt, deckThk, zDPt);
+                  var dm2 = new THREE.Mesh(dg2, mDeck);
+                  dm2.position.set(zCx, yDeck, zCz);
+                  grps.interior.add(dm2);
+                } else {
+                  // 4 panels around the hole
+                  // Convert hole bounds to scene units
+                  var hsx0 = (hx0 - (Q.w||40)/2) * Sc, hsx1 = (hx1 - (Q.w||40)/2) * Sc;
+                  var hsz0 = (hy0 - (Q.l||60)/2) * Sc, hsz1 = (hy1 - (Q.l||60)/2) * Sc;
+                  var zsx0 = (z.x - (Q.w||40)/2) * Sc, zsx1 = zsx0 + zWPt;
+                  var zsz0 = (z.y - (Q.l||60)/2) * Sc, zsz1 = zsz0 + zDPt;
+                  var panels = [
+                    // Left of hole
+                    { x0:zsx0, x1:hsx0, z0:zsz0, z1:zsz1 },
+                    // Right of hole
+                    { x0:hsx1, x1:zsx1, z0:zsz0, z1:zsz1 },
+                    // Front of hole (between left/right edges)
+                    { x0:hsx0, x1:hsx1, z0:zsz0, z1:hsz0 },
+                    // Back of hole
+                    { x0:hsx0, x1:hsx1, z0:hsz1, z1:zsz1 },
+                  ];
+                  panels.forEach(function(p) {
+                    var pw = p.x1-p.x0, pd = p.z1-p.z0;
+                    if (pw < 0.001 || pd < 0.001) return;
+                    var dpg = new THREE.BoxGeometry(pw, deckThk, pd);
+                    var dpm = new THREE.Mesh(dpg, mDeck);
+                    dpm.position.set((p.x0+p.x1)/2, yDeck, (p.z0+p.z1)/2);
+                    grps.interior.add(dpm);
+                  });
+                }
+              }
 
               var jType2 = lv.joistType || 'sawn';
               var isIJoist = (jType2 !== 'sawn');
@@ -14887,59 +15028,133 @@ function applyVoiceQuote(parsed, overlay) {
         // ── LEVEL STAIRS 3D ──────────────────────────────────────────────────
         (window._levelConfigs||[]).forEach(function(lv) {
           if (!lv.stairs || lv.floorElevFt <= 0) return;
-          var lFlH   = lv.floorElevFt * Sc;
-          var riseIn = 7.5/12, runIn = 10.0/12;
-          var stepCt = Math.round(lv.floorElevFt / riseIn);
-          var stairW2 = 3 * Sc;
+          var lFlH    = lv.floorElevFt * Sc;
+          var riseIn  = 7.5/12, runIn = 10.0/12;
+          var stepCt  = Math.round(lv.floorElevFt / riseIn);
+          var stairW  = 3 * Sc;       // 3' wide stair
           var riseS   = riseIn * Sc;
           var runS    = runIn  * Sc;
+          var totalRun = stepCt * runS;
           var treadThk = 0.018 * Sc;
           var riserThk = 0.012 * Sc;
-          var mStairL = new THREE.MeshLambertMaterial({ color: 0xA07840 });
-          var mJoistL = new THREE.MeshLambertMaterial({ color: 0xBE9A5A });
+          var mStairL  = new THREE.MeshLambertMaterial({ color: 0xA07840 });
+          var mStringL = new THREE.MeshLambertMaterial({ color: 0xA07840, side: THREE.DoubleSide });
 
-          // Place stairs along the front gable wall (z = -sl/2) by default
-          // stairPos: left/center/right along building width
           var bwSc = (Q.w||40) * Sc;
           var blSc = (Q.l||60) * Sc;
+          var stairRot = lv.stairRot || 'front';
           var stairPos = lv.stairPos || 'left';
-          var alongOffset = stairPos === 'center' ? (bwSc/2 - stairW2/2)
-                          : stairPos === 'right'  ? (bwSc - stairW2 - 0.1*Sc)
-                          : 0.1*Sc; // left
-          var sAlongX = -bwSc/2 + alongOffset;
-          var sBaseZ  = -blSc/2;   // front wall, stairs go inward (+Z)
-          var totalRun = stepCt * runS;
 
-          for (var si = 0; si < stepCt; si++) {
-            var stepY    = lFlH - riseS * (si + 1);
-            var stepZ    = sBaseZ + runS * (si + 1);
-            // Tread
-            var tg = new THREE.BoxGeometry(stairW2, treadThk, runS);
-            var tm = new THREE.Mesh(tg, mStairL);
-            tm.position.set(sAlongX + stairW2/2, stepY + treadThk/2, stepZ - runS/2);
-            grps.interior.add(tm);
-            // Riser
-            var rrg = new THREE.BoxGeometry(stairW2, riseS, riserThk);
-            var rrm = new THREE.Mesh(rrg, mJoistL);
-            rrm.position.set(sAlongX + stairW2/2, stepY + riseS/2, stepZ);
-            grps.interior.add(rrm);
+          // Determine stair origin (corner at floor level where bottom step starts)
+          // and direction vectors: 'run' = direction stairs descend, 'along' = left-right along wall
+          var runDir, alongDir, wallBase;
+          if (stairRot === 'front') {
+            runDir   = new THREE.Vector3(0, 0, 1);   // stairs go inward from front
+            alongDir = new THREE.Vector3(1, 0, 0);   // position along X
+            wallBase = new THREE.Vector3(-bwSc/2, 0, -blSc/2);
+          } else if (stairRot === 'back') {
+            runDir   = new THREE.Vector3(0, 0, -1);
+            alongDir = new THREE.Vector3(1, 0, 0);
+            wallBase = new THREE.Vector3(-bwSc/2, 0,  blSc/2);
+          } else if (stairRot === 'left') {
+            runDir   = new THREE.Vector3(1, 0, 0);
+            alongDir = new THREE.Vector3(0, 0, 1);
+            wallBase = new THREE.Vector3(-bwSc/2, 0, -blSc/2);
+          } else { // right
+            runDir   = new THREE.Vector3(-1, 0, 0);
+            alongDir = new THREE.Vector3(0, 0, 1);
+            wallBase = new THREE.Vector3( bwSc/2, 0, -blSc/2);
           }
 
-          // Stringers (left and right)
-          [-1, 1].forEach(function(side) {
-            var sx = sAlongX + (side === -1 ? 0 : stairW2);
+          // Along-wall offset: left/center/right
+          var wallLen = (stairRot === 'left' || stairRot === 'right') ? blSc : bwSc;
+          var posOffset = stairPos === 'center' ? (wallLen/2 - stairW/2)
+                        : stairPos === 'right'  ? (wallLen - stairW - 0.1*Sc)
+                        : 0.1*Sc;
+
+          // Stair origin = wall base + along offset + small wall clearance
+          var origin = wallBase.clone()
+            .addScaledVector(alongDir, posOffset)
+            .addScaledVector(runDir, 0.01*Sc);  // tiny clearance from wall
+
+          // Draw each step
+          for (var si = 0; si < stepCt; si++) {
+            var stepY = lFlH - riseS * (si + 1);
+            // Tread center
+            var tCtr = origin.clone().addScaledVector(runDir, runS*(si+0.5));
+            var tPos = tCtr.clone().addScaledVector(alongDir, stairW/2);
+            tPos.y = stepY + treadThk/2;
+            var trunX = Math.abs(runDir.x) > 0.5 ? runS    : stairW;
+            var trunZ = Math.abs(runDir.z) > 0.5 ? runS    : stairW;
+            var tg = new THREE.BoxGeometry(trunX, treadThk, trunZ);
+            var tm = new THREE.Mesh(tg, mStairL);
+            tm.position.copy(tPos);
+            grps.interior.add(tm);
+            // Riser
+            var rCtr = origin.clone().addScaledVector(runDir, runS*(si+1));
+            var rPos = rCtr.clone().addScaledVector(alongDir, stairW/2);
+            rPos.y = stepY + riseS/2;
+            var rrunX = Math.abs(runDir.x) > 0.5 ? riserThk : stairW;
+            var rrunZ = Math.abs(runDir.z) > 0.5 ? riserThk : stairW;
+            var rg = new THREE.BoxGeometry(rrunX, riseS, rrunZ);
+            var rm2 = new THREE.Mesh(rg, mStairL);
+            rm2.position.copy(rPos);
+            grps.interior.add(rm2);
+          }
+
+          // Stringers — triangular profile along each side
+          [-0, stairW].forEach(function(aOff) {
             var sg = new THREE.BufferGeometry();
             var sv = [];
+            // Perpendicular to run direction (stringer side)
+            var sOrigin = origin.clone().addScaledVector(alongDir, aOff);
             for (var si2 = 0; si2 < stepCt; si2++) {
-              var y0 = lFlH - riseS * si2,  y1 = lFlH - riseS * (si2+1);
-              var z0 = sBaseZ + runS * si2,  z1 = sBaseZ + runS * (si2+1);
-              sv.push(sx,y0,z0, sx,y1,z0, sx,y1,z1, sx,y0,z0, sx,y1,z1, sx,y0,z1);
+              var p0 = sOrigin.clone().addScaledVector(runDir, runS*si2);
+              var p1 = sOrigin.clone().addScaledVector(runDir, runS*si2);
+              var p2 = sOrigin.clone().addScaledVector(runDir, runS*(si2+1));
+              p0.y = lFlH - riseS*si2;
+              p1.y = lFlH - riseS*(si2+1);
+              p2.y = lFlH - riseS*(si2+1);
+              sv.push(p0.x,p0.y,p0.z, p1.x,p1.y,p1.z, p2.x,p2.y,p2.z);
+              sv.push(p0.x,p0.y,p0.z, p2.x,p2.y,p2.z,
+                sOrigin.clone().addScaledVector(runDir, runS*(si2+1)).setY(lFlH-riseS*si2).x,
+                lFlH-riseS*si2,
+                sOrigin.clone().addScaledVector(runDir, runS*(si2+1)).z);
             }
             sg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sv), 3));
             sg.computeVertexNormals();
-            grps.interior.add(new THREE.Mesh(sg, new THREE.MeshLambertMaterial({ color: 0xA07840, side: THREE.DoubleSide })));
+            grps.interior.add(new THREE.Mesh(sg, mStringL));
           });
+
+          // ── FLOOR CUTOUT around stair opening ────────────────────────────
+          // Cut rectangle = stairW wide × totalRun deep in the floor deck
+          // We re-render the deck for this level's zones with a hole punched out
+          // Stair opening in floor: from wall face to totalRun inward, stairW wide
+          // Expressed in plan coordinates (feet from building corner)
+          var hW = stairW / Sc;   // hole width in feet
+          var hD = totalRun / Sc; // hole depth in feet
+
+          // Hole corner in plan space — convert 3D origin back to plan coords
+          // plan x = 3D x + bwSc/2 (in Sc) → ft = (3D x/Sc) + bw/2
+          var hx, hy_plan;
+          if (stairRot === 'front') {
+            hx      = (origin.x / Sc) + (Q.w||40)/2;
+            hy_plan = 0;  // starts at front wall
+          } else if (stairRot === 'back') {
+            hx      = (origin.x / Sc) + (Q.w||40)/2;
+            hy_plan = (Q.l||60) - hD;
+          } else if (stairRot === 'left') {
+            hx      = 0;
+            hy_plan = (origin.z / Sc) + (Q.l||60)/2;
+          } else {
+            hx      = (Q.w||40) - hD;
+            hy_plan = (origin.z / Sc) + (Q.l||60)/2;
+          }
+          var hxAlong = stairRot==='left'||stairRot==='right' ? hy_plan : hx;
+          // Store hole on level for floor zone renderer to use
+          lv._stairHole = { rot:stairRot, x:hx, y:hy_plan, w:hW, d:hD, xA:hxAlong };
         });
+
         // ── END INTERIOR WALLS 3D ────────────────────────────────────────
 
         // ── RE-APPLY ALL TOGGLE STATES (survive every rebuild) ───────────────
@@ -16108,6 +16323,7 @@ async function generateQuotePDF() {
       var ts = val2('st_trussSpacing') || val2('sf_trussSpacing') || '5';
       specRow2('Truss Spacing', ts + "' on center");
       if (!!(document.getElementById('st_scissorTruss')||{}).checked) specRow2('Scissor Truss', 'Yes');
+      if (!!(document.getElementById('st_atticTruss')||{}).checked) specRow2('Attic Truss', 'Yes');
     }
     var ohIn = Q2.oh || 0;
     if (isSteel) specRow2('Overhang', '18" — No Soffit');
@@ -19147,6 +19363,7 @@ function buildSpecText() {
     var ts = val2('st_trussSpacing') || val2('sf_trussSpacing') || '5';
     row('Truss Spacing', ts + "' on center");
     if (!!(document.getElementById('st_scissorTruss')||{}).checked) row('Scissor Truss', 'Yes');
+    if (!!(document.getElementById('st_atticTruss')||{}).checked) row('Attic Truss', 'Yes');
   }
   var ohIn = Q2.oh || 0;
   if (isSteel) row('Overhang', '18" — No Soffit');
@@ -21344,6 +21561,7 @@ function buildPricePayload(calcType) {
       postWraps: (document.getElementById('sf_postWraps') && document.getElementById('sf_postWraps').checked) ? 'Yes' : 'No',
       roofPitch612: (document.getElementById('sf_pitch612') && document.getElementById('sf_pitch612').checked) ? 'Yes' : 'No',
       scissorTruss: !!(document.getElementById('st_scissorTruss')||{}).checked ? 'Yes' : 'No',
+      atticTruss:   !!(document.getElementById('st_atticTruss')||{}).checked   ? 'Yes' : 'No',
       standingSeam: (document.getElementById('st_standingSeam') && document.getElementById('st_standingSeam').checked) ? 'Yes' : 'No',
       osbRoof: (document.getElementById('sf_osbRoof') && document.getElementById('sf_osbRoof').checked) ? 'Yes' : 'No',
       enclosedSideShedLinearFt: (function(){
@@ -23204,6 +23422,19 @@ window.SauceMaterials.calcWoodTrusses = function(Q, shedCfgs) {
       quantity:    totalTrusses,
       detail:      totalTrusses + ' trusses x $30/ea',
       fixedCost:   totalTrusses * 30
+    });
+  }
+
+  // Attic truss upgrade adder -- $40 per truss
+  var atticEl = document.getElementById('st_atticTruss');
+  if (atticEl && atticEl.checked) {
+    results.push({
+      category:    'Yard',
+      description: 'Attic Truss Upgrade',
+      sku:         'ATTIC-UPGRADE',
+      quantity:    totalTrusses,
+      detail:      totalTrusses + ' trusses x $40/ea',
+      fixedCost:   totalTrusses * 40
     });
   }
 
@@ -33693,15 +33924,40 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
         }
       });
 
-      // Wall length + level label
+      // Wall label: number + length + level name
       if(isActive){
         var wl2=Math.round(wLen*10)/10;
         var mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
-        ctx.fillStyle='#94a3b8'; ctx.font='10px Outfit,sans-serif'; ctx.textAlign='center';
-        ctx.fillText(wl2+"'",mx,my-7);
-        ctx.fillStyle=col; ctx.font='8px Outfit,sans-serif';
-        var lvName=(window._levelConfigs||[]).find(function(l){return l.id===iw.levelId;});
-        ctx.fillText(lvName?lvName.name:'',mx,my+14);
+        // Perpendicular offset so label sits beside the wall line
+        var ang2=Math.atan2(b.y-a.y,b.x-a.x);
+        var perpX=-Math.sin(ang2)*14, perpY=Math.cos(ang2)*14;
+
+        // Wall number — bold, matches material list "Wall N"
+        ctx.save();
+        ctx.fillStyle='#fff';
+        ctx.font='bold 11px Outfit,sans-serif';
+        ctx.textAlign='center';
+        ctx.textBaseline='middle';
+        // Small pill background (roundRect with fallback)
+        var wallLabel='W'+(i+1);
+        var tw=ctx.measureText(wallLabel).width+8;
+        ctx.fillStyle='rgba(15,23,42,.85)';
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(mx+perpX-tw/2, my+perpY-9, tw, 18, 4);
+        } else {
+          ctx.rect(mx+perpX-tw/2, my+perpY-9, tw, 18);
+        }
+        ctx.fill();
+        ctx.fillStyle=col;
+        ctx.fillText(wallLabel, mx+perpX, my+perpY);
+
+        // Length below label
+        ctx.fillStyle='#94a3b8';
+        ctx.font='9px Outfit,sans-serif';
+        ctx.fillText(wl2+"'", mx+perpX, my+perpY+13);
+
+        ctx.restore();
       }
 
       [a,b].forEach(function(pt){
