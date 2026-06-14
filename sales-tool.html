@@ -1845,6 +1845,13 @@ body.customer-mode #custColorChartLink { display: block !important; }
           </div>
           <label class="tog"><input type="checkbox" id="st_atticTruss" onchange="try{_onAtticScissorChange('attic');scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
         </div>
+        <div class="toggle-row" id="rowAtticFloor" style="display:none;">
+          <div class="toggle-info">
+            <div class="toggle-lbl">Attic Floor (OSB)</div>
+            <div class="toggle-sub" id="atticFloorSubLbl">5/8" OSB deck — attic room area</div>
+          </div>
+          <label class="tog"><input type="checkbox" id="st_atticFloor" onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+        </div>
         <div class="toggle-row">
           <div class="toggle-info">
             <div class="toggle-lbl">Post Wraps</div>
@@ -2487,27 +2494,33 @@ function _onAtticScissorChange(which) {
   _updateAtticLabel();
 }
 function _updateAtticLabel() {
-  var el = document.getElementById('atticTrussSubLbl');
+  var el       = document.getElementById('atticTrussSubLbl');
+  var floorRow = document.getElementById('rowAtticFloor');
+  var floorLbl = document.getElementById('atticFloorSubLbl');
+  var atticOn  = !!(document.getElementById('st_atticTruss')||{}).checked;
+  if (floorRow) floorRow.style.display = atticOn ? '' : 'none';
+  if (!atticOn) { var fa=document.getElementById('st_atticFloor'); if(fa) fa.checked=false; }
   if (!el) return;
-  var w = parseFloat((document.getElementById('qgWidth')||{}).value||'0') || 0;
-  var p = parseFloat((document.getElementById('qgPitch')||{}).value||'0') || 4;
+  var w = parseFloat((document.getElementById('qgWidth')||{}).value||'0')  || 0;
+  var p = parseFloat((document.getElementById('qgPitch')||{}).value||'0')  || 4;
+  var l = parseFloat((document.getElementById('qgLength')||{}).value||'0') || 0;
   if (w < 24) { el.textContent = '+$40/truss · usable attic room inside'; return; }
-  // Attic room sizing:
-  // Knee wall height ≈ 7' (standard)
-  // Knee wall runs from bottom chord up at 6/12 equivalent from each heel
-  // Room width = span - 2 × (knee wall horizontal run)
-  // Knee wall horizontal run at pitch: kneeH / (pitch/12)
-  var kneeH    = Math.min(7.0, (w/2 * (p/12)) * 0.65); // 7' or 65% of internal height
-  var kneeRun  = kneeH / (p / 12);            // horizontal ft per side
-  var roomW    = Math.max(0, w - 2 * kneeRun);
-  var peakH    = w/2 * (p/12);                // peak height above eave
-  var roomH    = peakH - kneeH;               // clear height at center
-  if (roomW < 4 || roomH < 4) {
+  var kneeH   = Math.min(7.0, (w/2*(p/12))*0.65);
+  var kneeRun = kneeH / (p/12);
+  var roomW   = Math.max(0, w - 2*kneeRun);
+  var peakH   = w/2*(p/12);
+  var roomH   = peakH - kneeH;
+  if (roomW < 4 || roomH < 3) {
     el.textContent = '+$40/truss · pitch too low for usable attic room';
+    if (floorRow) floorRow.style.display = 'none';
     return;
   }
-  var roomSqFt = Math.round(roomW);
   el.textContent = '+$40/truss · ~' + Math.round(roomW) + '\' wide × ' + Math.round(roomH*10)/10 + '\' tall attic room';
+  if (floorLbl && l > 0) {
+    var sqft   = Math.round(roomW * l);
+    var sheets = Math.ceil(Math.ceil(sqft/32)*1.1);
+    floorLbl.textContent = '5/8" OSB deck · ' + sqft + ' sqft · ' + sheets + ' sheets (OSB5.8)';
+  }
 }
 function scheduleBuild() {
   clearTimeout(_buildTimer);
@@ -5781,6 +5794,7 @@ function serializeConfig() {
       sfPitch612:    !!(document.getElementById('sf_pitch612')||{}).checked,
       scissorTruss:  !!(document.getElementById('st_scissorTruss')||{}).checked,
       atticTruss:    !!(document.getElementById('st_atticTruss')||{}).checked,
+      atticFloor:    !!(document.getElementById('st_atticFloor')||{}).checked,
       standingSeam:  !!(document.getElementById('st_standingSeam')||{}).checked,
       noRoofMetal:   !!(document.getElementById('st_noRoofMetal')||{}).checked,
       noWallMetal:   !!(document.getElementById('st_noWallMetal')||{}).checked,
@@ -6058,6 +6072,7 @@ function restoreConfig(cfg) {
       _sv('sf_pitch612',       sf.sfPitch612);
       (function(){ var el=document.getElementById('st_scissorTruss'); if(el) el.checked=!!sf.scissorTruss; })();
       (function(){ var el=document.getElementById('st_atticTruss');   if(el) el.checked=!!sf.atticTruss;   })();
+      (function(){ var el=document.getElementById('st_atticFloor');   if(el) el.checked=!!sf.atticFloor;   try{_updateAtticLabel();}catch(e){} })();
       _sv('st_standingSeam',    sf.standingSeam);
       _sv('st_noRoofMetal',     sf.noRoofMetal);
       _sv('st_noWallMetal',     sf.noWallMetal);
@@ -23438,6 +23453,25 @@ window.SauceMaterials.calcWoodTrusses = function(Q, shedCfgs) {
       detail:      totalTrusses + ' trusses x $40/ea',
       fixedCost:   totalTrusses * 40
     });
+    // Attic floor OSB
+    var atticFloorEl = document.getElementById('st_atticFloor');
+    if (atticFloorEl && atticFloorEl.checked) {
+      var _aW = Q.w || 0, _aL = Q.l || 0, _aP = Q.pitch || 4;
+      var _aKneeH   = Math.min(7.0, (_aW/2*(_aP/12))*0.65);
+      var _aKneeRun = _aKneeH / (_aP/12);
+      var _aRoomW   = Math.max(0, _aW - 2*_aKneeRun);
+      var _aSqft    = Math.round(_aRoomW * _aL);
+      var _aSheets  = Math.ceil(Math.ceil(_aSqft/32)*1.1);
+      if (_aSheets > 0) {
+        results.push({
+          category:    'Yard',
+          description: 'Attic Floor Sheathing (5/8" OSB)',
+          sku:         'OSB5.8',
+          quantity:    _aSheets,
+          detail:      Math.round(_aRoomW) + "' wide × " + _aL + "' long = " + _aSqft + ' sqft  |  ÷32 × 1.1 = ' + _aSheets + ' sheets'
+        });
+      }
+    }
   }
 
   // Gable extension trusses
