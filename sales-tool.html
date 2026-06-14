@@ -14527,7 +14527,6 @@ function applyVoiceQuote(parsed, overlay) {
             zones2.forEach(function(z) {
               var halfW3 = (Q.w||40)/2 * Sc;
               var halfL3 = (Q.l||60)/2 * Sc;
-              // Zone 3D position: plan x=0 is left edge (3D x=-halfW), plan y=0 is front (3D z=-halfL)
               var zCx = (z.x + z.w/2 - (Q.w||40)/2) * Sc;
               var zCz = (z.y + z.d/2 - (Q.l||60)/2) * Sc;
               var zWPt = z.w * Sc;
@@ -14539,26 +14538,74 @@ function applyVoiceQuote(parsed, overlay) {
               deckMesh.position.set(zCx, yDeck, zCz);
               grps.interior.add(deckMesh);
 
+              var jType2 = lv.joistType || 'sawn';
+              var isIJoist = (jType2 !== 'sawn');
+
+              // I-joist dimensions by type
+              var ijDepthMap = { ij117:11.875/12, ij14:14/12, ij162h:16/12, ij163h:16/12 };
+              var ijFlangeMap = { ij117:2.5/12, ij14:2.5/12, ij162h:2.5/12, ij163h:3.5/12 };
+              var ijDepth   = (ijDepthMap[jType2]  || 11.875/12) * Sc;
+              var ijFlange  = (ijFlangeMap[jType2] || 2.5/12)    * Sc;
+              var ijWebThk  = 0.375/12 * Sc;  // 3/8" OSB web
+              var ijWebH    = ijDepth - ijFlange*2;
+
+              var mIJoist    = new THREE.MeshLambertMaterial({ color: 0xD4A44C }); // LVL flange — golden
+              var mIJoistWeb = new THREE.MeshLambertMaterial({ color: 0xC8B870 }); // OSB web — lighter
+
+              // Helper: draw one joist (sawn box or I-beam) centered at (cx, cy, cz), spanning along 'axis'
+              function drawJoist(cx, cy, cz, span) {
+                if (!isIJoist) {
+                  // Sawn lumber — solid box
+                  var g = new THREE.BoxGeometry(
+                    spanWidth2 ? span : joistW2,
+                    joistH2,
+                    spanWidth2 ? joistW2 : span
+                  );
+                  var m = new THREE.Mesh(g, mJoist);
+                  m.position.set(cx, cy, cz);
+                  grps.interior.add(m);
+                } else {
+                  // I-joist — top flange + web + bottom flange
+                  var flangeW = spanWidth2 ? span : ijFlange;
+                  var flangeD = spanWidth2 ? ijFlange : span;
+                  var webW    = spanWidth2 ? span : ijWebThk;
+                  var webD    = spanWidth2 ? ijWebThk : span;
+
+                  // Top flange
+                  var tfg = new THREE.BoxGeometry(flangeW, ijFlange, flangeD);
+                  var tfm = new THREE.Mesh(tfg, mIJoist);
+                  tfm.position.set(cx, cy + ijWebH/2, cz);
+                  grps.interior.add(tfm);
+
+                  // Bottom flange
+                  var bfg = new THREE.BoxGeometry(flangeW, ijFlange, flangeD);
+                  var bfm = new THREE.Mesh(bfg, mIJoist);
+                  bfm.position.set(cx, cy - ijWebH/2, cz);
+                  grps.interior.add(bfm);
+
+                  // Web
+                  var wg = new THREE.BoxGeometry(webW, ijWebH, webD);
+                  var wm = new THREE.Mesh(wg, mIJoistWeb);
+                  wm.position.set(cx, cy, cz);
+                  grps.interior.add(wm);
+                }
+              }
+
               // Joists 16" OC within this zone
+              var jYBase = yDeck - (isIJoist ? ijDepth : joistH2) - deckThk/2;
+              var jYCtr  = jYBase + (isIJoist ? ijDepth/2 : joistH2/2);
+
               if (spanWidth2) {
-                // Span width (X), space along depth (Z)
                 var nJ3 = Math.floor(z.d / (16/12)) + 1;
                 for (var ji3=0; ji3<=nJ3; ji3++) {
                   var jz3 = (z.y + (ji3/nJ3)*z.d - (Q.l||60)/2) * Sc;
-                  var jg3 = new THREE.BoxGeometry(zWPt, joistH2, joistW2);
-                  var jm3 = new THREE.Mesh(jg3, mJoist);
-                  jm3.position.set(zCx, yDeck - joistH2/2 - deckThk/2, jz3);
-                  grps.interior.add(jm3);
+                  drawJoist(zCx, jYCtr, jz3, zWPt);
                 }
               } else {
-                // Span depth (Z), space along width (X)
                 var nJ4 = Math.floor(z.w / (16/12)) + 1;
                 for (var ji4=0; ji4<=nJ4; ji4++) {
                   var jx4 = (z.x + (ji4/nJ4)*z.w - (Q.w||40)/2) * Sc;
-                  var jg4 = new THREE.BoxGeometry(joistW2, joistH2, zDPt);
-                  var jm4 = new THREE.Mesh(jg4, mJoist);
-                  jm4.position.set(jx4, yDeck - joistH2/2 - deckThk/2, zCz);
-                  grps.interior.add(jm4);
+                  drawJoist(jx4, jYCtr, zCz, zDPt);
                 }
               }
             });
@@ -31994,6 +32041,37 @@ window.SauceMaterials.calcInteriorWallMaterials = function(Q, walls, levels) {
   var lvMap = {};
   (levels||[]).forEach(function(l){ lvMap[l.id]=l; });
 
+  var is2x4    = (Q.studSize === '2x4');
+  var dim      = is2x4 ? '2x4' : '2x6';
+  var ptBotSku = is2x4 ? 'PT2416' : 'PT2616';  // PT bottom plate — always 16' boards
+  var topSku   = is2x4 ? 'SYP2416' : 'SYP2616'; // SYP top plates — always 16' boards
+
+  // Precut studs fill between PT bottom plate and double SYP top plate
+  // Precut length = wall height × 12 - 4.5" (3 plates × 1.5")
+  // 8' wall → 92-5/8" stud | 9' wall → 104-5/8" | 10' wall → 116-5/8"
+  // 11'+ → nearest dimensional lumber length
+  function studSku(wallH) {
+    if (is2x4) {
+      if (wallH <= 8.5)  return 'SPF2492';   // 92-5/8" precut → 8' walls
+      if (wallH <= 9.5)  return 'SPF24104';  // 104-5/8" precut → 9' walls
+      if (wallH <= 10.5) return 'SPF24116';  // 116-5/8" precut → 10' walls
+      if (wallH <= 12)   return 'SPF2412';
+      if (wallH <= 14)   return 'SPF2414';
+      if (wallH <= 16)   return 'SPF2416';
+      return 'SPF2420';
+    } else {
+      if (wallH <= 8.5)  return 'SPF2692';   // 92-5/8" precut → 8' walls
+      if (wallH <= 9.5)  return 'SPF26104';  // 104-5/8" precut → 9' walls
+      if (wallH <= 10.5) return 'SPF26116';  // 116-5/8" precut → 10' walls
+      if (wallH <= 12)   return 'SPF2612';
+      if (wallH <= 14)   return 'SPF2614';
+      if (wallH <= 16)   return 'SPF2616';
+      if (wallH <= 20)   return 'SPF2620';
+      if (wallH <= 28)   return 'SPF2628';
+      return 'SPF2632';
+    }
+  }
+
   // Group walls by level
   var byLevel = {};
   walls.forEach(function(iw){
@@ -32005,116 +32083,113 @@ window.SauceMaterials.calcInteriorWallMaterials = function(Q, walls, levels) {
   Object.keys(byLevel).forEach(function(lid){
     var lv = lvMap[lid] || { name:'Ground Floor', floorElevFt:0, wallHeightFt: Q.h||9 };
     var cat = 'Interior Walls — ' + lv.name;
-    var wallH = lv.wallHeightFt;
+    var wallH = lv.wallHeightFt || Q.h || 9;
+    var sSku  = studSku(wallH);
 
     byLevel[lid].forEach(function(iw, idx){
-      var label = 'Wall '+(idx+1);
-      var wallLen = Math.sqrt(Math.pow(iw.x2-iw.x1,2) + Math.pow(iw.y2-iw.y1,2));
-      if(wallLen < 0.5) return;
+      var label  = 'Wall '+(idx+1);
+      var wallLen = Math.sqrt(Math.pow(iw.x2-iw.x1,2)+Math.pow(iw.y2-iw.y1,2));
+      if (wallLen < 0.5) return;
       var bearing = !!iw.bearing;
 
-      // Studs: 2×6 @ 16" OC
-      var studCount = Math.ceil(wallLen / (16/12)) + 1;
-      var studLen = Math.ceil(wallH); if(studLen%2!==0) studLen++;
-      var studSku = 'SYP26'+(studLen<10?'0'+studLen:studLen);
-      items.push({ category:cat, description:label+' — Studs (2×6)', sku:studSku,
-        quantity:studCount, detail:'16" OC  |  '+Math.round(wallLen*10)/10+"' long  |  "+studCount+' studs'});
+      // PT bottom plate (pressure treated — 1 run, 16' boards)
+      var botCt = Math.ceil(wallLen/16);
+      items.push({ category:cat, description:label+' — Bottom Plate ('+dim+') PT', sku:ptBotSku,
+        quantity:botCt, detail:'Pressure treated  |  '+Math.round(wallLen*10)/10+"' wall  |  16' boards"});
 
-      // Plates: 3 standard, 4 if bearing (double top plate = 2 top + 1 bottom + 1 cap plate)
-      var plateCt = Math.ceil(wallLen/16) * (bearing ? 4 : 3);
-      items.push({ category:cat, description:label+' — Plates (2×6×16)'+(bearing?' [BEARING]':''), sku:'SYP2616',
-        quantity:plateCt, detail:(bearing?'4':'3')+' plates  |  '+Math.round(wallLen*10)/10+"' wall"});
+      // Double top plate (standard SPF/SYP — 2 runs, 16' boards)
+      var topCt = Math.ceil(wallLen/16) * 2;
+      items.push({ category:cat, description:label+' — Top Plates ('+dim+') Double', sku:topSku,
+        quantity:topCt, detail:'Double top plate  |  '+Math.round(wallLen*10)/10+"' wall  |  16' boards"});
 
-      // Mid-height blocking — 1 row at ~4' off floor, same qty as one plate run
+      // Studs @ 16" OC
+      var studCount = Math.ceil(wallLen/(16/12)) + 1;
+      items.push({ category:cat, description:label+' — Studs ('+dim+') 16" OC', sku:sSku,
+        quantity:studCount, detail:'16" OC  |  '+Math.round(wallLen*10)/10+"' wall  |  "+studCount+' studs'});
+
+      // Mid-height blocking — 1 run at ~4', same SKU as studs, qty = 1 per 16' of wall
       var blockCt = Math.ceil(wallLen/16);
-      items.push({ category:cat, description:label+' — Blocking (2×6×16)', sku:'SYP2616',
-        quantity:blockCt, detail:'mid-height fire block  |  1 row @ ~4\'  |  '+Math.round(wallLen*10)/10+"' wall"});
+      items.push({ category:cat, description:label+' — Blocking ('+dim+')', sku:sSku,
+        quantity:blockCt, detail:'Mid-height fire block  |  1 row @ ~4\'  |  16\' boards'});
 
-      // Corner/T-intersection backing — 3 extra studs per opening or wall end
-      // Count openings + 2 ends = intersections
+      // Corner/T-intersection backing — 3 studs per end + 3 per door opening
       var intersections = 2 + (iw.openings||[]).length;
-      items.push({ category:cat, description:label+' — Corner/Backing Studs (2×6)', sku:studSku,
+      items.push({ category:cat, description:label+' — Corner/Backing Studs ('+dim+')', sku:sSku,
         quantity:intersections*3, detail:'3 studs per intersection/end  |  '+intersections+' locations'});
 
-      // Framing nails (16d sinker — 1 lb per 100 LF of wall)
-      var nailLbs = Math.ceil(wallLen / 50);
-      items.push({ category:cat, description:label+' — Framing Nails (16d)', sku:'NAIL16D5LB',
-        quantity:nailLbs, detail:'~1 lb per 50 LF  |  '+Math.round(wallLen*10)/10+"' wall"});
-
-      // Door openings
+      // Door openings — doubled 2×10 header + 2 king + 2 jack studs
       (iw.openings||[]).forEach(function(op, oi){
-        var dw = op.width||3;
+        var dw  = op.width||3;
         var hdrLen = Math.ceil(dw+0.5); if(hdrLen%2!==0) hdrLen++;
-        items.push({ category:cat, description:label+' Door '+(oi+1)+' — Header (2×10)', sku:'SYP210'+hdrLen, quantity:2,
-          detail:'doubled header  |  '+dw+"' opening"});
-        items.push({ category:cat, description:label+' Door '+(oi+1)+' — Framing Studs', sku:studSku, quantity:4,
-          detail:'2 king + 2 jack studs'});
+        var hdrSku = 'SYP210'+hdrLen;
+        items.push({ category:cat, description:label+' Door '+(oi+1)+' — Header (2×10)', sku:hdrSku,
+          quantity:2, detail:'Doubled header  |  '+dw+"' opening"});
+        items.push({ category:cat, description:label+' Door '+(oi+1)+' — Framing Studs ('+dim+')', sku:sSku,
+          quantity:4, detail:'2 king + 2 jack studs'});
       });
+
+      // Framing nails — same as exterior stud frame
+      items.push({ category:cat, description:label+' — Nails 12D', sku:'HDGRS12D30', quantity:1, detail:'wall framing' });
+      items.push({ category:cat, description:label+' — Nails 8D',  sku:'HDGRS8D30',  quantity:1, detail:'blocking/misc' });
     });
 
     // Floor deck — per zone
     if(lv.floorElevFt > 0) {
-      var jDir = lv.joistDir||'auto';
-      var bw2=Q.w||40, bl2=Q.l||60;
+      var jDir  = lv.joistDir||'auto';
+      var bw2   = Q.w||40, bl2 = Q.l||60;
       var spanW = (jDir==='auto')?(bw2<=bl2):(jDir==='width');
-
-      var zones3 = (lv.floorMode === 'full')
-        ? [{ x:0, y:0, w:bw2, d:bl2 }]
-        : (lv.floorZones||[]);
+      var zones3 = (lv.floorMode==='full') ? [{x:0,y:0,w:bw2,d:bl2}] : (lv.floorZones||[]);
       if(!zones3.length) return;
 
-      zones3.forEach(function(z, zi) {
-        var zLabel = zones3.length > 1 ? ' Zone '+(zi+1)+' ('+Math.round(z.w)+"'×"+Math.round(z.d)+"')" : '';
-        var sqft = z.w * z.d;
+      zones3.forEach(function(z, zi){
+        var zLabel = zones3.length>1 ? ' Zone '+(zi+1)+' ('+Math.round(z.w)+"'×"+Math.round(z.d)+"')" : '';
+        var sqft   = z.w*z.d;
         var spanFt = spanW ? z.w : z.d;
-        var lengthFt = spanW ? z.d : z.w;
+        var lenFt  = spanW ? z.d : z.w;
+        var jCount = Math.ceil(lenFt/(16/12))+1;
 
+        // OSB deck + glue
         var osbSheets = Math.ceil(sqft*1.1/32);
-        items.push({ category:cat, description:'Floor Deck OSB (5/8")'+zLabel, sku:'OSB5.8', quantity:osbSheets,
-          detail:Math.round(z.w)+"'×"+Math.round(z.d)+"'  |  "+Math.round(sqft)+' sqft  |  10% waste' });
-        items.push({ category:cat, description:'Sub Floor Glue'+zLabel, sku:'SFG', quantity:Math.ceil(osbSheets/4),
-          detail:'1 tube per 4 sheets' });
+        items.push({ category:cat, description:'Floor Deck OSB (5/8")'+zLabel, sku:'OSB5.8',
+          quantity:osbSheets, detail:Math.round(z.w)+"'×"+Math.round(z.d)+"'  |  "+Math.round(sqft)+' sqft  |  10% waste'});
+        items.push({ category:cat, description:'Sub Floor Glue'+zLabel, sku:'SFG',
+          quantity:Math.ceil(osbSheets/4), detail:'1 tube per 4 sheets'});
 
-        var joistCount = Math.ceil(lengthFt/(16/12)) + 1;
         var jType = lv.joistType || 'sawn';
-
         if (jType === 'sawn') {
-          // Traditional sawn lumber joists — depth by span
-          var joistDepth = spanFt <= 12 ? 10 : 12;
-          var joistLen = window.SauceMaterials.stockedSYP212Len(Math.ceil(spanFt));
-          var joistSku = 'SYP2'+joistDepth+(joistLen<10?'0'+joistLen:joistLen);
-          items.push({ category:cat, description:'Floor Joists (2×'+joistDepth+')'+zLabel, sku:joistSku, quantity:joistCount,
-            detail:'16" OC  |  '+Math.round(spanFt)+"' span  |  "+joistCount+' joists'});
-          var jhSku='JH2'+(joistDepth<10?'0'+joistDepth:joistDepth);
-          items.push({ category:cat, description:'Joist Hangers'+zLabel, sku:jhSku, quantity:joistCount*2, detail:'2 per joist' });
+          var jDepth  = spanFt<=12 ? 10 : 12;
+          var jLen    = window.SauceMaterials.stockedSYP212Len(Math.ceil(spanFt));
+          var jSku    = 'SYP2'+jDepth+(jLen<10?'0'+jLen:jLen);
+          items.push({ category:cat, description:'Floor Joists (2×'+jDepth+')'+zLabel, sku:jSku,
+            quantity:jCount, detail:'16" OC  |  '+Math.round(spanFt)+"' span  |  "+jCount+' joists'});
+          items.push({ category:cat, description:'Joist Hangers'+zLabel, sku:'JH2'+(jDepth<10?'0'+jDepth:jDepth),
+            quantity:jCount*2, detail:'2 per joist'});
         } else {
-          // I-Joist — priced per linear foot like LVL
-          var ijSkuMap = {
-            ij117:  { sku:'CIJ1178',   hSku:'IJH117/8', label:'11 7/8" I-Joist (2½" flange)' },
-            ij14:   { sku:'CIJ14',     hSku:'IJH117/8', label:'14" I-Joist (2½" flange)' },
-            ij162h: { sku:'CIJ162.5',  hSku:'IJH16',    label:'16" I-Joist (2½" flange)' },
-            ij163h: { sku:'CIJ163.5',  hSku:'IJH16',    label:'16" I-Joist (3½" flange)' },
+          var ijMap = {
+            ij117:  { sku:'CIJ1178',  hSku:'IJH117/8', label:'11 7/8" I-Joist (2½" flange)' },
+            ij14:   { sku:'CIJ14',    hSku:'IJH117/8', label:'14" I-Joist (2½" flange)'     },
+            ij162h: { sku:'CIJ162.5', hSku:'IJH16',    label:'16" I-Joist (2½" flange)'     },
+            ij163h: { sku:'CIJ163.5', hSku:'IJH16',    label:'16" I-Joist (3½" flange)'     },
           };
-          var ijInfo = ijSkuMap[jType] || ijSkuMap['ij117'];
-          // Per-ft pricing: qty = joistCount × span in ft (same as LVL pattern)
-          var totalLinFt = joistCount * Math.ceil(spanFt);
-          items.push({ category:cat, description:ijInfo.label+zLabel, sku:ijInfo.sku,
-            quantity:totalLinFt, boardLen:true, isLVL:true,
-            detail:'16" OC  |  '+joistCount+' joists × '+Math.ceil(spanFt)+"' = "+totalLinFt+' LF' });
-          items.push({ category:cat, description:'I-Joist Hangers'+zLabel, sku:ijInfo.hSku,
-            quantity:joistCount*2, detail:'2 per joist  |  '+joistCount+' joists' });
+          var ij = ijMap[jType] || ijMap['ij117'];
+          var totalLF = jCount * Math.ceil(spanFt);
+          items.push({ category:cat, description:ij.label+zLabel, sku:ij.sku,
+            quantity:totalLF, boardLen:true, isLVL:true,
+            detail:'16" OC  |  '+jCount+' joists × '+Math.ceil(spanFt)+"' = "+totalLF+' LF'});
+          items.push({ category:cat, description:'I-Joist Hangers'+zLabel, sku:ij.hSku,
+            quantity:jCount*2, detail:'2 per joist  |  '+jCount+' joists'});
         }
 
-        items.push({ category:cat, description:'Nails (10d)', sku:'HDGRS10D30', quantity:1, detail:'deck nailing' });
-        items.push({ category:cat, description:'Nails (8d)',  sku:'HDGRS8D30',  quantity:1, detail:'framing' });
+        items.push({ category:cat, description:'Deck Nails (10d)', sku:'HDGRS10D30', quantity:1, detail:'deck nailing' });
+        items.push({ category:cat, description:'Framing Nails (8d)', sku:'HDGRS8D30', quantity:1, detail:'framing' });
       });
     }
 
-    // Stairs for this elevated level
+    // Stairs for elevated levels
     if (lv.stairs && lv.floorElevFt > 0) {
-      var flH = lv.floorElevFt;
-      var stepCt = Math.round(flH / (7.5/12));
-      items.push({ category:cat, description:'Stair Stringers (2×12×24)', sku:'SYP21224', quantity:2, detail:'1 per side  |  2 stringers' });
+      var flH    = lv.floorElevFt;
+      var stepCt = Math.round(flH/(7.5/12));
+      items.push({ category:cat, description:'Stair Stringers (2×12×24)', sku:'SYP21224', quantity:2, detail:'1 per side' });
       items.push({ category:cat, description:'Stair Treads (2×10×12)',    sku:'SYP21012', quantity:stepCt, detail:stepCt+' steps @ 7.5" rise  |  '+flH+"' floor ht" });
       items.push({ category:cat, description:'Stair Header (2×12×12)',    sku:'SYP21212', quantity:2, detail:'stair header' });
     }
