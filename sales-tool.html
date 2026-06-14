@@ -2484,13 +2484,23 @@ function logPriceCalculated() {
 }
 
 function _onAtticScissorChange(which) {
-  // Scissor and Attic are mutually exclusive
   var scissorEl = document.getElementById('st_scissorTruss');
   var atticEl   = document.getElementById('st_atticTruss');
+  var spacingEl = document.getElementById('st_trussSpacing');
   if (!scissorEl || !atticEl) return;
   if (which === 'scissor' && scissorEl.checked) atticEl.checked = false;
   if (which === 'attic'   && atticEl.checked)   scissorEl.checked = false;
-  // Update attic sub-label with room size estimate
+  // Force 2' spacing when attic truss is on; restore to 5' default when turned off
+  if (spacingEl) {
+    if (atticEl.checked) {
+      spacingEl.dataset.prevValue = spacingEl.value; // save previous
+      spacingEl.value = '2';
+      spacingEl.disabled = true;
+    } else {
+      spacingEl.value = spacingEl.dataset.prevValue || '5';
+      spacingEl.disabled = false;
+    }
+  }
   _updateAtticLabel();
 }
 function _updateAtticLabel() {
@@ -6073,7 +6083,7 @@ function restoreConfig(cfg) {
       _sv('sf_mbConcreteAdder',sf.mbConcreteAdder);
       _sv('sf_pitch612',       sf.sfPitch612);
       (function(){ var el=document.getElementById('st_scissorTruss'); if(el) el.checked=!!sf.scissorTruss; })();
-      (function(){ var el=document.getElementById('st_atticTruss');   if(el) el.checked=!!sf.atticTruss;   })();
+      (function(){ var el=document.getElementById('st_atticTruss');   if(el) el.checked=!!sf.atticTruss;   try{_onAtticScissorChange('attic');}catch(e){} })();
       (function(){ var el=document.getElementById('st_atticFloor');   if(el) el.checked=!!sf.atticFloor;   try{_updateAtticLabel();}catch(e){} })();
       _sv('st_standingSeam',    sf.standingSeam);
       _sv('st_noRoofMetal',     sf.noRoofMetal);
@@ -14193,33 +14203,46 @@ function applyVoiceQuote(parsed, overlay) {
 
             // ── ATTIC FLOOR OSB DECK ─────────────────────────────────────────
             if (_atticFloorOn) {
-              const _aIntH    = sr - sh;                          // internal truss height (scene)
+              const _aIntH    = sr - sh;
               const _aPitch12 = _aIntH / (sw/2);
               const _aKneeH   = Math.min(7*Sc, _aIntH*0.65);
               const _aKneeRun = _aKneeH / _aPitch12;
-              const _aFloorY  = sh + _aKneeH;                    // Y of raised floor chord
-              const _aRoomHW  = (sw/2) - _aKneeRun;             // half-width of room
+              const _aFloorY  = sh + _aKneeH;
+              const _aRoomHW  = (sw/2) - _aKneeRun;
 
               if (_aRoomHW > 0.05) {
-                const _aDeckW   = _aRoomHW * 2;                  // full room width (scene)
-                const _aDeckThk = 0.018;                         // 5/8" OSB thickness (~0.75")
+                const _aDeckW   = _aRoomHW * 2;
+                const _aDeckThk = 0.018;
                 const _mAtticDk = new THREE.MeshLambertMaterial({ color: 0x8B6914 });
+                const _mRim     = new THREE.MeshLambertMaterial({ color: 0xC8A878 });
+
+                // OSB deck panel — goes in grps.trusses so it shows with the truss toggle
                 const _aDeckGeo = new THREE.BoxGeometry(_aDeckW, _aDeckThk, sl);
                 const _aDeckMsh = new THREE.Mesh(_aDeckGeo, _mAtticDk);
                 _aDeckMsh.position.set(0, _aFloorY - _aDeckThk/2, 0);
-                grps.interior.add(_aDeckMsh);
+                grps.trusses.add(_aDeckMsh);
 
-                // Edge blocking/rim boards at each end
-                const _mRim = new THREE.MeshLambertMaterial({ color: 0xC8A878 });
-                const _aRimH = 0.05;
-                const _aRimW = 0.015;
-                // Rim along Z-edges of deck
-                [- _aRoomHW + _aRimW/2, _aRoomHW - _aRimW/2].forEach(function(rx) {
+                // Rim boards along each side of the deck
+                const _aRimH = 0.05, _aRimW = 0.015;
+                [-_aRoomHW + _aRimW/2, _aRoomHW - _aRimW/2].forEach(function(rx) {
                   const _rg = new THREE.BoxGeometry(_aRimW, _aRimH, sl);
                   const _rm = new THREE.Mesh(_rg, _mRim);
                   _rm.position.set(rx, _aFloorY - _aDeckThk - _aRimH/2, 0);
-                  grps.interior.add(_rm);
+                  grps.trusses.add(_rm);
                 });
+
+                // Blocking between trusses at deck edge (visible from below)
+                const _aBlockH = _aKneeH;
+                const _aBlockW = 0.015;
+                for (let _bi = 0; _bi <= count; _bi++) {
+                  const _bz = z0 + _bi * spacing;
+                  [-_aRoomHW, _aRoomHW].forEach(function(bx) {
+                    const _bg = new THREE.BoxGeometry(_aBlockW, _aBlockH, _aBlockW * 2);
+                    const _bm = new THREE.Mesh(_bg, _mRim);
+                    _bm.position.set(bx, sh + _aBlockH/2, _bz);
+                    grps.trusses.add(_bm);
+                  });
+                }
               }
             }
           }
