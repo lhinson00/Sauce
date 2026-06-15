@@ -143,7 +143,7 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
 .strip-block.garage{background:rgba(75,75,75,.2);border-color:rgba(75,75,75,.45);}
 .strip-block.walk{background:rgba(139,92,246,.25);border-color:#7c3aed;}
 .strip-block.win{background:rgba(59,130,246,.25);border-color:#2563eb;}
-.nudge-row{display:flex;gap:4px;align-items:center;margin-top:5px;}
+.nudge-row{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:5px;}
 .nudge-btn{padding:3px 8px;border:1px solid var(--border);border-radius:5px;background:#fff;font-size:10px;color:var(--navy);cursor:pointer;font-weight:600;transition:all .1s;}
 .nudge-btn:hover{border-color:var(--gold);}
 .nudge-btn.ctr{background:var(--navy);color:var(--gold);border-color:var(--navy);}
@@ -3608,9 +3608,12 @@ function makeStrip(obj, getW, wallKey, cls, onUpdate) {
     +'<div class="nudge-row">'
     +'<button class="nudge-btn" onclick="nudgeOpening(\''+cls+'\','+obj.id+',-1)">← 1\'</button>'
     +'<button class="nudge-btn" onclick="nudgeOpening(\''+cls+'\','+obj.id+',1)">1\' →</button>'
+    +'<button class="nudge-btn" onclick="nudgeOpeningInch(\''+cls+'\','+obj.id+',-1)">← 1"</button>'
+    +'<button class="nudge-btn" onclick="nudgeOpeningInch(\''+cls+'\','+obj.id+',1)">1" →</button>'
     +'<span class="nudge-offset" id="off_'+cls+'_'+obj.id+'">'+fmt(displayOffset)+'</span>'
     +'<button class="nudge-btn ctr" onclick="centerOpening(\''+cls+'\','+obj.id+')">Center</button>'
     +(cls==='garage'&&allDoors.filter(function(d){return d.wall===obj.wall&&d.type!=='barn';}).length>=2?'<button class="nudge-btn ctr" onclick="spaceDoorsEvenly(\''+obj.wall+'\')" style="background:rgba(255,130,0,.12);color:#cc6800;border-color:rgba(255,130,0,.3);">⇿ Space Evenly</button>':'')
+    +(cls==='garage'&&allDoors.filter(function(d){return d.wall===obj.wall&&d.type!=='barn';}).length>=3?'<button class="nudge-btn ctr" onclick="spaceDoorsTallestCenter(\''+obj.wall+'\')" style="background:rgba(56,142,60,.12);color:#2e7d32;border-color:rgba(56,142,60,.35);">⬆ Tallest Center</button>':'')
     +(cls==='win'&&window._windows.filter(function(d){return d.wall===obj.wall;}).length>=2?'<button class="nudge-btn ctr" onclick="spaceWindowsEvenly(\''+obj.wall+'\')" style="background:rgba(255,130,0,.12);color:#cc6800;border-color:rgba(255,130,0,.3);">⇿ Space Evenly</button>':'')
     +'</div>';
   return html;
@@ -3622,6 +3625,16 @@ function nudgeOpening(cls, id, dir){
   var ow=getOpeningW(cls,obj);
   var actualDir = _wallMirrored(obj.wall) ? -dir : dir;
   obj.offset=Math.max(0,Math.min(wall.len-ow,(obj.offset||0)+actualDir));
+  obj.offset=Math.round(obj.offset*12)/12;
+  refreshOpenings(); scheduleBuild();
+}
+// Fine nudge — 1 inch increments (dir is +/-1 inch)
+function nudgeOpeningInch(cls, id, dir){
+  var obj = getOpening(cls,id); if(!obj) return;
+  var wall=WALLS.find(function(w){return w.id===obj.wall;})||{len:Q.l};
+  var ow=getOpeningW(cls,obj);
+  var actualDir = _wallMirrored(obj.wall) ? -dir : dir;
+  obj.offset=Math.max(0,Math.min(wall.len-ow,(obj.offset||0)+actualDir/12));
   obj.offset=Math.round(obj.offset*12)/12;
   refreshOpenings(); scheduleBuild();
 }
@@ -3690,7 +3703,39 @@ function spaceDoorsEvenly(wallId) {
   refreshOpenings(); scheduleBuild();
 }
 
-function spaceWindowsEvenly(wallId) {
+// Space garage doors evenly but arrange heights as a "tent" — the tallest door
+// centered, tapering toward the edges (customer preference for 3+ doors).
+// Identities/sizes are unchanged; only each door's offset is reassigned.
+function spaceDoorsTallestCenter(wallId) {
+  var wall = WALLS.find(function(w){return w.id===wallId;})||{len:Q.l};
+  var doors = allDoors.filter(function(d){return d.wall===wallId && d.type!=='barn';});
+  if (doors.length < 3) { spaceDoorsEvenly(wallId); return; }
+  var n = doors.length;
+  // Tallest first; tie-break wider, then id for a stable order
+  var byH = doors.slice().sort(function(a,b){ return (b.h||0)-(a.h||0) || (b.w||0)-(a.w||0) || (a.id||0)-(b.id||0); });
+  // Slot order outward from center: c, c+1, c-1, c+2, c-2, ...
+  var center = Math.floor((n-1)/2);
+  var order = [center], step = 1;
+  while (order.length < n) {
+    var r = center+step, l = center-step;
+    if (r < n) order.push(r);
+    if (l >= 0 && order.length < n) order.push(l);
+    step++;
+  }
+  var slots = new Array(n);
+  byH.forEach(function(door, i){ slots[order[i]] = door; }); // left->right physical order
+  // Even spacing across the wall in the new order
+  var totalDoorW = slots.reduce(function(s,d){return s+(d.w||10);}, 0);
+  var totalGap = wall.len - totalDoorW;
+  if (totalGap < 0) return;
+  var gap = totalGap / (n + 1);
+  var cursor = gap;
+  slots.forEach(function(door){
+    door.offset = Math.round(cursor*12)/12;
+    cursor += (door.w||10) + gap;
+  });
+  refreshOpenings(); scheduleBuild();
+}
   var wall = WALLS.find(function(w){return w.id===wallId;})||{len:Q.l};
   var wins = window._windows.filter(function(d){return d.wall===wallId;});
   if (wins.length < 2) return;
