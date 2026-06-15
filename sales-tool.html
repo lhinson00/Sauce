@@ -11473,17 +11473,51 @@ function applyVoiceQuote(parsed, overlay) {
         // === BASE TRIM — trim strip along the bottom of walls (partial walls: at bottom of metal, not ground) ===
         const baseH = 0.03;
         if (!isSingleSlope) {
+        // Subtract opening spans [a,b] from [lo,hi]; returns remaining segments.
+        // Used on PARTIAL walls so the elevated base trim breaks at openings
+        // instead of running across a framed/garage opening. Full walls (partialY=0)
+        // get no gaps and render one continuous strip exactly as before.
+        var _trimSegs = function(lo, hi, gaps) {
+            var segs = [[lo,hi]];
+            gaps.forEach(function(g){
+                var ng = [];
+                segs.forEach(function(sg){
+                    var a=sg[0], b=sg[1], ga=Math.max(g[0],a), gb=Math.min(g[1],b);
+                    if (gb<=ga) { ng.push(sg); return; }
+                    if (ga>a+1e-5) ng.push([a,ga]);
+                    if (gb<b-1e-5) ng.push([gb,b]);
+                });
+                segs = ng;
+            });
+            return segs;
+        };
         [-1,1].forEach(s => {
             const eaveId = s === -1 ? 'left' : 'right';
             const eaveWc = wallCfgs.find(w => w.id === eaveId);
             const eavePartialY = (eaveWc && eaveWc.encl === 'partial') ? sh - (eaveWc.partialH || Math.min(4, Q.h)) * Sc : 0;
-            if (!(s === -1 && leftOpen) && !(s === 1 && rightOpen))
-                grps.wallPanels.add(mkQ([s*sw/2 + s*co, eavePartialY, -sl/2, s*sw/2 + s*co, eavePartialY + baseH, -sl/2, s*sw/2 + s*co, eavePartialY + baseH, sl/2, s*sw/2 + s*co, eavePartialY, sl/2], mTrimPanel));
+            if (!(s === -1 && leftOpen) && !(s === 1 && rightOpen)) {
+                const xb = s*sw/2 + s*co;
+                var eGaps = (eavePartialY > 0)
+                    ? placed.filter(d => d.wall === eaveId && ((d.h||99)*Sc > eavePartialY + 1e-4))
+                          .map(d => [ -sl/2 + (d.offset||0)*Sc, -sl/2 + ((d.offset||0)+d.w)*Sc ])
+                    : [];
+                _trimSegs(-sl/2, sl/2, eGaps).forEach(function(sg){
+                    grps.wallPanels.add(mkQ([xb, eavePartialY, sg[0], xb, eavePartialY + baseH, sg[0], xb, eavePartialY + baseH, sg[1], xb, eavePartialY, sg[1]], mTrimPanel));
+                });
+            }
             const gableId = s === -1 ? 'front' : 'back';
             const gableWc = wallCfgs.find(w => w.id === gableId);
             const gablePartialY = (gableWc && gableWc.encl === 'partial') ? sh - (gableWc.partialH || Math.min(4, Q.h)) * Sc : 0;
-            if (!(s === -1 && frontOpen) && !(s === 1 && backOpen))
-                grps.wallPanels.add(mkQ([-sw/2, gablePartialY, s*sl/2 + s*co, sw/2, gablePartialY, s*sl/2 + s*co, sw/2, gablePartialY + baseH, s*sl/2 + s*co, -sw/2, gablePartialY + baseH, s*sl/2 + s*co], mTrimPanel));
+            if (!(s === -1 && frontOpen) && !(s === 1 && backOpen)) {
+                const zb = s*sl/2 + s*co;
+                var gGaps = (gablePartialY > 0)
+                    ? placed.filter(d => d.wall === gableId && ((d.h||99)*Sc > gablePartialY + 1e-4))
+                          .map(d => [ -sw/2 + (d.offset||0)*Sc, -sw/2 + ((d.offset||0)+d.w)*Sc ])
+                    : [];
+                _trimSegs(-sw/2, sw/2, gGaps).forEach(function(sg){
+                    grps.wallPanels.add(mkQ([sg[0], gablePartialY, zb, sg[1], gablePartialY, zb, sg[1], gablePartialY + baseH, zb, sg[0], gablePartialY + baseH, zb], mTrimPanel));
+                });
+            }
         });
         } // end !isSingleSlope base trim
 
@@ -14650,6 +14684,28 @@ function applyVoiceQuote(parsed, overlay) {
           // Floor decks for levels above ground — per zone
           (window._levelConfigs||[]).forEach(function(lv) {
             if (lv.floorElevFt <= 0) return;
+            // Stair opening (AABB in plan feet) from stairs placed on this level.
+            // Footprint matches the 3D stair geometry: (st.x,st.y)=top-center,
+            // 3' wide, run = (10"/step)*stepCt descending per the 2D arrow.
+            lv._stairHole = null;
+            (window._stairObjects||[]).forEach(function(st){
+              if (st.levelId !== lv.id) return;
+              var sCt = st.steps || Math.round(lv.floorElevFt/(7.5/12));
+              if (sCt < 2) return;
+              var runL = (10/12) * sCt, halfW = 1.5, r = st.rot||0;
+              var x0,x1,y0,y1;
+              if      (r===0)   { x0=st.x-halfW; x1=st.x+halfW; y0=st.y;      y1=st.y+runL; }
+              else if (r===180) { x0=st.x-halfW; x1=st.x+halfW; y0=st.y-runL; y1=st.y; }
+              else if (r===90)  { x0=st.x-runL;  x1=st.x;       y0=st.y-halfW;y1=st.y+halfW; }
+              else              { x0=st.x;       x1=st.x+runL;  y0=st.y-halfW;y1=st.y+halfW; } // 270
+              if (!lv._stairHole) {
+                lv._stairHole = { x:x0, y:y0, w:x1-x0, d:y1-y0 };
+              } else {
+                var h=lv._stairHole, ax0=Math.min(h.x,x0), ay0=Math.min(h.y,y0),
+                    ax1=Math.max(h.x+h.w,x1), ay1=Math.max(h.y+h.d,y1);
+                lv._stairHole = { x:ax0, y:ay0, w:ax1-ax0, d:ay1-ay0 };
+              }
+            });
             var yDeck = lv.floorElevFt * Sc;
             var deckThk = 0.018;
             var joistW2 = 0.015, joistH2 = 0.05;
@@ -14780,17 +14836,40 @@ function applyVoiceQuote(parsed, overlay) {
               var jYBase = yDeck - (isIJoist ? ijDepth : joistH2) - deckThk/2;
               var jYCtr  = jYBase + (isIJoist ? ijDepth/2 : joistH2/2);
 
+              // Stair opening bounds (scene units) clipped to this zone, for trimming
+              var jhb = null;
+              if (lv._stairHole) {
+                var _H=lv._stairHole;
+                var _hx0=Math.max(_H.x,z.x), _hy0=Math.max(_H.y,z.y);
+                var _hx1=Math.min(_H.x+_H.w,z.x+z.w), _hy1=Math.min(_H.y+_H.d,z.y+z.d);
+                if (_hx1>_hx0 && _hy1>_hy0) {
+                  jhb = { x0:(_hx0-(Q.w||40)/2)*Sc, x1:(_hx1-(Q.w||40)/2)*Sc,
+                          z0:(_hy0-(Q.l||60)/2)*Sc, z1:(_hy1-(Q.l||60)/2)*Sc };
+                }
+              }
+              var _zsx0=zCx-zWPt/2, _zsx1=zCx+zWPt/2, _zsz0=zCz-zDPt/2, _zsz1=zCz+zDPt/2;
+
               if (spanWidth2) {
                 var nJ3 = Math.floor(z.d / (16/12)) + 1;
                 for (var ji3=0; ji3<=nJ3; ji3++) {
                   var jz3 = (z.y + (ji3/nJ3)*z.d - (Q.l||60)/2) * Sc;
-                  drawJoist(zCx, jYCtr, jz3, zWPt);
+                  if (jhb && jz3>jhb.z0 && jz3<jhb.z1) {
+                    if (jhb.x0-_zsx0 > 0.002) drawJoist((_zsx0+jhb.x0)/2, jYCtr, jz3, jhb.x0-_zsx0);
+                    if (_zsx1-jhb.x1 > 0.002) drawJoist((jhb.x1+_zsx1)/2, jYCtr, jz3, _zsx1-jhb.x1);
+                  } else {
+                    drawJoist(zCx, jYCtr, jz3, zWPt);
+                  }
                 }
               } else {
                 var nJ4 = Math.floor(z.w / (16/12)) + 1;
                 for (var ji4=0; ji4<=nJ4; ji4++) {
                   var jx4 = (z.x + (ji4/nJ4)*z.w - (Q.w||40)/2) * Sc;
-                  drawJoist(jx4, jYCtr, zCz, zDPt);
+                  if (jhb && jx4>jhb.x0 && jx4<jhb.x1) {
+                    if (jhb.z0-_zsz0 > 0.002) drawJoist(jx4, jYCtr, (_zsz0+jhb.z0)/2, jhb.z0-_zsz0);
+                    if (_zsz1-jhb.z1 > 0.002) drawJoist(jx4, jYCtr, (jhb.z1+_zsz1)/2, _zsz1-jhb.z1);
+                  } else {
+                    drawJoist(jx4, jYCtr, zCz, zDPt);
+                  }
                 }
               }
             });
