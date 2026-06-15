@@ -15069,134 +15069,55 @@ function applyVoiceQuote(parsed, overlay) {
             }
           });
         }
-        // ── LEVEL STAIRS 3D ──────────────────────────────────────────────────
-        (window._levelConfigs||[]).forEach(function(lv) {
-          if (!lv.stairs || lv.floorElevFt <= 0) return;
-          var lFlH    = lv.floorElevFt * Sc;
+        // ── STAIRS 3D — from canvas-placed stair objects ─────────────────────
+        (window._stairObjects||[]).forEach(function(st) {
+          var lv = (window._levelConfigs||[]).find(function(l){ return l.id===st.levelId; });
+          var lFlH = lv ? lv.floorElevFt * Sc : 0;
+          if (lFlH <= 0) return;
           var riseIn  = 7.5/12, runIn = 10.0/12;
-          var stepCt  = Math.round(lv.floorElevFt / riseIn);
-          var stairW  = 3 * Sc;       // 3' wide stair
+          var stepCt  = st.steps || Math.round(lv.floorElevFt / riseIn);
+          var stairW  = 3 * Sc;
           var riseS   = riseIn * Sc;
           var runS    = runIn  * Sc;
-          var totalRun = stepCt * runS;
           var treadThk = 0.018 * Sc;
           var riserThk = 0.012 * Sc;
           var mStairL  = new THREE.MeshLambertMaterial({ color: 0xA07840 });
           var mStringL = new THREE.MeshLambertMaterial({ color: 0xA07840, side: THREE.DoubleSide });
-
-          var bwSc = (Q.w||40) * Sc;
-          var blSc = (Q.l||60) * Sc;
-          var stairRot = lv.stairRot || 'front';
-          var stairPos = lv.stairPos || 'left';
-
-          // Determine stair origin (corner at floor level where bottom step starts)
-          // and direction vectors: 'run' = direction stairs descend, 'along' = left-right along wall
-          var runDir, alongDir, wallBase;
-          if (stairRot === 'front') {
-            runDir   = new THREE.Vector3(0, 0, 1);   // stairs go inward from front
-            alongDir = new THREE.Vector3(1, 0, 0);   // position along X
-            wallBase = new THREE.Vector3(-bwSc/2, 0, -blSc/2);
-          } else if (stairRot === 'back') {
-            runDir   = new THREE.Vector3(0, 0, -1);
-            alongDir = new THREE.Vector3(1, 0, 0);
-            wallBase = new THREE.Vector3(-bwSc/2, 0,  blSc/2);
-          } else if (stairRot === 'left') {
-            runDir   = new THREE.Vector3(1, 0, 0);
-            alongDir = new THREE.Vector3(0, 0, 1);
-            wallBase = new THREE.Vector3(-bwSc/2, 0, -blSc/2);
-          } else { // right
-            runDir   = new THREE.Vector3(-1, 0, 0);
-            alongDir = new THREE.Vector3(0, 0, 1);
-            wallBase = new THREE.Vector3( bwSc/2, 0, -blSc/2);
-          }
-
-          // Along-wall offset: left/center/right
-          var wallLen = (stairRot === 'left' || stairRot === 'right') ? blSc : bwSc;
-          var posOffset = stairPos === 'center' ? (wallLen/2 - stairW/2)
-                        : stairPos === 'right'  ? (wallLen - stairW - 0.1*Sc)
-                        : 0.1*Sc;
-
-          // Stair origin = wall base + along offset + small wall clearance
-          var origin = wallBase.clone()
-            .addScaledVector(alongDir, posOffset)
-            .addScaledVector(runDir, 0.01*Sc);  // tiny clearance from wall
-
-          // Draw each step
+          var ox3 = (st.x - (Q.w||40)/2) * Sc;
+          var oz3 = (st.y - (Q.l||60)/2) * Sc;
+          var rotRad = ((st.rot||0) * Math.PI / 180);
+          var stairGroup = new THREE.Group();
+          stairGroup.position.set(ox3, 0, oz3);
+          stairGroup.rotation.y = -rotRad;
           for (var si = 0; si < stepCt; si++) {
             var stepY = lFlH - riseS * (si + 1);
-            // Tread center
-            var tCtr = origin.clone().addScaledVector(runDir, runS*(si+0.5));
-            var tPos = tCtr.clone().addScaledVector(alongDir, stairW/2);
-            tPos.y = stepY + treadThk/2;
-            var trunX = Math.abs(runDir.x) > 0.5 ? runS    : stairW;
-            var trunZ = Math.abs(runDir.z) > 0.5 ? runS    : stairW;
-            var tg = new THREE.BoxGeometry(trunX, treadThk, trunZ);
+            var tg = new THREE.BoxGeometry(stairW, treadThk, runS);
             var tm = new THREE.Mesh(tg, mStairL);
-            tm.position.copy(tPos);
-            grps.interior.add(tm);
-            // Riser
-            var rCtr = origin.clone().addScaledVector(runDir, runS*(si+1));
-            var rPos = rCtr.clone().addScaledVector(alongDir, stairW/2);
-            rPos.y = stepY + riseS/2;
-            var rrunX = Math.abs(runDir.x) > 0.5 ? riserThk : stairW;
-            var rrunZ = Math.abs(runDir.z) > 0.5 ? riserThk : stairW;
-            var rg = new THREE.BoxGeometry(rrunX, riseS, rrunZ);
+            tm.position.set(0, stepY + treadThk/2, runS*(si+0.5));
+            stairGroup.add(tm);
+            var rg = new THREE.BoxGeometry(stairW, riseS, riserThk);
             var rm2 = new THREE.Mesh(rg, mStairL);
-            rm2.position.copy(rPos);
-            grps.interior.add(rm2);
+            rm2.position.set(0, stepY + riseS/2, runS*(si+1));
+            stairGroup.add(rm2);
           }
-
-          // Stringers — triangular profile along each side
-          [-0, stairW].forEach(function(aOff) {
-            var sg = new THREE.BufferGeometry();
+          [-1,1].forEach(function(side) {
+            var sx3 = side * stairW/2;
             var sv = [];
-            // Perpendicular to run direction (stringer side)
-            var sOrigin = origin.clone().addScaledVector(alongDir, aOff);
             for (var si2 = 0; si2 < stepCt; si2++) {
-              var p0 = sOrigin.clone().addScaledVector(runDir, runS*si2);
-              var p1 = sOrigin.clone().addScaledVector(runDir, runS*si2);
-              var p2 = sOrigin.clone().addScaledVector(runDir, runS*(si2+1));
-              p0.y = lFlH - riseS*si2;
-              p1.y = lFlH - riseS*(si2+1);
-              p2.y = lFlH - riseS*(si2+1);
-              sv.push(p0.x,p0.y,p0.z, p1.x,p1.y,p1.z, p2.x,p2.y,p2.z);
-              sv.push(p0.x,p0.y,p0.z, p2.x,p2.y,p2.z,
-                sOrigin.clone().addScaledVector(runDir, runS*(si2+1)).setY(lFlH-riseS*si2).x,
-                lFlH-riseS*si2,
-                sOrigin.clone().addScaledVector(runDir, runS*(si2+1)).z);
+              var y0 = lFlH - riseS*si2,     z0 = runS*si2;
+              var y1 = lFlH - riseS*(si2+1), z1 = runS*(si2+1);
+              sv.push(sx3,y0,z0, sx3,y1,z0, sx3,y1,z1,
+                      sx3,y0,z0, sx3,y1,z1, sx3,y0,z1);
             }
+            var sg = new THREE.BufferGeometry();
             sg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sv), 3));
             sg.computeVertexNormals();
-            grps.interior.add(new THREE.Mesh(sg, mStringL));
+            stairGroup.add(new THREE.Mesh(sg, mStringL));
           });
-
-          // ── FLOOR CUTOUT around stair opening ────────────────────────────
-          // Cut rectangle = stairW wide × totalRun deep in the floor deck
-          // We re-render the deck for this level's zones with a hole punched out
-          // Stair opening in floor: from wall face to totalRun inward, stairW wide
-          // Expressed in plan coordinates (feet from building corner)
-          var hW = stairW / Sc;   // hole width in feet
-          var hD = totalRun / Sc; // hole depth in feet
-
-          // Hole corner in plan space — convert 3D origin back to plan coords
-          // plan x = 3D x + bwSc/2 (in Sc) → ft = (3D x/Sc) + bw/2
-          var hx, hy_plan;
-          if (stairRot === 'front') {
-            hx      = (origin.x / Sc) + (Q.w||40)/2;
-            hy_plan = 0;  // starts at front wall
-          } else if (stairRot === 'back') {
-            hx      = (origin.x / Sc) + (Q.w||40)/2;
-            hy_plan = (Q.l||60) - hD;
-          } else if (stairRot === 'left') {
-            hx      = 0;
-            hy_plan = (origin.z / Sc) + (Q.l||60)/2;
-          } else {
-            hx      = (Q.w||40) - hD;
-            hy_plan = (origin.z / Sc) + (Q.l||60)/2;
+          grps.interior.add(stairGroup);
+          if (lv) {
+            lv._stairHole = { x:st.x - 1.5, y:st.y, w:3, d:stepCt*runIn, rot:st.rot||0 };
           }
-          var hxAlong = stairRot==='left'||stairRot==='right' ? hy_plan : hx;
-          // Store hole on level for floor zone renderer to use
-          lv._stairHole = { rot:stairRot, x:hx, y:hy_plan, w:hW, d:hD, xA:hxAlong };
         });
 
         // ── END INTERIOR WALLS 3D ────────────────────────────────────────
@@ -34139,16 +34060,23 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
       ctx.fillStyle = '#888'; ctx.font = '8px Outfit,sans-serif';
       ctx.fillText(Math.round(stD)+"' run", 0, -13);
 
-      // Rotation handle when selected
+      // Rotation arrows + delete when selected
       if (isSelected) {
-        ctx.fillStyle = '#a78bfa';
-        ctx.beginPath(); ctx.arc(pw/2+8, ph/2, 5, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = '#0f172a'; ctx.font = 'bold 7px Outfit,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-        ctx.fillText('R', pw/2+8, ph/2);
-        // Delete badge
-        ctx.fillStyle='rgba(239,68,68,.9)'; ctx.beginPath(); ctx.arc(-pw/2-8, -6, 7, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle='#fff'; ctx.font='bold 9px Outfit,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-        ctx.fillText('\u00d7', -pw/2-8, -6);
+        // CCW rotate button (left of stair)
+        ctx.fillStyle='rgba(167,139,250,.9)';
+        ctx.beginPath(); ctx.arc(-pw/2-14, ph/2, 10, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle='#fff'; ctx.font='bold 13px Outfit,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('\u21ba', -pw/2-14, ph/2+1);
+        // CW rotate button (right of stair)
+        ctx.fillStyle='rgba(167,139,250,.9)';
+        ctx.beginPath(); ctx.arc(pw/2+14, ph/2, 10, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle='#fff';
+        ctx.fillText('\u21bb', pw/2+14, ph/2+1);
+        // Delete badge (top)
+        ctx.fillStyle='rgba(239,68,68,.9)';
+        ctx.beginPath(); ctx.arc(0, -12, 9, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle='#fff'; ctx.font='bold 11px Outfit,sans-serif';
+        ctx.fillText('\u00d7', 0, -11);
       }
 
       ctx.restore();
@@ -34249,20 +34177,42 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
     // Stair tool — place or remove
     if(drawState.tool==='stair'){
       if(!window._stairObjects) window._stairObjects=[];
-      // Check hit on existing stair
+      // Check hit on existing stair — also check rotate/delete buttons
       var stHitIdx=-1;
+      var stAction='select'; // 'select','rotateCCW','rotateCW','delete'
       window._stairObjects.forEach(function(st,si){
         var cp=ftToCanvas(st.x,st.y);
-        var dist=Math.sqrt(Math.pow(cx2-cp.x,2)+Math.pow(cy2-cp.y,2));
-        if(dist<50) stHitIdx=si;
+        var stW=3,stD=st.run||10;
+        var pw=stW*scale, ph=stD*scale;
+        var rotR=((st.rot||0)*Math.PI/180);
+        // Transform click into stair local coords
+        var dx=cx2-cp.x, dy=cy2-cp.y;
+        var lx=dx*Math.cos(rotR)+dy*Math.sin(rotR);
+        var ly=-dx*Math.sin(rotR)+dy*Math.cos(rotR);
+        // Check if inside stair box
+        if(lx>=-pw/2&&lx<=pw/2&&ly>=0&&ly<=ph){ stHitIdx=si; stAction='select'; }
+        // Check rotate/delete buttons (only if selected)
+        if(si===_selectedStairIdx){
+          // CCW button: (-pw/2-14, ph/2)
+          var dccw=Math.sqrt(Math.pow(cx2-(cp.x+(-pw/2-14)*Math.cos(-rotR)-(ph/2)*Math.sin(-rotR)),2)+Math.pow(cy2-(cp.y+(-pw/2-14)*Math.sin(-rotR)+(ph/2)*Math.cos(-rotR)),2));
+          if(dccw<12){ stHitIdx=si; stAction='rotateCCW'; }
+          // CW button: (pw/2+14, ph/2)
+          var dcw=Math.sqrt(Math.pow(cx2-(cp.x+(pw/2+14)*Math.cos(-rotR)-(ph/2)*Math.sin(-rotR)),2)+Math.pow(cy2-(cp.y+(pw/2+14)*Math.sin(-rotR)+(ph/2)*Math.cos(-rotR)),2));
+          if(dcw<12){ stHitIdx=si; stAction='rotateCW'; }
+          // Delete button: (0,-12)
+          var ddel=Math.sqrt(Math.pow(cx2-(cp.x+0*Math.cos(-rotR)-(-12)*Math.sin(-rotR)),2)+Math.pow(cy2-(cp.y+0*Math.sin(-rotR)+(-12)*Math.cos(-rotR)),2));
+          if(ddel<12){ stHitIdx=si; stAction='delete'; }
+        }
       });
       if(stHitIdx>=0){
-        // Already selected — delete it
-        if(_selectedStairIdx===stHitIdx){
-          window._stairObjects.splice(stHitIdx,1);
-          _selectedStairIdx=-1;
+        if(stAction==='rotateCCW'){
+          window._stairObjects[stHitIdx].rot=((window._stairObjects[stHitIdx].rot||0)-90+360)%360;
+        } else if(stAction==='rotateCW'){
+          window._stairObjects[stHitIdx].rot=((window._stairObjects[stHitIdx].rot||0)+90)%360;
+        } else if(stAction==='delete'){
+          window._stairObjects.splice(stHitIdx,1); _selectedStairIdx=-1;
         } else {
-          _selectedStairIdx=stHitIdx;
+          _selectedStairIdx=(_selectedStairIdx===stHitIdx)?-1:stHitIdx;
         }
       } else {
         // Place new stair
