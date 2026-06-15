@@ -15072,52 +15072,57 @@ function applyVoiceQuote(parsed, overlay) {
         // ── STAIRS 3D — from canvas-placed stair objects ─────────────────────
         (window._stairObjects||[]).forEach(function(st) {
           var lv = (window._levelConfigs||[]).find(function(l){ return l.id===st.levelId; });
-          var lFlH = lv ? lv.floorElevFt * Sc : 0;
-          if (lFlH <= 0) return;
+          // Use floor elevation — for ground floor (0) still render if steps>0
+          var lFlH = lv ? lv.floorElevFt * Sc : (Q.h||14)*Sc*0.5;
           var riseIn  = 7.5/12, runIn = 10.0/12;
-          var stepCt  = st.steps || Math.round(lv.floorElevFt / riseIn);
-          var stairW  = 3 * Sc;
-          var riseS   = riseIn * Sc;
-          var runS    = runIn  * Sc;
-          var treadThk = 0.018 * Sc;
-          var riserThk = 0.012 * Sc;
-          var mStairL  = new THREE.MeshLambertMaterial({ color: 0xA07840 });
-          var mStringL = new THREE.MeshLambertMaterial({ color: 0xA07840, side: THREE.DoubleSide });
+          var stepCt  = st.steps || 14;
+          if(stepCt <= 0) stepCt = 14;
+          var stairW   = 3 * Sc;
+          var riseS    = riseIn * Sc;
+          var runS     = runIn  * Sc;
+          var treadThk = 0.015 * Sc;
+          var mTread   = new THREE.MeshLambertMaterial({ color: 0xC8A478 });
+          var mStringer= new THREE.MeshLambertMaterial({ color: 0xA07840, side: THREE.DoubleSide });
+
+          // Plan position → 3D world (plan 0,0 = building top-left corner)
           var ox3 = (st.x - (Q.w||40)/2) * Sc;
           var oz3 = (st.y - (Q.l||60)/2) * Sc;
           var rotRad = ((st.rot||0) * Math.PI / 180);
+
           var stairGroup = new THREE.Group();
           stairGroup.position.set(ox3, 0, oz3);
           stairGroup.rotation.y = -rotRad;
+
+          // Treads — each step is a flat box, stepping up along Z and up in Y
           for (var si = 0; si < stepCt; si++) {
-            var stepY = lFlH - riseS * (si + 1);
+            var stepY = lFlH - riseS * (stepCt - si);  // bottom step at ground, top step at lFlH
             var tg = new THREE.BoxGeometry(stairW, treadThk, runS);
-            var tm = new THREE.Mesh(tg, mStairL);
-            tm.position.set(0, stepY + treadThk/2, runS*(si+0.5));
+            var tm = new THREE.Mesh(tg, mTread);
+            tm.position.set(0, stepY + treadThk/2, runS * (si + 0.5));
             stairGroup.add(tm);
-            var rg = new THREE.BoxGeometry(stairW, riseS, riserThk);
-            var rm2 = new THREE.Mesh(rg, mStairL);
-            rm2.position.set(0, stepY + riseS/2, runS*(si+1));
-            stairGroup.add(rm2);
           }
-          [-1,1].forEach(function(side) {
-            var sx3 = side * stairW/2;
-            var sv = [];
-            for (var si2 = 0; si2 < stepCt; si2++) {
-              var y0 = lFlH - riseS*si2,     z0 = runS*si2;
-              var y1 = lFlH - riseS*(si2+1), z1 = runS*(si2+1);
-              sv.push(sx3,y0,z0, sx3,y1,z0, sx3,y1,z1,
-                      sx3,y0,z0, sx3,y1,z1, sx3,y0,z1);
-            }
-            var sg = new THREE.BufferGeometry();
-            sg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sv), 3));
-            sg.computeVertexNormals();
-            stairGroup.add(new THREE.Mesh(sg, mStringL));
-          });
+
+          // Left stringer triangle
+          var sv = [];
+          for (var si2 = 0; si2 < stepCt; si2++) {
+            var y0 = lFlH - riseS*(stepCt-si2),   z0 = runS*si2;
+            var y1 = lFlH - riseS*(stepCt-si2-1), z1 = runS*(si2+1);
+            sv.push(-stairW/2,y0,z0, -stairW/2,y1,z0, -stairW/2,y1,z1,
+                    -stairW/2,y0,z0, -stairW/2,y1,z1, -stairW/2,y0,z1);
+          }
+          var sgL = new THREE.BufferGeometry();
+          sgL.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sv), 3));
+          sgL.computeVertexNormals();
+          stairGroup.add(new THREE.Mesh(sgL, mStringer));
+
+          // Right stringer (mirror X)
+          var svR = sv.map(function(v,i){ return i%3===0 ? -v : v; });
+          var sgR = new THREE.BufferGeometry();
+          sgR.setAttribute('position', new THREE.BufferAttribute(new Float32Array(svR), 3));
+          sgR.computeVertexNormals();
+          stairGroup.add(new THREE.Mesh(sgR, mStringer));
+
           grps.walls.add(stairGroup);
-          if (lv) {
-            lv._stairHole = { x:st.x - 1.5, y:st.y, w:3, d:stepCt*runIn, rot:st.rot||0 };
-          }
         });
 
         // ── END INTERIOR WALLS 3D ────────────────────────────────────────
@@ -34022,7 +34027,7 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
     });
 
     // ── STAIRS on canvas ──────────────────────────────────────────────────
-    window._stairBtns = []; // rebuilt every frame
+    window._stairBtns = [];
     var _isStairTool = drawState.tool === 'stair';
     (window._stairObjects||[]).forEach(function(st, si) {
       var cp  = ftToCanvas(st.x, st.y);
@@ -34031,66 +34036,73 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
       var rot = (st.rot||0) * Math.PI / 180;
       var isSel = (_selectedStairIdx === si);
       var cos = Math.cos(rot), sin = Math.sin(rot);
-
-      // helper: local stair coords → world canvas coords
       function wp(lx,ly){ return {x: cp.x + lx*cos - ly*sin, y: cp.y + lx*sin + ly*cos}; }
 
       ctx.save();
       ctx.translate(cp.x, cp.y);
       ctx.rotate(rot);
 
-      // Body
       ctx.fillStyle   = isSel ? 'rgba(167,139,250,.3)' : 'rgba(167,139,250,.12)';
-      ctx.strokeStyle = isSel ? '#a78bfa' : 'rgba(167,139,250,.55)';
-      ctx.lineWidth   = isSel ? 2 : 1.5;
+      ctx.strokeStyle = isSel ? '#a78bfa' : 'rgba(167,139,250,.5)';
+      ctx.lineWidth   = isSel ? 2 : 1;
       ctx.beginPath(); ctx.rect(-pw/2, 0, pw, ph); ctx.fill(); ctx.stroke();
 
-      // Step lines
-      ctx.strokeStyle='rgba(167,139,250,.35)'; ctx.lineWidth=0.8;
       var sr=(10/12)*scale;
-      for(var n=1; n*sr < ph; n++){ ctx.beginPath(); ctx.moveTo(-pw/2,n*sr); ctx.lineTo(pw/2,n*sr); ctx.stroke(); }
+      ctx.strokeStyle='rgba(167,139,250,.3)'; ctx.lineWidth=0.7;
+      for(var n=1;n*sr<ph;n++){ ctx.beginPath(); ctx.moveTo(-pw/2,n*sr); ctx.lineTo(pw/2,n*sr); ctx.stroke(); }
 
-      // Arrow (pointing down = direction of descent)
       ctx.strokeStyle='#a78bfa'; ctx.lineWidth=1.5;
-      ctx.beginPath(); ctx.moveTo(0,ph*0.2); ctx.lineTo(0,ph*0.7); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(-5,ph*0.58); ctx.lineTo(0,ph*0.7); ctx.lineTo(5,ph*0.58); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,ph*0.2); ctx.lineTo(0,ph*0.72); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-5,ph*0.6); ctx.lineTo(0,ph*0.72); ctx.lineTo(5,ph*0.6); ctx.stroke();
 
-      // Label
-      ctx.fillStyle='#a78bfa'; ctx.font='bold 9px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='alphabetic';
-      ctx.fillText('STAIR', 0, -5);
-      ctx.fillStyle='#94a3b8'; ctx.font='8px sans-serif';
-      ctx.fillText(Math.round(st.run||10)+"' run", 0, -14);
+      ctx.fillStyle='#a78bfa'; ctx.font='bold 8px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+      ctx.fillText('STAIR',0,-4);
 
-      // Buttons (only when selected)
+      // Delete X on selected stair
       if(isSel){
-        // CCW ↺ — left side
-        ctx.fillStyle='rgba(139,92,246,.9)'; ctx.beginPath(); ctx.arc(-pw/2-18,ph/2,13,0,Math.PI*2); ctx.fill();
-        ctx.fillStyle='#fff'; ctx.font='15px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-        ctx.fillText('\u21ba', -pw/2-18, ph/2+1);
-        // CW ↻ — right side
-        ctx.fillStyle='rgba(139,92,246,.9)'; ctx.beginPath(); ctx.arc(pw/2+18,ph/2,13,0,Math.PI*2); ctx.fill();
-        ctx.fillStyle='#fff';
-        ctx.fillText('\u21bb', pw/2+18, ph/2+1);
-        // Delete × — top
-        ctx.fillStyle='rgba(220,38,38,.9)'; ctx.beginPath(); ctx.arc(0,-16,11,0,Math.PI*2); ctx.fill();
-        ctx.fillStyle='#fff'; ctx.font='bold 13px sans-serif';
-        ctx.fillText('\u00d7', 0, -15);
-
-        // Store world positions for click detection
-        var bL=wp(-pw/2-18,ph/2), bR=wp(pw/2+18,ph/2), bD=wp(0,-16);
-        window._stairBtns.push({idx:si,action:'ccw',x:bL.x,y:bL.y,r:14});
-        window._stairBtns.push({idx:si,action:'cw', x:bR.x,y:bR.y,r:14});
+        var bD=wp(0,-14);
+        ctx.fillStyle='rgba(220,38,38,.9)'; ctx.beginPath(); ctx.arc(0,-14,10,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='#fff'; ctx.font='bold 12px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('\u00d7',0,-14);
         window._stairBtns.push({idx:si,action:'del',x:bD.x,y:bD.y,r:12});
       }
       ctx.restore();
     });
-    // Ghost preview on hover
+    // Preview
     if(_isStairTool && mousePos && !_draggingStair){
-      var sp=ftToCanvas(mousePos.x,mousePos.y);
-      ctx.save(); ctx.globalAlpha=0.35;
+      var sp2=ftToCanvas(mousePos.x,mousePos.y);
+      ctx.save(); ctx.globalAlpha=0.3;
       ctx.strokeStyle='#a78bfa'; ctx.lineWidth=1.5; ctx.setLineDash([5,3]);
-      ctx.strokeRect(sp.x-1.5*scale, sp.y, 3*scale, 10*scale);
+      ctx.strokeRect(sp2.x-1.5*scale,sp2.y,3*scale,10*scale);
       ctx.setLineDash([]); ctx.restore();
+    }
+    // Direction chips — rendered as a floating overlay below selected stair
+    var stairChipEl = document.getElementById('_stairDirChips');
+    if(_selectedStairIdx>=0 && _selectedStairIdx<(window._stairObjects||[]).length){
+      var _sSt = window._stairObjects[_selectedStairIdx];
+      var _scp = ftToCanvas(_sSt.x, _sSt.y);
+      var _chipY = _scp.y + (_sSt.run||10)*scale + 18;
+      var _chipX = _scp.x;
+      if(!stairChipEl){
+        stairChipEl = document.createElement('div');
+        stairChipEl.id='_stairDirChips';
+        stairChipEl.style.cssText='position:absolute;display:flex;gap:4px;z-index:30;';
+        canvasWrap.style.position='relative';
+        canvasWrap.appendChild(stairChipEl);
+      }
+      stairChipEl.style.left=(_chipX-60)+'px';
+      stairChipEl.style.top=_chipY+'px';
+      stairChipEl.style.display='flex';
+      var dirs=[{r:0,l:'↓ S'},{r:90,l:'← W'},{r:180,l:'↑ N'},{r:270,l:'→ E'}];
+      stairChipEl.innerHTML=dirs.map(function(d){
+        var active=(_sSt.rot||0)===d.r;
+        return '<button onclick="(function(){window._stairObjects['+_selectedStairIdx+'].rot='+d.r+';window.scheduleBuild&&scheduleBuild();})()" '
+          +'style="padding:4px 8px;border-radius:5px;border:1px solid '+(active?'#a78bfa':'rgba(167,139,250,.3)')+';'
+          +'background:'+(active?'rgba(139,92,246,.3)':'rgba(0,0,0,.5)')+';'
+          +'color:'+(active?'#a78bfa':'#888')+';font-size:10px;font-weight:700;cursor:pointer;font-family:sans-serif;">'+d.l+'</button>';
+      }).join('');
+    } else {
+      if(stairChipEl) stairChipEl.style.display='none';
     }
 
     // Preview while drawing
