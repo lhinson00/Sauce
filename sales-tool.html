@@ -7037,24 +7037,6 @@ function renderLevelManager() {
         zoneHTML += '<div style="font-size:10px;color:#666;padding:4px 0;">No zones — draw in Floor Plan Designer</div>';
       }
       zoneHTML += '</div>';
-
-      // ── Stairs ──────────────────────────────────────────────────────────
-      var stairPosOpts = ['left','center','right'].map(function(p){
-        return '<option value="'+p+'"'+(lv.stairPos===p?' selected':'')+'>'+p.charAt(0).toUpperCase()+p.slice(1)+'</option>';
-      }).join('');
-      var stairRotOpts = ['front','back','left','right'].map(function(r){
-        return '<option value="'+r+'"'+(lv.stairRot===r?' selected':'')+'>Toward '+r.charAt(0).toUpperCase()+r.slice(1)+'</option>';
-      }).join('');
-      zoneHTML += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08);">'
-        +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">'
-        +'<div class="shed-label" style="margin:0;">Stairs</div>'
-        +'<label class="tog"><input type="checkbox" '+(lv.stairs?'checked':'')+' onchange="setLevelProp('+lv.id+',\'stairs\',this.checked);scheduleBuild()"><span class="tog-track"></span></label>'
-        +'</div>'
-        +(lv.stairs ? '<div class="shed-row">'
-          +'<div><div class="shed-label">Direction</div><select class="shed-sel" onchange="setLevelProp('+lv.id+',\'stairRot\',this.value);scheduleBuild()">'+stairRotOpts+'</select></div>'
-          +'<div><div class="shed-label">Position</div><select class="shed-sel" onchange="setLevelProp('+lv.id+',\'stairPos\',this.value);scheduleBuild()">'+stairPosOpts+'</select></div>'
-          +'</div>' : '')
-        +'</div>';
     }
 
     return '<div style="border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px 10px;margin-bottom:6px;border-left:3px solid '+lv.color+';">'
@@ -33797,6 +33779,9 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
   modeBar.style.cssText = 'display:flex;gap:6px;align-items:center;flex-shrink:0;flex-wrap:wrap;';
   var drawState = { tool: _initialTool, startFt: null, zonePt1: null };
   var selectedIdx = -1;
+  var _selectedStairIdx = -1;
+  var _draggingStair = false;
+  var _dragStairOffsetX = 0, _dragStairOffsetY = 0;
   var selectedZoneId = -1;
 
   function mkTool(id, label, color, fn) {
@@ -33811,11 +33796,12 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
   var bearToolBtn  = mkTool('bear',  'Bearing', '#f87171', function(){ setTool('bearing'); });
   var drainToolBtn = mkTool('drain', 'Drain',   '#22d3ee', function(){ setTool('drain'); });
   var zoneToolBtn  = mkTool('zone',  '⬡ Floor Zone', '#34d399', function(){ setTool('zone'); });
+  var stairToolBtn = mkTool('stair', '⬒ Stairs', '#a78bfa', function(){ setTool('stair'); });
 
   var instEl = document.createElement('div');
   instEl.style.cssText = 'font-size:10px;color:#64748b;flex:1;';
 
-  [wallToolBtn, doorToolBtn, bearToolBtn, drainToolBtn, zoneToolBtn, instEl].forEach(function(el){ modeBar.appendChild(el); });
+  [wallToolBtn, doorToolBtn, bearToolBtn, drainToolBtn, zoneToolBtn, stairToolBtn, instEl].forEach(function(el){ modeBar.appendChild(el); });
   panel.appendChild(modeBar);
 
   function setTool(t) {
@@ -33824,24 +33810,24 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
       wall:'Click start → click end to draw wall on active level',
       door:'Click a wall to add a door opening  |  Click an existing door to remove it',
       bearing:'Click a wall to toggle load-bearing (double top plate)',
-      drain:'Click anywhere to place a drain/fixture',
+      drain:'Click to place a fixture  |  Click an existing fixture to remove it',
       zone:'Click two corners to draw a floor zone on the active elevated level',
-      drain:'Click to place a fixture  |  Click an existing fixture to remove it'
+      stair:'Click to place stairs  |  Drag to move  |  R key to rotate  |  Click stair to select & delete with ✕'
     };
     instEl.textContent = instMap[t]||'';
-    [wallToolBtn,doorToolBtn,bearToolBtn,drainToolBtn,zoneToolBtn].forEach(function(b){ b.style.background='rgba(0,0,0,.25)'; });
-    var map={wall:wallToolBtn,door:doorToolBtn,bearing:bearToolBtn,drain:drainToolBtn,zone:zoneToolBtn};
+    [wallToolBtn,doorToolBtn,bearToolBtn,drainToolBtn,zoneToolBtn,stairToolBtn].forEach(function(b){ b.style.background='rgba(0,0,0,.25)'; });
+    var map={wall:wallToolBtn,door:doorToolBtn,bearing:bearToolBtn,drain:drainToolBtn,zone:zoneToolBtn,stair:stairToolBtn};
     if(map[t]) map[t].style.background='rgba(255,255,255,.12)';
     if(ctx) redraw(null);
   }
   setTool(_initialTool);
 
-  // Canvas
+  // Canvas — enlarged for better precision
   var PAD = 44;
-  var maxW = Math.min(window.innerWidth * 0.94, 1060) - 40;
-  var maxH = Math.min(window.innerHeight * 0.68, 680);
+  var maxW = Math.min(window.innerWidth * 0.96, 1300) - 40;
+  var maxH = Math.min(window.innerHeight * 0.82, 900);
   var scale = Math.min((maxW-PAD*2)/bw, (maxH-PAD*2)/bl);
-  scale = Math.max(scale, 14);
+  scale = Math.max(scale, 18);   // minimum 18px per foot
   var cw = Math.round(bw*scale+PAD*2);
   var ch = Math.round(bl*scale+PAD*2);
 
@@ -34114,6 +34100,78 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
       ctx.restore();
     });
 
+    // ── STAIRS on canvas ──────────────────────────────────────────────────
+    var _stairs = window._stairObjects || [];
+    var _isStairTool = drawState.tool === 'stair';
+    _stairs.forEach(function(st, si) {
+      var cx = ftToCanvas(st.x, st.y);
+      // Stair footprint: width 3', run depends on steps (7.5" rise, 10" run, steps = ceil(floorElev/(7.5/12)))
+      var stW = 3, stD = st.run || 10;  // default 10' run
+      var isSelected = (_selectedStairIdx === si);
+
+      ctx.save();
+      ctx.translate(cx.x, cx.y);
+      ctx.rotate((st.rot||0) * Math.PI/180);
+
+      // Box outline
+      var pw = stW*scale, ph = stD*scale;
+      ctx.fillStyle = isSelected ? 'rgba(167,139,250,.25)' : 'rgba(167,139,250,.15)';
+      ctx.strokeStyle = isSelected ? '#a78bfa' : 'rgba(167,139,250,.6)';
+      ctx.lineWidth = isSelected ? 2 : 1.5;
+      ctx.beginPath(); ctx.rect(-pw/2, 0, pw, ph); ctx.fill(); ctx.stroke();
+
+      // Step lines
+      ctx.strokeStyle = 'rgba(167,139,250,.4)'; ctx.lineWidth = 0.8;
+      var stepRun = (10/12)*scale;
+      for (var si2 = 1; si2 * stepRun < ph; si2++) {
+        var sy2 = si2 * stepRun;
+        ctx.beginPath(); ctx.moveTo(-pw/2, sy2); ctx.lineTo(pw/2, sy2); ctx.stroke();
+      }
+
+      // Direction arrow
+      ctx.strokeStyle = '#a78bfa'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(0, ph*0.15); ctx.lineTo(0, ph*0.75); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-4, ph*0.6); ctx.lineTo(0, ph*0.75); ctx.lineTo(4, ph*0.6); ctx.stroke();
+
+      // Label
+      ctx.fillStyle = '#a78bfa'; ctx.font = 'bold 9px Outfit,sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('STAIR', 0, -4);
+      ctx.fillStyle = '#888'; ctx.font = '8px Outfit,sans-serif';
+      ctx.fillText(Math.round(stD)+"' run", 0, -13);
+
+      // Rotation handle when selected
+      if (isSelected) {
+        ctx.fillStyle = '#a78bfa';
+        ctx.beginPath(); ctx.arc(pw/2+8, ph/2, 5, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#0f172a'; ctx.font = 'bold 7px Outfit,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('R', pw/2+8, ph/2);
+        // Delete badge
+        ctx.fillStyle='rgba(239,68,68,.9)'; ctx.beginPath(); ctx.arc(-pw/2-8, -6, 7, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle='#fff'; ctx.font='bold 9px Outfit,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText('\u00d7', -pw/2-8, -6);
+      }
+
+      ctx.restore();
+
+      // Show ✕ badge when stair tool active
+      if (_isStairTool && !isSelected) {
+        ctx.save();
+        ctx.fillStyle='rgba(167,139,250,.9)';
+        ctx.beginPath(); ctx.arc(cx.x, cx.y-8, 7, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle='#0f172a'; ctx.font='bold 9px Outfit,sans-serif'; ctx.textAlign='center';
+        ctx.fillText('\u00d7', cx.x, cx.y-4);
+        ctx.restore();
+      }
+    });
+    // Preview stair placement on hover
+    if (_isStairTool && mousePos && !_draggingStair) {
+      var sp = ftToCanvas(mousePos.x, mousePos.y);
+      ctx.save(); ctx.globalAlpha=0.4;
+      ctx.strokeStyle='#a78bfa'; ctx.lineWidth=1.5; ctx.setLineDash([4,3]);
+      ctx.strokeRect(sp.x - 1.5*scale, sp.y, 3*scale, 10*scale);
+      ctx.setLineDash([]); ctx.restore();
+    }
+
     // Preview while drawing
     if(drawState.tool==='wall' && drawState.startFt && mousePos){
       var sa=ftToCanvas(drawState.startFt.x,drawState.startFt.y);
@@ -34141,9 +34199,44 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
 
   // Interaction
   var lastMouse=null;
+  canvas.addEventListener('mousedown',function(e){
+    if (drawState.tool !== 'stair') return;
+    var r=canvas.getBoundingClientRect(),sx=canvas.width/r.width,sy=canvas.height/r.height;
+    var cx2=(e.clientX-r.left)*sx, cy2=(e.clientY-r.top)*sy;
+    var ft=clampFt(canvasToFt(cx2,cy2));
+    // Check if clicking near an existing stair
+    var hitIdx=-1;
+    (window._stairObjects||[]).forEach(function(st,si){
+      var cp=ftToCanvas(st.x,st.y);
+      var dist=Math.sqrt(Math.pow(cx2-cp.x,2)+Math.pow(cy2-cp.y,2));
+      if(dist<50) hitIdx=si;
+    });
+    if(hitIdx>=0){
+      _selectedStairIdx=hitIdx;
+      _draggingStair=true;
+      var st=window._stairObjects[hitIdx];
+      _dragStairOffsetX=ft.x-st.x;
+      _dragStairOffsetY=ft.y-st.y;
+    } else {
+      _selectedStairIdx=-1;
+      _draggingStair=false;
+    }
+    redraw(lastMouse);
+  });
+
+  canvas.addEventListener('mouseup',function(){
+    if(_draggingStair){ _draggingStair=false; scheduleBuild(); }
+  });
+
   canvas.addEventListener('mousemove',function(e){
     var r=canvas.getBoundingClientRect(),sx=canvas.width/r.width,sy=canvas.height/r.height;
     lastMouse={x:(e.clientX-r.left)*sx,y:(e.clientY-r.top)*sy};
+    if(_draggingStair && _selectedStairIdx>=0 && (window._stairObjects||[]).length>_selectedStairIdx){
+      var ft2=canvasToFt(lastMouse.x,lastMouse.y);
+      var st2=window._stairObjects[_selectedStairIdx];
+      st2.x=Math.max(0,Math.min((Q.w||40),ft2.x-_dragStairOffsetX));
+      st2.y=Math.max(0,Math.min((Q.l||60),ft2.y-_dragStairOffsetY));
+    }
     redraw(lastMouse);
   });
   canvas.addEventListener('mouseleave',function(){lastMouse=null;redraw(null);});
@@ -34153,6 +34246,43 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
     var cx2=(e.clientX-r.left)*sx, cy2=(e.clientY-r.top)*sy;
     var ft=clampFt(canvasToFt(cx2,cy2));
 
+    // Stair tool — place or remove
+    if(drawState.tool==='stair'){
+      if(!window._stairObjects) window._stairObjects=[];
+      // Check hit on existing stair
+      var stHitIdx=-1;
+      window._stairObjects.forEach(function(st,si){
+        var cp=ftToCanvas(st.x,st.y);
+        var dist=Math.sqrt(Math.pow(cx2-cp.x,2)+Math.pow(cy2-cp.y,2));
+        if(dist<50) stHitIdx=si;
+      });
+      if(stHitIdx>=0){
+        // Already selected — delete it
+        if(_selectedStairIdx===stHitIdx){
+          window._stairObjects.splice(stHitIdx,1);
+          _selectedStairIdx=-1;
+        } else {
+          _selectedStairIdx=stHitIdx;
+        }
+      } else {
+        // Place new stair
+        var stFloor = (window._levelConfigs||[]).find(function(l){ return l.id===activeLevelId; });
+        var stElevFt = stFloor ? stFloor.floorElevFt : 0;
+        var stSteps  = Math.round(stElevFt/(7.5/12)) || 14;
+        var stRun    = Math.round(stSteps*(10/12)*10)/10;
+        window._stairObjects.push({
+          id: Date.now(),
+          x: ft.x, y: ft.y,
+          rot: 0,
+          levelId: activeLevelId,
+          steps: stSteps,
+          run: stRun
+        });
+        _selectedStairIdx = window._stairObjects.length-1;
+      }
+      scheduleBuild(); redraw(lastMouse);
+      return;
+    }
     // Zone draw tool
     if(drawState.tool==='zone'){
       var lv2 = (window._levelConfigs||[]).find(function(l){ return l.id===activeLevelId; });
@@ -34327,6 +34457,16 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
       var lv3=(window._levelConfigs||[]).find(function(l){return l.id===activeLevelId;});
       if(lv3) { removeFloorZone(lv3.id, selectedZoneId); selectedZoneId=-1; redraw(lastMouse); }
     }
+    // R key — rotate selected stair 90°
+    if((e.key==='r'||e.key==='R') && _selectedStairIdx>=0 && (window._stairObjects||[]).length>_selectedStairIdx){
+      window._stairObjects[_selectedStairIdx].rot = ((window._stairObjects[_selectedStairIdx].rot||0)+90)%360;
+      scheduleBuild(); redraw(lastMouse);
+    }
+    // Delete selected stair
+    if((e.key==='Delete'||e.key==='Backspace')&&_selectedStairIdx>=0&&(window._stairObjects||[]).length>_selectedStairIdx){
+      window._stairObjects.splice(_selectedStairIdx,1); _selectedStairIdx=-1;
+      scheduleBuild(); redraw(lastMouse);
+    }
   });
 
   // Toolbar
@@ -34344,7 +34484,7 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
   }));
   toolbar.appendChild(mkBtn2('Clear All','#64748b',function(){
     if(!confirm('Clear all interior walls and drains?'))return;
-    window._interiorWalls=[];window._floorDrains=[];selectedIdx=-1;
+    window._interiorWalls=[];window._floorDrains=[];window._stairObjects=[];selectedIdx=-1;
     renderInteriorWalls();scheduleBuild();redraw(lastMouse);
   }));
   var doneBtn=mkBtn2('Done','#22c55e',function(){overlay.remove();});
