@@ -15094,30 +15094,32 @@ function applyVoiceQuote(parsed, overlay) {
           stairGroup.position.set(ox3, 0, oz3);
           stairGroup.rotation.y = -rotRad;
 
-          // Treads — each step is a flat box, stepping up along Z and up in Y
+          // Treads — step 0 is lowest (near ground), step stepCt-1 is at top (lFlH)
+          var riseS2 = lFlH / stepCt;  // actual rise per step based on real floor height
           for (var si = 0; si < stepCt; si++) {
-            var stepY = lFlH - riseS * (stepCt - si);  // bottom step at ground, top step at lFlH
+            var stepY = riseS2 * (si + 1);  // Y of top surface of this tread
             var tg = new THREE.BoxGeometry(stairW, treadThk, runS);
             var tm = new THREE.Mesh(tg, mTread);
-            tm.position.set(0, stepY + treadThk/2, runS * (si + 0.5));
+            tm.position.set(0, stepY - treadThk/2, runS * (si + 0.5));
             stairGroup.add(tm);
           }
 
-          // Left stringer triangle
+          // Stringers — sloped boards on each side
           var sv = [];
           for (var si2 = 0; si2 < stepCt; si2++) {
-            var y0 = lFlH - riseS*(stepCt-si2),   z0 = runS*si2;
-            var y1 = lFlH - riseS*(stepCt-si2-1), z1 = runS*(si2+1);
-            sv.push(-stairW/2,y0,z0, -stairW/2,y1,z0, -stairW/2,y1,z1,
-                    -stairW/2,y0,z0, -stairW/2,y1,z1, -stairW/2,y0,z1);
+            var y0 = riseS2 * si2,       z0 = runS * si2;
+            var y1 = riseS2 * (si2+1),   z1 = runS * (si2+1);
+            sv.push(-stairW/2, y0, z0,  -stairW/2, y1, z0,  -stairW/2, y1, z1,
+                    -stairW/2, y0, z0,  -stairW/2, y1, z1,  -stairW/2, y0, z1);
           }
           var sgL = new THREE.BufferGeometry();
           sgL.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sv), 3));
           sgL.computeVertexNormals();
           stairGroup.add(new THREE.Mesh(sgL, mStringer));
 
-          // Right stringer (mirror X)
-          var svR = sv.map(function(v,i){ return i%3===0 ? -v : v; });
+          // Right stringer — same shape but at +stairW/2
+          var svR = sv.slice();
+          for(var ri=0;ri<svR.length;ri+=3) svR[ri]=stairW/2;  // set X to right side
           var sgR = new THREE.BufferGeometry();
           sgR.setAttribute('position', new THREE.BufferAttribute(new Float32Array(svR), 3));
           sgR.computeVertexNormals();
@@ -33739,7 +33741,7 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
       bearing:'Click a wall to toggle load-bearing (double top plate)',
       drain:'Click to place a fixture  |  Click an existing fixture to remove it',
       zone:'Click two corners to draw a floor zone on the active elevated level',
-      stair:'Click to place stairs  |  Drag to move  |  R key to rotate  |  Click stair to select & delete with ✕'
+      stair:'Click to place stairs to 2nd floor  |  Drag to move  |  Select to change direction or delete  |  Requires an elevated level'
     };
     instEl.textContent = instMap[t]||'';
     [wallToolBtn,doorToolBtn,bearToolBtn,drainToolBtn,zoneToolBtn,stairToolBtn].forEach(function(b){ b.style.background='rgba(0,0,0,.25)'; });
@@ -34217,13 +34219,19 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
         scheduleBuild(); redraw(lastMouse); return;
       }
 
-      // 3. No hit — place new stair
+      // Place new stair — always targets the first elevated level
       _selectedStairIdx=-1;
-      var stFloor=(window._levelConfigs||[]).find(function(l){return l.id===activeLevelId;});
-      var stElevFt=stFloor?stFloor.floorElevFt:0;
-      var stSteps=Math.round(stElevFt/(7.5/12))||14;
+      // Find first elevated level (floorElevFt > 0)
+      var stFloor=(window._levelConfigs||[]).find(function(l){return l.floorElevFt>0;});
+      if(!stFloor){
+        instEl.textContent='Add a 2nd floor level first — stairs need an elevated floor to climb to.';
+        redraw(lastMouse); return;
+      }
+      var stElevFt=stFloor.floorElevFt;
+      var stSteps=Math.round(stElevFt/(7.5/12));
+      if(stSteps<3) stSteps=Math.round(stElevFt/(6.5/12));
       var stRun=Math.round(stSteps*(10/12)*10)/10;
-      window._stairObjects.push({id:Date.now(),x:ft.x,y:ft.y,rot:0,levelId:activeLevelId,steps:stSteps,run:stRun});
+      window._stairObjects.push({id:Date.now(),x:ft.x,y:ft.y,rot:0,levelId:stFloor.id,steps:stSteps,run:stRun});
       _selectedStairIdx=window._stairObjects.length-1;
       scheduleBuild(); redraw(lastMouse);
       return;
