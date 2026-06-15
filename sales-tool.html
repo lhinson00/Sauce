@@ -15070,71 +15070,86 @@ function applyVoiceQuote(parsed, overlay) {
           });
         }
         // ── STAIRS 3D — from canvas-placed stair objects ─────────────────────
+        // ── INTERIOR STAIRS 3D ──────────────────────────────────────────────
         var _stObjs = window._stairObjects||[];
-        console.log("[Stairs3D] count:", _stObjs.length, "walls visible:", grps.walls ? grps.walls.visible : 'no grps.walls');
+        console.log("[Stairs3D] count:", _stObjs.length);
+        var mStairTread = new THREE.MeshLambertMaterial({ color: 0xC8A478 });
+        var mStairRiser = new THREE.MeshLambertMaterial({ color: 0xA07840 });
+        var mStairStrng = new THREE.MeshLambertMaterial({ color: 0x8B6914, side: THREE.DoubleSide });
         _stObjs.forEach(function(st) {
-          console.log("[Stairs3D] st:", JSON.stringify({x:st.x,y:st.y,rot:st.rot,levelId:st.levelId,steps:st.steps,run:st.run}));
-          try {
           var lv = (window._levelConfigs||[]).find(function(l){ return l.id===st.levelId; });
-          // Use floor elevation — for ground floor (0) still render if steps>0
-          var lFlH = lv ? lv.floorElevFt * Sc : (Q.h||14)*Sc*0.5;
+          if (!lv || lv.floorElevFt <= 0) return;
+          var lFlH    = lv.floorElevFt * Sc;
           var riseIn  = 7.5/12, runIn = 10.0/12;
-          var stepCt  = st.steps || 14;
-          if(stepCt <= 0) stepCt = 14;
-          var stairW   = 3 * Sc;
-          var riseS    = riseIn * Sc;
-          var runS     = runIn  * Sc;
-          var treadThk = 0.015 * Sc;
-          var mTread   = new THREE.MeshLambertMaterial({ color: 0xC8A478 });
-          var mStringer= new THREE.MeshLambertMaterial({ color: 0xA07840, side: THREE.DoubleSide });
+          var stepCt  = st.steps || Math.round(lv.floorElevFt / riseIn);
+          if (stepCt < 2) return;
+          var stairW  = 3 * Sc;
+          var riseS   = lFlH / stepCt;   // actual rise per step
+          var runS    = runIn * Sc;
+          var treadThk = 0.018 * Sc;
+          var riserThk = 0.012 * Sc;
 
-          // Plan position is where the stair MEETS the upper floor
-          // Stair runs in -Z direction by default (rot=0 = descends toward front of building)
-          // Rotate by rotRad around Y axis
-          var ox3 = (st.x - (Q.w||40)/2) * Sc;
-          var oz3 = (st.y - (Q.l||60)/2) * Sc;
-          var rotRad = ((st.rot||0) * Math.PI / 180);
-          var totalRunS = stepCt * runS;
+          // World position of stair top (where it meets the floor above)
+          // st.x, st.y are plan coords (ft from building top-left)
+          var wx = (st.x - (Q.w||40)/2) * Sc;
+          var wz = (st.y - (Q.l||60)/2) * Sc;
 
-          var stairGroup = new THREE.Group();
-          // Place group at click point; geometry runs in -Z so stair goes INTO building
-          stairGroup.position.set(ox3, 0, oz3);
-          stairGroup.rotation.y = rotRad;
+          // Direction vector based on rot
+          // rot=0: descends toward -Z (front), rot=90: descends toward +X (right)
+          // rot=180: toward +Z (back), rot=270: toward -X (left)
+          var rot = (st.rot||0);
+          var dx = rot===90 ? runS : rot===270 ? -runS : 0;
+          var dz = rot===0  ? -runS : rot===180 ? runS  : 0;
 
-          // Treads: step 0 at top (z=0, y=lFlH), descends to bottom (z=-totalRunS, y=0)
-          var riseS2 = lFlH / stepCt;
+          // Perpendicular to run direction (for stair width)
+          var px = dz===0 ? 0 : (dz > 0 ? stairW : -stairW);
+          var pz = dx===0 ? 0 : (dx > 0 ? stairW : -stairW);
+          // Width vector: perpendicular to run
+          var wx2 = rot===0||rot===180 ? stairW : 0;
+          var wz2 = rot===90||rot===270 ? stairW : 0;
+
           for (var si = 0; si < stepCt; si++) {
-            var stepY = lFlH - riseS2 * si;
-            var tg = new THREE.BoxGeometry(stairW, treadThk, runS);
-            var tm = new THREE.Mesh(tg, mTread);
-            tm.position.set(0, stepY - treadThk/2, -runS * (si + 0.5));
-            stairGroup.add(tm);
+            var stepY  = lFlH - riseS * (si + 1);
+            // Tread center: starts at top (si=0 near upper floor), runs away with each step
+            var tcx = wx + dx * (si + 0.5) + wx2/2;
+            var tcz = wz + dz * (si + 0.5) + wz2/2;
+
+            var tgW = (dx===0) ? stairW : Math.abs(runS);
+            var tgD = (dz===0) ? stairW : Math.abs(runS);
+            var tg = new THREE.BoxGeometry(tgW, treadThk, tgD);
+            var tm = new THREE.Mesh(tg, mStairTread);
+            tm.position.set(tcx, stepY + treadThk/2, tcz);
+            grps.walls.add(tm);
+
+            // Riser
+            var rcx = wx + dx * (si + 1) + wx2/2;
+            var rcz = wz + dz * (si + 1) + wz2/2;
+            var rgW = (dx===0) ? stairW : riserThk;
+            var rgD = (dz===0) ? stairW : riserThk;
+            var rg = new THREE.BoxGeometry(rgW, riseS, rgD);
+            var rm2 = new THREE.Mesh(rg, mStairRiser);
+            rm2.position.set(rcx, stepY + riseS/2, rcz);
+            grps.walls.add(rm2);
           }
 
-          // Stringers run in -Z
-          var sv = [];
-          for (var si2 = 0; si2 < stepCt; si2++) {
-            var y0 = lFlH - riseS2 * si2,       z0 = -runS * si2;
-            var y1 = lFlH - riseS2 * (si2+1),   z1 = -runS * (si2+1);
-            sv.push(-stairW/2, y0, z0,  -stairW/2, y1, z0,  -stairW/2, y1, z1,
-                    -stairW/2, y0, z0,  -stairW/2, y1, z1,  -stairW/2, y0, z1);
-          }
-          var sgL = new THREE.BufferGeometry();
-          sgL.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sv), 3));
-          sgL.computeVertexNormals();
-          stairGroup.add(new THREE.Mesh(sgL, mStringer));
-
-          // Right stringer — same shape but at +stairW/2
-          var svR = sv.slice();
-          for(var ri=0;ri<svR.length;ri+=3) svR[ri]=stairW/2;  // set X to right side
-          var sgR = new THREE.BufferGeometry();
-          sgR.setAttribute('position', new THREE.BufferAttribute(new Float32Array(svR), 3));
-          sgR.computeVertexNormals();
-          stairGroup.add(new THREE.Mesh(sgR, mStringer));
-
-          grps.walls.add(stairGroup);
-          console.log("[Stairs3D] Added stairGroup to grps.walls. Children:", stairGroup.children.length, "pos:", ox3.toFixed(3), oz3.toFixed(3), "lFlH:", lFlH.toFixed(3));
-          } catch(stErr) { console.error("[Stairs3D] ERROR:", stErr); }
+          // Stringers — one on each side of the stair width
+          [0, 1].forEach(function(side) {
+            var sg = new THREE.BufferGeometry();
+            var sv = [];
+            // Side offset perpendicular to run direction
+            var sox = (rot===0||rot===180) ? (side===0?0:stairW) : 0;
+            var soz = (rot===90||rot===270) ? (side===0?0:stairW) : 0;
+            for (var si2 = 0; si2 < stepCt; si2++) {
+              var y0 = lFlH - riseS * si2;
+              var y1 = lFlH - riseS * (si2 + 1);
+              var x0 = wx + dx*si2     + sox;  var z0 = wz + dz*si2     + soz;
+              var x1 = wx + dx*(si2+1) + sox;  var z1 = wz + dz*(si2+1) + soz;
+              sv.push(x0,y0,z0, x0,y1,z0, x1,y1,z1, x0,y0,z0, x1,y1,z1, x1,y0,z1);
+            }
+            sg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sv), 3));
+            sg.computeVertexNormals();
+            grps.walls.add(new THREE.Mesh(sg, mStairStrng));
+          });
         });
 
         // ── END INTERIOR WALLS 3D ────────────────────────────────────────
