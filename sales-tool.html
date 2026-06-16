@@ -2424,6 +2424,10 @@ function winDims(t) {
   if (t==='5x5 Casement') return {w:5,h:5,casement:true};
   if (t==='5x7 Casement') return {w:5,h:7,casement:true};
   if (t==='4x2') return {w:4,h:2};
+  // Types that lead with an explicit NxM size (e.g. "4x2 Picture BL", "5x5 slider").
+  // Anchored at start so fraction sizes like "2/8 x 6/10" fall through to their rule.
+  var _mx = t.match(/^(\d+)\s*[xX]\s*(\d+)/);
+  if (_mx) return {w:parseInt(_mx[1],10), h:parseInt(_mx[2],10), casement:/casement/i.test(t)};
   var m = t.match(/(\d)(\d)/);
   if (t.startsWith('VW')&&m) return {w:parseInt(m[1]),h:parseInt(m[2])};
   if (t.indexOf('3056')>=0) return {w:2.5,h:4.67};
@@ -2434,6 +2438,56 @@ function winDims(t) {
   if (t.indexOf('6036')>=0) return {w:5,h:3};
   if (t.indexOf('2/8')>=0) return {w:2.67,h:6.83};
   return {w:3,h:3};
+}
+// SHARED OPENING DESCRIPTIONS -- one source of truth so the customer 3-D view
+// card reads exactly what the quoted PDF lists. Logic mirrors the PDF spec
+// builder (Doors / Windows sections): garage doors by size + framed/insulated/
+// full-view/window-insert state, walk doors via the friendly type table plus
+// framed-opening (frame-out) state, windows by their actual quoted type.
+var _WD_LABELS = {
+  'WHITE 3/0 PLYCO ALUMINUM FRAME':'36" Solid White Plyco',
+  'BLACK 3/0 PLYCO ALUMINUM FRAME':'36" Solid Black Plyco',
+  'WHITE PLYCO 99 4/0 ALUM FRAME': '48" Solid White Plyco',
+  'WHITE 6/0 FRENCH ALUM FRAME':   "6' French White Plyco",
+  '3/0 PLYCO 1/2 GLASS L.H.':      '36" Half Glass Plyco',
+  'BLACK 3/0 -1/2 GLASS PLYCO LH': '36" Half Glass Black Plyco',
+  '3/0 9-LITE PLYCO RH':           '36" 9-Lite Plyco',
+  'BLACK 3/0 9-LITE PLYCO LH':     '36" 9-Lite Black Plyco',
+  '3/0 6 PANEL LH SMOOTH FIBERGLASS':   '36" 6-Panel Smooth Fiberglass',
+  '3/0 1/2 GLASS LH SMOOTH FIBERGLASS': '36" Half Glass Smooth Fiberglass',
+  '3/0 9 LITE LH SMOOTH FIBERGLASS':    '36" 9-Lite Smooth Fiberglass',
+  '6/0 1/2 GLASS NO GRIDS LH':     "6' Half Glass No Grids",
+  '6/0 FULL VIEW NO GRIDS LH':     "6' Full View No Grids",
+  '6/0 FRENCH FULL BLINDS RH':     "6' French Full Blinds",
+  'CENTRAL WOODWORKS 3/0 MAHOGANY 3/4 GLASS 4-LITE LH':'36" Mahogany 3/4 Glass 4-Lite',
+  'TEXTURED FIBERGLASS 4-LITE SDL RH BRONZE':'36" Textured Fiberglass 4-Lite Bronze'
+};
+function openingGarageLabel(d){
+  var s = (d.w||'?') + 'x' + (d.h||'?') + ' Garage Door';
+  if (d.framedOpening) return s + ' \u2014 Framed Opening (No Door Installed)';
+  if (d.insulated) s += ' \u2014 Insulated';
+  if (d.fullView)  s += ' \u2014 Full View Glass';
+  try { if ((document.getElementById('sf_gdWindows')||{}).checked) s += ' \u2014 Window Inserts'; } catch(e){}
+  return s;
+}
+function openingWalkLabel(d){
+  var s = (_WD_LABELS[d.type] || d.type || '36" Walk Door') + ' Walk Door';
+  if (d.framedOpening) s += ' \u2014 Framed Opening (No Door Installed)';
+  return s;
+}
+function openingWindowLabel(w){
+  var t = w.type || 'Window';
+  if (w.framedOpening) return t + ' \u2014 Framed Opening';
+  var fc = (typeof _winFrameColor==='function') ? _winFrameColor(w.type, w.frameColor) : (w.frameColor||'');
+  return t + '  \u2014  ' + fc + ' Frame  \u2014  ' + (w.grids!==false ? 'With Grids' : 'No Grids');
+}
+function _fmtOpeningGroups(arr, labelFn){
+  // Group openings by their PDF-matched label and prefix the quantity, e.g.
+  // "(8) 4x2 Picture BL  --  White Frame  --  No Grids". Used for the email body
+  // so it reads the same grouped detail as the quoted PDF attachment.
+  var m={}, order=[];
+  (arr||[]).forEach(function(it){ var k=labelFn(it); if(!(k in m)){ m[k]=0; order.push(k); } m[k]++; });
+  return order.map(function(k){ return '(' + m[k] + ') ' + k; });
 }
 function fmt(ft) {
   if (ft==null) return '';
@@ -19152,7 +19206,12 @@ async function saveSalesQuote(overwriteMode) {
       truss:        Q.truss||'',
       gdList:       _doors.map(function(d){ var ic=d.insulated?(d.w===18?'INS':'IN'):''; return d.w+'x'+d.h+(ic?ic:''); }),
       wdList:       _wds.map(function(d){ return d.type||'3/0'; }),
-      winList:      _wins.map(function(d){ return d.type||'VW33'; })
+      winList:      _wins.map(function(d){ return d.type||'VW33'; }),
+      // Pre-formatted, grouped, PDF-matched opening lines for the email body so
+      // it reads the same as the quoted PDF attachment (counts + full detail).
+      gdListFmt:    _fmtOpeningGroups(_doors, openingGarageLabel),
+      wdListFmt:    _fmtOpeningGroups(_wds,   openingWalkLabel),
+      winListFmt:   _fmtOpeningGroups(_wins,  openingWindowLabel)
     };
 
     // 4. Build snapshot
@@ -20252,40 +20311,19 @@ function populateViewCard(snapshot) {
       return groups.map(function(g){ return '(' + g.count + ') ' + g.key; }).join(', ');
     }
 
-    // Garage doors: size + style
-    var garageGroups = groupBy(garages, function(d){
-      var style = d.framedOpening ? 'Framed Opening'
-                : d.fullView      ? 'Full View Glass'
-                : d.insulated     ? 'Insulated'
-                                  : 'Standard';
-      return d.w + 'x' + d.h + ' ' + style;
-    });
+    // Garage doors + barns — labels mirror the quoted PDF exactly
+    var garageGroups = groupBy(garages, openingGarageLabel);
     var barnGroups = groupBy(barns, function(d){
       return d.w + 'x' + d.h + ' Barn' + (d.split ? ' (Split)' : '');
     });
     var allGarageHtml = formatGroup(garageGroups.concat(barnGroups));
 
-    // Walk doors: size + style tag
-    function wdShortLabel(d) {
-      if (d.type === 'dutch') return "4'x8' Dutch Door";
-      var w = wdWidth(d.type);
-      var t = d.type || 'Walk Door';
-      var styleTag = /FULL\s*VIEW|FULL\s*GLASS/i.test(t) ? ' Full Glass'
-                   : /GLASS/i.test(t) ? ' w/ Glass'
-                   : /FIBERGLASS/i.test(t) ? ' Fiberglass'
-                   : /FRENCH/i.test(t) ? ' French'
-                   : '';
-      return w + "' Walk Door" + styleTag;
-    }
-    var wdGroups = groupBy(wds, wdShortLabel);
+    // Walk doors — same labels as the PDF (frame-outs and glass type included)
+    var wdGroups = groupBy(wds, openingWalkLabel);
     var wdHtml = formatGroup(wdGroups);
 
-    // Windows
-    function winLabel(d) {
-      var dims = winDims(d.type);
-      return dims.w + "'x" + dims.h + "'" + (d.type && d.type.indexOf('Casement') >= 0 ? ' Casement' : '');
-    }
-    var winGroups = groupBy(wins, winLabel);
+    // Windows — actual quoted type + frame + grids, matching the PDF
+    var winGroups = groupBy(wins, openingWindowLabel);
     var winHtml = formatGroup(winGroups);
 
     var sections = [];
