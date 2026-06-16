@@ -6243,7 +6243,7 @@ async function safeDecodeAsync(str){
       // even though the trailing sales/pricing fields were lost in transit.
       try {
         var _salv = await salvageTruncatedConfig(bytes);
-        if (_salv) { console.warn('[config] recovered truncated link (geometry only)'); return _salv; }
+        if (_salv) { try { window._configTruncated = true; } catch(_f){} console.warn('[config] recovered truncated link (geometry only)'); return _salv; }
       } catch(_sErr){}
       return null;
     }
@@ -6296,6 +6296,76 @@ async function salvageTruncatedConfig(bytes){
   var repaired=s.slice(0,lastTopComma)+'}';
   try { var obj=JSON.parse(repaired); return (obj&&obj.Q)?obj:null; }
   catch(e){ return null; }
+}
+// ── SELF-HEAL: rebuild a truncated ?config= link from its saved twin ──────────
+// Already-sent links embed the whole config in the URL; long ones get clipped in
+// transit and lose their tail (GD windows, truss style, pricing). The complete
+// record still lives in Supabase. We match the surviving front of the link --
+// the building geometry, which is serialized first -- against saved quotes of the
+// same dimensions, and on a single confident match load the full config from the
+// DB. Only a unique geometry match is used; anything ambiguous stays on the
+// geometry-only salvage rather than risk showing the wrong customer's building.
+function _ghKey(cfg){
+  var Q=cfg.Q||{};
+  function r2(n){ return Math.round((Number(n)||0)*100)/100; }
+  function doorSig(arr){ return (arr||[]).map(function(d){
+    return [d.wall||'', r2(d.w), r2(d.h), r2(d.offset), d.type||''].join(':'); }).sort().join('|'); }
+  function winSig(arr){ return (arr||[]).map(function(w){
+    return [w.wall||'', w.type||'', r2(w.offset)].join(':'); }).sort().join('|'); }
+  function shedSig(arr){ return (arr||[]).map(function(s){
+    return [s.wall||'', s.type||'', r2(s.w), r2(s.l)].join(':'); }).sort().join('|'); }
+  return {
+    dims: [Q.w||0,Q.l||0,Q.h||0,Q.pitch||0,Q.truss||'',Q.roofStyle||'',Q.frameType||''].join(':'),
+    walls: (cfg.walls||[]).map(function(w){ return (w.id||'')+':'+(w.encl||''); }).sort().join('|'),
+    doors: doorSig(cfg.doors),
+    walks: doorSig(cfg.walkDoors),
+    wins:  winSig(cfg.windows),
+    sheds: shedSig(cfg.sheds)
+  };
+}
+function _ghEqual(a,b){
+  return a.dims===b.dims && a.walls===b.walls && a.doors===b.doors
+      && a.walks===b.walks && a.wins===b.wins && a.sheds===b.sheds;
+}
+async function selfHealConfigFromDB(partial){
+  try {
+    if(!partial || !partial.Q) return null;
+    var Q=partial.Q;
+    var dimsFrag=(Q.w||'')+"'x"+(Q.l||'')+"'x"+(Q.h||'')+"'";
+    var _su='https://rvhzploxeeqgggjefsif.supabase.co';
+    var _sk='sb_publishable_JFnksTNbexbFQ0LZtC3Olg_Tf2baKx4';
+    var sel='select=config_encoded,name,phone,email,city,snapshot,pricing_results,form_fields,updated_at&order=updated_at.desc&limit=60';
+    async function _q(url){
+      try { var r=await fetch(url,{headers:{apikey:_sk,Authorization:'Bearer '+_sk}}); return r.ok?await r.json():[]; }
+      catch(e){ return []; }
+    }
+    var rows=await _q(_su+'/rest/v1/quotes?specs=like.*'+encodeURIComponent(dimsFrag)+'*&'+sel);
+    if(!rows || !rows.length){
+      // Older rows may lack a specs string -- bounded recent scan as a fallback
+      rows=await _q(_su+'/rest/v1/quotes?'+sel.replace('limit=60','limit=200'));
+    }
+    if(!rows || !rows.length) return null;
+    var want=_ghKey(partial);
+    var matches=[];
+    for(var i=0;i<rows.length;i++){
+      var enc=rows[i].config_encoded; if(!enc) continue;
+      var full=null;
+      try { full=await safeDecodeAsync(enc); } catch(e){ continue; }
+      if(!full || !full.Q) continue;
+      if(_ghEqual(want,_ghKey(full))) matches.push({ row:rows[i], cfg:full });
+    }
+    if(matches.length>1 && (partial.contact||{}).email){
+      var em=(partial.contact.email||'').toLowerCase();
+      var byEmail=matches.filter(function(m){ return (m.row.email||'').toLowerCase()===em; });
+      if(byEmail.length===1) matches=byEmail;
+    }
+    if(matches.length!==1) return null;
+    var hit=matches[0];
+    var snap=hit.row.snapshot || {};
+    if(!snap.pricingResults && hit.row.pricing_results) snap.pricingResults=hit.row.pricing_results;
+    if(!snap.formFields && hit.row.form_fields) snap.formFields=hit.row.form_fields;
+    return { cfg:hit.cfg, snap:snap };
+  } catch(e){ return null; }
 }
 function safeDecode(str){
   // Sync fallback for non-URL contexts (quote saving etc) — plain base64 only
@@ -7266,12 +7336,29 @@ function renderInteriorWalls() {
   // ?config=BASE64 — inline share link
   var cfgParam=params.get('config');
   if(cfgParam){
-    safeDecodeAsync(cfgParam).then(function(cfg){
-      if(cfg){
-        setTimeout(function(){
-          restoreConfig(cfg);
-          triggerBuild();
-          if(window._viewModeActive) {
+    safeDecodeAsync(cfgParam).then(async function(cfg){
+      if(!cfg){ console.warn('Invalid config param'); return; }
+      // If the link arrived truncated, pull the complete record from Supabase so
+      // tail-encoded options (GD windows, truss style, pricing) come back. Falls
+      // back to the geometry-only salvage if no confident match is found.
+      var _healSnap = null;
+      if(window._configTruncated){
+        try {
+          var _heal = await selfHealConfigFromDB(cfg);
+          if(_heal && _heal.cfg){
+            cfg = _heal.cfg; _healSnap = _heal.snap || null;
+            console.warn('[config] self-healed truncated link from saved quote');
+          }
+        } catch(_he){}
+      }
+      setTimeout(function(){
+        restoreConfig(cfg);
+        triggerBuild();
+        if(window._viewModeActive) {
+          if(_healSnap){
+            // Full record from the DB — use its snapshot for the view card
+            setTimeout(function(){ populateViewCard(_healSnap); }, 1200);
+          } else {
             // Build snapshot for the view card from embedded _viewData
             var vd = cfg._viewData || {};
             var sf = cfg.salesFields || cfg.contact || {};
@@ -7285,9 +7372,8 @@ function renderInteriorWalls() {
             };
             setTimeout(function(){ populateViewCard(pseudoSnap); }, 1200);
           }
-        },300);
-      }
-      else { console.warn('Invalid config param'); }
+        }
+      },300);
     }).catch(function(e){ console.warn('Config decode error',e); });
     return;
   }
