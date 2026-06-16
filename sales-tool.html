@@ -14609,9 +14609,16 @@ function applyVoiceQuote(parsed, overlay) {
             if (!isMainSteel) {
               var rafterSpacing = 2 * Sc;
               var rafterSz = 0.022;
-              // Rafters at 2' OC starting from shed start, aligned with 2' grid
-              var shedStartFt = shedOffFt;
-              var shedEndFt   = shedOffFt + shedLen;
+              // Primary leg span. Wrap legs anchor at the wrap CORNER (cw=start,
+              // ccw=end) to match the roof (_effSco), not the centered shed offset.
+              var shedStartFt, shedEndFt;
+              if (sc.type === 'wrap') {
+                shedStartFt = (sc.wrapDir === 'cw') ? 0 : Math.max(0, mainWallLen - shedLen);
+                shedEndFt   = shedStartFt + shedLen;
+              } else {
+                shedStartFt = shedOffFt;
+                shedEndFt   = shedOffFt + shedLen;
+              }
               var mainHalfFt  = mainWallLen / 2;
               for (var rft = shedStartFt; rft <= shedEndFt + 0.01; rft += 2) {
                 var along = (rft - mainHalfFt) * Sc;
@@ -14623,6 +14630,36 @@ function applyVoiceQuote(parsed, overlay) {
                   var xr = along;
                   if (sc.wall==='front') sBeam(xr,attachH-0.01,-sl/2, xr,outerH-0.01,-sl/2-ssw, rafterSz, sWoodMat, grps.trusses);
                   else                   sBeam(xr,attachH-0.01, sl/2, xr,outerH-0.01, sl/2+ssw, rafterSz, sWoodMat, grps.trusses);
+                }
+              }
+              // ── WRAP SECONDARY LEG RAFTERS — run along the adjacent wall ────
+              // Mirrors the secondary-leg roof: wrapWall = perpendicular wall,
+              // leg runs `wrapLeg` ft from the building corner.
+              if (sc.type === 'wrap' && (sc.wrapLeg||0) > 0) {
+                var _secLenSc = (sc.wrapLeg||0) * Sc;
+                var _wrapWall = isEaveWall ? (sc.wrapDir==='cw' ? 'front':'back')
+                                           : (sc.wrapDir==='cw' ? 'left':'right');
+                var _step2 = 2 * Sc;
+                if (_wrapWall==='left' || _wrapWall==='right') {
+                  // secondary on an eave wall — rafters run in X, spaced along Z
+                  var _waX = _wrapWall==='left' ? -sw/2 : sw/2;
+                  var _woX = _wrapWall==='left' ? -sw/2-ssw : sw/2+ssw;
+                  var _cBZ = (sc.wall==='front') ? -sl/2 : sl/2;
+                  var _dZ  = _cBZ>0 ? -1 : 1;
+                  for (var _sz=0; _sz<=_secLenSc+0.001; _sz+=_step2) {
+                    var _zz = _cBZ + _dZ*_sz;
+                    sBeam(_waX, attachH-0.01, _zz, _woX, outerH-0.01, _zz, rafterSz, sWoodMat, grps.trusses);
+                  }
+                } else {
+                  // secondary on a gable wall — rafters run in Z, spaced along X
+                  var _waZ = _wrapWall==='front' ? -sl/2 : sl/2;
+                  var _woZ = _wrapWall==='front' ? -sl/2-ssw : sl/2+ssw;
+                  var _cBX = (sc.wall==='left') ? -sw/2 : sw/2;
+                  var _dX  = _cBX>0 ? -1 : 1;
+                  for (var _sx=0; _sx<=_secLenSc+0.001; _sx+=_step2) {
+                    var _xx = _cBX + _dX*_sx;
+                    sBeam(_xx, attachH-0.01, _waZ, _xx, outerH-0.01, _woZ, rafterSz, sWoodMat, grps.trusses);
+                  }
                 }
               }
             }
@@ -14701,6 +14738,13 @@ function applyVoiceQuote(parsed, overlay) {
             var numSPurlins = Math.floor(slopeLen2 / (2*Sc)) - 1;
             if (numSPurlins < 0) numSPurlins = 0;
             var purlinLen2 = ssl + 2*shedOh;
+            // Wrap primary leg is corner-anchored — purlins must use the same
+            // effective offset as the (now corner-aligned) rafters, not shedCOff.
+            var shedCOffEff = shedCOff;
+            if (sc.type === 'wrap') {
+              var _stFtP = (sc.wrapDir==='cw') ? 0 : Math.max(0, mainWallLen - shedLen);
+              shedCOffEff = (_stFtP + shedLen/2 - mainWallLen/2) * Sc;
+            }
 
             for (var spi=0; spi<=numSPurlins; spi++) {
               var sfrac = spi / (numSPurlins + 1);
@@ -14710,7 +14754,7 @@ function applyVoiceQuote(parsed, overlay) {
                 // Purlin runs along Z (building length direction)
                 var pg = new THREE.BoxGeometry(sPurW, sPurH, purlinLen2);
                 var pm = new THREE.Mesh(pg, sPurlinMat);
-                pm.position.set(spx, spy, shedCOff);
+                pm.position.set(spx, spy, shedCOffEff);
                 grps.framing.add(pm);
               } else {
                 // Gable wall shed — purlin runs along X
@@ -14718,7 +14762,7 @@ function applyVoiceQuote(parsed, overlay) {
                 var spy2 = attachH + (outerH - attachH) * sfrac;
                 var pg2 = new THREE.BoxGeometry(purlinLen2, sPurH, sPurW);
                 var pm2 = new THREE.Mesh(pg2, sPurlinMat);
-                pm2.position.set(shedCOff, spy2, spz);
+                pm2.position.set(shedCOffEff, spy2, spz);
                 grps.framing.add(pm2);
               }
             }
@@ -14727,25 +14771,65 @@ function applyVoiceQuote(parsed, overlay) {
               var epx = sc.wall==='left' ? -sw/2-ssw : sw/2+ssw;
               var epg = new THREE.BoxGeometry(sPurW, sPurH, purlinLen2);
               var epm = new THREE.Mesh(epg, sPurlinMat);
-              epm.position.set(epx, outerH, shedCOff);
+              epm.position.set(epx, outerH, shedCOffEff);
               grps.framing.add(epm);
               // Ridge/attach purlin
               var apx = sc.wall==='left' ? -sw/2 : sw/2;
               var apg = new THREE.BoxGeometry(sPurW, sPurH, purlinLen2);
               var apm = new THREE.Mesh(apg, sPurlinMat);
-              apm.position.set(apx, attachH, shedCOff);
+              apm.position.set(apx, attachH, shedCOffEff);
               grps.framing.add(apm);
             } else {
               var epz = sc.wall==='front' ? -sl/2-ssw : sl/2+ssw;
               var epg2 = new THREE.BoxGeometry(purlinLen2, sPurH, sPurW);
               var epm2 = new THREE.Mesh(epg2, sPurlinMat);
-              epm2.position.set(shedCOff, outerH, epz);
+              epm2.position.set(shedCOffEff, outerH, epz);
               grps.framing.add(epm2);
               var apz = sc.wall==='front' ? -sl/2 : sl/2;
               var apg2 = new THREE.BoxGeometry(purlinLen2, sPurH, sPurW);
               var apm2 = new THREE.Mesh(apg2, sPurlinMat);
-              apm2.position.set(shedCOff, attachH, apz);
+              apm2.position.set(shedCOffEff, attachH, apz);
               grps.framing.add(apm2);
+            }
+
+            // ── WRAP SECONDARY LEG PURLINS — match secondary rafters ────────
+            if (sc.type === 'wrap' && (sc.wrapLeg||0) > 0) {
+              var _secLenP = (sc.wrapLeg||0) * Sc;
+              var _wrapWallP = isEaveWall ? (sc.wrapDir==='cw' ? 'front':'back')
+                                          : (sc.wrapDir==='cw' ? 'left':'right');
+              if (_wrapWallP==='left' || _wrapWallP==='right') {
+                var _aXP = _wrapWallP==='left' ? -sw/2 : sw/2;
+                var _oXP = _wrapWallP==='left' ? -sw/2-ssw : sw/2+ssw;
+                var _cBZP = (sc.wall==='front') ? -sl/2 : sl/2;
+                var _dZP  = _cBZP>0 ? -1 : 1;
+                var _zCtrP = _cBZP + _dZP*_secLenP/2;
+                for (var spP=0; spP<=numSPurlins; spP++) {
+                  var _frP = spP/(numSPurlins+1);
+                  var _pxP = _aXP + (_oXP-_aXP)*_frP, _pyP = attachH + (outerH-attachH)*_frP;
+                  var _pmP = new THREE.Mesh(new THREE.BoxGeometry(sPurW, sPurH, _secLenP), sPurlinMat);
+                  _pmP.position.set(_pxP, _pyP, _zCtrP); grps.framing.add(_pmP);
+                }
+                var _epP = new THREE.Mesh(new THREE.BoxGeometry(sPurW, sPurH, _secLenP), sPurlinMat);
+                _epP.position.set(_oXP, outerH, _zCtrP); grps.framing.add(_epP);
+                var _apP = new THREE.Mesh(new THREE.BoxGeometry(sPurW, sPurH, _secLenP), sPurlinMat);
+                _apP.position.set(_aXP, attachH, _zCtrP); grps.framing.add(_apP);
+              } else {
+                var _aZP = _wrapWallP==='front' ? -sl/2 : sl/2;
+                var _oZP = _wrapWallP==='front' ? -sl/2-ssw : sl/2+ssw;
+                var _cBXP = (sc.wall==='left') ? -sw/2 : sw/2;
+                var _dXP  = _cBXP>0 ? -1 : 1;
+                var _xCtrP = _cBXP + _dXP*_secLenP/2;
+                for (var spP2=0; spP2<=numSPurlins; spP2++) {
+                  var _frP2 = spP2/(numSPurlins+1);
+                  var _pzP2 = _aZP + (_oZP-_aZP)*_frP2, _pyP2 = attachH + (outerH-attachH)*_frP2;
+                  var _pmP2 = new THREE.Mesh(new THREE.BoxGeometry(_secLenP, sPurH, sPurW), sPurlinMat);
+                  _pmP2.position.set(_xCtrP, _pyP2, _pzP2); grps.framing.add(_pmP2);
+                }
+                var _epP2 = new THREE.Mesh(new THREE.BoxGeometry(_secLenP, sPurH, sPurW), sPurlinMat);
+                _epP2.position.set(_xCtrP, outerH, _oZP); grps.framing.add(_epP2);
+                var _apP2 = new THREE.Mesh(new THREE.BoxGeometry(_secLenP, sPurH, sPurW), sPurlinMat);
+                _apP2.position.set(_xCtrP, attachH, _aZP); grps.framing.add(_apP2);
+              }
             }
           });
         }
