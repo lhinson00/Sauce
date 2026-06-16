@@ -6235,10 +6235,67 @@ async function safeDecodeAsync(str){
       var out=await new Response(ds.readable).arrayBuffer();
       return JSON.parse(new TextDecoder().decode(out));
     } catch(compErr){
-      // Fall back: plain JSON (legacy links)
-      return JSON.parse(new TextDecoder().decode(bytes));
+      // Legacy uncompressed links: plain JSON
+      try { return JSON.parse(new TextDecoder().decode(bytes)); } catch(plainErr){}
+      // SALVAGE -- a truncated compressed ?config= link (a long URL clipped by a
+      // PDF / email / SMS client). Recover whatever inflated before the stream
+      // ran out: geometry is serialized first, so the building still renders
+      // even though the trailing sales/pricing fields were lost in transit.
+      try {
+        var _salv = await salvageTruncatedConfig(bytes);
+        if (_salv) { console.warn('[config] recovered truncated link (geometry only)'); return _salv; }
+      } catch(_sErr){}
+      return null;
     }
   } catch(e){ return null; }
+}
+// Tolerant recovery for truncated compressed ?config= links. A long share URL
+// can be clipped by a PDF link annotation or an email/SMS client; the deflate
+// stream then ends mid-way and a strict decode throws. We keep whatever inflated
+// before the cut, trim to the last complete top-level field, close the root
+// object, and return it. Building geometry (dimensions, walls, doors, windows,
+// sheds, colors) serializes first, so it survives; only the trailing sales/
+// pricing metadata is lost. Returns null if not even the geometry survived.
+async function salvageTruncatedConfig(bytes){
+  var chunks=[];
+  try {
+    var ds=new DecompressionStream('deflate-raw');
+    var writer=ds.writable.getWriter();
+    writer.write(bytes).catch(function(){});
+    writer.close().catch(function(){});
+    var reader=ds.readable.getReader();
+    while(true){
+      var r;
+      try { r=await reader.read(); } catch(readErr){ break; } // truncated -- keep chunks
+      if(r.done) break;
+      if(r.value) chunks.push(r.value);
+    }
+  } catch(e){}
+  if(!chunks.length) return null;
+  var total=0; chunks.forEach(function(c){ total+=c.length; });
+  var all=new Uint8Array(total); var off=0;
+  chunks.forEach(function(c){ all.set(c,off); off+=c.length; });
+  var s=new TextDecoder().decode(all);
+  // Walk the partial JSON; record the last comma that sits directly inside the
+  // root object (depth 1, not in a string) -- that separates complete entries.
+  var depth=0, inStr=false, esc=false, lastTopComma=-1;
+  for(var i=0;i<s.length;i++){
+    var ch=s[i];
+    if(inStr){
+      if(esc){ esc=false; }
+      else if(ch==='\\'){ esc=true; }
+      else if(ch==='"'){ inStr=false; }
+      continue;
+    }
+    if(ch==='"'){ inStr=true; }
+    else if(ch==='{'||ch==='['){ depth++; }
+    else if(ch==='}'||ch===']'){ depth--; }
+    else if(ch===','&&depth===1){ lastTopComma=i; }
+  }
+  if(lastTopComma<1) return null;
+  var repaired=s.slice(0,lastTopComma)+'}';
+  try { var obj=JSON.parse(repaired); return (obj&&obj.Q)?obj:null; }
+  catch(e){ return null; }
 }
 function safeDecode(str){
   // Sync fallback for non-URL contexts (quote saving etc) — plain base64 only
@@ -16040,8 +16097,20 @@ async function generateQuotePDF() {
       salesmanEmail:   _cu3d.email    || '',
       salesmanCompany: _cu3d.company  || ''
     };
-    var _enc3d = await safeEncodeCompressed(_cfg3d);
-    configLink3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + _enc3d;
+    // Prefer the short Supabase loadQuote link for saved quotes. The full
+    // config blob can exceed URL length limits and get truncated in transit
+    // (PDF link annotations, email/SMS clients), which breaks decompression
+    // on the customer side. The ?view=1&loadQuote= loader pulls the same
+    // config + snapshot from Supabase, so the view card shows identical
+    // pricing/salesman info. Fall back to the self-contained config blob when
+    // there is no saved quote ID, or when forced/filtered price entries are
+    // active (text-quote flow) since those prices live only in _viewData.
+    if (window._savedQuoteId && !window._pdfForcedPriceEntries) {
+      configLink3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&loadQuote=' + encodeURIComponent(window._savedQuoteId);
+    } else {
+      var _enc3d = await safeEncodeCompressed(_cfg3d);
+      configLink3d = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + _enc3d;
+    }
   } catch(e3d) {}
 
   // ── Everything below is synchronous — blob created, then share called immediately ──
