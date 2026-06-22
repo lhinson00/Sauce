@@ -5027,7 +5027,7 @@ function addShedDoor(shedId) {
   if (!sc) return;
   if (!sc.doors) sc.doors = [];
   var sz = '10x10'; var w = parseInt(sz.split('x')[0]);
-  sc.doors.push({ size: sz, offset: Math.max(0, Math.round((sc.l - w) / 2 * 12) / 12) });
+  sc.doors.push({ size: sz, wall: 'outer', offset: Math.max(0, Math.round((sc.l - w) / 2 * 12) / 12) });
   renderSheds(); scheduleBuild();
 }
 function removeShedDoor(shedId, idx) {
@@ -5042,6 +5042,12 @@ function setShedDoor(shedId, idx, prop, val) {
   if (prop === 'offset') val = parseFloat(val) || 0;
   else if (prop === 'framedOpening') val = (val === true || val === 'true');
   sc.doors[idx][prop] = val;
+  if (prop === 'wall') {
+    // Re-center on the chosen wall: outer runs along shed length, ends along shed width
+    var _dw = parseInt((sc.doors[idx].size||'10x10').split('x')[0]) || 10;
+    var _span = (val === 'outer') ? sc.l : sc.w;
+    sc.doors[idx].offset = Math.max(0, Math.round((_span - _dw) / 2 * 12) / 12);
+  }
   renderSheds(); scheduleBuild();
 }
 // Walk doors
@@ -5479,6 +5485,12 @@ function renderSheds(){
           var sizeOpts = GARAGE_SIZES.map(function(s){ return '<option'+(s===gd.size?' selected':'')+'>'+s+'</option>'; }).join('');
           var insOpts = '<option value="false"'+(gd.insulated?'':' selected')+'>Standard</option><option value="true"'+(gd.insulated?' selected':'')+'>Insulated</option>';
           var dc = gd.doorColor||'White';
+          var gWall = gd.wall||'outer';
+          var gWallSel = '<select class="shed-sel" style="width:74px;" onchange="setShedDoor('+sid+','+gi+',\'wall\',this.value)">'
+            +'<option value="outer"'+(gWall==='outer'?' selected':'')+'>Outer</option>'
+            +'<option value="gable1"'+(gWall==='gable1'?' selected':'')+'>End 1</option>'
+            +'<option value="gable2"'+(gWall==='gable2'?' selected':'')+'>End 2</option>'
+            +'</select>';
           var colorBtns = [['White','#f5f5f5'],['Black','#1a1a1a'],['Brown','#5c3a1e']].map(function(c){
             return '<button onclick="setShedDoor('+sid+','+gi+',\'doorColor\',\''+c[0]+'\')" title="'+c[0]+'" style="width:18px;height:18px;border-radius:3px;border:'+(dc===c[0]?'2px solid #FF8200':'1px solid #ccc')+';background:'+c[1]+';cursor:pointer;outline:none;"></button>';
           }).join('');
@@ -5486,6 +5498,7 @@ function renderSheds(){
             +'<select '+selStyle+' onchange="setShedDoor('+sid+','+gi+',\'size\',this.value)">'+sizeOpts+'</select>'
             +(gd.framedOpening ? '' : '<select class="shed-sel" style="width:80px;" onchange="setShedDoor('+sid+','+gi+',\'insulated\',this.value===\'true\')">'+insOpts+'</select>')
             +(gd.framedOpening ? '' : colorBtns)
+            +gWallSel
             +framedToggle('setShedDoor', sid, gi, !!gd.framedOpening)
             +posLbl
             +'<input '+inpStyle+' value="'+(gd.offset||0)+'" onchange="setShedDoor('+sid+','+gi+',\'offset\',this.value)">'
@@ -13310,6 +13323,47 @@ function applyVoiceQuote(parsed, overlay) {
                         grps.doors.add(knobMG);
                     }
 
+                    // Draw a garage door on a shed gable END wall (X-Y plane at fixed Z).
+                    // Centered on the end-wall span; height clamped to the outer eave height so
+                    // it fits under the lean-to slope. Mirrors _drawShedGableWalkDoor.
+                    function _drawShedGableGarageDoor(gd, faceZ, zo, _xMin, _xMax) {
+                        const _p = (gd.size||'10x10').split('x');
+                        const gwFt = parseFloat(_p[0])||10, ghFt = parseFloat(_p[1])||10;
+                        const spanW = Math.abs(_xMax - _xMin);
+                        let dw = gwFt * Sc; if (dw > spanW - 0.04) dw = spanW - 0.04;
+                        const dh = Math.min(ghFt * Sc, outerWH);
+                        const cx = (_xMin + _xMax) / 2;
+                        const x0 = cx - dw/2, x1 = cx + dw/2;
+                        const fz  = faceZ + zo;
+                        const fz2 = faceZ + zo * 1.4;
+                        const flip = zo > 0;
+                        const doorHex = pc(gd.doorColor || 'White');
+                        const mGDg  = new THREE.MeshBasicMaterial({ color: doorHex, side: THREE.DoubleSide });
+                        const sSecG = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.28 });
+                        const sFrmG = new THREE.LineBasicMaterial({ color: pc(trimColorName), transparent: true, opacity: 0.85 });
+                        if (!gd.framedOpening) {
+                            const pan = new THREE.Mesh(new THREE.PlaneGeometry(dw, dh), mGDg);
+                            pan.position.set(cx, dh/2, fz);
+                            if (flip) pan.rotation.y = Math.PI;
+                            grps.doors.add(pan);
+                            const rows = Math.max(3, Math.min(5, Math.round(ghFt/2)));
+                            for (let r = 1; r < rows; r++) {
+                                const y = dh * r/rows;
+                                grps.doors.add(mkL([new THREE.Vector3(x0,y,fz2), new THREE.Vector3(x1,y,fz2)], sSecG));
+                            }
+                            const cols = Math.max(2, Math.min(4, Math.round(gwFt/2.5)));
+                            for (let c = 1; c < cols; c++) {
+                                const x = x0 + dw * c/cols;
+                                grps.doors.add(mkL([new THREE.Vector3(x,0,fz2), new THREE.Vector3(x,dh,fz2)], sSecG));
+                            }
+                        }
+                        grps.doors.add(mkL([
+                            new THREE.Vector3(x0,0,fz2), new THREE.Vector3(x0,dh,fz2),
+                            new THREE.Vector3(x1,dh,fz2), new THREE.Vector3(x1,0,fz2),
+                            new THREE.Vector3(x0,0,fz2)
+                        ], sFrmG));
+                    }
+
                     // Shed wainscot height — 4' if main building has wainscot enabled
                     const shedWsH = hasWainscot ? (outerWH > 4 * Sc ? 4 * Sc : outerWH * 0.3) : 0;
                     // Helper: draw a wall section with optional wainscot split (outer wall, fixed X)
@@ -13343,7 +13397,7 @@ function applyVoiceQuote(parsed, overlay) {
 
                     // All opening types merged and sorted by offset
                     const allShedOpenings = [];
-                    (sc.doors||[]).forEach(gd => {
+                    (sc.doors||[]).filter(gd => (gd.wall||'outer') === 'outer').forEach(gd => {
                         const p = (gd.size||'10x10').split('x');
                         allShedOpenings.push({ type:'garage', w:parseFloat(p[0])||10, h:parseFloat(p[1])||10, offset:gd.offset||0, doorColor:gd.doorColor||'White' });
                     });
@@ -13713,6 +13767,10 @@ function applyVoiceQuote(parsed, overlay) {
                         (sc.walkDoors||[]).filter(wd => (wd.wall||'outer') === 'gable1').forEach(wd => {
                             _drawShedGableWalkDoor(wd, z1, -0.015, xMin, xMax);
                         });
+                        // Garage doors on gable1 end wall
+                        (sc.doors||[]).filter(gd => (gd.wall||'outer') === 'gable1').forEach(gd => {
+                            _drawShedGableGarageDoor(gd, z1, -0.015, xMin, xMax);
+                        });
                         }
                         // Back end wall
                         if (hasWall('gable2') && showGable2) {
@@ -13732,6 +13790,10 @@ function applyVoiceQuote(parsed, overlay) {
                         // Walk doors on gable2 end wall
                         (sc.walkDoors||[]).filter(wd => (wd.wall||'outer') === 'gable2').forEach(wd => {
                             _drawShedGableWalkDoor(wd, z2, +0.015, xMin, xMax);
+                        });
+                        // Garage doors on gable2 end wall
+                        (sc.doors||[]).filter(gd => (gd.wall||'outer') === 'gable2').forEach(gd => {
+                            _drawShedGableGarageDoor(gd, z2, +0.015, xMin, xMax);
                         });
                         }
 
