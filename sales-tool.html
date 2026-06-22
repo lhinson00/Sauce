@@ -18499,17 +18499,14 @@ function _renderDesignList(quotes, list, append) {
     });
     if (!wdPills.length && wdCount) wdPills.push(pill('Walk Doors', wdCount, '#93c5fd'));
 
-    // Window details
+    // Window details — read grouped type + qty from formFields
     var winPills = [];
-    var _winSeen = {};
-    for (var _wni=1;_wni<=3;_wni++) {
+    for (var _wni=1;_wni<=4;_wni++) {
       var _wnt = ff['window'+_wni+'Type'] || '';
       if (!_wnt) break;
-      if (_winSeen[_wnt]) _winSeen[_wnt]++; else _winSeen[_wnt]=1;
+      var _wnq = parseInt(ff['window'+_wni+'Qty']) || 1;
+      winPills.push(pill('Win', (_wnq>1?_wnq+'× ':'')+_wnt, '#93c5fd'));
     }
-    Object.keys(_winSeen).forEach(function(k){
-      winPills.push(pill('Win', (_winSeen[k]>1?_winSeen[k]+'× ':'')+k, '#93c5fd'));
-    });
     if (!winPills.length && winCount) winPills.push(pill('Windows', winCount, '#93c5fd'));
 
     var openingPills = gdPills.concat(wdPills).concat(winPills);
@@ -19137,10 +19134,12 @@ async function saveSalesQuote(overwriteMode) {
       formFields['walkDoor' + (i+1) + 'Type'] = _wdList[i].type || '3/0';
       formFields['walkDoor' + (i+1) + 'Qty']  = '1';
     }
-    // Windows — use _windows array, save the window type string
-    for (var i = 0; i < Math.min(_winList.length, 4); i++) {
-      formFields['window' + (i+1) + 'Type'] = _winList[i].type || 'VW33';
-      formFields['window' + (i+1) + 'Qty']  = '1';
+    // Windows — group by type and send qty (so email/checklist counts are correct)
+    var winSnap = {}, winOrder = [];
+    _winList.forEach(function(w){ var t = w.type || 'VW33'; if(!(t in winSnap)){ winSnap[t]=0; winOrder.push(t); } winSnap[t]++; });
+    for (var i = 0; i < Math.min(winOrder.length, 4); i++) {
+      formFields['window' + (i+1) + 'Type'] = winOrder[i];
+      formFields['window' + (i+1) + 'Qty']  = String(winSnap[winOrder[i]]);
     }
     // Side sheds
     var sheds = window._shedConfigs || [];
@@ -19272,6 +19271,51 @@ async function saveSalesQuote(overwriteMode) {
       wdListFmt:    _fmtOpeningGroups(_wds,   openingWalkLabel),
       winListFmt:   _fmtOpeningGroups(_wins,  openingWindowLabel)
     };
+
+    // ── PDF-matched summary for the email body (same information as the PDF spec,
+    //    condensed). GAS can render displaySummary.specText (plain) or .specSections. ──
+    (function(){
+      var ds = displaySummary, Qd = (window._Q || (typeof Q!=='undefined'?Q:{}) || {});
+      function row(l,v){ return (v!==undefined && v!==null && v!=='') ? [l, String(v)] : null; }
+      var sections = [];
+      var _ss = (Qd.roofStyle === 'single');
+      var bld = [
+        row('Size', (Qd.w||'?')+"' \u00D7 "+(Qd.l||'?')+"' \u00D7 "+(Qd.h||'?')+"'"),
+        row('Roof', _ss ? 'Single Slope 1/12' : (ds.pitch||'4')+'/12 pitch'),
+        row('Truss', ds.truss==='Steel' ? 'Steel Truss No Soffit' : (parseFloat(ds.oh)>0 ? 'Wood Truss w/ 12" Soffit' : 'Wood Truss No Soffit')),
+        (ds.truss!=='Steel' && ds.trussSpacing) ? row('Truss Spacing', ds.trussSpacing+"' OC") : null,
+        row('Overhang', parseFloat(ds.oh)>0 ? ds.oh+'"' : 'None'),
+        ds.mbPostSize ? row('Posts', ds.mbPostSize + (ds.eavePostSpacing? '  @  '+ds.eavePostSpacing+"' OC":'')) : null
+      ].filter(Boolean);
+      sections.push({ title:'Building', rows:bld });
+      sections.push({ title:'Metal & Colors', rows:[
+        row('Roof',  (ds.roofMetal||'') + (ds.roofColor? '  \u2014  '+ds.roofColor : '')),
+        row('Walls', (ds.wallMetal||'') + (ds.wallColor? '  \u2014  '+ds.wallColor : '')),
+        row('Trim',  ds.trimColor),
+        (ds.wainscot==='Yes') ? row('Wainscot', ds.wainscotColor||'Yes') : null,
+        (ds.gutters) ? row('Gutters', ds.gutterType||'Yes') : null
+      ].filter(Boolean) });
+      if (ds.wallEnclosure) {
+        sections.push({ title:'Wall Enclosure', rows: ds.wallEnclosure.split('|').map(function(p){ var kv=p.split(':'); return [kv[0], kv[1]||'']; }) });
+      }
+      if (ds.sheds) sections.push({ title:'Side Structures', rows:[['', ds.sheds]] });
+      var op = [];
+      (ds.gdListFmt||[]).forEach(function(l){ op.push(['Garage Door', l]); });
+      (ds.wdListFmt||[]).forEach(function(l){ op.push(['Walk Door',   l]); });
+      (ds.winListFmt||[]).forEach(function(l){ op.push(['Window',      l]); });
+      if (op.length) sections.push({ title:'Doors & Windows', rows:op });
+      var opt = [
+        (ds.insulation && ds.insulation!=='None') ? row('Insulation', ds.insulation) : null,
+        ds.concrete ? row('Concrete', ds.concrete+'" Slab') : null,
+        ds.postWraps ? ['Post Wraps','Yes'] : null,
+        ds.wetSetPosts ? ['Wet-Set Posts','Yes'] : null
+      ].filter(Boolean);
+      if (opt.length) sections.push({ title:'Options', rows:opt });
+      ds.specSections = sections;
+      ds.specText = sections.map(function(s){
+        return s.title.toUpperCase() + '\n' + s.rows.map(function(r){ return r[0] ? '  ' + r[0] + ': ' + r[1] : '  ' + r[1]; }).join('\n');
+      }).join('\n\n');
+    })();
 
     // 4. Build snapshot
     var snapshot = {
@@ -36946,6 +36990,13 @@ window.SauceLabor.calcSideSheds = function(shedCfgs) {
       shedRate = sqft * 1.50; shedTierLabel = sqft + ' sqft @ $1.50/sqft';
     }
     lines.push({ label: label + '  |  ' + shedTierLabel, amount: shedRate });
+    // Finished ceiling labor - T&G $2.25/sqft; metal $1.75/sqft (+$0.25 over 12' width)
+    if (sc.tongueAndGroove) {
+      lines.push({ label: label + ' finished ceiling (T&G)  |  ' + sqft + ' sqft @ $2.25/sqft', amount: sqft * 2.25 });
+    } else if (sc.finishedCeiling) {
+      var ceilRate = sc.w > 12 ? 2.00 : 1.75;
+      lines.push({ label: label + ' finished ceiling (metal)  |  ' + sqft + ' sqft @ $' + ceilRate.toFixed(2) + '/sqft' + (sc.w > 12 ? "  (>12' width)" : ''), amount: sqft * ceilRate });
+    }
 
     // Enclosed walls — $8/LF
     if (sc.encl === 'enclosed') {
