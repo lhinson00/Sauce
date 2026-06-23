@@ -5849,6 +5849,7 @@ function serializeConfig() {
     Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,truss:Q.truss,frameType:Q.frameType,roofStyle:Q.roofStyle||'gable'},
     walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,partialH:w.partialH};}),
     doors: allDoors,
+    stallPosts: window._stallPosts || [],
     walkDoors: window._walkDoors,
     windows: window._windows,
     sheds: window._shedConfigs||[],
@@ -6037,6 +6038,7 @@ function restoreConfig(cfg) {
     _nextLoftId = (window._loftConfigs).reduce(function(mx,l){ return Math.max(mx, (l.id||0)+1); }, 1);
     renderLofts();
     window._interiorWalls = cfg.interiorWalls || [];
+    window._stallPosts = cfg.stallPosts || [];
     _nextIWallId = (window._interiorWalls).reduce(function(mx,w){ return Math.max(mx,(w.id||0)+1); }, 1);
     window._levelConfigs = cfg.levelConfigs || [];
     _nextLevelId = (window._levelConfigs).reduce(function(mx,l){ return Math.max(mx,(l.id||0)+1); }, 1);
@@ -10099,6 +10101,25 @@ function applyVoiceQuote(parsed, overlay) {
             grps.mainPosts.add(p);
             if (postsOnTop) addBracket(x, z, grps.mainPosts, slabH);
         }
+
+        // Interior / stall posts — slab to truss bottom (eave height), in grps.mainPosts
+        (function(){
+            var sp = window._stallPosts || [];
+            if (!sp.length) return;
+            var _stallMat = new THREE.MeshLambertMaterial({ color: 0x9B7040 });
+            var _qw = Q.w||0, _ql = Q.l||0;
+            sp.forEach(function(pp){
+                var dim = (pp.size==='8x8') ? (8/12) : (6/12);
+                var ps2 = dim * Sc;
+                var wx = ((pp.x||0) - _qw/2) * Sc;
+                var wz = ((pp.y||0) - _ql/2) * Sc;
+                var hh = sh;
+                var pMesh = new THREE.Mesh(new THREE.BoxGeometry(ps2, hh, ps2), _stallMat);
+                pMesh.position.set(wx, postBase + hh/2, wz);
+                pMesh.castShadow = true;
+                grps.mainPosts.add(pMesh);
+            });
+        })();
 
         // Build set of main building corner positions hidden behind shed gable end caps
         const _shedCoveredCorners = new Set();
@@ -16725,18 +16746,18 @@ async function generateQuotePDF() {
     doc.setFontSize(16); setTxt(col.gold);
     doc.text(totStr, MG+bodyW-8, yPos+16, {align:'right'});
     yPos += 24;
-    // Deposit row — 30% of materials + tax + shipping
+    // Deposit row — 35% of materials + tax + shipping (amount only, no breakout shown)
     var matNum  = parseFloat(String(r.materialOnly||0).replace(/[^0-9.]/g,'')) || 0;
     var taxNum  = parseFloat(String(r.tax||0).replace(/[^0-9.]/g,'')) || 0;
     var shipNum = parseFloat(String(r.shipping||0).replace(/[^0-9.]/g,'')) || 0;
     var depBase = matNum + taxNum + shipNum;
     if (depBase > 0) {
-      var dep = Math.round(depBase * 0.30);
+      var dep = Math.round(depBase * 0.35);
       var depStr = '$' + dep.toLocaleString('en-US');
       setFill('#5e5e5e'); doc.rect(MG, yPos, bodyW, 20, 'F');
       doc.setFont('helvetica','normal'); doc.setFontSize(9);
       doc.setTextColor(122,138,165);
-      doc.text('Proposed Deposit (30% of Mat/Tax/Shipping)', MG+8, yPos+13);
+      doc.text('Deposit', MG+8, yPos+13);
       doc.setFont('helvetica','bold'); doc.setFontSize(12); setTxt(col.gold);
       doc.text(depStr, MG+bodyW-8, yPos+14, {align:'right'});
       yPos += 20;
@@ -17134,6 +17155,8 @@ async function generateQuotePDF() {
       ups2.push(['Bar Joist', (bjT?bjT+' ':'') + (bjQ&&bjQ!=='0'?'× '+bjQ:'Included')]);
     }
     if (chk('st_wetSetPosts'))  ups2.push(['Wet Set Posts', 'Included']);
+    if (chk('st_sonoTube'))     ups2.push(['Sono Tube Posts', 'Included']);
+    if ((window._stallPosts||[]).length) ups2.push(['Interior/Stall Posts', '× ' + window._stallPosts.length]);
     if (chk('st_lvlHeaders'))   ups2.push(['LVL Headers', 'Included']);
     if (chk('st_cableBracing')) ups2.push(['Cable Bracing', 'Included']);
     if (chk('st_gutters')) {
@@ -19323,6 +19346,8 @@ async function saveSalesQuote(overwriteMode) {
       gutterType:   (document.getElementById('st_gutterType')||{}).value||'',
       gutterGuard:  !!(document.getElementById('st_gutterGuard')||{}).checked,
       wetSetPosts:  !!(document.getElementById('st_wetSetPosts')||{}).checked,
+      sonoTube:     !!(document.getElementById('st_sonoTube')||{}).checked,
+      stallPosts:   (window._stallPosts||[]).length,
       postsOnTop:   (document.getElementById('st_postsOnTop')||{}).value||'',
       lvlHeaders:   !!(document.getElementById('st_lvlHeaders')||{}).checked,
       wainscotHt:   (document.getElementById('st_wainscotHeight')||{}).value||'',
@@ -19393,7 +19418,9 @@ async function saveSalesQuote(overwriteMode) {
         (ds.insulation && ds.insulation!=='None') ? row('Insulation', ds.insulation) : null,
         ds.concrete ? row('Concrete', ds.concrete+'" Slab') : null,
         ds.postWraps ? ['Post Wraps','Yes'] : null,
-        ds.wetSetPosts ? ['Wet-Set Posts','Yes'] : null
+        ds.wetSetPosts ? ['Wet-Set Posts','Yes'] : null,
+        ds.sonoTube ? ['Sono Tube Posts','Yes'] : null,
+        ds.stallPosts ? ['Interior/Stall Posts', String(ds.stallPosts)] : null
       ].filter(Boolean);
       if (opt.length) sections.push({ title:'Options', rows:opt });
       ds.specSections = sections;
@@ -20234,6 +20261,8 @@ function buildSpecText() {
     ups.push('Bar Joist' + (bjType?' — '+bjType:'') + (bjQty&&bjQty!=='0'?' x '+bjQty:''));
   }
   if (chk('st_wetSetPosts'))  ups.push('Wet Set Posts');
+  if (chk('st_sonoTube'))     ups.push('Sono Tube Posts');
+  if ((window._stallPosts||[]).length) ups.push('Interior/Stall Posts x ' + window._stallPosts.length);
   if (chk('st_lvlHeaders'))   ups.push('LVL Headers');
   if (chk('st_cableBracing')) ups.push('Cable Bracing');
   if (chk('st_gutters')) {
@@ -33606,6 +33635,26 @@ window.SauceMaterials.calculate = function(forcedType) {
   SM.calcPostBrackets(Q, WALLS, allDoors, window._shedConfigs||[], sf).forEach(function(item) { items.push(item); });
   var sackcrete = SM.calcSackcrete(Q, WALLS, allDoors, window._shedConfigs||[], sf);
   if (sackcrete) items.push(sackcrete);
+  // Interior / stall posts — post SKU + footing pad + sackcrete (same package as an exterior post)
+  (function(){
+    var sp = window._stallPosts || [];
+    if (!sp.length) return;
+    var pmap = { '6x6':'PT66', '8x8':'PT88' };
+    var fpmap = { '6x6':'PBFP16', '8x8':'PBFP20' };
+    var bySize = {};
+    sp.forEach(function(pp){ var sz=(pp.size==='8x8')?'8x8':'6x6'; bySize[sz]=(bySize[sz]||0)+1; });
+    Object.keys(bySize).forEach(function(sz){
+      var cnt = bySize[sz];
+      var rawLen = Math.ceil(((Q.h||0) + 4)/2)*2;
+      var postLen = SM.enforceMinPostLen ? SM.enforceMinPostLen(sz, rawLen) : rawLen;
+      items.push({ category:'Yard', description:'Interior/Stall Posts ('+sz+')', sku: pmap[sz]+postLen, quantity:cnt,
+        detail: (Q.h||0) + "' eave + 4' burial  |  " + cnt + ' posts' });
+      items.push({ category:'Yard', description:'Interior/Stall Post Footing Pads', sku: fpmap[sz], quantity:cnt,
+        detail: '1 per post  |  ' + cnt + ' posts' });
+      items.push({ category:'Yard', description:'Interior/Stall Post Sackcrete', sku:'QCR', quantity:cnt*2,
+        detail: '2 bags per post  |  ' + cnt + ' posts' });
+    });
+  })();
   // LAG5
   (function() {
     var lagItems = SM.calcLagBolts(Q, WALLS, window._shedConfigs||[], allDoors, sf);
@@ -34395,11 +34444,18 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
   var drainToolBtn = mkTool('drain', 'Drain',   '#22d3ee', function(){ setTool('drain'); });
   var zoneToolBtn  = mkTool('zone',  '⬡ Floor Zone', '#34d399', function(){ setTool('zone'); });
   var stairToolBtn = mkTool('stair', '⬒ Stairs', '#a78bfa', function(){ setTool('stair'); });
+  if(!window._stallPostSize) window._stallPostSize='6x6';
+  var postToolBtn  = mkTool('post',  '◼ Posts', '#fb923c', function(){ setTool('post'); });
+  var postSizeBtn  = mkTool('postsz', window._stallPostSize, '#fb923c', function(){
+    window._stallPostSize = (window._stallPostSize==='6x6') ? '8x8' : '6x6';
+    postSizeBtn.textContent = window._stallPostSize;
+    redraw(null);
+  });
 
   var instEl = document.createElement('div');
   instEl.style.cssText = 'font-size:10px;color:#64748b;flex:1;';
 
-  [wallToolBtn, doorToolBtn, bearToolBtn, drainToolBtn, zoneToolBtn, stairToolBtn, instEl].forEach(function(el){ modeBar.appendChild(el); });
+  [wallToolBtn, doorToolBtn, bearToolBtn, drainToolBtn, zoneToolBtn, stairToolBtn, postToolBtn, postSizeBtn, instEl].forEach(function(el){ modeBar.appendChild(el); });
   panel.appendChild(modeBar);
 
   function setTool(t) {
@@ -34410,11 +34466,12 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
       bearing:'Click a wall to toggle load-bearing (double top plate)',
       drain:'Click to place a fixture  |  Click an existing fixture to remove it',
       zone:'Click two corners to draw a floor zone on the active elevated level',
-      stair:'Click to place stairs to 2nd floor  |  Drag to move  |  Select to change direction or delete  |  Requires an elevated level'
+      stair:'Click to place stairs to 2nd floor  |  Drag to move  |  Select to change direction or delete  |  Requires an elevated level',
+      post:'Click to drop an interior/stall post  |  Click a post to remove it  |  Size button toggles 6x6 / 8x8'
     };
     instEl.textContent = instMap[t]||'';
-    [wallToolBtn,doorToolBtn,bearToolBtn,drainToolBtn,zoneToolBtn,stairToolBtn].forEach(function(b){ b.style.background='rgba(0,0,0,.25)'; });
-    var map={wall:wallToolBtn,door:doorToolBtn,bearing:bearToolBtn,drain:drainToolBtn,zone:zoneToolBtn,stair:stairToolBtn};
+    [wallToolBtn,doorToolBtn,bearToolBtn,drainToolBtn,zoneToolBtn,stairToolBtn,postToolBtn].forEach(function(b){ b.style.background='rgba(0,0,0,.25)'; });
+    var map={wall:wallToolBtn,door:doorToolBtn,bearing:bearToolBtn,drain:drainToolBtn,zone:zoneToolBtn,stair:stairToolBtn,post:postToolBtn};
     if(map[t]) map[t].style.background='rgba(255,255,255,.12)';
     if(ctx) redraw(null);
   }
@@ -34698,6 +34755,35 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
       ctx.restore();
     });
 
+    // ── INTERIOR / STALL POSTS + live exterior posts ──
+    ctx.save();
+    (function(){
+      var SMp = window.SauceMaterials;
+      if(SMp && SMp.getPostsForWall){
+        var _wallsP = window._WALLS||[]; var _doorsP = window._allDoors||[];
+        function _extDraw(fx,fy){ var cp=ftToCanvas(fx,fy); var es=Math.max(5,0.5*scale);
+          ctx.strokeStyle='rgba(255,130,0,.55)'; ctx.lineWidth=1.5; ctx.strokeRect(cp.x-es/2,cp.y-es/2,es,es); }
+        try{
+          (SMp.getPostsForWall('left',Q,_wallsP,_doorsP)||[]).forEach(function(pt){ _extDraw(0, pt.ft); });
+          (SMp.getPostsForWall('right',Q,_wallsP,_doorsP)||[]).forEach(function(pt){ _extDraw(bw, pt.ft); });
+          (SMp.getPostsForWall('front',Q,_wallsP,_doorsP)||[]).forEach(function(pt){ _extDraw(pt.ft, 0); });
+          (SMp.getPostsForWall('back',Q,_wallsP,_doorsP)||[]).forEach(function(pt){ _extDraw(pt.ft, bl); });
+        }catch(e){}
+      }
+      var _isPostTool = drawState.tool==='post';
+      (window._stallPosts||[]).forEach(function(pp){
+        var cp=ftToCanvas(pp.x,pp.y); var dim=(pp.size==='8x8')?8:6; var s2=Math.max(8,(dim/12)*scale);
+        ctx.fillStyle=_isPostTool?'rgba(251,146,60,.85)':'rgba(251,146,60,.6)';
+        ctx.strokeStyle='#fb923c'; ctx.lineWidth=1.5;
+        ctx.fillRect(cp.x-s2/2,cp.y-s2/2,s2,s2); ctx.strokeRect(cp.x-s2/2,cp.y-s2/2,s2,s2);
+        ctx.fillStyle='#0f172a'; ctx.font='bold 8px Outfit,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText(pp.size==='8x8'?'8':'6', cp.x, cp.y);
+        if(_isPostTool){ ctx.fillStyle='rgba(239,68,68,.9)'; ctx.beginPath(); ctx.arc(cp.x+s2/2,cp.y-s2/2,6,0,Math.PI*2); ctx.fill();
+          ctx.fillStyle='#fff'; ctx.font='bold 9px Outfit,sans-serif'; ctx.fillText('×', cp.x+s2/2, cp.y-s2/2+0.5); }
+      });
+    })();
+    ctx.restore();
+
     // ── STAIRS on canvas ──────────────────────────────────────────────────
     window._stairBtns = [];
     var _isStairTool = drawState.tool === 'stair';
@@ -34902,6 +34988,19 @@ window.openFloorPlanModal = function(drawZoneLevelId) {
       var stRun=Math.round(stSteps*(10/12)*10)/10;
       window._stairObjects.push({id:Date.now(),x:ft.x,y:ft.y,rot:0,levelId:stFloor.id,steps:stSteps,run:stRun});
       _selectedStairIdx=window._stairObjects.length-1;
+      scheduleBuild(); redraw(lastMouse);
+      return;
+    }
+    // Interior / Stall Post tool — place or remove
+    if(drawState.tool==='post'){
+      if(!window._stallPosts) window._stallPosts=[];
+      var pHit=-1;
+      (window._stallPosts||[]).forEach(function(pp,pi){
+        var pc=ftToCanvas(pp.x,pp.y);
+        if(Math.abs(cx2-pc.x)<=10 && Math.abs(cy2-pc.y)<=10) pHit=pi;
+      });
+      if(pHit>=0){ window._stallPosts.splice(pHit,1); scheduleBuild(); redraw(lastMouse); return; }
+      window._stallPosts.push({id:Date.now(),x:ft.x,y:ft.y,size:(window._stallPostSize||'6x6')});
       scheduleBuild(); redraw(lastMouse);
       return;
     }
@@ -36938,6 +37037,12 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
       if (sc.w && sc.l) sonoPosts += Math.ceil(sc.l / (Q.postSpacing||10)) + 1;
     });
     if (sonoPosts > 0) lines.push({ label: 'Sono Tube Posts  |  ' + sonoPosts + ' posts @ $275.00', amount: sonoPosts * 275 });
+  }
+
+  // Interior / stall posts — $50 per post
+  var _stallP = window._stallPosts || [];
+  if (_stallP.length) {
+    lines.push({ label: 'Interior/Stall Posts  |  ' + _stallP.length + ' posts @ $50.00', amount: _stallP.length * 50 });
   }
 
   // Post Protectors labor — $10 per protector
