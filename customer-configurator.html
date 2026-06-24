@@ -867,6 +867,7 @@ body.customer-mode #saveQuoteStatus { display: none !important; }
 
 /* Hide viewport buttons that are salesman-only */
 body.customer-mode #vpLoadBtn,
+body.customer-mode #vpLeadsBtn,
 body.customer-mode #vpKitsBtn,
 body.customer-mode #vpImportBtn,
 body.customer-mode #vpActivityBtn { display: none !important; }
@@ -2266,6 +2267,7 @@ body.customer-mode #custColorChartLink { display: block !important; }
       <div id="vpUtilityCol" style="position:absolute;top:10px;right:14px;z-index:20;display:flex;flex-direction:column;gap:6px;align-items:stretch;width:110px;">
         <button id="vpDimToggle"   onclick="vpToggleDims()"                                    style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Hide Dims</button>
         <button id="vpLoadBtn"     onclick="openLoadDesignModal()"                             style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Load Quote</button>
+        <button id="vpLeadsBtn" onclick="openLeadsModal()" style="position:relative;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Leads<span id="vpLeadsBadge" style="display:none;position:absolute;top:-6px;right:-6px;min-width:16px;height:16px;padding:0 4px;background:#ef4444;color:#fff;font-size:9px;font-weight:800;border-radius:10px;line-height:16px;text-align:center;"></span></button>
         <button id="vpKitsBtn"     onclick="openKitsModal()"                                   style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Kits</button>
         <button id="vpImportBtn"   onclick="document.getElementById('pdfImportInput').click()" style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Import Quote</button>
         <button id="vpActivityBtn" onclick="openActivityLog()"     style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Activity Log</button>
@@ -29919,5 +29921,194 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     // Start capture immediately — no auth needed for Supabase anon reads
     _doCapture();
   }
+})();
+</script>
+
+<script>
+/* ── CUSTOMER LEADS INBOX ────────────────────────────────────────────────
+   Reads/updates the Supabase `submissions` table using a real logged-in
+   ("authenticated") session — NOT the public anon key — so leads stay private.
+   Hidden entirely in customer mode. ----------------------------------------*/
+(function(){
+  var SKEY = 'sb_leads_session';
+  function _sess(){ try { return JSON.parse(localStorage.getItem(SKEY) || 'null'); } catch(e){ return null; } }
+  function _tok(){ var s=_sess(); return (s && s.access_token) ? s.access_token : null; }
+  function leadsLogout(){ try { localStorage.removeItem(SKEY); } catch(e){} }
+  window.leadsLogout = leadsLogout;
+
+  async function _refresh(){
+    var s=_sess(); if(!s || !s.refresh_token) return false;
+    try {
+      var r = await fetch(_SB_URL + '/auth/v1/token?grant_type=refresh_token', {
+        method:'POST', headers:{ 'apikey':_SB_KEY, 'Content-Type':'application/json' },
+        body: JSON.stringify({ refresh_token: s.refresh_token }) });
+      if(!r.ok){ leadsLogout(); return false; }
+      localStorage.setItem(SKEY, JSON.stringify(await r.json())); return true;
+    } catch(e){ return false; }
+  }
+
+  async function _f(path, opts, _retried){
+    opts = opts || {};
+    var headers = Object.assign({
+      'apikey': _SB_KEY,
+      'Authorization': 'Bearer ' + (_tok() || _SB_KEY),
+      'Content-Type': 'application/json'
+    }, opts.headers || {});
+    var r = await fetch(_SB_URL + '/rest/v1/' + path, Object.assign({}, opts, { headers: headers }));
+    if ((r.status === 401 || r.status === 403) && !_retried && _sess()) {
+      if (await _refresh()) return _f(path, opts, true);
+    }
+    return r;
+  }
+
+  async function leadsLogin(email, password){
+    var r = await fetch(_SB_URL + '/auth/v1/token?grant_type=password', {
+      method:'POST', headers:{ 'apikey':_SB_KEY, 'Content-Type':'application/json' },
+      body: JSON.stringify({ email:email, password:password }) });
+    if(!r.ok){ var t=''; try{ t=await r.text(); }catch(e){} throw new Error(r.status + ' ' + t); }
+    localStorage.setItem(SKEY, JSON.stringify(await r.json()));
+  }
+
+  async function fetchLeads(){
+    var r = await _f('submissions?select=id,created_at,ref,name,phone,email,city,notes,specs,status&order=created_at.desc&limit=200', { method:'GET' });
+    if (r.status === 401 || r.status === 403) { throw new Error('AUTH'); }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  }
+
+  async function refreshLeadsBadge(){
+    if (window._customerMode || !_tok()) return;
+    try {
+      var r = await _f('submissions?select=id&status=eq.new&limit=1000', { method:'GET' });
+      if (!r.ok) return;
+      var rows = await r.json();
+      var n = Array.isArray(rows) ? rows.length : 0;
+      var b = document.getElementById('vpLeadsBadge');
+      if (b){ b.textContent = n>0 ? String(n) : ''; b.style.display = n>0 ? 'inline-block' : 'none'; }
+    } catch(e){}
+  }
+  window.refreshLeadsBadge = refreshLeadsBadge;
+
+  function _esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function _pill(s){
+    var m = ({ 'new':['#FF8200','New'],'contacted':['#5b8def','Contacted'],'quoted':['#4ade80','Quoted'] })[s] || ['#888', (s||'-')];
+    return '<span style="font-size:9px;font-weight:800;letter-spacing:.4px;padding:2px 7px;border-radius:20px;color:'+m[0]+';border:1px solid '+m[0]+';">'+_esc(m[1]).toUpperCase()+'</span>';
+  }
+
+  async function loadLead(id, n, p, e, c){
+    try {
+      var r = await _f('submissions?id=eq.' + encodeURIComponent(id) + '&select=config_encoded,name,phone,email,city', { method:'GET' });
+      var rows = await r.json();
+      var row = rows && rows[0];
+      if (!row) throw new Error('Lead not found');
+      var enc = row.config_encoded || '';
+      if (!enc) throw new Error('No design saved on this lead');
+      var cfg = await safeDecodeAsync(enc).catch(function(){ return safeDecode(enc); });
+      if (!cfg) throw new Error('Could not decode the design');
+      restoreConfig(cfg);
+      var sv = function(idf,v){ var el=document.getElementById(idf); if(el&&v) el.value=v; };
+      sv('st_name', row.name||n||''); sv('st_phone', row.phone||p||'');
+      sv('st_email', row.email||e||''); sv('st_address', row.city||c||'');
+      triggerBuild();
+      window.closeLeadsModal();
+      if (typeof showToast==='function') showToast('Loaded ' + (row.name||'lead') + ' - price it and send.', 'success');
+    } catch(err){
+      if (typeof showToast==='function') showToast('Could not load: ' + err.message, 'error');
+      console.error('[Leads] load error', err);
+    }
+  }
+
+  async function setStatus(id, status, btn){
+    try {
+      if (btn) btn.disabled = true;
+      var r = await _f('submissions?id=eq.' + encodeURIComponent(id), {
+        method:'PATCH', headers:{ 'Prefer':'return=minimal' }, body: JSON.stringify({ status: status }) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      await renderLeads(); refreshLeadsBadge();
+    } catch(err){
+      if (btn) btn.disabled = false;
+      if (typeof showToast==='function') showToast('Status update failed', 'error');
+    }
+  }
+
+  async function renderLeads(){
+    var list = document.getElementById('leadsBody'); if (!list) return;
+    list.innerHTML = '<div style="color:#888;font-size:13px;text-align:center;padding:24px;">Loading...</div>';
+    var leads;
+    try { leads = await fetchLeads(); }
+    catch(err){ if (err.message==='AUTH'){ showLeadsLogin(); return; }
+      list.innerHTML = '<div style="color:#ef4444;font-size:13px;text-align:center;padding:24px;">Could not load leads ('+_esc(err.message)+')</div>'; return; }
+    if (!leads.length){ list.innerHTML = '<div style="color:#888;font-size:13px;text-align:center;padding:24px;">No submissions yet.</div>'; return; }
+    list.innerHTML = '<div style="display:flex;flex-direction:column;gap:8px;">' + leads.map(function(d){
+      var date = (d.created_at||'').replace('T',' ').slice(0,16);
+      var contact = [d.phone, d.email].filter(Boolean).join('  -  ');
+      return '<div style="background:#2e2e2e;border:1px solid #5e5e5e;border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;">'
+        + '<div style="flex:1;min-width:0;">'
+        +   '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><span style="font-weight:700;color:#f0f3f7;font-size:13px;">'+_esc(d.name||'(no name)')+'</span>'+_pill(d.status)+'</div>'
+        +   '<div style="font-size:11px;color:#9aa6b6;margin-top:3px;">'+_esc(contact)+(d.city?('  -  '+_esc(d.city)):'')+'</div>'
+        +   '<div style="font-size:11px;color:#7a8aa0;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+_esc(d.specs||'')+'</div>'
+        +   (d.notes?'<div style="font-size:10px;color:#6b7a90;margin-top:3px;font-style:italic;">"'+_esc(d.notes)+'"</div>':'')
+        +   '<div style="font-size:10px;color:#3a4d65;margin-top:4px;">'+_esc(date)+(d.ref?('  -  '+_esc(d.ref)):'')+'</div>'
+        + '</div>'
+        + '<div style="display:flex;flex-direction:column;gap:5px;">'
+        +   '<button data-lead-load="'+_esc(d.id)+'" data-n="'+_esc(d.name)+'" data-p="'+_esc(d.phone)+'" data-e="'+_esc(d.email)+'" data-c="'+_esc(d.city)+'" style="padding:6px 14px;background:rgba(255,130,0,.14);color:#FF8200;border:1px solid rgba(255,130,0,.3);border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Load</button>'
+        +   (d.status!=='quoted'?'<button data-lead-quoted="'+_esc(d.id)+'" style="padding:5px 14px;background:rgba(74,222,128,.1);color:#4ade80;border:1px solid rgba(74,222,128,.25);border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Mark Quoted</button>':'')
+        + '</div></div>';
+    }).join('') + '</div>';
+    list.onclick = function(ev){
+      var lb = ev.target.closest('[data-lead-load]');
+      if (lb){ loadLead(lb.getAttribute('data-lead-load'), lb.getAttribute('data-n'), lb.getAttribute('data-p'), lb.getAttribute('data-e'), lb.getAttribute('data-c')); return; }
+      var qb = ev.target.closest('[data-lead-quoted]');
+      if (qb){ setStatus(qb.getAttribute('data-lead-quoted'), 'quoted', qb); return; }
+    };
+  }
+
+  function showLeadsLogin(){
+    var body = document.getElementById('leadsBody'); if (!body) return;
+    body.innerHTML =
+      '<div style="display:flex;flex-direction:column;gap:10px;max-width:330px;margin:10px auto;">'
+      + '<div style="font-size:12px;color:#9aa6b6;text-align:center;">Sign in once to view your leads.</div>'
+      + '<input id="leadsEmail" type="email" placeholder="Email" autocomplete="username" style="padding:10px 12px;border-radius:8px;border:1px solid #34405c;background:#0f1626;color:#f0f3f7;font-size:13px;">'
+      + '<input id="leadsPass" type="password" placeholder="Password" autocomplete="current-password" style="padding:10px 12px;border-radius:8px;border:1px solid #34405c;background:#0f1626;color:#f0f3f7;font-size:13px;">'
+      + '<button id="leadsLoginBtn" style="padding:10px;border-radius:8px;border:none;background:#FF8200;color:#fff;font-size:13px;font-weight:800;cursor:pointer;">Unlock Leads</button>'
+      + '<div id="leadsLoginErr" style="font-size:11px;color:#ef4444;text-align:center;min-height:14px;"></div>'
+      + '</div>';
+    var btn = document.getElementById('leadsLoginBtn');
+    var go = async function(){
+      var em=(document.getElementById('leadsEmail')||{}).value, pw=(document.getElementById('leadsPass')||{}).value;
+      var err=document.getElementById('leadsLoginErr'); err.textContent=''; btn.disabled=true; btn.textContent='Signing in...';
+      try { await leadsLogin(em, pw); await renderLeads(); refreshLeadsBadge(); }
+      catch(e){ err.textContent='Sign in failed - check email/password.'; btn.disabled=false; btn.textContent='Unlock Leads'; }
+    };
+    btn.onclick = go;
+    var pass = document.getElementById('leadsPass'); if (pass) pass.onkeydown = function(ev){ if(ev.key==='Enter') go(); };
+  }
+
+  function shell(){
+    if (document.getElementById('leadsModal')) return;
+    var d = document.createElement('div');
+    d.id = 'leadsModal';
+    d.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(10,16,32,.82);z-index:600;align-items:center;justify-content:center;backdrop-filter:blur(4px);';
+    d.innerHTML =
+      '<div style="background:#1a2236;border:1px solid #34405c;border-radius:16px;width:min(560px,94vw);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(0,0,0,.5);">'
+      + '<div style="padding:15px 18px;border-bottom:1px solid #2a3550;display:flex;align-items:center;justify-content:space-between;">'
+      +   '<div style="font-size:15px;font-weight:800;color:#f0f3f7;">Customer Leads</div>'
+      +   '<button onclick="closeLeadsModal()" style="background:none;border:none;color:#7a8aa0;font-size:22px;cursor:pointer;line-height:1;">&times;</button>'
+      + '</div>'
+      + '<div id="leadsBody" style="padding:14px 16px;overflow-y:auto;"></div>'
+      + '</div>';
+    d.addEventListener('click', function(ev){ if (ev.target === d) window.closeLeadsModal(); });
+    document.body.appendChild(d);
+  }
+
+  window.openLeadsModal = function(){
+    shell();
+    document.getElementById('leadsModal').style.display = 'flex';
+    if (_tok()) renderLeads(); else showLeadsLogin();
+  };
+  window.closeLeadsModal = function(){ var m=document.getElementById('leadsModal'); if (m) m.style.display='none'; };
+
+  function initBadge(){ if (window._customerMode) return; refreshLeadsBadge(); setInterval(refreshLeadsBadge, 120000); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initBadge); else initBadge();
 })();
 </script>
