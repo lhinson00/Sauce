@@ -6622,27 +6622,36 @@ async function submitCustomerDesign() {
     // Compress the config — same encoder as salesman Save Quote
     var configEncoded = await safeEncodeCompressed(cfg);
 
-    // POST to the dedicated submitCustomerDesign action — no token required
-    var resp = await fetchWithTimeout(API_URL, {
+    // Write the lead straight to Supabase (submissions table).
+    // RLS allows anonymous INSERT only — no read/update/delete with the public key.
+    var ref = 'CR-' + Date.now();
+    var resp = await fetch(_SB_URL + '/rest/v1/submissions', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
+      headers: {
+        'apikey':        _SB_KEY,
+        'Authorization': 'Bearer ' + _SB_KEY,
+        'Content-Type':  'application/json',
+        'Prefer':        'return=minimal'
+      },
       body: JSON.stringify({
-        action:        'submitCustomerDesign',
-        name:          name,
-        phone:         phone,
-        email:         email,
-        city:          city,
-        specs:         specs,
-        configEncoded: configEncoded,
-        notes:         notes,
-        baseUrl:       window.location.href.split('?')[0]
+        ref:            ref,
+        name:           name,
+        phone:          phone,
+        email:          email,
+        city:           city,
+        notes:          notes,
+        specs:          specs,
+        config_encoded: configEncoded,
+        status:         'new',
+        source_url:     window.location.href.split('?')[0]
       })
-    }, 55000);
+    });
+    if (!resp.ok) {
+      var _errTxt = ''; try { _errTxt = await resp.text(); } catch(e) {}
+      throw new Error('Submit failed (' + resp.status + ') ' + _errTxt);
+    }
 
-    var data = await safeJson(resp);
-    if (!data.success) throw new Error(data.error || 'Submit failed');
-
-    var quoteId = data.quoteId || ('CR-' + Date.now());
+    var quoteId = ref;
 
     // Show success state
     document.getElementById('cust-bar-form').classList.remove('open');
