@@ -14566,10 +14566,12 @@ function applyVoiceQuote(parsed, overlay) {
               }
             });
 
-            // Far gable interior posts
+            // Far gable interior posts — rise to the gable triangle height at each x
             for (var xp = -sw/2 + stepGablePS; xp < sw/2 - stepGablePS * 0.5; xp += stepGablePS) {
-              var gp2 = new THREE.Mesh(new THREE.BoxGeometry(ps, stepPostH, ps), mPencl);
-              gp2.position.set(xp, postBase + stepPostH / 2, sZb);
+              var _gpTop = Math.min(sh2 + (Q.w/2 - Math.abs(xp / Sc)) * (Q.pitch/12) * Sc, sr2);
+              var _gpH = _gpTop - postBase;
+              var gp2 = new THREE.Mesh(new THREE.BoxGeometry(ps, _gpH, ps), mPencl);
+              gp2.position.set(xp, postBase + _gpH / 2, sZb);
               gp2.castShadow = true;
               grps.mainPosts.add(gp2);
               if (postsOnTop) addBracket(xp, sZb, grps.mainPosts, slabH);
@@ -14630,12 +14632,32 @@ function applyVoiceQuote(parsed, overlay) {
 
             for (var z3=sZb; z3<=sZf; z3+=ribSp2) {
               // Left slope
-              grps.roof.add(mkQ([-sw/2,sh2-0.004,z3, -sw/2,sh2-0.004,z3+rrW2, 0,sr2-0.004,z3+rrW2, 0,sr2-0.004,z3], mRRHi2));
-              grps.roof.add(mkQ([-sw/2,sh2-0.004,z3+rrW2, -sw/2,sh2-0.004,z3+rrW2*2, 0,sr2-0.004,z3+rrW2*2, 0,sr2-0.004,z3+rrW2], mRRSh2));
+              grps.roof.add(mkQ([-sw/2,sh2-0.004,z3, -sw/2,sh2-0.004,z3+rrW2, 0,sr2+0.002,z3+rrW2, 0,sr2+0.002,z3], mRRHi2));
+              grps.roof.add(mkQ([-sw/2,sh2-0.004,z3+rrW2, -sw/2,sh2-0.004,z3+rrW2*2, 0,sr2+0.002,z3+rrW2*2, 0,sr2+0.002,z3+rrW2], mRRSh2));
               // Right slope
-              grps.roof.add(mkQ([sw/2,sh2-0.004,z3, 0,sr2-0.004,z3, 0,sr2-0.004,z3+rrW2, sw/2,sh2-0.004,z3+rrW2], mRRHi2));
-              grps.roof.add(mkQ([sw/2,sh2-0.004,z3+rrW2, 0,sr2-0.004,z3+rrW2, 0,sr2-0.004,z3+rrW2*2, sw/2,sh2-0.004,z3+rrW2*2], mRRSh2));
+              grps.roof.add(mkQ([sw/2,sh2-0.004,z3, 0,sr2+0.002,z3, 0,sr2+0.002,z3+rrW2, sw/2,sh2-0.004,z3+rrW2], mRRHi2));
+              grps.roof.add(mkQ([sw/2,sh2-0.004,z3+rrW2, 0,sr2+0.002,z3+rrW2, 0,sr2+0.002,z3+rrW2*2, sw/2,sh2-0.004,z3+rrW2*2], mRRSh2));
             }
+
+            // ── Rat guard (base trim) + corner trim — match main building
+            var _stTrimMat = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
+            var _stBH = 0.03, _stTW = 0.05, _stPf = 0.006;
+            // Rat guard along both eave walls (junction sZf -> far sZb)
+            [-1, 1].forEach(function(s) {
+              var _rx = s*sw/2 + s*_stPf;
+              grps.walls.add(mkQ([_rx, 0, sZf, _rx, _stBH, sZf, _rx, _stBH, sZb, _rx, 0, sZb], _stTrimMat));
+            });
+            // Rat guard along the far gable wall
+            var _stGz = sZb - _stPf;
+            grps.walls.add(mkQ([-sw/2, 0, _stGz, sw/2, 0, _stGz, sw/2, _stBH, _stGz, -sw/2, _stBH, _stGz], _stTrimMat));
+            // Corner trim (full eave height) at the two exposed far-gable corners
+            [-1, 1].forEach(function(sx) {
+              var _cx = sx*sw/2;
+              var _ex = _cx + sx*0.012;            // eave-plane leg (proud in x), runs toward junction
+              grps.walls.add(mkQ([_ex, 0, sZb, _ex, sh2, sZb, _ex, sh2, sZb + _stTW, _ex, 0, sZb + _stTW], _stTrimMat));
+              var _cgz = sZb - 0.012;              // gable-plane leg (proud in z), runs toward center
+              grps.walls.add(mkQ([_cx, 0, _cgz, _cx, sh2, _cgz, _cx - sx*_stTW, sh2, _cgz, _cx - sx*_stTW, 0, _cgz], _stTrimMat));
+            });
 
           } catch(stepErr) {
             console.warn('[3D] Step section render failed:', stepErr.message, stepErr.stack);
@@ -37445,61 +37467,38 @@ window.openMaterialsModal = function(initialTab) {
             // Single-per-quote items — only keep one copy (not additive)
             var singlePerQuote = ['RS00','STMPEAK','HDGRS10D30','JHNS1.255LB','STP38A11','HBBA'];
 
-            // Merge by SKU — sum quantities for matching SKUs, preserving list order
-            // Start with main building items as the base
+            // Step-down items render as their OWN labeled rows (not summed into main SKUs)
+            // so the salesman can verify exactly which materials belong to the step-down.
+            // Start with the main building items as the base of the list.
             var merged = res1.items.map(function(item) {
               return Object.assign({}, item); // clone so we don't mutate originals
             });
 
-            // Build index of merged items by SKU for fast lookup
-            var skuIndex = {};
-            merged.forEach(function(item, idx) {
-              var key = (item.sku||'__nosku__' + idx).toUpperCase();
-              if (!skuIndex[key]) skuIndex[key] = [];
-              skuIndex[key].push(idx);
-            });
+            // Build the step-down item set, dropping single-per-quote items already on the main list.
+            var stepItems = res2.items
+              .filter(function(item) { return singlePerQuote.indexOf((item.sku||'').toUpperCase()) < 0; })
+              .map(function(item) { return Object.assign({}, item); });
 
-            // Add step section items — merge into existing SKU or append
-            res2.items.forEach(function(item) {
-              var skuKey = (item.sku||'').toUpperCase();
-              // Single-per-quote: skip entirely
-              if (singlePerQuote.indexOf(skuKey) >= 0) return;
-              // fixedCost items (garage doors, labor adders): always append separately
-              if (item.fixedCost != null) { merged.push(Object.assign({}, item)); return; }
-              // Match by SKU + boardLen (board items with same SKU can have different lengths)
-              var matchIdx = -1;
-              if (skuIndex[skuKey]) {
-                for (var mi = 0; mi < skuIndex[skuKey].length; mi++) {
-                  var candidate = merged[skuIndex[skuKey][mi]];
-                  var sameBoardLen = (candidate.boardLen == null && item.boardLen == null) ||
-                                    (candidate.boardLen === item.boardLen);
-                  var sameMetalLen = candidate.metalLength === item.metalLength;
-                  if (sameBoardLen && sameMetalLen) { matchIdx = skuIndex[skuKey][mi]; break; }
-                }
-              }
-              if (matchIdx >= 0) {
-                // Sum quantities into existing item
-                merged[matchIdx].quantity = (merged[matchIdx].quantity || 0) + (item.quantity || 0);
-              } else {
-                // New SKU/length combo — append and index it
-                var newIdx = merged.length;
-                merged.push(Object.assign({}, item));
-                if (!skuIndex[skuKey]) skuIndex[skuKey] = [];
-                skuIndex[skuKey].push(newIdx);
-              }
-            });
-
-            // Deduct 2 eave posts at junction — scan from end, subtract from Eave Post items
+            // Deduct the 2 eave posts at the shared junction wall (already counted on the main building).
             var postDeducted = 0;
-            for (var ci = merged.length - 1; ci >= 0 && postDeducted < 2; ci--) {
-              var mitem = merged[ci];
-              if (mitem.category === 'Yard' && mitem.description && mitem.description.indexOf('Eave Post') >= 0 && mitem.quantity > 0) {
-                var deduct = Math.min(2 - postDeducted, mitem.quantity);
-                mitem.quantity -= deduct;
+            for (var ci = 0; ci < stepItems.length && postDeducted < 2; ci++) {
+              var sit = stepItems[ci];
+              if (sit.category === 'Yard' && sit.description && sit.description.indexOf('Eave Post') >= 0 && sit.quantity > 0) {
+                var deduct = Math.min(2 - postDeducted, sit.quantity);
+                sit.quantity -= deduct;
                 postDeducted += deduct;
-                if (mitem.quantity === 0) merged.splice(ci, 1);
               }
             }
+
+            // Label each step item and append. They group under the same categories as the main
+            // list (posts/Yard, Purlins, Girts, Roof Steel, Trim, ...) preserving the regular order,
+            // each tagged so the salesman can pick out the step-down materials at a glance.
+            stepItems.forEach(function(item) {
+              if (!item.quantity || item.quantity <= 0) return;
+              item.description = '\u21b3 Step-Down \u00b7 ' + (item.description || '');
+              item._stepDown = true;
+              merged.push(item);
+            });
 
             res1 = { items: merged, building: _origQ.w + "' x " + (_origQ.l + ss.length) + "' — " + _origQ.l + "' at " + _origQ.h + "' / " + ss.length + "' at " + ss.height + "'" };
           }
