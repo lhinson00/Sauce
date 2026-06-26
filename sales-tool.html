@@ -2894,7 +2894,7 @@ function updateStripFromLocalCalc() {
   var p = function(id,val){ var el=document.getElementById(id); if(el){ el.textContent=val; el.classList.remove('pending'); } };
 
   variants.forEach(function(v) {
-    var mat = matForVariant(v.forcedType) + stepMatForVariant(v.forcedType);
+    var mat = matForVariant(v.forcedType) + stepMatForVariant(v.forcedType) + (window._overrideDelta ? window._overrideDelta(v.forcedType) : 0);
     var mft    = mat * (mftVal / 100);
     var matWithMft = mat + mft + matAdderAmt;  // Match materials modal: mat + MFT + custom adders
     var tax    = farmTax ? 0 : mat * 0.0975;
@@ -5995,6 +5995,7 @@ function serializeConfig() {
     },
     comparisonSlots: (window.CMP && CMP.slots && CMP.slots.length) ? JSON.parse(JSON.stringify(CMP.slots)) : [],
     stepSection: window._stepSection ? JSON.parse(JSON.stringify(window._stepSection)) : { active: false, length: 30, height: 12 },
+    matListOverrides: window._matListOverrides ? JSON.parse(JSON.stringify(window._matListOverrides)) : {},
     salesFields: {
       name:      (document.getElementById('st_name')||{}).value||'',
       phone:     (document.getElementById('st_phone')||{}).value||'',
@@ -6246,6 +6247,7 @@ function restoreConfig(cfg) {
       if(cfg.extras.concreteCounty) { _cachedCounty = cfg.extras.concreteCounty; }
       if(cfg.extras.materialAdders) {
         window._materialAdders = cfg.extras.materialAdders; renderMatAdderList();
+        try { window._matListOverrides = cfg.matListOverrides || {}; window._matOvDims = window._Q ? [window._Q.w, window._Q.l, window._Q.h, window._Q.pitch].join('|') : null; } catch(e){}
       }
       if(conOn) renderConcreteOpts();
     }
@@ -35300,8 +35302,10 @@ window.closeMaterialsModal = function() {
 window._matListOverrides = window._matListOverrides || {};
 window._matOvDims = (window._matOvDims === undefined) ? null : window._matOvDims;
 window._matOvFor = function(bt){
-  if (!window._matListOverrides[bt]) window._matListOverrides[bt] = { deleted:{}, edits:{}, added:[] };
-  return window._matListOverrides[bt];
+  var o = window._matListOverrides[bt];
+  if (!o) { o = window._matListOverrides[bt] = { deleted:{}, edits:{}, added:[], order:{}, catOrder:null }; }
+  if (!o.order) o.order = {}; if (o.catOrder === undefined) o.catOrder = null;
+  return o;
 };
 // Wipe all lists when the building is resized or the pitch changes.
 window._matOvCheckReset = function(){
@@ -35350,6 +35354,109 @@ window._applyMatOverrides = function(items, bt){
     out.push(item);
   });
   return out;
+};
+
+// Canonical merged (main + step-down) material list for a build type — single source of truth
+// for the modal, the headline price, and exports.
+window._mergedMaterialItems = function(bt) {
+      var _odMain = window._allDoors; window._allDoors = window._stepDoorScope().main;
+      var res1 = window.SauceMaterials.calculate(bt);
+      window._allDoors = _odMain;
+      // If step section is active, run calc for step section and combine
+      var ss = window._stepSection;
+      if (ss && ss.active && res1 && res1.items) {
+        var _origQ = window._Q;
+        var _origDoorsMod = window._allDoors;
+        try {
+          window._Q = Object.assign({}, _origQ, { l: ss.length, h: ss.height });
+          window._allDoors = window._stepDoorScope().step;
+          var res2 = window.SauceMaterials.calculate(bt);
+          if (res2 && res2.items) {
+            // Single-per-quote items — only keep one copy (not additive)
+            var singlePerQuote = ['RS00','STMPEAK','HDGRS10D30','JHNS1.255LB','STP38A11','HBBA'];
+
+            // Step-down items render as their OWN labeled rows (not summed into main SKUs)
+            // so the salesman can verify exactly which materials belong to the step-down.
+            // Start with the main building items as the base of the list.
+            var merged = res1.items.map(function(item) {
+              return Object.assign({}, item); // clone so we don't mutate originals
+            });
+
+            // Build the step-down item set, dropping single-per-quote items already on the main list.
+            var stepItems = res2.items
+              .filter(function(item) { return singlePerQuote.indexOf((item.sku||'').toUpperCase()) < 0; })
+              .map(function(item) { return Object.assign({}, item); });
+
+            // Deduct the 2 eave posts at the shared junction wall (already counted on the main building).
+            var postDeducted = 0;
+            for (var ci = 0; ci < stepItems.length && postDeducted < 2; ci++) {
+              var sit = stepItems[ci];
+              if (sit.category === 'Yard' && sit.description && sit.description.indexOf('Eave Post') >= 0 && sit.quantity > 0) {
+                var deduct = Math.min(2 - postDeducted, sit.quantity);
+                sit.quantity -= deduct;
+                postDeducted += deduct;
+              }
+            }
+
+            // Label each step item and append. They group under the same categories as the main
+            // list (posts/Yard, Purlins, Girts, Roof Steel, Trim, ...) preserving the regular order,
+            // each tagged so the salesman can pick out the step-down materials at a glance.
+            stepItems.forEach(function(item) {
+              if (!item.quantity || item.quantity <= 0) return;
+              item.description = '\u21b3 Step-Down \u00b7 ' + (item.description || '');
+              item._stepDown = true;
+              merged.push(item);
+            });
+
+            res1 = { items: merged, building: _origQ.w + "' x " + (_origQ.l + ss.length) + "' — " + _origQ.l + "' at " + _origQ.h + "' / " + ss.length + "' at " + ss.height + "'" };
+          }
+        } catch(stepE) {
+          console.warn('[Materials] Step section calc failed:', stepE.message);
+        } finally {
+          window._Q = _origQ;
+          window._allDoors = _origDoorsMod;
+        }
+      }
+  return res1;
+};
+window._lineTotal = function(item) {
+  if (item.fixedCost != null) return item.fixedCost;
+  var up = (item._ovUnit != null) ? item._ovUnit : ((window.SauceMaterials._priceTable||{})[(item.sku||'').toUpperCase()]);
+  if (up == null) return 0;
+  if (item.metalLength) { var s=''+item.metalLength; var ftM=s.match(/(\d+)'/), inM=s.match(/(\d+(?:\.\d+)?)"/); var lf=(ftM?parseFloat(ftM[1]):0)+(inM?parseFloat(inM[1])/12:0); return up*item.quantity*lf; }
+  if (item.boardLen) return up*item.quantity*item.boardLen;
+  return up*item.quantity;
+};
+// Net $ change to the materials total from this build type's overrides (0 when none exist).
+window._overrideDelta = function(bt) {
+  var ov = window._matListOverrides && window._matListOverrides[bt];
+  if (!ov) return 0;
+  var hasAny = Object.keys(ov.deleted||{}).length || Object.keys(ov.edits||{}).length || (ov.added||[]).length;
+  if (!hasAny) return 0;
+  try {
+    var base = (window._mergedMaterialItems(bt)||{}).items || [];
+    var orig = 0; base.forEach(function(it){ orig += window._lineTotal(it); });
+    var fin = window._applyMatOverrides(base, bt);
+    var neu = 0; fin.forEach(function(it){ neu += window._lineTotal(it); });
+    return neu - orig;
+  } catch(e){ return 0; }
+};
+
+window._MAT_CATEGORY_ORDER = ['Cypress Gable Extension','Interior Loft','Interior Walls','Yard','Roof Metal','Side Shed Roof Metal','Sidewall Metal','Gable Metal','Side Shed Gable Metal','Wainscot Metal','Soffit Metal','Skirt Metal','Metal','Trim','Garage Doors','Doors','Barn Doors','Walk Doors','Windows','Extras','Insulation','Hardware'];
+// Final material list for a build type: merged main+step, with the salesman's deletes/edits/added
+// lines applied AND the saved ordering (section order + within-section order). Used by exports.
+window._finalMaterialItems = function(bt) {
+  var merged = (window._mergedMaterialItems(bt)||{}).items || [];
+  var items = window._applyMatOverrides(merged, bt);
+  var ov = window._matOvFor(bt); var CO = window._MAT_CATEGORY_ORDER;
+  function catIdx(c){ if(ov.catOrder){ var k=ov.catOrder.indexOf(c); if(k>=0) return k; } var i=CO.indexOf(c); return i===-1?999:i; }
+  items.forEach(function(it,i){ it._origIdx=i; });
+  items.sort(function(a,b){
+    var ca=catIdx(a.category||''), cb=catIdx(b.category||''); if (ca!==cb) return ca-cb;
+    var ord=ov.order[a.category]; if (ord){ var ia=ord.indexOf(a._key), ib=ord.indexOf(b._key); if(ia===-1)ia=999; if(ib===-1)ib=999; if(ia!==ib) return ia-ib; }
+    return a._origIdx-b._origIdx;
+  });
+  return items;
 };
 
 window.closePriceManager = function() {
@@ -37611,6 +37718,7 @@ window.openConcreteModal = function(forcedType) {
 };
 
 window.openMaterialsModal = function(initialTab) {
+  var _prevMatScroll = (document.getElementById('sauceMatBody')||{}).scrollTop || 0;
   window.closeMaterialsModal();
 
   // Calculate all 4 building types independently
@@ -37625,64 +37733,7 @@ window.openMaterialsModal = function(initialTab) {
   ];
   types.forEach(function(t) {
     try {
-      var _odMain = window._allDoors; window._allDoors = window._stepDoorScope().main;
-      var res1 = window.SauceMaterials.calculate(t.key);
-      window._allDoors = _odMain;
-      // If step section is active, run calc for step section and combine
-      var ss = window._stepSection;
-      if (ss && ss.active && res1 && res1.items) {
-        var _origQ = window._Q;
-        var _origDoorsMod = window._allDoors;
-        try {
-          window._Q = Object.assign({}, _origQ, { l: ss.length, h: ss.height });
-          window._allDoors = window._stepDoorScope().step;
-          var res2 = window.SauceMaterials.calculate(t.key);
-          if (res2 && res2.items) {
-            // Single-per-quote items — only keep one copy (not additive)
-            var singlePerQuote = ['RS00','STMPEAK','HDGRS10D30','JHNS1.255LB','STP38A11','HBBA'];
-
-            // Step-down items render as their OWN labeled rows (not summed into main SKUs)
-            // so the salesman can verify exactly which materials belong to the step-down.
-            // Start with the main building items as the base of the list.
-            var merged = res1.items.map(function(item) {
-              return Object.assign({}, item); // clone so we don't mutate originals
-            });
-
-            // Build the step-down item set, dropping single-per-quote items already on the main list.
-            var stepItems = res2.items
-              .filter(function(item) { return singlePerQuote.indexOf((item.sku||'').toUpperCase()) < 0; })
-              .map(function(item) { return Object.assign({}, item); });
-
-            // Deduct the 2 eave posts at the shared junction wall (already counted on the main building).
-            var postDeducted = 0;
-            for (var ci = 0; ci < stepItems.length && postDeducted < 2; ci++) {
-              var sit = stepItems[ci];
-              if (sit.category === 'Yard' && sit.description && sit.description.indexOf('Eave Post') >= 0 && sit.quantity > 0) {
-                var deduct = Math.min(2 - postDeducted, sit.quantity);
-                sit.quantity -= deduct;
-                postDeducted += deduct;
-              }
-            }
-
-            // Label each step item and append. They group under the same categories as the main
-            // list (posts/Yard, Purlins, Girts, Roof Steel, Trim, ...) preserving the regular order,
-            // each tagged so the salesman can pick out the step-down materials at a glance.
-            stepItems.forEach(function(item) {
-              if (!item.quantity || item.quantity <= 0) return;
-              item.description = '\u21b3 Step-Down \u00b7 ' + (item.description || '');
-              item._stepDown = true;
-              merged.push(item);
-            });
-
-            res1 = { items: merged, building: _origQ.w + "' x " + (_origQ.l + ss.length) + "' — " + _origQ.l + "' at " + _origQ.h + "' / " + ss.length + "' at " + ss.height + "'" };
-          }
-        } catch(stepE) {
-          console.warn('[Materials] Step section calc failed:', stepE.message);
-        } finally {
-          window._Q = _origQ;
-          window._allDoors = _origDoorsMod;
-        }
-      }
+      var res1 = window._mergedMaterialItems(t.key);
       if (res1 && res1.items) res1.items = window._applyMatOverrides(res1.items, t.key);
       results[t.key] = res1;
     }
@@ -37708,7 +37759,7 @@ window.openMaterialsModal = function(initialTab) {
   var overlay = document.createElement('div');
   overlay.id = 'sauceMaterialsModal';
   overlay.style.cssText = 'display:flex;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center;';
-  overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+  // Outside-click intentionally does NOT close the materials modal (prevents losing in-progress edits). Use the X.
 
   var panel = document.createElement('div');
   var isMobile = window.innerWidth < 600;
@@ -37768,6 +37819,7 @@ window.openMaterialsModal = function(initialTab) {
   panel.appendChild(tabBar);
 
   var body = document.createElement('div');
+  body.id = 'sauceMatBody';
   body.style.cssText = 'overflow-y:auto;flex:1;';
   panel.appendChild(body);
 
@@ -37866,16 +37918,24 @@ window.openMaterialsModal = function(initialTab) {
       cats[item.category].push(item);
     });
 
+    var ov = window._matOvFor(activeKey);
     var catKeys = Object.keys(cats).sort(function(a, b) {
+      if (ov.catOrder) { var ca=ov.catOrder.indexOf(a), cb=ov.catOrder.indexOf(b); if(ca===-1)ca=999; if(cb===-1)cb=999; if(ca!==cb) return ca-cb; }
       var ai = CATEGORY_ORDER.indexOf(a); var bi = CATEGORY_ORDER.indexOf(b);
       if (ai === -1) ai = 999; if (bi === -1) bi = 999;
       if (ai !== bi) return ai - bi;
       return a.localeCompare(b);
     });
+    var _dragKey=null, _dragCat=null;
+    function _reopenMat(){ window.openMaterialsModal(activeKey); }
+    function moveCat(c, dir){ var order = ov.catOrder ? ov.catOrder.slice() : catKeys.slice(); var p=order.indexOf(c); if(p<0)return; var np=p+dir; if(np<0||np>=order.length)return; var tmp=order[p]; order[p]=order[np]; order[np]=tmp; ov.catOrder=order; _reopenMat(); }
+    function moveLine(c, key, dir){ var keys=cats[c].map(function(it){return it._key;}); var p=keys.indexOf(key); if(p<0)return; var np=p+dir; if(np<0||np>=keys.length)return; var tmp=keys[p]; keys[p]=keys[np]; keys[np]=tmp; ov.order[c]=keys; _reopenMat(); }
+    function dropLine(c, dk, tk){ if(dk===tk)return; var keys=cats[c].map(function(it){return it._key;}); var di=keys.indexOf(dk); if(di<0)return; keys.splice(di,1); var ti=keys.indexOf(tk); if(ti<0)return; keys.splice(ti,0,dk); ov.order[c]=keys; _reopenMat(); }
 
     var grandTotal = 0;
 
     catKeys.forEach(function(cat) {
+      if (ov.order[cat]) { var _o=ov.order[cat]; cats[cat].sort(function(a,b){ var ia=_o.indexOf(a._key); var ib=_o.indexOf(b._key); if(ia===-1)ia=999; if(ib===-1)ib=999; return ia-ib; }); }
       var catTotal = 0;
       // Pre-calculate category total
       cats[cat].forEach(function(item) {
@@ -37887,6 +37947,13 @@ window.openMaterialsModal = function(initialTab) {
       catLabel.style.cssText = 'display:flex;justify-content:space-between;align-items:center;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:' + t.color + ';opacity:.8;margin:14px 0 6px;';
       var catName = document.createElement('span');
       catName.textContent = cat;
+      if (isLainModal) {
+        catName.style.cssText='display:inline-flex;align-items:center;gap:3px;';
+        var catUp=document.createElement('button'); catUp.textContent='\u25B2'; catUp.title='Move section up'; catUp.style.cssText='background:none;border:none;color:'+t.color+';opacity:.6;font-size:8px;cursor:pointer;padding:0 1px;line-height:1;';
+        var catDn=document.createElement('button'); catDn.textContent='\u25BC'; catDn.title='Move section down'; catDn.style.cssText='background:none;border:none;color:'+t.color+';opacity:.6;font-size:8px;cursor:pointer;padding:0 1px;line-height:1;';
+        (function(captCat){ catUp.onclick=function(e){e.stopPropagation(); moveCat(captCat,-1);}; catDn.onclick=function(e){e.stopPropagation(); moveCat(captCat,1);}; })(cat);
+        catName.appendChild(catUp); catName.appendChild(catDn);
+      }
       var catTotalEl = document.createElement('span');
       catTotalEl.style.cssText = 'font-size:10px;font-weight:900;opacity:1;';
       catTotalEl.textContent = catTotal > 0 ? '$' + catTotal.toFixed(2) : '';
@@ -38017,10 +38084,23 @@ window.openMaterialsModal = function(initialTab) {
         }
 
         if (isLainModal) {
-          var delBtn = document.createElement('button'); delBtn.textContent = '\u2715'; delBtn.title = 'Remove this line from the list';
-          delBtn.style.cssText = 'align-self:center;background:none;border:none;color:#64748b;font-size:13px;cursor:pointer;padding:2px 4px;line-height:1;';
-          (function(captKey){ delBtn.onclick = function(e){ e.stopPropagation(); window._matOvFor(activeKey).deleted[captKey] = true; window.openMaterialsModal(activeKey); }; })(item._key);
-          row.appendChild(delBtn);
+          var ctrl = document.createElement('div'); ctrl.style.cssText='display:grid;grid-template-columns:auto auto;gap:2px 4px;align-items:center;justify-items:center;align-self:center;';
+          var dragH = document.createElement('span'); dragH.textContent='\u2630'; dragH.title='Drag to reorder within this section'; dragH.style.cssText='color:#475569;font-size:12px;line-height:1;cursor:'+(isMobile?'default':'grab')+';';
+          var delBtn = document.createElement('button'); delBtn.textContent='\u2715'; delBtn.title='Remove this line'; delBtn.style.cssText='background:none;border:none;color:#64748b;font-size:12px;cursor:pointer;padding:0;line-height:1;';
+          (function(captKey){ delBtn.onclick=function(e){ e.stopPropagation(); window._matOvFor(activeKey).deleted[captKey]=true; window.openMaterialsModal(activeKey); }; })(item._key);
+          var upB=document.createElement('button'); upB.textContent='\u25B2'; upB.title='Move up'; upB.style.cssText='background:none;border:none;color:#64748b;font-size:9px;cursor:pointer;padding:0;line-height:1;';
+          var dnB=document.createElement('button'); dnB.textContent='\u25BC'; dnB.title='Move down'; dnB.style.cssText='background:none;border:none;color:#64748b;font-size:9px;cursor:pointer;padding:0;line-height:1;';
+          (function(captCat, captKey){ upB.onclick=function(e){e.stopPropagation(); moveLine(captCat,captKey,-1);}; dnB.onclick=function(e){e.stopPropagation(); moveLine(captCat,captKey,1);}; })(cat, item._key);
+          ctrl.appendChild(dragH); ctrl.appendChild(delBtn); ctrl.appendChild(upB); ctrl.appendChild(dnB); row.appendChild(ctrl);
+          if (!isMobile) { dragH.draggable=true;
+            (function(captCat, captKey){
+              dragH.addEventListener('dragstart', function(e){ _dragKey=captKey; _dragCat=captCat; try{e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',captKey);}catch(_){} row.style.opacity='0.45'; });
+              dragH.addEventListener('dragend', function(){ row.style.opacity=''; row.style.outline=''; _dragKey=null; _dragCat=null; });
+              row.addEventListener('dragover', function(e){ if(_dragCat===captCat){ e.preventDefault(); row.style.outline='2px dashed #4ade80'; } });
+              row.addEventListener('dragleave', function(){ row.style.outline=''; });
+              row.addEventListener('drop', function(e){ e.preventDefault(); row.style.outline=''; if(_dragCat===captCat && _dragKey){ dropLine(captCat,_dragKey,captKey); } });
+            })(cat, item._key);
+          }
         }
         row.appendChild(info); row.appendChild(skuEl); row.appendChild(qtyEl); row.appendChild(priceEl);
         body.appendChild(row);
@@ -38088,6 +38168,7 @@ window.openMaterialsModal = function(initialTab) {
   }
 
   renderBody();
+  try { if (_prevMatScroll) document.getElementById('sauceMatBody').scrollTop = _prevMatScroll; } catch(e){}
 
   // Footer row: Export CSV + Close
   var footerRow = document.createElement('div');
@@ -38804,14 +38885,14 @@ function buildCSV(items) {
 
 window.exportMaterialCSV = function(buildType, labelStr) {
   try {
-    var result = window.SauceMaterials.calculate(buildType);
-    if (!result || result.error || !result.items || !result.items.length) {
+    var _finalItems = (typeof window._finalMaterialItems === 'function') ? window._finalMaterialItems(buildType) : ((window.SauceMaterials.calculate(buildType)||{}).items||[]);
+    if (!_finalItems || !_finalItems.length) {
       alert('No material list available for export.');
       return;
     }
 
-    // Append labor + concrete COM rows to items clone
-    var exportItems = result.items.slice();
+    // Overridden + ordered list (salesman edits/deletes/added lines + arrangement), then append labor/concrete COM rows
+    var exportItems = _finalItems.slice();
 
     // ── LABOR — single COM row with total ───────────────────────────────
     try {
