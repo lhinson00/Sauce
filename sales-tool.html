@@ -2719,6 +2719,8 @@ function updateStripFromLocalCalc() {
   function matForVariant(forcedType) {
     var total = 0;
     var hasMissing = false;
+    var _odMV = window._allDoors;
+    if (!window._stepDoorPass) { window._allDoors = window._stepDoorScope().main; }
     try {
       var res = window.SauceMaterials.calculate(forcedType);
       if (res && res.items) {
@@ -2744,6 +2746,7 @@ function updateStripFromLocalCalc() {
         });
       }
     } catch(e) {}
+    window._allDoors = _odMV;
     _variantHasMissing[forcedType] = hasMissing;
     return total;
   }
@@ -2754,9 +2757,13 @@ function updateStripFromLocalCalc() {
     var ss = window._stepSection;
     if (!ss || !ss.active) return 0;
     var _origQ = window._Q;
+    var _origDoorsS = window._allDoors;
+    var _scopeS = window._stepDoorScope();
     var stepTotal = 0;
     try {
       window._Q = Object.assign({}, _origQ, { l: ss.length, h: ss.height });
+      window._stepDoorPass = true;
+      window._allDoors = _scopeS.step;
       stepTotal = matForVariant(forcedType);
 
       // Deduct 2 eave posts — find their unit price from the price table
@@ -2786,6 +2793,8 @@ function updateStripFromLocalCalc() {
       stepTotal = 0;
     } finally {
       window._Q = _origQ;
+      window._allDoors = _origDoorsS;
+      window._stepDoorPass = false;
     }
     return stepTotal;
   }
@@ -3719,8 +3728,36 @@ function _mirrorOffset(offset, wallLen, ow) {
   return Math.max(0, Math.min(wallLen - ow, wallLen - ow - offset));
 }
 
+// Resolve a wall object by id, including the step-down section's virtual walls.
+// Step eave walls run the step length; the step far gable runs the building width.
+function resolveWallObj(wallId) {
+  var _W = (typeof WALLS!=='undefined' ? WALLS : (window._WALLS||[]));
+  var w = _W.find(function(w){return w.id===wallId;});
+  if (w) return w;
+  var ss = window._stepSection;
+  if (ss && ss.active && /^step-/.test(wallId||'')) {
+    if (wallId==='step-left')  return { id:'step-left',  label:'Step Left Eave',  len: ss.length, encl:'enclosed', postSpacing:10, _step:true };
+    if (wallId==='step-right') return { id:'step-right', label:'Step Right Eave', len: ss.length, encl:'enclosed', postSpacing:10, _step:true };
+    if (wallId==='step-front') return { id:'step-front', label:'Step Far Gable',  len: (window._Q||Q).w, encl:'enclosed', postSpacing:10, gableType:'metal', _step:true };
+  }
+  return { len:(window._Q||Q).l, label:'Wall' };
+}
+window.resolveWallObj = resolveWallObj;
+// Split the door list into main-building doors vs. step-down doors (remapped to base walls
+// so the existing per-wall material logic runs against them at the step's dimensions).
+window._stepDoorScope = function() {
+  var all = window._allDoors || [];
+  var main = all.filter(function(d){ return !/^step-/.test(d.wall||''); });
+  var step = all.filter(function(d){ return /^step-/.test(d.wall||''); }).map(function(d){
+    var nd = Object.assign({}, d);
+    nd.wall = (d.wall==='step-left') ? 'left' : (d.wall==='step-right') ? 'right' : 'front';
+    return nd;
+  });
+  return { main: main, step: step };
+};
+
 function makeStrip(obj, getW, wallKey, cls, onUpdate) {
-  var wall = WALLS.find(function(w){return w.id===obj.wall;})||{len:Q.l, label:'Wall'};
+  var wall = resolveWallObj(obj.wall);
   var wallLen = wall.len;
   var ow = getW(obj);
   var mirrored = _wallMirrored(obj.wall);
@@ -3749,7 +3786,7 @@ function makeStrip(obj, getW, wallKey, cls, onUpdate) {
 
 function nudgeOpening(cls, id, dir){
   var obj = getOpening(cls,id); if(!obj) return;
-  var wall=WALLS.find(function(w){return w.id===obj.wall;})||{len:Q.l};
+  var wall=resolveWallObj(obj.wall);
   var ow=getOpeningW(cls,obj);
   var actualDir = _wallMirrored(obj.wall) ? -dir : dir;
   obj.offset=Math.max(0,Math.min(wall.len-ow,(obj.offset||0)+actualDir));
@@ -3759,7 +3796,7 @@ function nudgeOpening(cls, id, dir){
 // Fine nudge — 1 inch increments (dir is +/-1 inch)
 function nudgeOpeningInch(cls, id, dir){
   var obj = getOpening(cls,id); if(!obj) return;
-  var wall=WALLS.find(function(w){return w.id===obj.wall;})||{len:Q.l};
+  var wall=resolveWallObj(obj.wall);
   var ow=getOpeningW(cls,obj);
   var actualDir = _wallMirrored(obj.wall) ? -dir : dir;
   obj.offset=Math.max(0,Math.min(wall.len-ow,(obj.offset||0)+actualDir/12));
@@ -3768,7 +3805,7 @@ function nudgeOpeningInch(cls, id, dir){
 }
 function centerOpening(cls,id){
   var obj=getOpening(cls,id); if(!obj) return;
-  var wall=WALLS.find(function(w){return w.id===obj.wall;})||{len:Q.l};
+  var wall=resolveWallObj(obj.wall);
   var ow=getOpeningW(cls,obj);
   obj.offset=Math.max(0,(wall.len-ow)/2);
   obj.offset=Math.round(obj.offset*12)/12;
@@ -3975,10 +4012,12 @@ function renderGarageDoors(){
   var list=document.getElementById('garageDoorList'); list.innerHTML='';
   var garageDoorsOnly = allDoors.filter(function(d){return d.type==='garage';});
   garageDoorsOnly.forEach(function(d){
-    var wall=WALLS.find(function(w){return w.id===d.wall;})||{len:Q.l};
+    var wall=resolveWallObj(d.wall);
     var div=document.createElement('div'); div.className='opening-card';
-    var wallOpts=['back','front','left','right'].map(function(wid){
-      var wl=WALLS.find(function(w){return w.id===wid;});
+    var _wallIds=['back','front','left','right'];
+    if (window._stepSection && window._stepSection.active) _wallIds=_wallIds.concat(['step-left','step-right','step-front']);
+    var wallOpts=_wallIds.map(function(wid){
+      var wl=resolveWallObj(wid);
       return '<option value="'+wid+'"'+(d.wall===wid?' selected':'')+'>'+wl.label+'</option>';
     }).join('');
     var filteredSizes = GARAGE_SIZES.filter(function(s){ return parseInt(s.split('x')[1]) <= maxDoorH; });
@@ -14657,6 +14696,43 @@ function applyVoiceQuote(parsed, overlay) {
               grps.walls.add(mkQ([_ex, 0, sZb, _ex, sh2, sZb, _ex, sh2, sZb + _stTW, _ex, 0, sZb + _stTW], _stTrimMat));
               var _cgz = sZb - 0.012;              // gable-plane leg (proud in z), runs toward center
               grps.walls.add(mkQ([_cx, 0, _cgz, _cx, sh2, _cgz, _cx - sx*_stTW, sh2, _cgz, _cx - sx*_stTW, 0, _cgz], _stTrimMat));
+            });
+
+            // ── Garage doors on the step section (step-left / step-right / step-front) ──
+            (window._allDoors||[]).filter(function(d){ return d.type==='garage' && !d.framedOpening && /^step-/.test(d.wall||''); }).forEach(function(d){
+              var dw = (d.w||10)*Sc, dh = Math.min((d.h||8)*Sc, sh2);
+              var off = (d.offset||0)*Sc;
+              var col = pc(d.doorColor || 'White');
+              var dCol = (((Math.round((col>>16&0xff)*0.72))<<16)|((Math.round((col>>8&0xff)*0.72))<<8)|(Math.round((col&0xff)*0.72)));
+              var mDoor = new THREE.MeshBasicMaterial({color:col, side:THREE.DoubleSide});
+              var mFrm  = new THREE.MeshBasicMaterial({color:dCol, side:THREE.DoubleSide});
+              var mSecn = new THREE.LineBasicMaterial({color:0x000000, transparent:true, opacity:0.22});
+              var nSec = Math.max(3, Math.round((d.h||8)/2)), fw = 0.02, fwd = 0.018;
+              function _stDoorLabel(px, py, pz){
+                var cv=document.createElement('canvas'); cv.width=256; cv.height=64;
+                var c2=cv.getContext('2d'); c2.fillStyle='#f0d890'; c2.font='bold 32px monospace'; c2.textAlign='center'; c2.textBaseline='middle'; c2.fillText(d.size||'',128,32);
+                var lb=new THREE.Mesh(new THREE.PlaneGeometry(dw*0.5, dw*0.12), new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(cv), transparent:true, side:THREE.DoubleSide, depthTest:false}));
+                lb.position.set(px,py,pz); dimLabels.push(lb); grps.doors.add(lb);
+              }
+              if (d.wall==='step-front') {
+                var x0=-sw/2+off, x1=x0+dw, fz=sZb-fwd;
+                grps.doors.add(mkQ([x0,0,fz, x1,0,fz, x1,dh,fz, x0,dh,fz], mDoor));
+                grps.doors.add(mkQ([x0,0,fz-0.001, x0+fw,0,fz-0.001, x0+fw,dh,fz-0.001, x0,dh,fz-0.001], mFrm));
+                grps.doors.add(mkQ([x1-fw,0,fz-0.001, x1,0,fz-0.001, x1,dh,fz-0.001, x1-fw,dh,fz-0.001], mFrm));
+                grps.doors.add(mkQ([x0,dh-fw,fz-0.001, x1,dh-fw,fz-0.001, x1,dh,fz-0.001, x0,dh,fz-0.001], mFrm));
+                for (var s1=1;s1<nSec;s1++){ var ly=dh*s1/nSec; grps.doors.add(mkL([new THREE.Vector3(x0,ly,fz-0.002), new THREE.Vector3(x1,ly,fz-0.002)], mSecn)); }
+                _stDoorLabel((x0+x1)/2, dh+0.12, fz);
+              } else {
+                var sgn=(d.wall==='step-right')?1:-1;
+                var fx=sgn*sw/2 + sgn*fwd, fx2=fx+sgn*0.001;
+                var z0=sZf-off, z1=z0-dw;
+                grps.doors.add(mkQ([fx,0,z0, fx,0,z1, fx,dh,z1, fx,dh,z0], mDoor));
+                grps.doors.add(mkQ([fx2,0,z0, fx2,0,z0-fw, fx2,dh,z0-fw, fx2,dh,z0], mFrm));
+                grps.doors.add(mkQ([fx2,0,z1+fw, fx2,0,z1, fx2,dh,z1, fx2,dh,z1+fw], mFrm));
+                grps.doors.add(mkQ([fx2,dh-fw,z0, fx2,dh-fw,z1, fx2,dh,z1, fx2,dh,z0], mFrm));
+                for (var s2=1;s2<nSec;s2++){ var ly2=dh*s2/nSec; grps.doors.add(mkL([new THREE.Vector3(fx-sgn*0.001,ly2,z0), new THREE.Vector3(fx-sgn*0.001,ly2,z1)], mSecn)); }
+                _stDoorLabel(fx, dh+0.12, (z0+z1)/2);
+              }
             });
 
           } catch(stepErr) {
@@ -37455,13 +37531,17 @@ window.openMaterialsModal = function(initialTab) {
   ];
   types.forEach(function(t) {
     try {
+      var _odMain = window._allDoors; window._allDoors = window._stepDoorScope().main;
       var res1 = window.SauceMaterials.calculate(t.key);
+      window._allDoors = _odMain;
       // If step section is active, run calc for step section and combine
       var ss = window._stepSection;
       if (ss && ss.active && res1 && res1.items) {
         var _origQ = window._Q;
+        var _origDoorsMod = window._allDoors;
         try {
           window._Q = Object.assign({}, _origQ, { l: ss.length, h: ss.height });
+          window._allDoors = window._stepDoorScope().step;
           var res2 = window.SauceMaterials.calculate(t.key);
           if (res2 && res2.items) {
             // Single-per-quote items — only keep one copy (not additive)
@@ -37506,6 +37586,7 @@ window.openMaterialsModal = function(initialTab) {
           console.warn('[Materials] Step section calc failed:', stepE.message);
         } finally {
           window._Q = _origQ;
+          window._allDoors = _origDoorsMod;
         }
       }
       results[t.key] = res1;
