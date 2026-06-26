@@ -3722,7 +3722,7 @@ function syncRendererColors() {
 // We mirror for those walls so dragging right = moving right in 3D.
 // ═══════════════════════════════════════════════════════
 function _wallMirrored(wallId) {
-  return wallId === 'right' || wallId === 'front';
+  return wallId === 'right' || wallId === 'front' || wallId === 'step-right' || wallId === 'step-front';
 }
 function _mirrorOffset(offset, wallLen, ow) {
   return Math.max(0, Math.min(wallLen - ow, wallLen - ow - offset));
@@ -14698,40 +14698,74 @@ function applyVoiceQuote(parsed, overlay) {
               grps.walls.add(mkQ([_cx, 0, _cgz, _cx, sh2, _cgz, _cx - sx*_stTW, sh2, _cgz, _cx - sx*_stTW, 0, _cgz], _stTrimMat));
             });
 
-            // ── Garage doors on the step section (step-left / step-right / step-front) ──
+            // ── Garage doors on the step section — rendered exactly like main building doors ──
             (window._allDoors||[]).filter(function(d){ return d.type==='garage' && !d.framedOpening && /^step-/.test(d.wall||''); }).forEach(function(d){
+              var isGd = (d.wall==='step-front');
               var dw = (d.w||10)*Sc, dh = Math.min((d.h||8)*Sc, sh2);
-              var off = (d.offset||0)*Sc;
-              var col = pc(d.doorColor || 'White');
-              var dCol = (((Math.round((col>>16&0xff)*0.72))<<16)|((Math.round((col>>8&0xff)*0.72))<<8)|(Math.round((col&0xff)*0.72)));
-              var mDoor = new THREE.MeshBasicMaterial({color:col, side:THREE.DoubleSide});
-              var mFrm  = new THREE.MeshBasicMaterial({color:dCol, side:THREE.DoubleSide});
-              var mSecn = new THREE.LineBasicMaterial({color:0x000000, transparent:true, opacity:0.22});
-              var nSec = Math.max(3, Math.round((d.h||8)/2)), fw = 0.02, fwd = 0.018;
-              function _stDoorLabel(px, py, pz){
-                var cv=document.createElement('canvas'); cv.width=256; cv.height=64;
-                var c2=cv.getContext('2d'); c2.fillStyle='#f0d890'; c2.font='bold 32px monospace'; c2.textAlign='center'; c2.textBaseline='middle'; c2.fillText(d.size||'',128,32);
-                var lb=new THREE.Mesh(new THREE.PlaneGeometry(dw*0.5, dw*0.12), new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(cv), transparent:true, side:THREE.DoubleSide, depthTest:false}));
-                lb.position.set(px,py,pz); dimLabels.push(lb); grps.doors.add(lb);
-              }
-              if (d.wall==='step-front') {
-                var x0=-sw/2+off, x1=x0+dw, fz=sZb-fwd;
-                grps.doors.add(mkQ([x0,0,fz, x1,0,fz, x1,dh,fz, x0,dh,fz], mDoor));
-                grps.doors.add(mkQ([x0,0,fz-0.001, x0+fw,0,fz-0.001, x0+fw,dh,fz-0.001, x0,dh,fz-0.001], mFrm));
-                grps.doors.add(mkQ([x1-fw,0,fz-0.001, x1,0,fz-0.001, x1,dh,fz-0.001, x1-fw,dh,fz-0.001], mFrm));
-                grps.doors.add(mkQ([x0,dh-fw,fz-0.001, x1,dh-fw,fz-0.001, x1,dh,fz-0.001, x0,dh,fz-0.001], mFrm));
-                for (var s1=1;s1<nSec;s1++){ var ly=dh*s1/nSec; grps.doors.add(mkL([new THREE.Vector3(x0,ly,fz-0.002), new THREE.Vector3(x1,ly,fz-0.002)], mSecn)); }
-                _stDoorLabel((x0+x1)/2, dh+0.12, fz);
+              var center = isGd ? (-sw/2 + (d.offset||0)*Sc + dw/2) : (sZb + (d.offset||0)*Sc + dw/2);
+              var dMat = new THREE.MeshBasicMaterial({ color: pc(d.doorColor || 'White'), side: THREE.DoubleSide });
+              var numRows = Math.max(3, Math.min(5, Math.round(d.h / 2)));
+              var numCols = Math.max(2, Math.min(4, Math.round(d.w / 2.5)));
+              var frameW = dw*0.012, stileW = dw*0.004, railH = dh*0.016, bevel = frameW*0.45, hd = dw/2;
+              var hasWin = document.getElementById('sf_gdWindows') && document.getElementById('sf_gdWindows').checked;
+              var doorHex = pc(d.doorColor || 'White');
+              var mFrame = new THREE.MeshBasicMaterial({ color: doorHex, side: THREE.DoubleSide });
+              var mPanel = new THREE.MeshBasicMaterial({ color: doorHex, side: THREE.DoubleSide });
+              var sDark = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.30 });
+              var sMid  = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.14 });
+              var sLight = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.32 });
+              var mGDGlass = new THREE.MeshBasicMaterial({ color: 0x87ceeb, transparent: true, opacity: 0.6, side: THREE.DoubleSide });
+              function _stLabel(px,py,pz){ var cv=document.createElement('canvas'); cv.width=256; cv.height=64; var c2=cv.getContext('2d'); c2.fillStyle='#f0d890'; c2.font='bold 32px monospace'; c2.textAlign='center'; c2.textBaseline='middle'; c2.fillText(d.size||'',128,32); var lb=new THREE.Mesh(new THREE.PlaneGeometry(dw*0.5, dw*0.12), new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(cv), transparent:true, side:THREE.DoubleSide, depthTest:false})); lb.position.set(px,py,pz); dimLabels.push(lb); grps.doors.add(lb); }
+              if (isGd) {
+                var zP = sZb, zo = -0.015;
+                var fz0 = zP+zo, fz1 = zP+zo*1.4, fz2 = zP+zo*1.8, fz3 = zP+zo*2.2;
+                var pan = new THREE.Mesh(new THREE.PlaneGeometry(dw, dh), dMat); pan.position.set(center, dh/2, fz0); grps.doors.add(pan);
+                grps.doors.add(mkQ([center-hd,0,fz1, center-hd+frameW,0,fz1, center-hd+frameW,dh,fz1, center-hd,dh,fz1], mFrame));
+                grps.doors.add(mkQ([center+hd-frameW,0,fz1, center+hd,0,fz1, center+hd,dh,fz1, center+hd-frameW,dh,fz1], mFrame));
+                grps.doors.add(mkQ([center-hd,0,fz1, center+hd,0,fz1, center+hd,frameW,fz1, center-hd,frameW,fz1], mFrame));
+                grps.doors.add(mkQ([center-hd,dh-frameW,fz1, center+hd,dh-frameW,fz1, center+hd,dh,fz1, center-hd,dh,fz1], mFrame));
+                var innerW = dw-frameW*2, colW = (innerW - stileW*(numCols-1))/numCols;
+                for (var ci=1; ci<numCols; ci++){ var mx=center-hd+frameW+ci*colW+(ci-1)*stileW; grps.doors.add(mkQ([mx,frameW,fz1, mx+stileW,frameW,fz1, mx+stileW,dh-frameW,fz1, mx,dh-frameW,fz1], mFrame)); }
+                var innerH = dh-frameW*2, rowH2 = (innerH - railH*(numRows-1))/numRows;
+                for (var ri=1; ri<numRows; ri++){ var ry=frameW+ri*rowH2+(ri-1)*railH; grps.doors.add(mkQ([center-hd+frameW,ry,fz1, center+hd-frameW,ry,fz1, center+hd-frameW,ry+railH,fz1, center-hd+frameW,ry+railH,fz1], mFrame)); }
+                for (var ri2=0; ri2<numRows; ri2++){ var cellY0=frameW+ri2*(rowH2+railH), cellY1=cellY0+rowH2, isTop=(ri2===numRows-1);
+                  for (var ci2=0; ci2<numCols; ci2++){ var cellX0=center-hd+frameW+ci2*(colW+stileW), cellX1=cellX0+colW;
+                    if (isTop && hasWin){ var wp=bevel*0.8, wx0=cellX0+wp, wx1=cellX1-wp, wy0=cellY0+wp, wy1=cellY1-wp, ww=wx1-wx0, wh=wy1-wy0;
+                      if (ww>0&&wh>0){ var glass=new THREE.Mesh(new THREE.PlaneGeometry(ww,wh), mGDGlass); glass.position.set(wx0+ww/2, wy0+wh/2, fz2); grps.doors.add(glass);
+                        grps.doors.add(mkL([new THREE.Vector3(wx0,wy0,fz3),new THREE.Vector3(wx0,wy1,fz3),new THREE.Vector3(wx1,wy1,fz3),new THREE.Vector3(wx1,wy0,fz3),new THREE.Vector3(wx0,wy0,fz3)], new THREE.LineBasicMaterial({color:doorHex,transparent:true,opacity:0.9}))); } }
+                    else { var px0=cellX0+bevel, px1=cellX1-bevel, py0=cellY0+bevel, py1=cellY1-bevel, pw=px1-px0, ph=py1-py0;
+                      if (pw>0&&ph>0){ var pm=new THREE.Mesh(new THREE.PlaneGeometry(pw,ph), mPanel); pm.position.set(px0+pw/2, py0+ph/2, fz2); grps.doors.add(pm); }
+                      grps.doors.add(mkL([new THREE.Vector3(cellX0,cellY1,fz3),new THREE.Vector3(cellX0+bevel,cellY1-bevel,fz3),new THREE.Vector3(cellX1-bevel,cellY1-bevel,fz3),new THREE.Vector3(cellX1,cellY1,fz3)], sLight));
+                      grps.doors.add(mkL([new THREE.Vector3(cellX0,cellY0,fz3),new THREE.Vector3(cellX0+bevel,cellY0+bevel,fz3),new THREE.Vector3(cellX1-bevel,cellY0+bevel,fz3),new THREE.Vector3(cellX1,cellY0,fz3)], sDark));
+                      grps.doors.add(mkL([new THREE.Vector3(cellX0,cellY0,fz3),new THREE.Vector3(cellX0+bevel,cellY0+bevel,fz3),new THREE.Vector3(cellX0+bevel,cellY1-bevel,fz3),new THREE.Vector3(cellX0,cellY1,fz3)], sMid));
+                      grps.doors.add(mkL([new THREE.Vector3(cellX1,cellY0,fz3),new THREE.Vector3(cellX1-bevel,cellY0+bevel,fz3),new THREE.Vector3(cellX1-bevel,cellY1-bevel,fz3),new THREE.Vector3(cellX1,cellY1,fz3)], sMid)); } } }
+                grps.doors.add(mkL([new THREE.Vector3(center-hd,0,fz3),new THREE.Vector3(center-hd,dh,fz3),new THREE.Vector3(center+hd,dh,fz3),new THREE.Vector3(center+hd,0,fz3),new THREE.Vector3(center-hd,0,fz3)], sDark));
+                _stLabel(center, dh+0.15, fz1);
               } else {
-                var sgn=(d.wall==='step-right')?1:-1;
-                var fx=sgn*sw/2 + sgn*fwd, fx2=fx+sgn*0.001;
-                var z0=sZf-off, z1=z0-dw;
-                grps.doors.add(mkQ([fx,0,z0, fx,0,z1, fx,dh,z1, fx,dh,z0], mDoor));
-                grps.doors.add(mkQ([fx2,0,z0, fx2,0,z0-fw, fx2,dh,z0-fw, fx2,dh,z0], mFrm));
-                grps.doors.add(mkQ([fx2,0,z1+fw, fx2,0,z1, fx2,dh,z1, fx2,dh,z1+fw], mFrm));
-                grps.doors.add(mkQ([fx2,dh-fw,z0, fx2,dh-fw,z1, fx2,dh,z1, fx2,dh,z0], mFrm));
-                for (var s2=1;s2<nSec;s2++){ var ly2=dh*s2/nSec; grps.doors.add(mkL([new THREE.Vector3(fx-sgn*0.001,ly2,z0), new THREE.Vector3(fx-sgn*0.001,ly2,z1)], mSecn)); }
-                _stDoorLabel(fx, dh+0.12, (z0+z1)/2);
+                var sgn=(d.wall==='step-right')?1:-1, xP=sgn*sw/2, xo=sgn*0.015, flip2=(d.wall==='step-left');
+                var fx1=xP+xo*1.4, fx2=xP+xo*1.8, fx3=xP+xo*2.2, fx0=xP+xo;
+                var pan2=new THREE.Mesh(new THREE.PlaneGeometry(dw,dh), dMat); pan2.position.set(fx0, dh/2, center); pan2.rotation.y = flip2?Math.PI/2:-Math.PI/2; grps.doors.add(pan2);
+                function sdQ(x,y0,z0,y1,z1,mat){ grps.doors.add(mkQ([x,y0,z0, x,y0,z1, x,y1,z1, x,y1,z0], mat)); }
+                function sdL(x,pts,mat){ grps.doors.add(mkL(pts.map(function(p){return new THREE.Vector3(x,p[0],p[1]);}), mat)); }
+                sdQ(fx1,0,center-dw/2,dh,center-dw/2+frameW,mFrame); sdQ(fx1,0,center+dw/2-frameW,dh,center+dw/2,mFrame);
+                sdQ(fx1,0,center-dw/2,frameW,center+dw/2,mFrame); sdQ(fx1,dh-frameW,center-dw/2,dh,center+dw/2,mFrame);
+                var innerW2=dw-frameW*2, colW2=(innerW2-stileW*(numCols-1))/numCols;
+                for (var cci=1; cci<numCols; cci++){ var mz=center-dw/2+frameW+cci*colW2+(cci-1)*stileW; sdQ(fx1,frameW,mz,dh-frameW,mz+stileW,mFrame); }
+                var innerH2=dh-frameW*2, rowH3=(innerH2-railH*(numRows-1))/numRows;
+                for (var rri=1; rri<numRows; rri++){ var ry2=frameW+rri*rowH3+(rri-1)*railH; sdQ(fx1,ry2,center-dw/2+frameW,ry2+railH,center+dw/2-frameW,mFrame); }
+                for (var rri2=0; rri2<numRows; rri2++){ var cy0=frameW+rri2*(rowH3+railH), cy1=cy0+rowH3, isTop2=(rri2===numRows-1);
+                  for (var cci2=0; cci2<numCols; cci2++){ var cz0=center-dw/2+frameW+cci2*(colW2+stileW), cz1=cz0+colW2;
+                    if (isTop2 && hasWin){ var wp2=bevel*0.8, wz0=cz0+wp2, wz1=cz1-wp2, wy0b=cy0+wp2, wy1b=cy1-wp2, ww3=wz1-wz0, wh3=wy1b-wy0b;
+                      if (ww3>0&&wh3>0){ var g2=new THREE.Mesh(new THREE.PlaneGeometry(ww3,wh3), mGDGlass); g2.position.set(fx2, wy0b+wh3/2, wz0+ww3/2); g2.rotation.y=flip2?Math.PI/2:-Math.PI/2; grps.doors.add(g2);
+                        sdL(fx3,[[wy0b,wz0],[wy1b,wz0],[wy1b,wz1],[wy0b,wz1],[wy0b,wz0]], new THREE.LineBasicMaterial({color:doorHex,transparent:true,opacity:0.9})); } }
+                    else { var pz0=cz0+bevel, pz1=cz1-bevel, py0b=cy0+bevel, py1b=cy1-bevel, pw2=pz1-pz0, ph2=py1b-py0b;
+                      if (pw2>0&&ph2>0){ var pm2=new THREE.Mesh(new THREE.PlaneGeometry(pw2,ph2), mPanel); pm2.position.set(fx2, py0b+ph2/2, pz0+pw2/2); pm2.rotation.y=flip2?Math.PI/2:-Math.PI/2; grps.doors.add(pm2); }
+                      sdL(fx3,[[cy1,cz0],[cy1-bevel,cz0+bevel],[cy1-bevel,cz1-bevel],[cy1,cz1]], sLight);
+                      sdL(fx3,[[cy0,cz0],[cy0+bevel,cz0+bevel],[cy0+bevel,cz1-bevel],[cy0,cz1]], sDark);
+                      sdL(fx3,[[cy0,cz0],[cy0+bevel,cz0+bevel],[cy1-bevel,cz0+bevel],[cy1,cz0]], sMid);
+                      sdL(fx3,[[cy0,cz1],[cy0+bevel,cz1-bevel],[cy1-bevel,cz1-bevel],[cy1,cz1]], sMid); } } }
+                sdL(fx3,[[0,center-dw/2],[dh,center-dw/2],[dh,center+dw/2],[0,center+dw/2],[0,center-dw/2]], sDark);
+                _stLabel(fx1, dh+0.15, center);
               }
             });
 
