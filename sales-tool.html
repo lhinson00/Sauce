@@ -55,6 +55,7 @@
 html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);}
 
 .shell{display:flex;height:100vh;overflow:hidden;box-sizing:border-box;}
+body.matlist-docked .shell{padding-right:420px;}
 .left-panel{width:var(--panel-w);flex-shrink:0;display:flex;flex-direction:column;background:var(--bg);border-right:1px solid var(--border);overflow:hidden;}
 .right-pane{flex:1;position:relative;background:#1a2232;display:flex;flex-direction:column;}
 
@@ -2683,6 +2684,8 @@ function scheduleBuild() {
   clearTimeout(_buildTimer);
   _buildTimer = setTimeout(triggerBuild, 320);
 }
+// Resize the WebGL canvas to its container without rebuilding geometry (used when docking the material list).
+window._resizeRender = function(){ try { var c=document.getElementById('qgRV'); if(!c||!rrx||!window._cam) return; var w=c.clientWidth, h=c.clientHeight; if(w>0&&h>0){ rrx.setSize(w,h); window._cam.aspect=w/h; window._cam.updateProjectionMatrix(); } } catch(e){} };
 function scheduleBuildAndPrice() {
   scheduleBuild();
   schedulePrice();
@@ -9775,6 +9778,7 @@ function applyVoiceQuote(parsed, overlay) {
             const aspectRatio = Math.max(c.clientWidth / c.clientHeight, 0.1);
             console.log('[3D] Creating camera with aspect ratio:', aspectRatio);
             const cam = new THREE.PerspectiveCamera(38, aspectRatio, 0.1, 200);
+            try { window._cam = cam; } catch(e){}
             
             // 8. Reuse existing WebGL renderer if available, otherwise create new one
             if (rrx) {
@@ -10817,8 +10821,9 @@ function applyVoiceQuote(parsed, overlay) {
                                 if (_isMono) addBracket(aX, gz, grps.posts, slabH);
                             }
                         }
-                        if (_ew.includes('gable1')) addGableEndRow(-ssl/2 + shedCenterOff);
-                        if (_ew.includes('gable2')) addGableEndRow( ssl/2 + shedCenterOff);
+                        var _shedHasWallsEW = (sc.encl !== 'open' && sc.encl !== 'roofonly'); // open/roofonly = no gable infill posts
+                        if (_shedHasWallsEW && _ew.includes('gable1')) addGableEndRow(-ssl/2 + shedCenterOff);
+                        if (_shedHasWallsEW && _ew.includes('gable2')) addGableEndRow( ssl/2 + shedCenterOff);
                     } else {
                         const oZ = sc.wall === 'front' ? -sl/2 - ssw : sl/2 + ssw;
                         const aZ = sc.wall === 'front' ? -sl/2 : sl/2;
@@ -10855,8 +10860,9 @@ function applyVoiceQuote(parsed, overlay) {
                                 if (_isMono) addBracket(gx, aZ, grps.posts, slabH);
                             }
                         }
-                        if (_ew.includes('gable1')) addGableEndRowZ(-ssl/2 + shedCenterOff);
-                        if (_ew.includes('gable2')) addGableEndRowZ( ssl/2 + shedCenterOff);
+                        var _shedHasWallsFB = (sc.encl !== 'open' && sc.encl !== 'roofonly'); // open/roofonly = no gable infill posts
+                        if (_shedHasWallsFB && _ew.includes('gable1')) addGableEndRowZ(-ssl/2 + shedCenterOff);
+                        if (_shedHasWallsFB && _ew.includes('gable2')) addGableEndRowZ( ssl/2 + shedCenterOff);
                     }
                 }
             }
@@ -35303,6 +35309,7 @@ window.closeMaterialsModal = function() {
   var m = document.getElementById('sauceMaterialsModal');
   if (m) m.remove();
   window._sessionOverrides = {};
+  if (document.body.classList.contains('matlist-docked')) { document.body.classList.remove('matlist-docked'); requestAnimationFrame(window._resizeRender); }
 };
 // ─── MATERIAL LIST OVERRIDES (salesman edits to the computed list) ─────────────
 // Per-build-type set of deletes / per-line edits / added lines. Sticky across recalcs
@@ -37773,6 +37780,18 @@ window.openMaterialsModal = function(initialTab) {
   var isMobile = window.innerWidth < 600;
   panel.style.cssText = 'background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:' + (isMobile?'0':'16px') + ';padding:16px 14px 12px;width:' + (isMobile?'100%':'90%') + ';max-width:600px;max-height:' + (isMobile?'100vh':'88vh') + ';height:' + (isMobile?'100dvh':'auto') + ';display:flex;flex-direction:column;font-family:Outfit,sans-serif;gap:8px;';
   if (isMobile) overlay.style.alignItems = 'flex-start';
+  // Desktop (wide): dock the material list as a right-hand column instead of a blocking overlay,
+  // so the 3D render stays interactive while inspecting the list.
+  var _dockMode = window.innerWidth >= 1366;
+  if (_dockMode) {
+    overlay.style.cssText = 'display:flex;position:fixed;top:0;right:0;bottom:0;width:420px;background:#2e2e2e;z-index:9998;align-items:stretch;justify-content:stretch;box-shadow:-8px 0 24px rgba(0,0,0,.35);';
+    panel.style.cssText = 'background:#2e2e2e;border-left:1px solid rgba(255,130,0,.25);border-radius:0;padding:14px 12px 10px;width:100%;max-width:none;height:100%;max-height:none;display:flex;flex-direction:column;font-family:Outfit,sans-serif;gap:8px;box-sizing:border-box;';
+    document.body.classList.add('matlist-docked');
+    requestAnimationFrame(window._resizeRender);
+  } else if (document.body.classList.contains('matlist-docked')) {
+    document.body.classList.remove('matlist-docked');
+    requestAnimationFrame(window._resizeRender);
+  }
 
   // Header
   var hdr = document.createElement('div');
@@ -38099,7 +38118,7 @@ window.openMaterialsModal = function(initialTab) {
           var upB=document.createElement('button'); upB.textContent='\u25B2'; upB.title='Move up'; upB.style.cssText='background:none;border:none;color:#64748b;font-size:9px;cursor:pointer;padding:0;line-height:1;';
           var dnB=document.createElement('button'); dnB.textContent='\u25BC'; dnB.title='Move down'; dnB.style.cssText='background:none;border:none;color:#64748b;font-size:9px;cursor:pointer;padding:0;line-height:1;';
           (function(captCat, captKey){ upB.onclick=function(e){e.stopPropagation(); moveLine(captCat,captKey,-1);}; dnB.onclick=function(e){e.stopPropagation(); moveLine(captCat,captKey,1);}; })(cat, item._key);
-          ctrl.appendChild(dragH); ctrl.appendChild(delBtn); ctrl.appendChild(upB); ctrl.appendChild(dnB); row.appendChild(ctrl);
+          ctrl.appendChild(dragH); ctrl.appendChild(delBtn); if (isMobile) { ctrl.appendChild(upB); ctrl.appendChild(dnB); } row.appendChild(ctrl); // desktop: drag handle only; mobile keeps arrows (no native touch DnD)
           if (!isMobile) { dragH.draggable=true;
             (function(captCat, captKey){
               dragH.addEventListener('dragstart', function(e){ _dragKey=captKey; _dragCat=captCat; try{e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',captKey);}catch(_){} row.style.opacity='0.45'; });
