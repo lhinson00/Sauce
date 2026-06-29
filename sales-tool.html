@@ -6592,6 +6592,9 @@ window._mbGhostTransforms = function(){
   }
   return out;
 };
+window._mbActiveTransform = function(){ var abs=_mbBuildingLayout(); var a=window._activeBuilding||0; return abs[a]||{x:0,z:0,rotY:0}; };
+window._mbAllGhosts = function(){ var abs=_mbBuildingLayout(), a=window._activeBuilding||0, out=[]; for(var i=0;i<abs.length;i++){ if(i===a) continue; var d=_mbDims(i); out.push({idx:i,x:abs[i].x,z:abs[i].z,rotY:abs[i].rotY,w:d.w,l:d.l,h:d.h}); } return out; };
+window._mbCentroid = function(){ var abs=_mbBuildingLayout(); if(!abs.length) return {x:0,z:0}; var sx=0,sz=0; abs.forEach(function(t){sx+=t.x;sz+=t.z;}); return {x:sx/abs.length, z:sz/abs.length}; };
 (function(){
   if (typeof document === 'undefined') return;
   if (!document.getElementById('mbCss')){
@@ -14633,24 +14636,28 @@ function applyVoiceQuote(parsed, overlay) {
         }
         // ═══ END SINGLE SLOPE STANDALONE ══════════════════════════════════════
         Object.values(grps).forEach(g => { g.visible = true; });
-        // ── MULTI-BUILDING GHOSTS: translucent footprints of the OTHER buildings ──
-        // at their computed attach placement (active building renders full at origin).
+        // ── MULTI-BUILDING: anchor everything in Building A's frame ──
+        // Offset the active (full-geometry) building to its place relative to A,
+        // and draw the OTHER buildings as translucent footprints at their spots.
         try {
-          if (window.MULTI_BUILDING && Array.isArray(window._buildings) && window._buildings.length > 1 && window._mbGhostTransforms) {
-            window._mbGhostTransforms().forEach(function(g){
+          if (window.MULTI_BUILDING && Array.isArray(window._buildings) && window._buildings.length > 1 && window._mbActiveTransform) {
+            var _act = window._mbActiveTransform();
+            var _aRoot = new THREE.Group();
+            _aRoot.position.set(_act.x * Sc, 0, _act.z * Sc);
+            _aRoot.rotation.y = (_act.rotY || 0) * Math.PI / 180;
+            Object.values(grps).forEach(function(g){ _aRoot.add(g); });   // reparents grps (incl. dims) under the offset root
+            scene.add(_aRoot);
+            (window._mbAllGhosts ? window._mbAllGhosts() : []).forEach(function(g){
               var gw = g.w * Sc, gl = g.l * Sc, gh = (g.h || 14) * Sc;
               var geo = new THREE.BoxGeometry(gw, gh, gl);
-              var mat = new THREE.MeshStandardMaterial({ color: 0xff8200, transparent: true, opacity: 0.16, roughness: 0.9, depthWrite: false });
-              var mesh = new THREE.Mesh(geo, mat);
-              mesh.position.set(g.x * Sc, gh / 2, g.z * Sc);
-              mesh.rotation.y = (g.rotY || 0) * Math.PI / 180;
-              scene.add(mesh);
-              var edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0xff8200, transparent: true, opacity: 0.55 }));
-              edges.position.copy(mesh.position); edges.rotation.copy(mesh.rotation);
-              scene.add(edges);
+              var gm = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xff8200, transparent: true, opacity: 0.10, depthWrite: false }));
+              gm.position.set(g.x * Sc, gh / 2, g.z * Sc); gm.rotation.y = (g.rotY || 0) * Math.PI / 180; gm.renderOrder = 2; scene.add(gm);
+              var eg = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0xff8200, transparent: true, opacity: 0.6 }));
+              eg.position.copy(gm.position); eg.rotation.copy(gm.rotation); scene.add(eg);
             });
-          }
-        } catch(e) { console.warn('[mb ghosts]', e); }
+            if (window._mbCentroid){ var _c = window._mbCentroid(); window._mbTgtX = _c.x * Sc; window._mbTgtZ = _c.z * Sc; }
+          } else { window._mbTgtX = 0; window._mbTgtZ = 0; }
+        } catch(e) { window._mbTgtX = 0; window._mbTgtZ = 0; console.warn('[mb render]', e); }
         // Single slope: hide ALL main gable building groups — our geometry is in grps.shed only
         if (isSingleSlope) {
             grps.roof.visible      = false;
@@ -15008,7 +15015,7 @@ function applyVoiceQuote(parsed, overlay) {
         let ph = window._camPh !== undefined ? window._camPh : (isSingleSlope ? Math.PI * .18  : Math.PI * .14);
         let di = window._camDi !== undefined ? window._camDi : 12;
         let dr = false, pm = { x: 0, y: 0 };
-        function setC() { cam.position.set(di * Math.sin(th) * Math.cos(ph), di * Math.sin(ph) + 2, di * Math.cos(th) * Math.cos(ph)); cam.lookAt(0, sh * .4, 0); }
+        function setC() { var _tx = window._mbTgtX || 0, _tz = window._mbTgtZ || 0; cam.position.set(_tx + di * Math.sin(th) * Math.cos(ph), di * Math.sin(ph) + 2, _tz + di * Math.cos(th) * Math.cos(ph)); cam.lookAt(_tx, sh * .4, _tz); }
         setC();
         window._3d = { get th() { return th; }, set th(v) { th = v; }, get ph() { return ph; }, set ph(v) { ph = v; }, get di() { return di; }, set di(v) { di = v; }, setC, scene, cam, rrx, dimLabels, grps };
         rrx.domElement.addEventListener('pointerdown', e => { e.preventDefault(); dr = true; pm = { x: e.clientX, y: e.clientY }; rrx.domElement.setPointerCapture(e.pointerId); });
