@@ -6459,6 +6459,7 @@ function _mbEnsureInit(){
 }
 function _mbSaveActive(){
   _mbEnsureInit();
+  window._mbResultCache = {};
   if (window._buildings[window._activeBuilding]) window._buildings[window._activeBuilding].config = _mbSnapshot();
 }
 function _mbLabel(i){ return 'Building ' + String.fromCharCode(65 + i); }
@@ -6487,6 +6488,7 @@ function setActiveBuilding(idx){
 }
 function removeBuilding(idx){
   _mbEnsureInit();
+  window._mbResultCache = {};
   if (window._buildings.length <= 1 || idx <= 0) return;   // keep Building A + at least one
   window._buildings.splice(idx,1);
   window._buildings.forEach(function(b){ if(b.attach){ if(b.attach.to===idx) b.attach.to=0; else if(b.attach.to>idx) b.attach.to--; } });
@@ -34457,33 +34459,50 @@ window.SauceShipping = {
     // quiet-restoring into the live globals (no 3D/strip kick), then restore the
     // live state. Merge the per-building item lists by SKU. JSON-clone the live
     // snapshot so restoreConfig's in-place array edits can't corrupt it.
-    var liveBlob;
-    try { liveBlob = JSON.parse(JSON.stringify(serializeConfig())); }
-    catch(e){ return _single.call(this, forcedType); }
-    var arrays = [], base = null;
+    // The ACTIVE building is already loaded in live globals — price it directly,
+    // no serialize/restore. OTHER buildings change only when you switch away from
+    // them, so cache their per-forcedType results. Result: while editing, only the
+    // active building is recomputed each calc; the rest come from cache (no DOM
+    // serialize/restore), which is what keeps multi-building responsive.
+    var active = window._activeBuilding || 0;
+    var cache = window._mbResultCache || (window._mbResultCache = {});
+    var arrays = [], base = null, liveBlob = null;
     var prevQuiet = window._quietRestore;
-    // Neutralize heavy UI rebuilds during the pricing pass — restoreConfig drives
-    // calc off DATA globals, so the DOM list/grid renders are pure waste here and
-    // are the main cause of multi-building jank. Stub them, restore after.
     var _STUBS = ['renderLofts','renderInteriorWalls','renderLevelManager','_iwShowHide',
       'buildCupolaChips','renderMatAdderList','renderConcreteOpts','renderBarjoists',
       'buildWallGrid','renderGarageDoors','renderWalkDoors','renderWindows','renderSheds',
-      'renderBarjoists','updateBtn','updateStepLabel','renderMatAdderList'];
-    var _savedFns = {};
-    _STUBS.forEach(function(fn){ if (typeof window[fn] === 'function' && !_savedFns[fn]){ _savedFns[fn] = window[fn]; window[fn] = function(){}; } });
-    window._quietRestore = true; SM._inBuildingRun = true;
+      'updateBtn','updateStepLabel'];
+    var _savedFns = {}, _stubbed = false;
+    function _stubOn(){ if (_stubbed) return; _STUBS.forEach(function(fn){ if (typeof window[fn] === 'function' && !_savedFns[fn]){ _savedFns[fn] = window[fn]; window[fn] = function(){}; } }); window._quietRestore = true; _stubbed = true; }
+    SM._inBuildingRun = true;
     try {
-      window._buildings.forEach(function(entry){
+      for (var i = 0; i < window._buildings.length; i++){
+        var entry = window._buildings[i];
         var cfg = (entry && entry.config) ? entry.config : entry;
-        if (!cfg) return;
-        try { restoreConfig(cfg); } catch(e){ return; }
-        var r = _single.call(SM, forcedType);
-        if (r && Array.isArray(r.items)) { arrays.push(r.items); if (!base) base = r; }
-      });
+        var items = null;
+        if (i === active){
+          var r0 = _single.call(SM, forcedType);                 // live state, no restore
+          items = (r0 && r0.items) ? r0.items : null;
+          if (r0 && !base) base = r0;
+        } else {
+          var key = i + ':' + forcedType;
+          if (cache[key]) { items = cache[key]; }
+          else if (cfg) {
+            if (!liveBlob){ try { liveBlob = JSON.parse(JSON.stringify(serializeConfig())); } catch(e){ liveBlob = null; } }
+            _stubOn();
+            try { restoreConfig(cfg); } catch(e){ continue; }
+            var r1 = _single.call(SM, forcedType);
+            items = (r1 && r1.items) ? r1.items : null;
+            if (items) cache[key] = items;
+            if (r1 && !base) base = r1;
+          }
+        }
+        if (items) arrays.push(items);
+      }
     } finally {
-      try { restoreConfig(liveBlob); } catch(e){}
-      Object.keys(_savedFns).forEach(function(fn){ window[fn] = _savedFns[fn]; });
-      window._quietRestore = prevQuiet; SM._inBuildingRun = false;
+      if (liveBlob){ try { restoreConfig(liveBlob); } catch(e){} }
+      if (_stubbed){ Object.keys(_savedFns).forEach(function(fn){ window[fn] = _savedFns[fn]; }); window._quietRestore = prevQuiet; }
+      SM._inBuildingRun = false;
     }
     if (!base) return _single.call(this, forcedType);
     return Object.assign({}, base, {
