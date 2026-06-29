@@ -2380,6 +2380,11 @@ body.customer-mode #stab_specs { display: block !important; }
 // STATE
 // ═══════════════════════════════════════════════════════
 var Q = { w:40, l:60, h:14, pitch:4, oh:18, soffit:true, postSpacing:10, eavePS:10, gablePS:10, truss:'Wood', frameType:'post', roofColor:'Black', roofStyle:'gable' };
+// ── MULTI-BUILDING (attach standalone structures) — OFF by default; when
+// false, _buildings stays a 1-element mirror of live state and every path
+// behaves exactly as the single-building tool always has.
+window.MULTI_BUILDING = false;
+window._buildings = window._buildings || [];
 // Step-down section — zero impact when inactive
 window._stepSection = { active: false, length: 30, height: 12 };
 // roofStyle: 'gable' = standard peak roof | 'single' = single slope (monopitch/snoot)
@@ -6423,6 +6428,7 @@ function restoreConfig(cfg) {
         if (_sc4) _sc4.value = (_co.sheds[3] && _co.sheds[3].included) ? 'Yes' : 'None';
       }
     })();
+    if (!window._quietRestore) {
     scheduleBuild();
     // Fire strip immediately after restore — don't wait for scheduleBuild's 320ms + 50ms delay
     // This ensures pricing is correct the moment a quote loads, before any user interaction
@@ -6433,8 +6439,175 @@ function restoreConfig(cfg) {
     setTimeout(function() {
       try { updateStripFromLocalCalc(); } catch(e) { console.warn('[RestoreStrip2]', e); }
     }, 500);
+    } // !_quietRestore
   } catch(e){ console.error('restoreConfig error',e); }
 }
+
+// <<MB_MODULE_START>> ════════════════════════════════════════════════════════
+// MULTI-BUILDING MANAGER (Phase 2) — flag-gated; fully invisible when off.
+// A "building" = { config: serializeConfig() snapshot, attach: {to,wall,type} }.
+// window._buildings holds them; window._activeBuilding is the editing index.
+window._activeBuilding = window._activeBuilding || 0;
+function _mbEnabled(){ return !!window.MULTI_BUILDING; }
+function _mbSnapshot(){ try { return JSON.parse(JSON.stringify(serializeConfig())); } catch(e){ return serializeConfig(); } }
+function _mbEnsureInit(){
+  if (!Array.isArray(window._buildings)) window._buildings = [];
+  if (window._buildings.length === 0){
+    window._buildings.push({ config: _mbSnapshot(), attach: null });
+    window._activeBuilding = 0;
+  }
+}
+function _mbSaveActive(){
+  _mbEnsureInit();
+  if (window._buildings[window._activeBuilding]) window._buildings[window._activeBuilding].config = _mbSnapshot();
+}
+function _mbLabel(i){ return 'Building ' + String.fromCharCode(65 + i); }
+function _mbDefaultConfig(){
+  var base = _mbSnapshot();
+  base.Q = Object.assign({}, base.Q, { w:40, l:60, h:14, pitch:4, oh:18, roofStyle:'gable' });
+  base.doors=[]; base.sheds=[]; base.walkDoors=[]; base.windows=[]; base.stallPosts=[];
+  base.lofts=[]; base.interiorWalls=[]; base.levelConfigs=[]; base.floorDrains=[];
+  base.stepSection={active:false,length:30,height:12}; base.matListOverrides={};
+  return base;
+}
+function addBuilding(){
+  _mbSaveActive();
+  window._buildings.push({ config: _mbDefaultConfig(), attach: { to:0, wall:'back', type:'linear' } });
+  setActiveBuilding(window._buildings.length - 1);
+}
+function setActiveBuilding(idx){
+  _mbEnsureInit();
+  if (idx < 0 || idx >= window._buildings.length) return;
+  if (idx !== window._activeBuilding){
+    _mbSaveActive();
+    window._activeBuilding = idx;
+    try { restoreConfig(window._buildings[idx].config); } catch(e){ console.error('switch building', e); }
+  }
+  renderBuildingBar();
+}
+function removeBuilding(idx){
+  _mbEnsureInit();
+  if (window._buildings.length <= 1 || idx <= 0) return;   // keep Building A + at least one
+  window._buildings.splice(idx,1);
+  window._buildings.forEach(function(b){ if(b.attach){ if(b.attach.to===idx) b.attach.to=0; else if(b.attach.to>idx) b.attach.to--; } });
+  if (window._activeBuilding >= window._buildings.length) window._activeBuilding = window._buildings.length-1;
+  else if (window._activeBuilding > idx) window._activeBuilding--;
+  try { restoreConfig(window._buildings[window._activeBuilding].config); } catch(e){}
+  renderBuildingBar();
+}
+function setAttach(idx, field, value){
+  if (!window._buildings[idx]) return;
+  if (!window._buildings[idx].attach) window._buildings[idx].attach = { to:0, wall:'back', type:'linear' };
+  if (field==='to') value = parseInt(value,10);
+  window._buildings[idx].attach[field] = value;
+}
+function renderBuildingBar(){
+  if (typeof document === 'undefined') return;
+  var host = document.getElementById('mbBar');
+  if (!host){
+    var lp = document.querySelector('.left-panel'); if (!lp) return;
+    host = document.createElement('div'); host.id='mbBar'; lp.insertBefore(host, lp.firstChild);
+  }
+  if (!_mbEnabled()){ host.style.display='none'; host.innerHTML=''; return; }
+  _mbEnsureInit();
+  host.style.display='block';
+  var act = window._activeBuilding;
+  var tabs = window._buildings.map(function(b,i){
+    var x = (i>0) ? '<span class="mb-x" data-rm="'+i+'" title="Remove">&#10005;</span>' : '';
+    return '<button class="mb-tab'+(i===act?' on':'')+'" data-go="'+i+'">'+_mbLabel(i)+x+'</button>';
+  }).join('');
+  var attachRow = '';
+  if (act > 0){
+    var at = window._buildings[act].attach || {to:0,wall:'back',type:'linear'};
+    var toOpts = window._buildings.map(function(b,i){ return i===act?'':'<option value="'+i+'"'+(at.to===i?' selected':'')+'>'+_mbLabel(i)+'</option>'; }).join('');
+    var wallOpts = ['front','back','left','right'].map(function(w){ return '<option value="'+w+'"'+(at.wall===w?' selected':'')+'>'+w.charAt(0).toUpperCase()+w.slice(1)+'</option>'; }).join('');
+    var typeOpts = ['linear','perpendicular'].map(function(t){ return '<option value="'+t+'"'+(at.type===t?' selected':'')+'>'+t.charAt(0).toUpperCase()+t.slice(1)+'</option>'; }).join('');
+    attachRow = '<div class="mb-attach"><span>Attach to</span><select data-at="to">'+toOpts+'</select>'
+      + '<span>wall</span><select data-at="wall">'+wallOpts+'</select><select data-at="type">'+typeOpts+'</select></div>';
+  }
+  host.innerHTML = '<div class="mb-tabs">'+tabs+'<button class="mb-add" data-add="1">+ Add</button></div>'+attachRow;
+  Array.prototype.forEach.call(host.querySelectorAll('.mb-tab'), function(b){ b.onclick=function(e){ if(e.target && e.target.classList && e.target.classList.contains('mb-x')) return; setActiveBuilding(parseInt(b.getAttribute('data-go'),10)); }; });
+  Array.prototype.forEach.call(host.querySelectorAll('.mb-x'), function(s){ s.onclick=function(e){ e.stopPropagation(); removeBuilding(parseInt(s.getAttribute('data-rm'),10)); }; });
+  var ab = host.querySelector('.mb-add'); if(ab) ab.onclick=function(){ addBuilding(); };
+  Array.prototype.forEach.call(host.querySelectorAll('select[data-at]'), function(sel){ sel.onchange=function(){ setAttach(act, sel.getAttribute('data-at'), sel.value); renderBuildingBar(); try{ if(window.scheduleBuild) scheduleBuild(); }catch(e){} }; });
+}
+// ── PLACEMENT MATH (pure) ─────────────────────────────────────────────────────
+// width->X, length->Z, left=-X right=+X front=-Z back=+Z (matches renderer).
+function _mbRot(dx, dz, deg){ var r=deg*Math.PI/180, c=Math.cos(r), s=Math.sin(r); return { x: dx*c - dz*s, z: dx*s + dz*c }; }
+function computeBuildingPlacement(parent, B, attach){
+  // parent/B: {w,l}; attach: {wall,type}. Returns center of B vs parent center (feet) + rotY(deg).
+  var perp = (attach && attach.type === 'perpendicular');
+  var wall = (attach && attach.wall) || 'back';
+  var rotY = perp ? 90 : 0, x = 0, z = 0;
+  if (wall === 'front' || wall === 'back'){
+    var depZ = perp ? B.w : B.l;               // B dimension facing the wall (Z)
+    z = (wall === 'back' ? 1 : -1) * (parent.l/2 + depZ/2);
+  } else {
+    var depX = perp ? B.l : B.w;               // B dimension facing the wall (X)
+    x = (wall === 'right' ? 1 : -1) * (parent.w/2 + depX/2);
+  }
+  return { x:x, z:z, rotY:rotY };
+}
+function _mbDims(i){
+  var live = (i === window._activeBuilding);
+  var Qd = live ? window._Q : (window._buildings[i] && window._buildings[i].config && window._buildings[i].config.Q);
+  Qd = Qd || { w:40, l:60, h:14 };
+  return { w:Qd.w, l:Qd.l, h:Qd.h };
+}
+function _mbBuildingLayout(){
+  // Absolute transform per building in the root(0) frame, resolving attach chains.
+  var n = (window._buildings||[]).length, abs = new Array(n), done = new Array(n).fill(false);
+  if (!n) return abs;
+  abs[0] = { x:0, z:0, rotY:0 }; done[0] = true;
+  for (var pass=0; pass<n+1; pass++){
+    for (var i=1;i<n;i++){
+      if (done[i]) continue;
+      var at = window._buildings[i].attach || { to:0, wall:'back', type:'linear' };
+      var p = (typeof at.to === 'number') ? at.to : 0; if (p<0||p>=n) p=0;
+      if (!done[p]) continue;
+      var loc = computeBuildingPlacement(_mbDims(p), _mbDims(i), at);
+      var rr = _mbRot(loc.x, loc.z, abs[p].rotY);
+      abs[i] = { x: abs[p].x + rr.x, z: abs[p].z + rr.z, rotY: abs[p].rotY + loc.rotY };
+      done[i] = true;
+    }
+  }
+  for (var k=0;k<n;k++){ if(!abs[k]) abs[k]={x:0,z:0,rotY:0}; }
+  return abs;
+}
+window._mbGhostTransforms = function(){
+  // Other buildings expressed in the ACTIVE building's frame (active renders at origin).
+  var abs = _mbBuildingLayout(), a = window._activeBuilding||0, out = [];
+  if (!abs.length || !abs[a]) return out;
+  var base = abs[a];
+  for (var i=0;i<abs.length;i++){
+    if (i===a) continue;
+    var dx = abs[i].x - base.x, dz = abs[i].z - base.z;
+    var rr = _mbRot(dx, dz, -base.rotY);
+    var d = _mbDims(i);
+    out.push({ idx:i, x:rr.x, z:rr.z, rotY: abs[i].rotY - base.rotY, w:d.w, l:d.l, h:d.h });
+  }
+  return out;
+};
+(function(){
+  if (typeof document === 'undefined') return;
+  if (!document.getElementById('mbCss')){
+    var s=document.createElement('style'); s.id='mbCss';
+    s.textContent='#mbBar{padding:8px 10px;border-bottom:1px solid #444;background:#2e2e2e;}'
+    +'.mb-tabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}'
+    +'.mb-tab{position:relative;background:#383838;color:#ddd;border:1px solid #555;border-radius:6px;padding:6px 24px 6px 11px;font-size:12px;cursor:pointer;}'
+    +'.mb-tab.on{background:#FF8200;color:#1a1a1a;border-color:#FF8200;font-weight:600;}'
+    +'.mb-x{position:absolute;right:7px;top:50%;transform:translateY(-50%);opacity:.55;font-size:10px;}'
+    +'.mb-x:hover{opacity:1;}'
+    +'.mb-add{background:transparent;color:#FF8200;border:1px dashed #FF8200;border-radius:6px;padding:6px 11px;font-size:12px;cursor:pointer;}'
+    +'.mb-attach{display:flex;gap:6px;align-items:center;margin-top:8px;font-size:11px;color:#aaa;flex-wrap:wrap;}'
+    +'.mb-attach select{background:#383838;color:#eee;border:1px solid #555;border-radius:4px;padding:3px 6px;font-size:11px;}';
+    (document.head||document.documentElement).appendChild(s);
+  }
+  try { if (new URLSearchParams(location.search).get('multi')==='1') window.MULTI_BUILDING = true; } catch(e){}
+  function mount(){ try{ renderBuildingBar(); }catch(e){} }
+  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', mount); else mount();
+})();
+// <<MB_MODULE_END>> ══════════════════════════════════════════════════════════
 
 // ── SHARE LINK ────────────────────────────────────────────────────
 // ── CONFIG ENCODING: deflate-compressed + URL-safe base64 ──────────
@@ -14455,6 +14628,24 @@ function applyVoiceQuote(parsed, overlay) {
         }
         // ═══ END SINGLE SLOPE STANDALONE ══════════════════════════════════════
         Object.values(grps).forEach(g => { g.visible = true; });
+        // ── MULTI-BUILDING GHOSTS: translucent footprints of the OTHER buildings ──
+        // at their computed attach placement (active building renders full at origin).
+        try {
+          if (window.MULTI_BUILDING && Array.isArray(window._buildings) && window._buildings.length > 1 && window._mbGhostTransforms) {
+            window._mbGhostTransforms().forEach(function(g){
+              var gw = g.w * Sc, gl = g.l * Sc, gh = (g.h || 14) * Sc;
+              var geo = new THREE.BoxGeometry(gw, gh, gl);
+              var mat = new THREE.MeshStandardMaterial({ color: 0xff8200, transparent: true, opacity: 0.16, roughness: 0.9, depthWrite: false });
+              var mesh = new THREE.Mesh(geo, mat);
+              mesh.position.set(g.x * Sc, gh / 2, g.z * Sc);
+              mesh.rotation.y = (g.rotY || 0) * Math.PI / 180;
+              scene.add(mesh);
+              var edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0xff8200, transparent: true, opacity: 0.55 }));
+              edges.position.copy(mesh.position); edges.rotation.copy(mesh.rotation);
+              scene.add(edges);
+            });
+          }
+        } catch(e) { console.warn('[mb ghosts]', e); }
         // Single slope: hide ALL main gable building groups — our geometry is in grps.shed only
         if (isSingleSlope) {
             grps.roof.visible      = false;
@@ -23449,6 +23640,76 @@ function setPriceStripWaiting(prefix) {
  * with the pricing glue guarded to no-op when these globals are absent.
  */
 window.SauceMaterials = window.SauceMaterials || {};
+
+// ── COMBINED MATERIAL LIST (multi-building) ───────────────────────────────────
+// Merge per-building line-item arrays into ONE list grouped by SKU with
+// quantities summed (girts, purlins, posts, etc. come out as single lines).
+// Lines without a SKU fall back to category|description as the group key.
+// Category/description/detail come from the first occurrence; first-seen order
+// is preserved. Pure function — no globals, no DOM — so it is unit-testable.
+window.SauceMaterials.mergeBuildings = function(itemArrays) {
+  var order = [], map = {};
+  (itemArrays || []).forEach(function(items) {
+    (items || []).forEach(function(it) {
+      if (!it) return;
+      var key = it.sku ? ('SKU:' + it.sku)
+                       : ('ND:' + (it.category || '') + '|' + (it.description || ''));
+      if (!map[key]) { map[key] = Object.assign({}, it); order.push(key); }
+      else { map[key].quantity = (map[key].quantity || 0) + (it.quantity || 0); }
+    });
+  });
+  return order.map(function(k){ return map[k]; });
+};
+
+// ── PER-BUILDING CONTEXT (multi-building) ─────────────────────────────────────
+// The material engine reads window._Q/_WALLS/_allDoors/_shedConfigs AND ~51 DOM
+// option inputs. To price a second standalone building we swap that ENTIRE input
+// context, run the engine, then restore. Mirrors the proven step-down _Q swap.
+window.SauceMaterials._OPTION_IDS = ['psd_stud','qgCupolaQty','qgCupolaSize','sf_gdOpener','sf_gdOpenerQty','sf_gdWindows','sf_osbRoof','sf_osbWalls','sf_ssAwning','sf_ssAwningQty','sf_studSize','sf_wallGirts','sf_wdAwning','sf_wdAwningQty','sf_winAwning','sf_winAwningQty','st_atticFloor','st_atticTruss','st_barjoist','st_cableBracing','st_craneFee','st_esd','st_gcFee','st_gutterGuard','st_gutterType','st_gutters','st_insulRoof','st_insulWalls','st_insulation','st_lvlHeaders','st_mbPostSize','st_noRoofMetal','st_noWallMetal','st_postProtectors','st_postSize_left','st_postWraps','st_postsOnTop','st_rockWainscot','st_roofMetal','st_scissorTruss','st_sonoTube','st_ssPostSize','st_standingSeam','st_trussSpacing','st_wainscot','st_wainscotMetal','st_wallMetal','st_wetSetPosts','st_widowsPeak','st_zxlRoof','st_zxlWall'];
+window.SauceMaterials._captureOptions = function() {
+  var snap = {};
+  if (typeof document === 'undefined') return snap;
+  window.SauceMaterials._OPTION_IDS.forEach(function(id){
+    var el = document.getElementById(id);
+    if (!el) return;
+    snap[id] = { value: el.value, checked: !!el.checked };
+  });
+  return snap;
+};
+window.SauceMaterials._applyOptions = function(snap) {
+  if (!snap || typeof document === 'undefined') return;
+  Object.keys(snap).forEach(function(id){
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (snap[id].value !== undefined) el.value = snap[id].value;
+    if ('checked' in snap[id]) el.checked = snap[id].checked;
+  });
+};
+window.SauceMaterials.captureBuildingContext = function() {
+  var clone = function(x){ try { return JSON.parse(JSON.stringify(x)); } catch(e){ return x; } };
+  return {
+    Q:       Object.assign({}, window._Q),
+    WALLS:   clone(window._WALLS || []),
+    doors:   clone(window._allDoors || []),
+    sheds:   clone(window._shedConfigs || []),
+    options: window.SauceMaterials._captureOptions()
+  };
+};
+window.SauceMaterials.withBuildingContext = function(ctx, fn) {
+  var o = { Q: window._Q, WALLS: window._WALLS, doors: window._allDoors, sheds: window._shedConfigs };
+  var oOpts = window.SauceMaterials._captureOptions();
+  try {
+    if (ctx.Q)     window._Q          = ctx.Q;
+    if (ctx.WALLS) window._WALLS      = ctx.WALLS;
+    if (ctx.doors) window._allDoors   = ctx.doors;
+    if (ctx.sheds) window._shedConfigs= ctx.sheds;
+    if (ctx.options) window.SauceMaterials._applyOptions(ctx.options);
+    return fn();
+  } finally {
+    window._Q = o.Q; window._WALLS = o.WALLS; window._allDoors = o.doors; window._shedConfigs = o.sheds;
+    window.SauceMaterials._applyOptions(oOpts);
+  }
+};
 
 // Gable extension attachment helpers — used throughout material functions
 function isGableEaveAttached(sc)   { return sc.type === 'gable' && (sc.wall === 'left' || sc.wall === 'right'); }
@@ -34156,6 +34417,54 @@ window.SauceShipping = {
     return parseFloat(window._cachedMileage) || 0;
   }
 };
+
+
+// ── MULTI-BUILDING CALC WRAPPER (outermost) ───────────────────────────────────
+// When MULTI_BUILDING is ON and 2+ buildings exist, run the single-building
+// calculate once per building context and merge item lists by SKU. Otherwise
+// delegate unchanged → byte-identical single-building behavior. Re-entrancy
+// guarded so per-building runs and step-down calculate() calls hit the single path.
+(function(){
+  if (!window.SauceMaterials || window.SauceMaterials._multiWrapped) return;
+  var _single = window.SauceMaterials.calculate;
+  window.SauceMaterials._calculateSingle = _single;
+  window.SauceMaterials._multiWrapped = true;
+  window.SauceMaterials.calculate = function(forcedType) {
+    var SM = window.SauceMaterials;
+    var canSwap = (typeof serializeConfig === 'function' && typeof restoreConfig === 'function');
+    if (!window.MULTI_BUILDING || SM._inBuildingRun || !canSwap ||
+        !Array.isArray(window._buildings) || window._buildings.length < 2) {
+      return _single.call(this, forcedType);
+    }
+    // Each building is a full editor snapshot. Price them one at a time by
+    // quiet-restoring into the live globals (no 3D/strip kick), then restore the
+    // live state. Merge the per-building item lists by SKU. JSON-clone the live
+    // snapshot so restoreConfig's in-place array edits can't corrupt it.
+    var liveBlob;
+    try { liveBlob = JSON.parse(JSON.stringify(serializeConfig())); }
+    catch(e){ return _single.call(this, forcedType); }
+    var arrays = [], base = null;
+    var prevQuiet = window._quietRestore;
+    window._quietRestore = true; SM._inBuildingRun = true;
+    try {
+      window._buildings.forEach(function(entry){
+        var cfg = (entry && entry.config) ? entry.config : entry;
+        if (!cfg) return;
+        try { restoreConfig(cfg); } catch(e){ return; }
+        var r = _single.call(SM, forcedType);
+        if (r && Array.isArray(r.items)) { arrays.push(r.items); if (!base) base = r; }
+      });
+    } finally {
+      try { restoreConfig(liveBlob); } catch(e){}
+      window._quietRestore = prevQuiet; SM._inBuildingRun = false;
+    }
+    if (!base) return _single.call(this, forcedType);
+    return Object.assign({}, base, {
+      items: SM.mergeBuildings(arrays),
+      building: window._buildings.length + ' Buildings (combined)'
+    });
+  };
+})();
 
 </script>
 <script>
