@@ -6499,6 +6499,7 @@ function setAttach(idx, field, value){
   if (!window._buildings[idx]) return;
   if (!window._buildings[idx].attach) window._buildings[idx].attach = { to:0, wall:'back', type:'linear' };
   if (field==='to') value = parseInt(value,10);
+  else if (field==='offset') value = parseFloat(value) || 0;
   window._buildings[idx].attach[field] = value;
 }
 function renderBuildingBar(){
@@ -6527,13 +6528,14 @@ function renderBuildingBar(){
     var wallOpts = ['front','back','left','right'].map(function(w){ return '<option value="'+w+'"'+(at.wall===w?' selected':'')+'>'+w.charAt(0).toUpperCase()+w.slice(1)+'</option>'; }).join('');
     var typeOpts = ['linear','perpendicular'].map(function(t){ return '<option value="'+t+'"'+(at.type===t?' selected':'')+'>'+t.charAt(0).toUpperCase()+t.slice(1)+'</option>'; }).join('');
     attachRow = '<div class="mb-attach"><span>Attach to</span><select data-at="to">'+toOpts+'</select>'
-      + '<span>wall</span><select data-at="wall">'+wallOpts+'</select><select data-at="type">'+typeOpts+'</select></div>';
+      + '<span>wall</span><select data-at="wall">'+wallOpts+'</select><select data-at="type">'+typeOpts+'</select>'
+      + '<span>offset</span><input type="number" data-at="offset" step="1" value="'+(at.offset||0)+'" /><span>ft</span></div>';
   }
   host.innerHTML = '<div class="mb-tabs">'+tabs+'<button class="mb-add" data-add="1">+ Add</button></div>'+attachRow;
   Array.prototype.forEach.call(host.querySelectorAll('.mb-tab'), function(b){ b.onclick=function(e){ if(e.target && e.target.classList && e.target.classList.contains('mb-x')) return; setActiveBuilding(parseInt(b.getAttribute('data-go'),10)); }; });
   Array.prototype.forEach.call(host.querySelectorAll('.mb-x'), function(s){ s.onclick=function(e){ e.stopPropagation(); removeBuilding(parseInt(s.getAttribute('data-rm'),10)); }; });
   var ab = host.querySelector('.mb-add'); if(ab) ab.onclick=function(){ addBuilding(); };
-  Array.prototype.forEach.call(host.querySelectorAll('select[data-at]'), function(sel){ sel.onchange=function(){ setAttach(act, sel.getAttribute('data-at'), sel.value); renderBuildingBar(); try{ if(window.scheduleBuild) scheduleBuild(); }catch(e){} }; });
+  Array.prototype.forEach.call(host.querySelectorAll('[data-at]'), function(sel){ sel.onchange=function(){ setAttach(act, sel.getAttribute('data-at'), sel.value); renderBuildingBar(); try{ if(window.scheduleBuild) scheduleBuild(); }catch(e){} }; });
 }
 // ── PLACEMENT MATH (pure) ─────────────────────────────────────────────────────
 // width->X, length->Z, left=-X right=+X front=-Z back=+Z (matches renderer).
@@ -6542,13 +6544,16 @@ function computeBuildingPlacement(parent, B, attach){
   // parent/B: {w,l}; attach: {wall,type}. Returns center of B vs parent center (feet) + rotY(deg).
   var perp = (attach && attach.type === 'perpendicular');
   var wall = (attach && attach.wall) || 'back';
+  var off = (attach && parseFloat(attach.offset)) || 0;   // slide ALONG the wall (feet); 0 = centered
   var rotY = perp ? 90 : 0, x = 0, z = 0;
   if (wall === 'front' || wall === 'back'){
     var depZ = perp ? B.w : B.l;               // B dimension facing the wall (Z)
     z = (wall === 'back' ? 1 : -1) * (parent.l/2 + depZ/2);
+    x = off;                                   // front/back wall runs along X
   } else {
     var depX = perp ? B.l : B.w;               // B dimension facing the wall (X)
     x = (wall === 'right' ? -1 : 1) * (parent.w/2 + depX/2);  // left=+X, right=-X (matches on-screen)
+    z = off;                                   // left/right wall runs along Z
   }
   return { x:x, z:z, rotY:rotY };
 }
@@ -6607,7 +6612,8 @@ window._mbCentroid = function(){ var abs=_mbBuildingLayout(); if(!abs.length) re
     +'.mb-x:hover{opacity:1;}'
     +'.mb-add{background:transparent;color:#FF8200;border:1px dashed #FF8200;border-radius:6px;padding:6px 11px;font-size:12px;cursor:pointer;}'
     +'.mb-attach{display:flex;gap:6px;align-items:center;margin-top:8px;font-size:11px;color:#aaa;flex-wrap:wrap;}'
-    +'.mb-attach select{background:#383838;color:#eee;border:1px solid #555;border-radius:4px;padding:3px 6px;font-size:11px;}';
+    +'.mb-attach select,.mb-attach input{background:#383838;color:#eee;border:1px solid #555;border-radius:4px;padding:3px 6px;font-size:11px;}'
+    +'.mb-attach input{width:56px;}';
     (document.head||document.documentElement).appendChild(s);
   }
   try { if (new URLSearchParams(location.search).get('multi')==='1') window.MULTI_BUILDING = true; } catch(e){}
@@ -34457,6 +34463,15 @@ window.SauceShipping = {
     catch(e){ return _single.call(this, forcedType); }
     var arrays = [], base = null;
     var prevQuiet = window._quietRestore;
+    // Neutralize heavy UI rebuilds during the pricing pass — restoreConfig drives
+    // calc off DATA globals, so the DOM list/grid renders are pure waste here and
+    // are the main cause of multi-building jank. Stub them, restore after.
+    var _STUBS = ['renderLofts','renderInteriorWalls','renderLevelManager','_iwShowHide',
+      'buildCupolaChips','renderMatAdderList','renderConcreteOpts','renderBarjoists',
+      'buildWallGrid','renderGarageDoors','renderWalkDoors','renderWindows','renderSheds',
+      'renderBarjoists','updateBtn','updateStepLabel','renderMatAdderList'];
+    var _savedFns = {};
+    _STUBS.forEach(function(fn){ if (typeof window[fn] === 'function' && !_savedFns[fn]){ _savedFns[fn] = window[fn]; window[fn] = function(){}; } });
     window._quietRestore = true; SM._inBuildingRun = true;
     try {
       window._buildings.forEach(function(entry){
@@ -34468,6 +34483,7 @@ window.SauceShipping = {
       });
     } finally {
       try { restoreConfig(liveBlob); } catch(e){}
+      Object.keys(_savedFns).forEach(function(fn){ window[fn] = _savedFns[fn]; });
       window._quietRestore = prevQuiet; SM._inBuildingRun = false;
     }
     if (!base) return _single.call(this, forcedType);
