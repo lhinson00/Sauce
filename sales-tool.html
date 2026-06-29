@@ -6563,7 +6563,7 @@ function _mbDims(i){
   var live = (i === window._activeBuilding);
   var Qd = live ? window._Q : (window._buildings[i] && window._buildings[i].config && window._buildings[i].config.Q);
   Qd = Qd || { w:40, l:60, h:14 };
-  return { w:Qd.w, l:Qd.l, h:Qd.h };
+  return { w:Qd.w, l:Qd.l, h:Qd.h, pitch:(Qd.pitch||4), roofStyle:(Qd.roofStyle||'gable') };
 }
 function _mbBuildingLayout(){
   // Absolute transform per building in the root(0) frame, resolving attach chains.
@@ -6600,7 +6600,7 @@ window._mbGhostTransforms = function(){
   return out;
 };
 window._mbActiveTransform = function(){ var abs=_mbBuildingLayout(); var a=window._activeBuilding||0; return abs[a]||{x:0,z:0,rotY:0}; };
-window._mbAllGhosts = function(){ var abs=_mbBuildingLayout(), a=window._activeBuilding||0, out=[]; for(var i=0;i<abs.length;i++){ if(i===a) continue; var d=_mbDims(i); out.push({idx:i,x:abs[i].x,z:abs[i].z,rotY:abs[i].rotY,w:d.w,l:d.l,h:d.h}); } return out; };
+window._mbAllGhosts = function(){ var abs=_mbBuildingLayout(), a=window._activeBuilding||0, out=[]; for(var i=0;i<abs.length;i++){ if(i===a) continue; var d=_mbDims(i); out.push({idx:i,x:abs[i].x,z:abs[i].z,rotY:abs[i].rotY,w:d.w,l:d.l,h:d.h,pitch:d.pitch,roofStyle:d.roofStyle}); } return out; };
 window._mbCentroid = function(){ var abs=_mbBuildingLayout(); if(!abs.length) return {x:0,z:0}; var sx=0,sz=0; abs.forEach(function(t){sx+=t.x;sz+=t.z;}); return {x:sx/abs.length, z:sz/abs.length}; };
 (function(){
   if (typeof document === 'undefined') return;
@@ -14656,11 +14656,35 @@ function applyVoiceQuote(parsed, overlay) {
             Object.values(grps).forEach(function(g){ _aRoot.add(g); });   // reparents grps (incl. dims) under the offset root
             scene.add(_aRoot);
             (window._mbAllGhosts ? window._mbAllGhosts() : []).forEach(function(g){
+              // SOLID MASSING of each non-active building: walls box + roof at its
+              // true size / pitch / orientation. Shadows off to stay light.
               var gw = g.w * Sc, gl = g.l * Sc, gh = (g.h || 14) * Sc;
-              // Wireframe footprint ONLY — no filled translucent box. A big semi-
-              // transparent box fills the viewport on rotate and tanks fillrate/FPS.
-              var eg = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(gw, gh, gl)), new THREE.LineBasicMaterial({ color: 0xff8200, transparent: true, opacity: 0.75 }));
-              eg.position.set(g.x * Sc, gh / 2, g.z * Sc); eg.rotation.y = (g.rotY || 0) * Math.PI / 180; scene.add(eg);
+              var grp = new THREE.Group();
+              grp.position.set(g.x * Sc, 0, g.z * Sc);
+              grp.rotation.y = (g.rotY || 0) * Math.PI / 180;
+              var wallMat = new THREE.MeshStandardMaterial({ color: 0x9a9a9a, roughness: 0.95, metalness: 0.0 });
+              var roofMat = new THREE.MeshStandardMaterial({ color: 0x2b2b2b, roughness: 0.9, metalness: 0.0 });
+              var walls = new THREE.Mesh(new THREE.BoxGeometry(gw, gh, gl), wallMat);
+              walls.position.y = gh / 2; walls.castShadow = false; walls.receiveShadow = false;
+              grp.add(walls);
+              var pitch = g.pitch || 4;
+              if (g.roofStyle === 'single') {
+                var riseS = g.w * (pitch / 12) * Sc;
+                var slabLen = Math.sqrt(gw * gw + riseS * riseS);
+                var slab = new THREE.Mesh(new THREE.BoxGeometry(slabLen, 0.03, gl), roofMat);
+                slab.position.set(0, gh + riseS / 2, 0);
+                slab.rotation.z = Math.atan2(riseS, gw);
+                slab.castShadow = false; grp.add(slab);
+              } else {
+                var rise = (g.w / 2) * (pitch / 12) * Sc;
+                var shape = new THREE.Shape();
+                shape.moveTo(-gw / 2, 0); shape.lineTo(gw / 2, 0); shape.lineTo(0, rise); shape.lineTo(-gw / 2, 0);
+                var rgeo = new THREE.ExtrudeGeometry(shape, { depth: gl, bevelEnabled: false });
+                var roof = new THREE.Mesh(rgeo, roofMat);
+                roof.position.set(0, gh, -gl / 2); roof.castShadow = false;
+                grp.add(roof);
+              }
+              scene.add(grp);
             });
             if (window._mbCentroid){ var _c = window._mbCentroid(); window._mbTgtX = _c.x * Sc; window._mbTgtZ = _c.z * Sc; }
           } else { window._mbTgtX = 0; window._mbTgtZ = 0; }
