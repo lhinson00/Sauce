@@ -7031,7 +7031,8 @@ async function submitQuote(){
 // VIEWPORT TOGGLES — Posts & Dims
 // ═══════════════════════════════════════════════════════
 var _postsVisible    = true;
-var _dimsVisible     = true;
+var _hiddenPostsShown = false;   // posts behind enclosed walls stay hidden on load
+var _dimsVisible     = false;
 var _roofVisible     = true;
 var _trussesVisible  = false;
 var _interiorVisible = false;
@@ -7039,34 +7040,24 @@ var _interiorVisible = false;
 function vpTogglePosts() {
   var d = window._3d;
   if (!d || !d.grps) return;
-  _postsVisible = !_postsVisible;
-
-  // Main building posts — only hide if all main walls are enclosed
-  var mainWallsEnclosed = WALLS.every(function(w) { return w.encl === 'enclosed' || w.encl === 'partial'; });
-  if (mainWallsEnclosed) {
-    d.grps.mainPosts.visible = _postsVisible;
-  } else {
-    d.grps.mainPosts.visible = true; // open walls always show posts
+  // Reveal/hide ONLY the posts behind fully-enclosed walls. Open-wall, interior,
+  // and shed posts stay visible (exposed structural members).
+  _hiddenPostsShown = !_hiddenPostsShown;
+  if (d.grps.mainPosts && d.grps.mainPosts.children) {
+    d.grps.mainPosts.visible = true;
+    d.grps.mainPosts.children.forEach(function(ch) {
+      ch.visible = (ch.userData && ch.userData.hideBehindWall) ? _hiddenPostsShown : true;
+    });
   }
-
-  // Shed posts — only hide if all sheds are enclosed; open/roofonly sheds keep posts
-  var sc = window._shedConfigs || [];
-  var allShedsEnclosed = sc.length > 0 && sc.every(function(s) { return s.encl === 'enclosed'; });
-  if (allShedsEnclosed) {
-    d.grps.posts.visible = _postsVisible;
-  } else if (sc.length === 0) {
-    d.grps.posts.visible = _postsVisible; // no sheds — hide the (empty) group freely
-  } else {
-    d.grps.posts.visible = true; // some sheds open/roofonly — always show
-  }
+  d.grps.posts.visible = true; // sheds always show structural posts
 
   var btn = document.getElementById('vpPostToggle');
   if (btn) {
-    btn.textContent = _postsVisible ? '🪵 Hide Posts' : '🪵 Show Posts';
-    btn.style.color = _postsVisible ? '#FF8200' : '#888888';
-    btn.style.borderColor = _postsVisible ? 'rgba(255,130,0,.35)' : 'rgba(255,255,255,.15)';
+    btn.textContent = _hiddenPostsShown ? '🪵 Hide Posts' : '🪵 Show Posts';
+    btn.style.color = _hiddenPostsShown ? '#FF8200' : '#888888';
+    btn.style.borderColor = _hiddenPostsShown ? 'rgba(255,130,0,.35)' : 'rgba(255,255,255,.15)';
   }
-  _syncStaticToggle('vstPosts', _postsVisible);
+  _syncStaticToggle('vstPosts', _hiddenPostsShown);
 }
 
 function vpToggleDims() {
@@ -10237,11 +10228,12 @@ function applyVoiceQuote(parsed, overlay) {
         }
 
         // Helper: add a main building post at (x, z) with optional bracket
-        function addMainPost(x, z, postH_, mat) {
+        function addMainPost(x, z, postH_, mat, hideBehindWall) {
             const h = postH_ !== undefined ? postH_ : postH;
             const p = new THREE.Mesh(new THREE.BoxGeometry(ps, h, ps), mat);
             p.position.set(x, postBase + h / 2, z);
             p.castShadow = true;
+            p.userData.hideBehindWall = !!hideBehindWall;
             grps.mainPosts.add(p);
             if (postsOnTop) addBracket(x, z, grps.mainPosts, slabH);
         }
@@ -10442,7 +10434,8 @@ function applyVoiceQuote(parsed, overlay) {
                     if (!postPositions.has(key) && !_shedCoveredCorners.has(key)) {
                         postPositions.add(key);
                         const mPeave = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
-                        addMainPost(xSide, z, postH, mPeave);
+                        var _eaveCorner = Math.abs(Math.abs(z) - sl/2) < 1e-4;
+                        addMainPost(xSide, z, postH, mPeave, (wCfg && wCfg.encl === 'enclosed') && !_eaveCorner);
                     }
                 });
             });
@@ -10465,7 +10458,7 @@ function applyVoiceQuote(parsed, overlay) {
                     const distC = Math.abs(post.ft - Q.w / 2);
                     const pH = (Q.h + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc;
                     const mPgable = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
-                    addMainPost(xPos, zPos, pH, mPgable);
+                    addMainPost(xPos, zPos, pH, mPgable, (wCfg && wCfg.encl === 'enclosed'));
                 });
             });
         }
@@ -16173,8 +16166,12 @@ function applyVoiceQuote(parsed, overlay) {
             grps.posts.visible     = false;
             grps.shed.visible      = _postsVisible;
           } else {
-          var _mainEncl2 = WALLS.every(function(w){return w.encl==='enclosed'||w.encl==='partial';});
-          grps.mainPosts.visible = _mainEncl2 ? _postsVisible : true;
+          // Posts behind FULLY enclosed walls are hidden on load; open-wall &
+          // interior posts always show. The Posts toggle reveals the hidden ones.
+          grps.mainPosts.visible = true;
+          if (grps.mainPosts.children) grps.mainPosts.children.forEach(function(ch){
+            ch.visible = (ch.userData && ch.userData.hideBehindWall) ? _hiddenPostsShown : true;
+          });
           var _hasOpenShed2 = (window._shedConfigs||[]).some(function(s){
             if(s.encl==='open'||s.encl==='roofonly') return true;
             if(s.encl==='enclosed' && s.enclFt!=null && parseFloat(s.enclFt) < s.l) return true;
@@ -16188,7 +16185,7 @@ function applyVoiceQuote(parsed, overlay) {
           grps.loft.visible     = _interiorVisible;
           grps.interior.visible = _interiorVisible;
         }
-        if (typeof _dimsVisible     !== 'undefined') { grps.dims.visible = _dimsVisible; }
+        if (typeof _dimsVisible     !== 'undefined') { grps.dims.visible = _dimsVisible; if (dimLabels) dimLabels.forEach(function(l){ l.visible = _dimsVisible; }); }
         // Sync toggle button appearances
         (function() {
           function _bSync(id, on) { var b=document.getElementById(id); if(!b) return; b.style.color=on?'#FF8200':'#888'; b.style.borderColor=on?'rgba(255,130,0,.5)':'rgba(255,255,255,.15)'; }
@@ -16196,7 +16193,8 @@ function applyVoiceQuote(parsed, overlay) {
           _bSync('vpWallToggle',     _wallsVisible);
           _bSync('vpRoofToggle',     _roofVisible);
           _bSync('vpTrussToggle',    _trussesVisible);
-          _bSync('vpPostToggle',     _postsVisible);
+          _bSync('vpPostToggle',     _hiddenPostsShown);
+          (function(){ var pb=document.getElementById('vpPostToggle'); if(pb) pb.textContent = _hiddenPostsShown ? 'Hide Posts' : 'Show Posts'; })();
           _bSync('vpInteriorToggle', _interiorVisible);
           var db = document.getElementById('vpDimToggle');
           if (db) { db.textContent = _dimsVisible ? 'Hide Dims' : 'Show Dims'; _bSync('vpDimToggle', _dimsVisible); }
