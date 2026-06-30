@@ -3552,6 +3552,27 @@ function buildWallGrid(){
       wrap.appendChild(row);
     }
 
+    // Partial-length OPEN run on eave walls: leave a length of wall open, rest enclosed.
+    if((wall.id==='left'||wall.id==='right') && wall.encl!=='open'){
+      var orow=document.createElement('div'); orow.className='wall-partial-row';
+      orow.innerHTML='<span>Open:</span>';
+      var oLen=document.createElement('input'); oLen.type='number'; oLen.min='0'; oLen.max=String(Q.l); oLen.step='1'; oLen.value=(wall.openLenFt||0); oLen.style.cssText='width:46px;'; oLen.title='Open length (ft) along this wall';
+      oLen.onclick=function(e){e.stopPropagation();};
+      oLen.onchange=(function(w){return function(){ w.openLenFt=Math.max(0,Math.min(parseFloat(this.value)||0,Q.l)); buildWallGrid(); scheduleBuild(); };})(wall);
+      var oMid=document.createElement('span'); oMid.textContent='ft from';
+      var oStart=document.createElement('input'); oStart.type='number'; oStart.min='0'; oStart.max=String(Q.l); oStart.step='1'; oStart.value=(wall.openStartFt||0); oStart.style.cssText='width:46px;'; oStart.title='Open run starts this many ft from the front (-Z) end';
+      oStart.onclick=function(e){e.stopPropagation();};
+      oStart.onchange=(function(w){return function(){ w.openStartFt=Math.max(0,Math.min(parseFloat(this.value)||0,Q.l)); scheduleBuild(); };})(wall);
+      var oEnd=document.createElement('span'); oEnd.textContent='ft @';
+      var _effOpenPS=wall.openPS||(wall.postSpacing||Q.postSpacing||10);
+      var oPS=document.createElement('input'); oPS.type='number'; oPS.min='1'; oPS.step='1'; oPS.value=_effOpenPS; oPS.style.cssText='width:46px;'; oPS.title='Post spacing within the open section (ft)';
+      oPS.onclick=function(e){e.stopPropagation();};
+      oPS.onchange=(function(w){return function(){ w.openPS=Math.max(1,parseFloat(this.value)||0); scheduleBuild(); };})(wall);
+      var oPSlbl=document.createElement('span'); oPSlbl.textContent='ft posts';
+      orow.appendChild(oLen); orow.appendChild(oMid); orow.appendChild(oStart); orow.appendChild(oEnd); orow.appendChild(oPS); orow.appendChild(oPSlbl);
+      wrap.appendChild(orow);
+    }
+
     var isGableWall = wall.id==='front'||wall.id==='back';
     if(wall.encl==='open' && isGableWall){
       var trow=document.createElement('div');
@@ -5504,6 +5525,12 @@ function renderSheds(){
         +'<div><div class="shed-label">Drop (ft)</div>'
         +'<input class="shed-inp" type="number" value="'+(sc.dropFt||0)+'" min="0" max="6" step="1" onchange="setShedProp('+sc.id+',\'dropFt\',this.value)"></div>'
         +'</div>';
+      var _attW=(WALLS||[]).find(function(w){return w.id===sc.wall;});
+      var _effEavePS=sc.eavePS||(_attW&&_attW.postSpacing)||Q.postSpacing||10;
+      extraOptions+='<div class="shed-row"><div><div class="shed-label">Post Spacing</div>'
+        +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'eavePS\',this.value);scheduleBuild()">'
+        +[8,10,12].map(function(p){return '<option value="'+p+'"'+(_effEavePS==p?' selected':'')+'>'+p+"'</option>";}).join('')
+        +'</select></div></div>';
     }
     if(isWrap){
       if(sc.type==='wrap'){
@@ -5978,7 +6005,7 @@ async function openActivityLog() {
 function serializeConfig() {
   return {
     Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,truss:Q.truss,frameType:Q.frameType,roofStyle:Q.roofStyle||'gable'},
-    walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,partialH:w.partialH};}),
+    walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,partialH:w.partialH,openLenFt:w.openLenFt,openStartFt:w.openStartFt,openPS:w.openPS};}),
     doors: allDoors,
     stallPosts: window._stallPosts || [],
     walkDoors: window._walkDoors,
@@ -10428,14 +10455,16 @@ function applyVoiceQuote(parsed, overlay) {
                 const xSide = wallId === 'left' ? -sw / 2 : sw / 2;
                 const wd = placed.filter(d => d.wall === wallId);
                 const posts = buildPostList(Q.l, wPS, wd, Q.truss, false); // eave wall — not gable
-                posts.forEach(post => {
+                (function(){ var _ps=posts; var _oLen=parseFloat(wCfg&&wCfg.openLenFt)||0; if(_oLen>0){ var _oS=parseFloat(wCfg.openStartFt)||0,_oE=_oS+_oLen,_oPS=parseFloat(wCfg.openPS)||wPS; _ps=posts.filter(function(p){return p.ft<=_oS+0.01||p.ft>=_oE-0.01;}); for(var _f=_oS;_f<=_oE+0.01;_f+=_oPS){var _ff=Math.min(_f,_oE); if(!_ps.some(function(p){return Math.abs(p.ft-_ff)<0.01;})) _ps.push({ft:_ff,jamb:false,corner:false});} [_oS,_oE].forEach(function(b){ if(!_ps.some(function(p){return Math.abs(p.ft-b)<0.01;})) _ps.push({ft:b,jamb:false,corner:false}); }); _ps.sort(function(a,b){return a.ft-b.ft;}); } return _ps; })().forEach(post => {
                     const z = (-Q.l / 2 + post.ft) * Sc;
                     const key = Math.round(xSide * 1000) + ',' + Math.round(z * 1000);
                     if (!postPositions.has(key) && !_shedCoveredCorners.has(key)) {
                         postPositions.add(key);
                         const mPeave = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
                         var _eaveCorner = Math.abs(Math.abs(z) - sl/2) < 1e-4;
-                        addMainPost(xSide, z, postH, mPeave, (wCfg && wCfg.encl === 'enclosed') && !_eaveCorner);
+                        var _inOpenRun = false;
+                        if (wCfg && (parseFloat(wCfg.openLenFt)||0) > 0) { var _oRS = parseFloat(wCfg.openStartFt)||0, _oRE = _oRS + (parseFloat(wCfg.openLenFt)||0); _inOpenRun = (post.ft >= _oRS - 0.01 && post.ft <= _oRE + 0.01); }
+                        addMainPost(xSide, z, postH, _inOpenRun ? mPopen : mPeave, (wCfg && wCfg.encl === 'enclosed') && !_eaveCorner && !_inOpenRun);
                     }
                 });
             });
@@ -10480,7 +10509,7 @@ function applyVoiceQuote(parsed, overlay) {
             const shedShClamped = shedSh;
             // Use the post spacing of the wall the shed attaches to
             const attachWall = wallCfgs.find(w => w.id === sc.wall);
-            const attachPS = attachWall ? attachWall.postSpacing : (Q.postSpacing || 10);
+            const attachPS = (sc.eavePS != null && sc.eavePS !== '') ? parseFloat(sc.eavePS) : (attachWall ? attachWall.postSpacing : (Q.postSpacing || 10));
 
             // Compute shed offset from wall start (in feet)
             const isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
@@ -11117,6 +11146,8 @@ function applyVoiceQuote(parsed, overlay) {
 
                 // Draw eave wall in small segments, respecting height clamps from sheds
                 // Segment width in feet — small enough to snap cleanly at shed boundaries
+                const _openLenFt = (wallId==='left'||wallId==='right') ? (parseFloat(wCfg.openLenFt)||0) : 0;
+                const _openStartFt = parseFloat(wCfg.openStartFt)||0;
                 const eaveSegW = 0.5; // 6 inch segments
                 const totalEaveFt = wLen;
                 const eaveRibSp = 0.075, eaveRibW = 0.006;
@@ -11162,6 +11193,7 @@ function applyVoiceQuote(parsed, overlay) {
                     // Map from feet-from-wall-start to feet-from-wall-center
                     const zFtCenterFromMid = zFtCenter - totalEaveFt / 2;
                     const effectiveYTop = wallYTop(zFtCenterFromMid);
+                    if (_openLenFt > 0 && zFtCenter >= _openStartFt - 0.01 && zFtCenter <= _openStartFt + _openLenFt + 0.01) { zFt = zFtEnd; continue; }
                     const z1sc = (-wLen / 2 + zFt)    * Sc;
                     const z2sc = (-wLen / 2 + zFtEnd)  * Sc;
 
@@ -23535,6 +23567,14 @@ window.SauceMaterials.getPostsForWall = function(wallId, Q, WALLS, allDoors) {
       }
     }
   }
+  var _oLen = parseFloat(wCfg && wCfg.openLenFt) || 0;
+  if (isEave && _oLen > 0) {
+    var _oS = parseFloat(wCfg.openStartFt) || 0, _oE = _oS + _oLen, _oPS = parseFloat(wCfg.openPS) || ps;
+    posts = posts.filter(function(p){ return p.ft <= _oS + 0.01 || p.ft >= _oE - 0.01; });
+    for (var _f = _oS; _f <= _oE + 0.01; _f += _oPS) { var _ff = Math.min(_f, _oE); if (!posts.some(function(p){return Math.abs(p.ft-_ff)<0.01;})) posts.push({ ft:_ff, jamb:false, corner:false }); }
+    [_oS, _oE].forEach(function(b){ if(!posts.some(function(p){return Math.abs(p.ft-b)<0.01;})) posts.push({ ft:b, jamb:false, corner:false }); });
+    posts.sort(function(a,b){ return a.ft-b.ft; });
+  }
   return posts;
 };
 
@@ -23697,7 +23737,7 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
     var ground = (globalOnTop || isOnSlab || shedOnTop) ? 0 : 4;
 
     var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
-    var attachPS   = wallPS(sc.wall);
+    var attachPS   = (sc.eavePS != null && sc.eavePS !== '') ? parseFloat(sc.eavePS) : wallPS(sc.wall);
     var attachH    = Q.h - (sc.dropFt || 0);
     var outerH     = attachH - (sc.w * (sc.ltPitch || 1) / 12);
     var totalH     = outerH + ground;
@@ -27947,7 +27987,10 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
     }
 
     if (wallHeight <= 0) return;
-    add(wallHeight, panelsPerRun);
+    var _openLen = parseFloat(wallCfg && wallCfg.openLenFt) || 0;
+    var _runLen = Math.max(0, Q.l - _openLen);
+    if (_runLen <= 0) return;
+    add(wallHeight, Math.ceil(_runLen / 3));
   }); // end if (!shedOnlyMode) forEach
 
   // Enclosed side sheds — outer eave wall only
