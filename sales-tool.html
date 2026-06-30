@@ -34849,14 +34849,29 @@ async function generateChecklist() {
         
         var fieldStr = String(val);
 
-        // Auto-size: font size 0 lets pdf-lib / the PDF reader shrink the text to
-        // fit the field box, so long entries are never cut off (NeedAppearances is on).
+        // Bake a font size that fits the field box on ONE line, measured against the
+        // real widget width with Helvetica metrics. These fields are only ~11pt tall and
+        // flagged multiline, so anything that wraps gets clipped on print. A fixed fitting
+        // size in the field's /DA prints and displays correctly everywhere (size 0/'auto'
+        // was being ignored by the print path).
+        var _fitSize = 9;
         try {
-          field.setFontSize(0);
+          var _wd = field.acroField.getWidgets();
+          var _rect = (_wd && _wd[0] && _wd[0].getRectangle) ? _wd[0].getRectangle() : null;
+          var _avail = _rect ? Math.max(8, _rect.width - 4) : 9999;
+          _fitSize = _rect ? Math.max(5, Math.min(9, _rect.height - 2)) : 9;
+          if (_ckFont) {
+            while (_fitSize > 4 && _ckFont.widthOfTextAtSize(fieldStr, _fitSize) > _avail) _fitSize -= 0.25;
+          } else {
+            while (_fitSize > 4 && (fieldStr.length * _fitSize * 0.5) > _avail) _fitSize -= 0.25;
+          }
+        } catch(measErr) { _fitSize = 8; }
+        try {
+          field.setFontSize(_fitSize);
           field.setText(fieldStr);
-          console.log('[txt] Set text (auto-fit) for field:', id, 'to:', JSON.stringify(fieldStr));
+          console.log('[txt] Set field:', id, 'at fitted size', _fitSize, 'val:', JSON.stringify(fieldStr));
         } catch(fontError) {
-          console.log('[txt] Auto-size failed for field:', id, ', setting text only');
+          console.log('[txt] Size set failed for field:', id, ', setting text only');
           field.setText(fieldStr);
         }
         
@@ -34912,6 +34927,8 @@ async function generateChecklist() {
     console.log('[Checklist] PDF document loaded successfully');
     
     var form     = pdfDoc.getForm();
+    var _ckFont = null;
+    try { _ckFont = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica); } catch(e) { _ckFont = null; }
     console.log('[Checklist] Form extracted, field count:', form.getFields().length);
 
     // ── COMPREHENSIVE CLEAR ALL FIELDS RULE ─────────────────────────────
@@ -35089,23 +35106,29 @@ async function generateChecklist() {
     txt(form, 'cust_name',   sf.name    || '');
     txt(form, 'cust_phone',  sf.phone   || '');
     txt(form, 'cust_email',  sf.email   || '');
-    txt(form, 'address',     sf.address || '');
-    // City / State / Zip line - pull ONLY city, state, zip, never the full street address.
-    // Prefer the geocoder's parsed components (cached during the mileage/address lookup)
-    // when they match the typed address; otherwise fall back to everything after the
-    // first comma of what was typed.
+    // Split the typed address into STREET (address line) and CITY / STATE / ZIP (city line).
+    // Prefer the geocoder's parsed parts (cached during the mileage/address lookup) when
+    // they match what was typed; otherwise fall back to splitting on the first comma.
     var _addrFull = sf.address || '';
     var _gcCity = window._cachedCity || '', _gcState = window._cachedState || '', _gcZip = window._cachedZip || '';
-    var _cityLine;
     var _gcMatch = (_gcCity && _addrFull.toUpperCase().indexOf(_gcCity.toUpperCase()) !== -1) ||
                    (_gcZip && _addrFull.indexOf(_gcZip) !== -1);
+    var _streetLine, _cityLine;
     if (_gcMatch && (_gcCity || _gcState || _gcZip)) {
       _cityLine = _gcCity + (_gcState ? (_gcCity ? ', ' : '') + _gcState : '') + (_gcZip ? ' ' + _gcZip : '');
+      var _cidx = _gcCity ? _addrFull.toUpperCase().indexOf(_gcCity.toUpperCase()) : 0;
+      if (_cidx > 0) {
+        var _st = _addrFull.slice(0, _cidx).trim();
+        if (_st.charAt(_st.length - 1) === ',') _st = _st.slice(0, -1).trim();
+        _streetLine = _st;
+      } else { _streetLine = ''; }
     } else {
       var _ci = _addrFull.indexOf(',');
-      _cityLine = (_ci !== -1) ? _addrFull.slice(_ci + 1).trim() : _addrFull;
+      if (_ci !== -1) { _streetLine = _addrFull.slice(0, _ci).trim(); _cityLine = _addrFull.slice(_ci + 1).trim(); }
+      else { _streetLine = _addrFull; _cityLine = ''; }
     }
-    txt(form, 'city',        _cityLine);   // city, state, zip only
+    txt(form, 'address',     _streetLine);   // street only (city/state/zip moved below)
+    txt(form, 'city',        _cityLine);     // city, state, zip only
     txt(form, 'county',      county);
     console.log('[Checklist] Customer fields complete');
 
@@ -35445,7 +35468,7 @@ async function generateChecklist() {
 
     // updateFieldAppearances() bakes typed values into each field's appearance
     // stream so they display in ALL PDF viewers while keeping fields interactive.
-    try { form.updateFieldAppearances(); } catch(e) { /* non-fatal */ }
+    try { form.updateFieldAppearances(_ckFont || undefined); } catch(e) { /* non-fatal */ }
     var filledBytes = await pdfDoc.save();
     var blob = new Blob([filledBytes], {type: 'application/pdf'});
     var url  = URL.createObjectURL(blob);
