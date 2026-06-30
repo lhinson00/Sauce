@@ -1514,6 +1514,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="sec-title">Wall Enclosure</div>
         <div class="wall-grid" id="wallGrid"></div>
         <div style="font-size:9px;color:var(--muted);margin-top:6px;text-align:center;">Tap a wall to toggle Enclosed ↔ Open</div>
+        <div id="openWallCard" style="margin-top:8px;"></div>
         <div id="ventGapRow" style="display:none;margin-top:8px;">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
             <span style="font-size:11px;font-weight:700;color:var(--navy);">Vent Gap</span>
@@ -3552,27 +3553,6 @@ function buildWallGrid(){
       wrap.appendChild(row);
     }
 
-    // Partial-length OPEN run on eave walls: leave a length of wall open, rest enclosed.
-    if((wall.id==='left'||wall.id==='right') && wall.encl!=='open'){
-      var orow=document.createElement('div'); orow.className='wall-partial-row';
-      orow.innerHTML='<span>Open:</span>';
-      var oLen=document.createElement('input'); oLen.type='number'; oLen.min='0'; oLen.max=String(Q.l); oLen.step='1'; oLen.value=(wall.openLenFt||0); oLen.style.cssText='width:46px;'; oLen.title='Open length (ft) along this wall';
-      oLen.onclick=function(e){e.stopPropagation();};
-      oLen.onchange=(function(w){return function(){ w.openLenFt=Math.max(0,Math.min(parseFloat(this.value)||0,Q.l)); buildWallGrid(); scheduleBuild(); };})(wall);
-      var oMid=document.createElement('span'); oMid.textContent='ft from';
-      var oStart=document.createElement('input'); oStart.type='number'; oStart.min='0'; oStart.max=String(Q.l); oStart.step='1'; oStart.value=(wall.openStartFt||0); oStart.style.cssText='width:46px;'; oStart.title='Open run starts this many ft from the front (-Z) end';
-      oStart.onclick=function(e){e.stopPropagation();};
-      oStart.onchange=(function(w){return function(){ w.openStartFt=Math.max(0,Math.min(parseFloat(this.value)||0,Q.l)); scheduleBuild(); };})(wall);
-      var oEnd=document.createElement('span'); oEnd.textContent='ft @';
-      var _effOpenPS=wall.openPS||(wall.postSpacing||Q.postSpacing||10);
-      var oPS=document.createElement('input'); oPS.type='number'; oPS.min='1'; oPS.step='1'; oPS.value=_effOpenPS; oPS.style.cssText='width:46px;'; oPS.title='Post spacing within the open section (ft)';
-      oPS.onclick=function(e){e.stopPropagation();};
-      oPS.onchange=(function(w){return function(){ w.openPS=Math.max(1,parseFloat(this.value)||0); scheduleBuild(); };})(wall);
-      var oPSlbl=document.createElement('span'); oPSlbl.textContent='ft posts';
-      orow.appendChild(oLen); orow.appendChild(oMid); orow.appendChild(oStart); orow.appendChild(oEnd); orow.appendChild(oPS); orow.appendChild(oPSlbl);
-      wrap.appendChild(orow);
-    }
-
     var isGableWall = wall.id==='front'||wall.id==='back';
     if(wall.encl==='open' && isGableWall){
       var trow=document.createElement('div');
@@ -3608,6 +3588,53 @@ function buildWallGrid(){
     if (yesBtn) { yesBtn.style.background = ventOn ? '#4B4B4B' : ''; yesBtn.style.color = ventOn ? '#FF8200' : ''; yesBtn.style.borderColor = ventOn ? '#4B4B4B' : ''; }
   }
   syncOpeningVisibility();
+  buildOpenWallCard();
+}
+
+// ── OPEN WALL SECTION (partial-length open eave wall) ────────────────────────
+function setOpenWall(id){
+  if(id==='none'){ (WALLS||[]).forEach(function(w){ if(w.id==='left'||w.id==='right') w.openLenFt=0; }); window._openWallActive=null; }
+  else { window._openWallActive=id; (WALLS||[]).forEach(function(w){ if((w.id==='left'||w.id==='right') && w.id!==id) w.openLenFt=0; }); }
+  buildOpenWallCard(); scheduleBuild();
+}
+function setOpenWallProp(id,prop,val){
+  var w=(WALLS||[]).find(function(x){return x.id===id;}); if(!w) return;
+  var n=parseFloat(val); if(isNaN(n)) n=0;
+  if(prop==='openLenFt'||prop==='openStartFt') n=Math.max(0,Math.min(n,Q.l));
+  if(prop==='openPS') n=Math.max(1,n);
+  w[prop]=n; buildOpenWallCard(); scheduleBuild();
+}
+function buildOpenWallCard(){
+  var el=document.getElementById('openWallCard'); if(!el) return;
+  var L=(WALLS||[]).find(function(w){return w.id==='left';})||{};
+  var R=(WALLS||[]).find(function(w){return w.id==='right';})||{};
+  var active=window._openWallActive || ((parseFloat(L.openLenFt)||0)>0?'left':((parseFloat(R.openLenFt)||0)>0?'right':null));
+  function chip(id,label){
+    var on=(active===id)||(id==='none'&&!active);
+    return '<div onclick="setOpenWall(\''+id+'\')" style="flex:1;text-align:center;padding:7px 0;border-radius:7px;border:1.5px solid '+(on?'#FF8200':'var(--border)')+';background:'+(on?'rgba(255,130,0,.10)':'#f4f6f8')+';color:'+(on?'#c2410c':'var(--muted)')+';font-size:11px;font-weight:700;cursor:pointer;user-select:none;">'+label+'</div>';
+  }
+  var html='<div style="border:1px solid var(--border);border-radius:10px;padding:11px;background:#fbfcff;">'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">OPEN WALL SECTION</div>'
+    +'<div style="display:flex;gap:6px;">'+chip('none','None')+chip('left','Left Eave')+chip('right','Right Eave')+'</div>';
+  if(active){
+    var w=(active==='left')?L:R;
+    var len=(w.openLenFt!=null?w.openLenFt:0);
+    var st=(w.openStartFt!=null?w.openStartFt:0);
+    var ps=(w.openPS!=null && w.openPS!=='')?w.openPS:(w.postSpacing||Q.postSpacing||10);
+    function fld(lbl,val,prop,unit){
+      return '<div style="flex:1;"><div style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:3px;">'+lbl+'</div>'
+        +'<div style="display:flex;align-items:center;gap:4px;"><input type="number" value="'+val+'" min="0" onclick="event.stopPropagation();" onchange="setOpenWallProp(\''+active+'\',\''+prop+'\',this.value)" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;background:#fff;color:var(--text);box-sizing:border-box;">'
+        +'<span style="font-size:10px;color:var(--muted);">'+unit+'</span></div></div>';
+    }
+    html+='<div style="display:flex;gap:8px;margin-top:10px;">'
+      +fld('Open length',len,'openLenFt','ft')
+      +fld('Start (from front)',st,'openStartFt','ft')
+      +fld('Post spacing',ps,'openPS','ft')
+      +'</div>'
+      +'<div style="font-size:9px;color:var(--muted);margin-top:7px;line-height:1.4;">Cladding and ribs drop out over the open run; posts stay at the spacing above. The rest of the wall keeps its normal spacing.</div>';
+  }
+  html+='</div>';
+  el.innerHTML=html;
 }
 
 // ── MATERIAL LIST ADDERS ─────────────────────────────────────────────────────
@@ -12143,6 +12170,9 @@ function applyVoiceQuote(parsed, overlay) {
                 const eavePartial = eaveWcfg && eaveWcfg.encl === 'partial';
                 const eaveRibBot = eavePartial ? sh - (eaveWcfg.partialH || Math.min(4, Q.h)) * Sc : 0;
                 const xBase = s * sw / 2;
+                const _eaveOpenLenR = parseFloat(eaveWcfg && eaveWcfg.openLenFt) || 0;
+                const _eaveOpenZlo = (-sl/2) + (parseFloat(eaveWcfg && eaveWcfg.openStartFt)||0) * Sc;
+                const _eaveOpenZhi = _eaveOpenZlo + _eaveOpenLenR * Sc;
                 // Build height clamps from enclosed lean-to sheds on this eave wall
                 const _eaveRibClamps = [];
                 (shedCfgs || []).forEach(sc2 => {
@@ -12183,6 +12213,7 @@ function applyVoiceQuote(parsed, overlay) {
                 }).filter(Boolean);
                 for (let z = -sl/2; z <= sl/2; z += ribSpacing) {
                     // Clamp rib top to attachH within enclosed shed span (scene units)
+                    if (_eaveOpenLenR > 0 && z >= _eaveOpenZlo - 0.001 && z <= _eaveOpenZhi + 0.001) continue;
                     let _ribTop = sh;
                     let _ribBot = eaveRibBot;
                     _eaveRibClamps.forEach(clamp => {
