@@ -21703,6 +21703,9 @@ async function doAddressLookup(addrOverride) {
   window._cachedMileage = mileage;
   _cachedZip            = zip;
   _cachedCounty         = county;
+  window._cachedCity    = city;
+  window._cachedState   = state;
+  window._cachedZip     = zip;
 
   if (display) {
     if (mileage > 0) {
@@ -34845,40 +34848,16 @@ async function generateChecklist() {
         console.log('[txt] Got field:', id, 'successfully');
         
         var fieldStr = String(val);
-        var textLength = fieldStr.length;
-        
-        // Smart font sizing based on text length and field type
-        var fontSize = 12; // Default
-        
-        // Determine optimal font size based on content length
-        if (textLength <= 3) fontSize = 12;      // Short codes, numbers
-        else if (textLength <= 8) fontSize = 11;  // Medium text
-        else if (textLength <= 15) fontSize = 10; // Names, addresses (shorter)
-        else if (textLength <= 25) fontSize = 9;  // Addresses, descriptions
-        else if (textLength <= 40) fontSize = 8;  // Long descriptions
-        else fontSize = 7;                        // Very long text
-        
-        // Specific field adjustments
-        if (id.indexOf('address') >= 0 || id.indexOf('city') >= 0) {
-          fontSize = Math.min(fontSize, 9); // Addresses tend to be long
-        }
-        if (id.indexOf('email') >= 0) {
-          fontSize = Math.min(fontSize, 8); // Emails can be long
-        }
-        if (id.indexOf('name') >= 0 && textLength > 15) {
-          fontSize = Math.min(fontSize, 9); // Long names need smaller font
-        }
-        
+
+        // Auto-size: font size 0 lets pdf-lib / the PDF reader shrink the text to
+        // fit the field box, so long entries are never cut off (NeedAppearances is on).
         try {
-          // Try to set font size - if it fails, fall back gracefully
-          field.setFontSize(fontSize);
+          field.setFontSize(0);
           field.setText(fieldStr);
-          console.log('[txt] Set text for field:', id, 'at font size', fontSize, 'to:', JSON.stringify(fieldStr));
+          console.log('[txt] Set text (auto-fit) for field:', id, 'to:', JSON.stringify(fieldStr));
         } catch(fontError) {
-          // If font sizing fails, try without it
-          console.log('[txt] Font sizing failed for field:', id, ', trying without font size');
+          console.log('[txt] Auto-size failed for field:', id, ', setting text only');
           field.setText(fieldStr);
-          console.log('[txt] Set text for field:', id, 'without font sizing to:', JSON.stringify(fieldStr));
         }
         
       } else {
@@ -35111,7 +35090,22 @@ async function generateChecklist() {
     txt(form, 'cust_phone',  sf.phone   || '');
     txt(form, 'cust_email',  sf.email   || '');
     txt(form, 'address',     sf.address || '');
-    txt(form, 'city',        sf.address || '');   // city field
+    // City / State / Zip line - pull ONLY city, state, zip, never the full street address.
+    // Prefer the geocoder's parsed components (cached during the mileage/address lookup)
+    // when they match the typed address; otherwise fall back to everything after the
+    // first comma of what was typed.
+    var _addrFull = sf.address || '';
+    var _gcCity = window._cachedCity || '', _gcState = window._cachedState || '', _gcZip = window._cachedZip || '';
+    var _cityLine;
+    var _gcMatch = (_gcCity && _addrFull.toUpperCase().indexOf(_gcCity.toUpperCase()) !== -1) ||
+                   (_gcZip && _addrFull.indexOf(_gcZip) !== -1);
+    if (_gcMatch && (_gcCity || _gcState || _gcZip)) {
+      _cityLine = _gcCity + (_gcState ? (_gcCity ? ', ' : '') + _gcState : '') + (_gcZip ? ' ' + _gcZip : '');
+    } else {
+      var _ci = _addrFull.indexOf(',');
+      _cityLine = (_ci !== -1) ? _addrFull.slice(_ci + 1).trim() : _addrFull;
+    }
+    txt(form, 'city',        _cityLine);   // city, state, zip only
     txt(form, 'county',      county);
     console.log('[Checklist] Customer fields complete');
 
