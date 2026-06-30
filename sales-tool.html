@@ -12083,6 +12083,36 @@ function applyVoiceQuote(parsed, overlay) {
             });
             return segs;
         };
+        // Spans of each wall covered by an attached shed/wrap — base trim breaks here
+        var _shedCoverGaps = function(wallId, axisLen, axisSc) {
+            var gaps = [], OPP = {left:'right',right:'left',front:'back',back:'front'};
+            (shedCfgs||[]).forEach(function(sc){
+                var t = sc.type || 'leanto', full = [-axisSc/2, axisSc/2];
+                if (t === 'wrap4') { gaps.push(full); return; }
+                if (t === 'wrap3') { if (wallId !== OPP[sc.wall]) gaps.push(full); return; }
+                if (t === 'wrap') {
+                    var adj = (sc.wall==='left'||sc.wall==='right') ? (sc.wrapDir==='cw'?'front':'back') : (sc.wrapDir==='cw'?'left':'right');
+                    if (wallId === sc.wall) {
+                        var pl = Math.min(sc.l||0, axisLen);
+                        if (sc.wrapDir === 'cw') gaps.push([-axisSc/2, -axisSc/2 + pl*Sc]); else gaps.push([axisSc/2 - pl*Sc, axisSc/2]);
+                    } else if (wallId === adj) {
+                        var legft = Math.min(sc.wrapLeg||0, axisLen);
+                        if (legft > 0) { var cn = (sc.wall==='left'||sc.wall==='front'); if (cn) gaps.push([-axisSc/2, -axisSc/2 + legft*Sc]); else gaps.push([axisSc/2 - legft*Sc, axisSc/2]); }
+                    }
+                    return;
+                }
+                if (wallId === sc.wall) {
+                    var slen = Math.min(sc.l||0, axisLen), off;
+                    if ((sc.l||0) >= axisLen) off = 0;
+                    else if ((sc.position||'center')==='start') off = 0;
+                    else if (sc.position==='end') off = axisLen - sc.l;
+                    else if (sc.position==='custom') off = Math.max(0, Math.min(sc.offsetFt||0, axisLen - sc.l));
+                    else off = (axisLen - sc.l)/2;
+                    gaps.push([(-axisLen/2 + off)*Sc, (-axisLen/2 + off + slen)*Sc]);
+                }
+            });
+            return gaps;
+        };
         [-1,1].forEach(s => {
             const eaveId = s === -1 ? 'left' : 'right';
             const eaveWc = wallCfgs.find(w => w.id === eaveId);
@@ -12095,6 +12125,7 @@ function applyVoiceQuote(parsed, overlay) {
                     ? placed.filter(d => d.wall === eaveId && ((d.h||99)*Sc > eavePartialY + 1e-4))
                           .map(d => [ -sl/2 + (d.offset||0)*Sc, -sl/2 + ((d.offset||0)+d.w)*Sc ])
                     : [];
+                eGaps = eGaps.concat(_shedCoverGaps(eaveId, Q.l, sl));
                 _trimSegs(-sl/2, sl/2, eGaps).forEach(function(sg){
                     grps.wallPanels.add(mkQ([xb, eaveTrimY, sg[0], xb, eaveTrimY + baseH, sg[0], xb, eaveTrimY + baseH, sg[1], xb, eaveTrimY, sg[1]], mTrimPanel));
                 });
@@ -12109,6 +12140,7 @@ function applyVoiceQuote(parsed, overlay) {
                     ? placed.filter(d => d.wall === gableId && ((d.h||99)*Sc > gablePartialY + 1e-4))
                           .map(d => [ -sw/2 + (d.offset||0)*Sc, -sw/2 + ((d.offset||0)+d.w)*Sc ])
                     : [];
+                gGaps = gGaps.concat(_shedCoverGaps(gableId, Q.w, sw));
                 _trimSegs(-sw/2, sw/2, gGaps).forEach(function(sg){
                     grps.wallPanels.add(mkQ([sg[0], gableTrimY, zb, sg[1], gableTrimY, zb, sg[1], gableTrimY + baseH, zb, sg[0], gableTrimY + baseH, zb], mTrimPanel));
                 });
@@ -24447,24 +24479,38 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
     if (!sc.wall || !sc.w || !sc.l) return;
     if (sc.cypressRafters) return; // headers become RCC88xx, calculated separately
 
-    function addShedPieces(len, multiplier) {
-      var pieces = fillWall(len, shedPS);
-      Object.keys(pieces).forEach(function(l) {
-        var key = 'SYP212' + l;
-        shedGroups[key] = shedGroups[key] || { len: parseInt(l), qty: 0, isLVL: false };
-        shedGroups[key].qty += pieces[l] * multiplier;
-      });
+    var _attWall = (WALLS||[]).find(function(w){return w.id===sc.wall;}) || {};
+    var _legEavePS  = (sc.eavePS != null && sc.eavePS !== '') ? parseFloat(sc.eavePS) : (parseFloat(_attWall.postSpacing) || Q.postSpacing || 10);
+    var _legGablePS = parseFloat(sc.gablePS) || Q.postSpacing || 10;
+    var _legWrapPS  = (sc.wrapLegPS != null && sc.wrapLegPS !== '') ? parseFloat(sc.wrapLegPS) : _legEavePS;
+    // 2x12 at/under 12' spacing; LVL (CLVL1178) 2-ply per bay at the spacing length when a leg exceeds 12'.
+    function addShedPieces(len, multiplier, legPS) {
+      var ps = parseFloat(legPS) || shedPS;
+      if (ps > 12) {
+        var bays = Math.max(1, Math.round(len / ps));
+        var boardLen = Math.round(ps);
+        var key = 'LVL' + boardLen;
+        shedGroups[key] = shedGroups[key] || { len: boardLen, qty: 0, isLVL: true };
+        shedGroups[key].qty += bays * multiplier;
+      } else {
+        var pieces = fillWall(len, ps);
+        Object.keys(pieces).forEach(function(l) {
+          var key = 'SYP212' + l;
+          shedGroups[key] = shedGroups[key] || { len: parseInt(l), qty: 0, isLVL: false };
+          shedGroups[key].qty += pieces[l] * multiplier;
+        });
+      }
     }
 
     if (sc.type === 'gable') {
       if (isGableEaveAttached(sc)) {
-        addShedPieces(sc.l, 4);
+        addShedPieces(sc.l, 4, _legGablePS);
       } else {
-        addShedPieces(20, 2); // 1×20' per side — builders cut inside + outside pieces
+        addShedPieces(20, 2, _legGablePS); // 1x20' per side — builders cut inside + outside pieces
       }
       return;
     }
-    if (sc.type === 'leanto') { addShedPieces(sc.l, 2); return; }
+    if (sc.type === 'leanto') { addShedPieces(sc.l, 2, _legEavePS); return; }
     if (sc.type === 'wrap4') {
       // Full wrap-around: 4 sides, each hip-tip to hip-tip.
       // Board length chosen by post spacing: 8'→10', 10'→20', 12'→12'.
@@ -24484,6 +24530,14 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
         return { boardLen: boardLen, qty: Math.ceil(baySides / baysPerBoard) };
       }
       function _w4Add(totalLen, ps) {
+        if (ps > 12) {
+          var _bays = Math.max(1, Math.round(totalLen / ps));
+          var _bl = Math.round(ps);
+          var _k = 'LVL' + _bl;
+          shedGroups[_k] = shedGroups[_k] || { len: _bl, qty: 0, isLVL: true };
+          shedGroups[_k].qty += _bays * 2; // 2-ply per bay
+          return;
+        }
         var b = _w4BoardsPerSide(totalLen, ps);
         var key = 'SYP212' + b.boardLen;
         shedGroups[key] = shedGroups[key] || { len: b.boardLen, qty: 0, isLVL: false };
@@ -24498,12 +24552,12 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
       return;
     }
     if (sc.type === 'wrap' || sc.type === 'wrap3') {
-      addShedPieces(sc.l, 2);
+      addShedPieces(sc.l, 2, _legEavePS);
       if (sc.type === 'wrap3') {
         var isEave = (sc.wall === 'left' || sc.wall === 'right');
-        addShedPieces(isEave ? Q.w : Q.l, 4);
+        addShedPieces(isEave ? Q.w : Q.l, 4, _legWrapPS);
       } else if (sc.wrapLeg > 0) {
-        addShedPieces(sc.wrapLeg, 2);
+        addShedPieces(sc.wrapLeg, 2, _legWrapPS);
       }
     }
   });
@@ -24515,7 +24569,7 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
   });
   Object.keys(shedGroups).sort().forEach(function(key) {
     var g = shedGroups[key];
-    results.push(makeItem('Side Shed Headers', 'SYP212' + g.len, g.qty, g.len, false));
+    results.push(makeItem('Side Shed Headers', 'SYP212' + g.len, g.qty, g.len, g.isLVL));
   });
   return results;
 };
