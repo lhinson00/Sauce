@@ -10036,7 +10036,7 @@ function applyVoiceQuote(parsed, overlay) {
           'Frost Black':'Gloss Black','Frost Bronze':'Bronze','Frost Charcoal':'County Charcoal',
           'Frost Barn Red':'Barn Red','Frost Clay':'Clay','Frost Green':'Patina Green'
         };
-        function pc(name) { return panelColors[frostFallback[name] || name] || 0x475569; }
+        function pc(name) { var _k = frostFallback[name] || name; var _ov = window._colorOverrides; if (_ov && _ov[_k] != null) return _ov[_k]; return panelColors[_k] || 0x475569; }
 
         const roofColorName = document.getElementById('qgRoofColor').value;
         const wallColorName = document.getElementById('qgWallColor').value;
@@ -41657,4 +41657,304 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
 /* customer option toggles -> drive the real salesman controls so they persist */
 window.custMirror = function(stId, checked){ var s=document.getElementById(stId); if(!s) return; s.checked=!!checked; s.dispatchEvent(new Event("change")); };
 window.custMirrorVal = function(stId, val){ var s=document.getElementById(stId); if(!s) return; s.value=val; s.dispatchEvent(new Event("change")); };
+</script>
+
+<!-- ===== LAIN COLOR TUNER v2 (shared palette via Supabase, gated) ===== -->
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   COLOR TUNER v2 — shared published palette.
+   • ALL users load the published palette on open and the 3D paints it.
+   • lain.hinson only: live-tune + Save (publishes to server for everyone).
+   • Saved palette is the permanent baseline — no reset to shipped presets.
+   Read  : GET  {SB}/rest/v1/color_palette?id=eq.1   (public via anon key)
+   Write : POST {SB}/rest/v1/color_palette  (upsert; UI-gated to lain)
+   Open tuner: Ctrl+Shift+C  or  ?tuner=1
+   ══════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+  if (window.__lctInit) return;
+  window.__lctInit = true;
+
+  function isLain() { return ((window.currentUser || {}).username === 'lain.hinson'); }
+
+  var LS_SHARED = 'sauceColorPalette';   // published palette, all users
+  var LS_DRAFT = 'stColorDraft_v1';      // lain's unsaved edits (local only)
+
+  // Shipped fallback — used only until a palette has ever been published.
+  var BASE = [
+    ['White', '#f5f5f5', 'Whites & neutrals'],
+    ['Pure White', '#f2f2f0', 'Whites & neutrals'],
+    ['Bone White', '#e8e4d8', 'Whites & neutrals'],
+    ['Ivory', '#e8dfc0', 'Whites & neutrals'],
+    ['Stone', '#c4bba8', 'Whites & neutrals'],
+    ['Tan', '#c9aa7c', 'Whites & neutrals'],
+    ['Buckskin', '#b89060', 'Whites & neutrals'],
+    ['Light Gray', '#b0b4b8', 'Grays & metallic'],
+    ['Galvalume', '#a8aaa5', 'Grays & metallic'],
+    ['Gray Rough Sawn Cedar', '#787068', 'Grays & metallic'],
+    ['County Charcoal', '#5a5c5e', 'Charcoals & blacks'],
+    ['Blue Charcoal', '#4a5058', 'Charcoals & blacks'],
+    ['Gloss Black', '#1a1a1c', 'Charcoals & blacks'],
+    ['Matte Black', '#202020', 'Charcoals & blacks'],
+    ['Clay', '#a07858', 'Earth / bronze / copper'],
+    ['Brown', '#6e4830', 'Earth / bronze / copper'],
+    ['Bronze', '#7a5838', 'Earth / bronze / copper'],
+    ['Copper Metallic', '#b07828', 'Earth / bronze / copper'],
+    ['Barn Red', '#8c2820', 'Reds & burgundy'],
+    ['Bright Red', '#c02020', 'Reds & burgundy'],
+    ['Dark Red', '#7a1818', 'Reds & burgundy'],
+    ['Burgundy', '#6a1828', 'Reds & burgundy'],
+    ['Patina Green', '#4a7060', 'Greens'],
+    ['Forest Green', '#1e4030', 'Greens'],
+    ['Hawaiian Blue', '#3060a0', 'Blues'],
+    ['Gallery Blue', '#2a4870', 'Blues'],
+    ['Rough Sawn Cedar', '#8b5e3c', 'Cedar & wood tones'],
+    ['Distressed Rough Sawn Cedar', '#6b4020', 'Cedar & wood tones']
+  ];
+  var FAMS = ['Whites & neutrals', 'Grays & metallic', 'Charcoals & blacks',
+    'Earth / bronze / copper', 'Reds & burgundy', 'Greens', 'Blues', 'Cedar & wood tones'];
+  var NAMES = BASE.map(function (r) { return r[0]; });
+  var SHIPPED = {}; BASE.forEach(function (r) { SHIPPED[r[0]] = r[1].toLowerCase(); });
+
+  function hxInt(h) { return parseInt(String(h).replace('#', ''), 16); }
+  function norm(h) { h = String(h || '').trim().toLowerCase(); if (h && h[0] !== '#') h = '#' + h; return h; }
+  function valid(h) { return /^#[0-9a-f]{6}$/i.test(h); }
+  function clone(o) { var c = {}; Object.keys(o).forEach(function (k) { c[k] = o[k]; }); return c; }
+  function textOn(h) { var n = h.replace('#', ''); var r = parseInt(n.slice(0, 2), 16), g = parseInt(n.slice(2, 4), 16), b = parseInt(n.slice(4, 6), 16); return (0.299 * r + 0.587 * g + 0.114 * b) > 150 ? '#111' : '#fff'; }
+
+  function readJSON(k) { try { return JSON.parse(localStorage.getItem(k) || '{}') || {}; } catch (e) { return {}; } }
+  function writeJSON(k, o) { try { localStorage.setItem(k, JSON.stringify(o)); } catch (e) { } }
+  function readShared() { return readJSON(LS_SHARED); }
+  function writeShared(o) { writeJSON(LS_SHARED, o); }
+  function readDraft() { return readJSON(LS_DRAFT); }
+
+  // Supabase REST (uses the tool's existing anon key / URL globals)
+  function sbReady() { return (typeof _SB_URL !== 'undefined' && typeof _SB_KEY !== 'undefined' && (typeof _SB_ON === 'undefined' || _SB_ON)); }
+  function sbHeaders(extra) {
+    var h = { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json' };
+    if (extra) Object.keys(extra).forEach(function (k) { h[k] = extra[k]; });
+    return h;
+  }
+
+  // Full palette every base color resolves to: shipped, overlaid by published.
+  function effectivePublished() {
+    var pal = clone(SHIPPED), pub = readShared();
+    NAMES.forEach(function (n) { if (valid(norm(pub[n]))) pal[n] = norm(pub[n]); });
+    return pal;
+  }
+
+  // Push a full palette into the live scene via pc()'s override hook, rebuild.
+  function applyOverrides(pal, rebuild) {
+    var ov = window._colorOverrides = window._colorOverrides || {};
+    NAMES.forEach(function (n) { var h = valid(norm(pal[n])) ? norm(pal[n]) : SHIPPED[n]; ov[n] = hxInt(h); });
+    if (rebuild) { if (typeof scheduleBuild === 'function') scheduleBuild(); else if (typeof triggerBuild === 'function') { try { triggerBuild(); } catch (e) { } } }
+  }
+
+  // ---- state ----
+  var SAVED = {};   // last published palette (name -> hex)
+  var cur = {};     // working palette shown/edited
+  function recomputeDraft() {
+    var d = {}; NAMES.forEach(function (n) { if (cur[n] !== SAVED[n]) d[n] = cur[n]; }); writeJSON(LS_DRAFT, d);
+  }
+  function unsavedCount() { return NAMES.filter(function (n) { return cur[n] !== SAVED[n]; }).length; }
+
+  // ---- publish load: runs for EVERY user on open ----
+  window._loadColorPalette = function () {
+    // 1) instant paint from cache (or shipped), overlaid with lain's local draft
+    SAVED = effectivePublished();
+    cur = clone(SAVED);
+    if (isLain()) { var d = readDraft(); NAMES.forEach(function (n) { if (valid(norm(d[n]))) cur[n] = norm(d[n]); }); }
+    applyOverrides(cur, true);
+    // 2) background refresh from server (public read, no token needed)
+    if (!sbReady()) return;
+    var attempt = 0;
+    function go() {
+      attempt++;
+      fetch(_SB_URL + '/rest/v1/color_palette?id=eq.1&select=palette', { headers: sbHeaders() })
+        .then(function (r) { return r.ok ? r.json() : []; })
+        .then(function (rows) {
+          var srv = rows && rows[0] && rows[0].palette;
+          if (srv && typeof srv === 'object' && Object.keys(srv).length) {
+            var pub = {}; Object.keys(srv).forEach(function (n) { if (valid(norm(srv[n]))) pub[n] = norm(srv[n]); });
+            writeShared(pub);
+            SAVED = effectivePublished();
+            var draft = isLain() ? readDraft() : {};
+            cur = clone(SAVED);
+            NAMES.forEach(function (n) { if (valid(norm(draft[n]))) cur[n] = norm(draft[n]); });
+            applyOverrides(cur, true);
+            if (panel) { refreshAll(); updateFooter(); }
+          } else if (attempt < 4) { setTimeout(go, 1500); }
+        })
+        .catch(function () { if (attempt < 4) setTimeout(go, 2000); });
+    }
+    setTimeout(go, 300);
+  };
+
+  // ---- lain edits ----
+  function setColor(name, hex) {
+    hex = norm(hex); if (!valid(hex)) return;
+    cur[name] = hex;
+    recomputeDraft();
+    applyOverrides(cur, true);
+    refreshRow(name); updateFooter();
+  }
+  function resetOne(name) { cur[name] = SAVED[name]; recomputeDraft(); applyOverrides(cur, true); refreshRow(name); updateFooter(); }
+  function discardUnsaved() {
+    if (!unsavedCount()) return;
+    if (!confirm('Discard your unsaved changes and go back to the last saved palette?')) return;
+    cur = clone(SAVED); writeJSON(LS_DRAFT, {}); applyOverrides(cur, true); refreshAll(); updateFooter();
+  }
+
+  // ---- publish (Save) — lain only, token-gated server-side ----
+  var saving = false;
+  function save() {
+    if (!isLain() || saving) return;
+    if (!unsavedCount()) { toast('Nothing to save'); return; }
+    if (!sbReady()) { toast('Supabase not configured'); return; }
+    saving = true; updateFooter();
+    fetch(_SB_URL + '/rest/v1/color_palette', {
+      method: 'POST',
+      headers: sbHeaders({ 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
+      body: JSON.stringify([{ id: 1, palette: cur, updated_at: new Date().toISOString() }])
+    })
+      .then(function (r) {
+        saving = false;
+        if (r.ok) {
+          writeShared(clone(cur)); SAVED = clone(cur); writeJSON(LS_DRAFT, {});
+          refreshAll(); updateFooter(); toast('Saved — now live for everyone');
+        } else { r.text().then(function () { updateFooter(); toast('Save failed (' + r.status + ')'); }); }
+      })
+      .catch(function () { saving = false; updateFooter(); toast('Save failed — check connection'); });
+  }
+
+  // ---- UI ----
+  var panel, rows = {}, footEl, saveBtn, discardBtn;
+  function refreshRow(name) {
+    var r = rows[name]; if (!r) return;
+    var hex = cur[name], changed = hex !== SAVED[name];
+    r.sw.style.background = hex; r.sw.value = hex;
+    if (document.activeElement !== r.hex) r.hex.value = hex;
+    r.dot.style.opacity = changed ? '1' : '0';
+    r.rst.style.visibility = changed ? 'visible' : 'hidden';
+  }
+  function refreshAll() { NAMES.forEach(refreshRow); }
+  function updateFooter() {
+    if (!footEl) return;
+    var n = unsavedCount();
+    footEl.textContent = saving ? 'Saving…' : (n ? (n + (n === 1 ? ' unsaved change' : ' unsaved changes')) : 'All changes saved');
+    if (saveBtn) { saveBtn.disabled = saving || !n; saveBtn.style.opacity = (saving || !n) ? '.5' : '1'; }
+    if (discardBtn) { discardBtn.style.visibility = n ? 'visible' : 'hidden'; }
+  }
+
+  function buildPanel() {
+    if (panel) return;
+    var st = document.createElement('style');
+    st.textContent = [
+      '#lct-panel{position:fixed;top:0;right:0;bottom:0;width:344px;max-width:92vw;z-index:99990;',
+      'background:#23262b;color:#eef1f4;border-left:1px solid #3a3f47;box-shadow:-10px 0 40px rgba(0,0,0,.45);',
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:none;flex-direction:column;transform:translateX(100%);transition:transform .18s}',
+      '#lct-panel.open{display:flex;transform:translateX(0)}',
+      '#lct-head{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid #3a3f47}',
+      '#lct-head b{font-size:14px}',
+      '#lct-head .sub{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#6b727c}',
+      '#lct-head .sp{flex:1}',
+      '#lct-head .close{background:none;border:1px solid #3a3f47;color:#9aa2ac;border-radius:7px;padding:5px 9px;cursor:pointer;font-size:12px}',
+      '#lct-head .close:hover{color:#eef1f4;border-color:#4a505a}',
+      '#lct-body{flex:1;overflow:auto;padding:10px 12px}',
+      '#lct-body h4{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#6b727c;margin:14px 0 7px;border-bottom:1px solid #33373d;padding-bottom:5px}',
+      '#lct-body h4:first-child{margin-top:2px}',
+      '.lct-row{display:flex;align-items:center;gap:8px;padding:5px 0}',
+      '.lct-row .nm{flex:1;font-size:12.5px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+      '.lct-row .dot{width:7px;height:7px;border-radius:50%;background:#ff8200;opacity:0;flex:none}',
+      '.lct-sw{width:30px;height:30px;border-radius:7px;border:1px solid #3a3f47;padding:0;cursor:pointer;flex:none;-webkit-appearance:none;appearance:none}',
+      '.lct-sw::-webkit-color-swatch-wrapper{padding:0}.lct-sw::-webkit-color-swatch{border:none;border-radius:6px}',
+      '.lct-hex{width:78px;flex:none;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;background:#2b2f35;border:1px solid #3a3f47;border-radius:6px;color:#eef1f4;padding:6px 7px;outline:none;text-transform:lowercase}',
+      '.lct-hex:focus{border-color:#ff8200}',
+      '.lct-eye,.lct-rst{background:none;border:1px solid #3a3f47;color:#9aa2ac;border-radius:6px;width:28px;height:28px;cursor:pointer;flex:none;font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center}',
+      '.lct-eye:hover,.lct-rst:hover{color:#eef1f4;border-color:#4a505a}',
+      '#lct-foot{padding:11px 14px;border-top:1px solid #3a3f47;display:flex;align-items:center;gap:9px}',
+      '#lct-foot .cnt{font-size:11px;color:#9aa2ac;flex:1}',
+      '#lct-foot .discard{background:none;border:1px solid #3a3f47;color:#9aa2ac;border-radius:8px;padding:8px 11px;cursor:pointer;font-size:12px;visibility:hidden}',
+      '#lct-foot .discard:hover{color:#eef1f4;border-color:#4a505a}',
+      '#lct-foot .save{background:#ff8200;border:none;color:#241300;font-weight:700;border-radius:8px;padding:9px 16px;cursor:pointer;font-size:13px}',
+      '#lct-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(16px);background:#57c68a;color:#08160d;font-weight:700;padding:9px 16px;border-radius:9px;opacity:0;transition:.2s;z-index:99992;pointer-events:none;font-size:13px;max-width:80vw;text-align:center}',
+      '#lct-toast.on{opacity:1;transform:translateX(-50%) translateY(0)}'
+    ].join('');
+    document.head.appendChild(st);
+
+    panel = document.createElement('div');
+    panel.id = 'lct-panel';
+    panel.innerHTML =
+      '<div id="lct-head"><div><b>Color Tuner</b><div class="sub">lain.hinson · shared</div></div>' +
+      '<span class="sp"></span><button class="close" id="lct-close" title="Close (Ctrl+Shift+C)">Close</button></div>' +
+      '<div id="lct-body"></div>' +
+      '<div id="lct-foot"><span class="cnt" id="lct-cnt"></span>' +
+      '<button class="discard" id="lct-discard">Discard</button>' +
+      '<button class="save" id="lct-save">Save for everyone</button></div>';
+    document.body.appendChild(panel);
+
+    var body = panel.querySelector('#lct-body');
+    var hasEye = ('EyeDropper' in window);
+    FAMS.forEach(function (fam) {
+      var items = BASE.filter(function (r) { return r[2] === fam; });
+      if (!items.length) return;
+      var h = document.createElement('h4'); h.textContent = fam; body.appendChild(h);
+      items.forEach(function (r) {
+        var name = r[0];
+        var row = document.createElement('div'); row.className = 'lct-row';
+        var dot = document.createElement('span'); dot.className = 'dot';
+        var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = name; nm.title = name;
+        var sw = document.createElement('input'); sw.type = 'color'; sw.className = 'lct-sw'; sw.value = cur[name] || SHIPPED[name];
+        var hex = document.createElement('input'); hex.className = 'lct-hex'; hex.value = cur[name] || SHIPPED[name]; hex.spellcheck = false; hex.maxLength = 7;
+        var eye = document.createElement('button'); eye.className = 'lct-eye'; eye.innerHTML = '&#128167;'; eye.title = 'Eyedrop a color from anywhere on screen';
+        var rst = document.createElement('button'); rst.className = 'lct-rst'; rst.innerHTML = '&#8635;'; rst.title = 'Back to last saved'; rst.style.visibility = 'hidden';
+
+        sw.addEventListener('input', function () { setColor(name, sw.value); });
+        hex.addEventListener('input', function () { var v = norm(hex.value); if (valid(v)) setColor(name, v); });
+        rst.addEventListener('click', function () { resetOne(name); });
+        if (hasEye) { eye.addEventListener('click', function () { try { new window.EyeDropper().open().then(function (res) { if (res && res.sRGBHex) setColor(name, res.sRGBHex); }).catch(function () { }); } catch (e) { } }); }
+        else { eye.style.display = 'none'; }
+
+        row.appendChild(dot); row.appendChild(nm); row.appendChild(sw); row.appendChild(hex); row.appendChild(eye); row.appendChild(rst);
+        body.appendChild(row);
+        rows[name] = { sw: sw, hex: hex, dot: dot, rst: rst };
+        refreshRow(name);
+      });
+    });
+
+    footEl = panel.querySelector('#lct-cnt');
+    saveBtn = panel.querySelector('#lct-save');
+    discardBtn = panel.querySelector('#lct-discard');
+    panel.querySelector('#lct-close').addEventListener('click', close);
+    saveBtn.addEventListener('click', save);
+    discardBtn.addEventListener('click', discardUnsaved);
+    updateFooter();
+  }
+
+  function toast(msg) {
+    var t = document.getElementById('lct-toast');
+    if (!t) { t = document.createElement('div'); t.id = 'lct-toast'; document.body.appendChild(t); }
+    t.textContent = msg; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(function () { t.classList.remove('on'); }, 1900);
+  }
+
+  function open() { if (!isLain()) return; buildPanel(); refreshAll(); updateFooter(); panel.classList.add('open'); }
+  function close() { if (panel) panel.classList.remove('open'); }
+  function toggle() { if (panel && panel.classList.contains('open')) close(); else open(); }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) { if (isLain()) { e.preventDefault(); toggle(); } }
+  });
+
+  // ---- init: load published palette for ALL users; enable tuner for lain ----
+  function init() {
+    try { window._loadColorPalette(); } catch (e) { }
+    if (isLain()) { try { if (new URLSearchParams(location.search).get('tuner') === '1') open(); } catch (e) { } }
+  }
+  var tries = 0;
+  (function waitUser() {
+    if ((window.currentUser && window.currentUser.username) || tries > 30) { init(); return; }
+    tries++; setTimeout(waitUser, 150);
+  })();
+})();
+
 </script>
