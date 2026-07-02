@@ -37265,21 +37265,32 @@ window.openConcreteModal = function(forcedType) {
       county = zip; // will resolve via zippopotam below
     }
     try {
-      // Get county from Zippopotam (instant, no auth)
-      var zresp = await fetch('https://api.zippopotam.us/us/' + zip);
-      if (zresp.ok) {
-        var zdata = await zresp.json();
-        var place = zdata.places && zdata.places[0];
-        if (place) {
-          county = place['place name'];
-          zone = SC.getZone(county);
-          _cachedZip = zip;
-          _cachedCounty = county;
-          if (ZIP_MILES[zip]) _cachedMileage = ZIP_MILES[zip];
-          updateZoneLabel();
-          zipStatus.textContent = zone ? (place['place name'] + ', ' + place['state abbreviation']) : 'Zone not found';
-          recalc();
-          return;
+      // County must come from Google Geocoding (administrative_area_level_2).
+      // Zippopotam only returns the city name, not the county, which made
+      // valid TN zips (e.g. 37748 Harriman / Roane) default to Middle TN.
+      var gResp = await fetch('https://maps.googleapis.com/maps/api/geocode/json?address='
+        + encodeURIComponent(zip) + '&key=AIzaSyCs2SXmB1WkirXhYmIrH4xedaWs-xZ2JV8');
+      if (gResp.ok) {
+        var gData = await gResp.json();
+        var res = gData.results && gData.results[0];
+        if (res && res.address_components) {
+          var gCounty = '', gCity = '', gState = '';
+          res.address_components.forEach(function(c){
+            if (c.types.indexOf('administrative_area_level_2') !== -1) gCounty = c.long_name.replace(/\s*County\s*/i,'').trim().toUpperCase();
+            if (c.types.indexOf('locality') !== -1) gCity = c.long_name;
+            if (c.types.indexOf('administrative_area_level_1') !== -1) gState = c.short_name;
+          });
+          if (gCounty) {
+            county = gCounty;
+            zone = SC.getZone(county);
+            _cachedZip = zip;
+            _cachedCounty = county;
+            if (ZIP_MILES[zip]) _cachedMileage = ZIP_MILES[zip];
+            updateZoneLabel();
+            zipStatus.textContent = zone ? (gCity ? (gCity + ', ' + gState) : SC.RATES[zone].label) : 'Zone not found';
+            recalc();
+            return;
+          }
         }
       }
     } catch(e) {}
