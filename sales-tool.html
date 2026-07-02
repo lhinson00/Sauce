@@ -3637,6 +3637,33 @@ function buildWallGrid(){
       wrap.appendChild(trow);
     }
 
+    // ── Per-wall color + wainscot (blank = inherit building) ──
+    (function(w){
+      function colorSel(cur, onch){
+        var s=document.createElement("select"); s.onclick=function(e){e.stopPropagation();};
+        s.style.cssText="width:100%;padding:4px;border:1px solid var(--border);border-radius:5px;font-size:10px;background:#fff;color:var(--text);margin-top:2px;";
+        var o0=document.createElement("option"); o0.value=""; o0.textContent="Building default"; s.appendChild(o0);
+        var src=document.getElementById("qgWallColor");
+        if(src){ for(var i=0;i<src.options.length;i++){ var o=document.createElement("option"); o.value=src.options[i].value; o.textContent=src.options[i].text; if(cur===o.value) o.selected=true; s.appendChild(o); } }
+        s.onchange=function(){ onch(this.value); scheduleBuild(); try{updateStripFromLocalCalc();}catch(e){} };
+        return s;
+      }
+      var box=document.createElement("div"); box.className="wall-partial-row";
+      box.style.cssText="flex-direction:column;align-items:stretch;gap:2px;padding:5px 6px;";
+      box.onclick=function(e){e.stopPropagation();};
+      var cl=document.createElement("div"); cl.style.cssText="font-size:9px;color:var(--muted);font-weight:700;"; cl.textContent="Wall color"; box.appendChild(cl);
+      box.appendChild(colorSel(w.wallColor||"", function(v){ w.wallColor=v||null; }));
+      var wwc=colorSel(w.wainscotColor||"", function(v){ w.wainscotColor=v||null; });
+      var lab=document.createElement("label"); lab.style.cssText="display:flex;align-items:center;gap:5px;font-size:10px;color:var(--navy);cursor:pointer;margin-top:5px;";
+      var cb=document.createElement("input"); cb.type="checkbox"; cb.style.accentColor="#FF8200";
+      cb.checked=(w.wainscot!=null)?!!w.wainscot:!!(document.getElementById("qgWainscot")||{}).checked;
+      cb.onclick=function(e){e.stopPropagation();};
+      cb.onchange=function(){ w.wainscot=this.checked; wwc.style.display=this.checked?"block":"none"; scheduleBuild(); try{updateStripFromLocalCalc();}catch(e){} };
+      lab.appendChild(cb); var sp=document.createElement("span"); sp.textContent="Wainscot"; lab.appendChild(sp); box.appendChild(lab);
+      wwc.style.display=cb.checked?"block":"none"; box.appendChild(wwc);
+      wrap.appendChild(box);
+    })(wall);
+
     g.appendChild(wrap);
   });
 
@@ -11049,6 +11076,12 @@ function applyVoiceQuote(parsed, overlay) {
         function buildWS(wallId) {
             const wCfg = wallCfgs.find(w => w.id === wallId);
             if (!wCfg) return;
+            // Per-wall color / wainscot (blank = inherit building)
+            var _wColName = wCfg.wallColor || wallColorName;
+            var _hasWains = (wCfg.wainscot != null) ? !!wCfg.wainscot : hasWainscot;
+            var _wWainsColName = wCfg.wainscotColor || (_hasWains ? roofColorName : _wColName);
+            var _mW = new THREE.MeshBasicMaterial({ color: pc(_wColName), side: THREE.DoubleSide });
+            var _mWainscot = new THREE.MeshBasicMaterial({ color: pc(_wWainsColName), side: THREE.DoubleSide });
 
             const isG = (wallId === 'front' || wallId === 'back');
             var _gEaveFt = (wallId==='front') ? (_hsOn?_hsSecs[0].h:Q.h) : (_hsOn?_hsSecs[_hsSecs.length-1].h:Q.h);
@@ -11069,7 +11102,7 @@ function applyVoiceQuote(parsed, overlay) {
             const partialDrop = wCfg.encl === 'partial' ? (wCfg.partialH || Math.min(4, Q.h)) * Sc : 0;
             const wH = wCfg.encl === 'partial' ? _gSh - partialDrop : _gSh;
             const wTop = _gSh; // top of metal always = eave height
-            const wsH = hasWainscot ? Math.min(4 * Sc, wH) : 0; // 4' wainscot height
+            const wsH = _hasWains ? Math.min(4 * Sc, wH) : 0; // 4' wainscot height
 
             // Gable triangle — with monitor cutout if eave sheds have drop-down
             if (isG) {
@@ -11157,19 +11190,19 @@ function applyVoiceQuote(parsed, overlay) {
                         const botL = Math.min(effectiveBot, topL);
                         const botR = Math.min(effectiveBot, topR);
                         // Wainscot split on enclosed gable — draw wainscot strip up to wsH, then wall above
-                        if (hasWainscot && wsH > botL && wCfg.encl !== 'open') {
+                        if (_hasWains && wsH > botL && wCfg.encl !== 'open') {
                             const wsHL = Math.min(wsH, topL);
                             const wsHR = Math.min(wsH, topR);
                             // Lower wainscot portion
                             if (wsHL > botL || wsHR > botR) {
-                                grps.wallPanels.add(mkQ([gx, botL, z, gxR, botR, z, gxR, wsHR, z, gx, wsHL, z], mWainscot));
+                                grps.wallPanels.add(mkQ([gx, botL, z, gxR, botR, z, gxR, wsHR, z, gx, wsHL, z], _mWainscot));
                             }
                             // Upper wall portion above wainscot
                             if (topL > wsHL || topR > wsHR) {
-                                grps.wallPanels.add(mkQ([gx, wsHL, z, gxR, wsHR, z, gxR, topR, z, gx, topL, z], mW));
+                                grps.wallPanels.add(mkQ([gx, wsHL, z, gxR, wsHR, z, gxR, topR, z, gx, topL, z], _mW));
                             }
                         } else {
-                            grps.walls.add(mkQ([gx, botL, z, gxR, botR, z, gxR, topR, z, gx, topL, z], mW));
+                            grps.walls.add(mkQ([gx, botL, z, gxR, botR, z, gxR, topR, z, gx, topL, z], _mW));
                         }
                     }
                 } else {
@@ -11179,7 +11212,7 @@ function applyVoiceQuote(parsed, overlay) {
                     tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
                         -sw/2, _gSh, z, sw/2, _gSh, z, 0, _gSr, z
                     ]), 3)); tg.setIndex([0, 1, 2]); tg.computeVertexNormals();
-                    grps.walls.add(new THREE.Mesh(tg, mW));
+                    grps.walls.add(new THREE.Mesh(tg, _mW));
                     const zM = zP + (wallId === 'front' ? .008 : -.008);
                     const mMask = new THREE.MeshBasicMaterial({ 
                         colorWrite: false, side: THREE.DoubleSide 
@@ -11214,17 +11247,17 @@ function applyVoiceQuote(parsed, overlay) {
                     }
                 }
                 const gz = (isGable && zOverride !== undefined) ? zOverride : zP;
-                if (hasWainscot && wsH > y0 && y0 === 0 && y1 > wsH && wCfg.encl !== 'partial') {
+                if (_hasWains && wsH > y0 && y0 === 0 && y1 > wsH && wCfg.encl !== 'partial') {
                     // Split: lower wainscot + upper wall
                     if (isGable) {
-                        grps.wallPanels.add(mkQ([x1, 0, gz, x2, 0, gz, x2, wsH, gz, x1, wsH, gz], mWainscot));
-                        grps.wallPanels.add(mkQ([x1, wsH, gz, x2, wsH, gz, x2, y1, gz, x1, y1, gz], mW));
+                        grps.wallPanels.add(mkQ([x1, 0, gz, x2, 0, gz, x2, wsH, gz, x1, wsH, gz], _mWainscot));
+                        grps.wallPanels.add(mkQ([x1, wsH, gz, x2, wsH, gz, x2, y1, gz, x1, y1, gz], _mW));
                     } else {
-                        grps.wallPanels.add(mkQ([xP, 0, x1, xP, 0, x2, xP, wsH, x2, xP, wsH, x1], mWainscot));
-                        grps.wallPanels.add(mkQ([xP, wsH, x1, xP, wsH, x2, xP, y1, x2, xP, y1, x1], mW));
+                        grps.wallPanels.add(mkQ([xP, 0, x1, xP, 0, x2, xP, wsH, x2, xP, wsH, x1], _mWainscot));
+                        grps.wallPanels.add(mkQ([xP, wsH, x1, xP, wsH, x2, xP, y1, x2, xP, y1, x1], _mW));
                     }
                 } else {
-                    const useMat = (hasWainscot && y1 <= wsH) ? mWainscot : mat;
+                    const useMat = (_hasWains && y1 <= wsH) ? _mWainscot : mat;
                     if (isGable) {
                         grps.wallPanels.add(mkQ([x1, y0, gz, x2, y0, gz, x2, y1, gz, x1, y1, gz], useMat));
                     } else {
@@ -11240,14 +11273,14 @@ function applyVoiceQuote(parsed, overlay) {
                 let x = 0;
                 wdAll.forEach(d => {
                     const dL = d.offset || 0, dR = dL + d.w, dh = Math.min(d.h * Sc, yTop);
-                    if (dL > x) addWallSeg((-wLen / 2 + x) * Sc, (-wLen / 2 + dL) * Sc, yBot, yTop, mW, true, zGable);
+                    if (dL > x) addWallSeg((-wLen / 2 + x) * Sc, (-wLen / 2 + dL) * Sc, yBot, yTop, _mW, true, zGable);
                     // Draw above-door panel for ALL doors including framed openings
                     if (dh < yTop && dh > yBot) {
-                        grps.wallPanels.add(mkQ([(-wLen / 2 + dL) * Sc, dh, zGable, (-wLen / 2 + dR) * Sc, dh, zGable, (-wLen / 2 + dR) * Sc, yTop, zGable, (-wLen / 2 + dL) * Sc, yTop, zGable], mW));
+                        grps.wallPanels.add(mkQ([(-wLen / 2 + dL) * Sc, dh, zGable, (-wLen / 2 + dR) * Sc, dh, zGable, (-wLen / 2 + dR) * Sc, yTop, zGable, (-wLen / 2 + dL) * Sc, yTop, zGable], _mW));
                     }
                     x = dR;
                 });
-                if (x < wLen) addWallSeg((-wLen / 2 + x) * Sc, (wLen / 2) * Sc, yBot, yTop, mW, true, zGable);
+                if (x < wLen) addWallSeg((-wLen / 2 + x) * Sc, (wLen / 2) * Sc, yBot, yTop, _mW, true, zGable);
             } else {
                 // Build a list of Z-range height clamps from enclosed lean-to sheds
                 // on this eave wall — within those Z spans, the main wall is hidden
@@ -11300,12 +11333,12 @@ function applyVoiceQuote(parsed, overlay) {
                 const totalEaveFt = wLen;
                 const eaveRibSp = 0.075, eaveRibW = 0.006;
                 const eaveSide = (wallId === 'left') ? -1 : 1; // outward direction for rib offset
-                const eaveRibHex = pc(wallColorName);
+                const eaveRibHex = pc(_wColName);
                 const eRR = (eaveRibHex >> 16) & 0xff, eRG = (eaveRibHex >> 8) & 0xff, eRB = eaveRibHex & 0xff;
                 const mEaveRibHi = new THREE.MeshBasicMaterial({ color: ((Math.min(255, eRR + 55) << 16) | (Math.min(255, eRG + 55) << 8) | Math.min(255, eRB + 55)), side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
                 const mEaveRibSh = new THREE.MeshBasicMaterial({ color: ((Math.max(0, eRR - 40) << 16) | (Math.max(0, eRG - 40) << 8) | Math.max(0, eRB - 40)), side: THREE.DoubleSide, transparent: true, opacity: 0.75 });
                 // Wainscot-colored ribs so the wall color doesn't bleed through the wainscot band
-                const eaveWsRibHex = pc(wainscotColorName);
+                const eaveWsRibHex = pc(_wWainsColName);
                 const eWR = (eaveWsRibHex >> 16) & 0xff, eWG = (eaveWsRibHex >> 8) & 0xff, eWB = eaveWsRibHex & 0xff;
                 const mEaveWsRibHi = new THREE.MeshBasicMaterial({ color: ((Math.min(255, eWR + 55) << 16) | (Math.min(255, eWG + 55) << 8) | Math.min(255, eWB + 55)), side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
                 const mEaveWsRibSh = new THREE.MeshBasicMaterial({ color: ((Math.max(0, eWR - 40) << 16) | (Math.max(0, eWG - 40) << 8) | Math.max(0, eWB - 40)), side: THREE.DoubleSide, transparent: true, opacity: 0.75 });
@@ -11315,7 +11348,7 @@ function applyVoiceQuote(parsed, overlay) {
                 }
                 // Draw a rib column from yLo→yHi, recoloring the portion below the wainscot line
                 function addEaveRib(rz, yLo, yHi) {
-                    const wsActive = hasWainscot && wCfg.encl !== 'partial';
+                    const wsActive = _hasWains && wCfg.encl !== 'partial';
                     if (wsActive && wsH > yLo && yHi > wsH) {
                         addEaveRibQuad(rz, yLo, wsH, mEaveWsRibHi, mEaveWsRibSh);
                         addEaveRibQuad(rz, wsH, yHi, mEaveRibHi, mEaveRibSh);
@@ -11358,11 +11391,11 @@ function applyVoiceQuote(parsed, overlay) {
                     // Framed opening — skip segment below doorH (hollow), draw above normally
                     if (isFramedSeg) {
                         if (effectiveYTop > doorH) {
-                            if (hasWainscot && wsH > doorH && effectiveYTop > wsH && wCfg.encl !== 'partial') {
-                                grps.wallPanels.add(mkQ([xP, doorH, z1sc, xP, doorH, z2sc, xP, wsH, z2sc, xP, wsH, z1sc], mWainscot));
-                                grps.wallPanels.add(mkQ([xP, wsH, z1sc, xP, wsH, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], mW));
+                            if (_hasWains && wsH > doorH && effectiveYTop > wsH && wCfg.encl !== 'partial') {
+                                grps.wallPanels.add(mkQ([xP, doorH, z1sc, xP, doorH, z2sc, xP, wsH, z2sc, xP, wsH, z1sc], _mWainscot));
+                                grps.wallPanels.add(mkQ([xP, wsH, z1sc, xP, wsH, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], _mW));
                             } else {
-                                grps.wallPanels.add(mkQ([xP, doorH, z1sc, xP, doorH, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], mW));
+                                grps.wallPanels.add(mkQ([xP, doorH, z1sc, xP, doorH, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], _mW));
                             }
                             if (isSingleSlope) for (let rz = z1sc; rz <= z2sc; rz += eaveRibSp) {
                                 addEaveRib(rz, doorH, effectiveYTop);
@@ -11374,16 +11407,16 @@ function applyVoiceQuote(parsed, overlay) {
                     if (doorH > yBot) {
                         // Draw above door only
                         if (effectiveYTop > doorH) {
-                            grps.wallPanels.add(mkQ([xP, doorH, z1sc, xP, doorH, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], mW));
+                            grps.wallPanels.add(mkQ([xP, doorH, z1sc, xP, doorH, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], _mW));
                         }
                     } else {
                         // Full segment
                         if (effectiveYTop > yBot) {
-                            if (hasWainscot && wsH > yBot && effectiveYTop > wsH && wCfg.encl !== 'partial') {
-                                grps.wallPanels.add(mkQ([xP, yBot, z1sc, xP, yBot, z2sc, xP, wsH, z2sc, xP, wsH, z1sc], mWainscot));
-                                grps.wallPanels.add(mkQ([xP, wsH, z1sc, xP, wsH, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], mW));
+                            if (_hasWains && wsH > yBot && effectiveYTop > wsH && wCfg.encl !== 'partial') {
+                                grps.wallPanels.add(mkQ([xP, yBot, z1sc, xP, yBot, z2sc, xP, wsH, z2sc, xP, wsH, z1sc], _mWainscot));
+                                grps.wallPanels.add(mkQ([xP, wsH, z1sc, xP, wsH, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], _mW));
                             } else {
-                                const useMat = (hasWainscot && effectiveYTop <= wsH) ? mWainscot : mW;
+                                const useMat = (_hasWains && effectiveYTop <= wsH) ? _mWainscot : _mW;
                                 grps.wallPanels.add(mkQ([xP, yBot, z1sc, xP, yBot, z2sc, xP, effectiveYTop, z2sc, xP, effectiveYTop, z1sc], useMat));
                             }
                             // Add ribs for this segment so clamped zones get proper metal texture
@@ -12334,28 +12367,29 @@ function applyVoiceQuote(parsed, overlay) {
             });
         } else if (!isSingleSlope) {
             // Standard metal ribbed panels — raised quad strips for visible ribs
-            const wallHex = pc(wallColorName);
-            // Rib highlight: lighter shade for contrast
-            const ribR = ((wallHex >> 16) & 0xff), ribG2 = ((wallHex >> 8) & 0xff), ribB = (wallHex & 0xff);
-            const ribHighlight = ((Math.min(255, ribR + 55) << 16) | (Math.min(255, ribG2 + 55) << 8) | Math.min(255, ribB + 55));
-            const ribShadow = ((Math.max(0, ribR - 40) << 16) | (Math.max(0, ribG2 - 40) << 8) | Math.max(0, ribB - 40));
-            const mRibHi = new THREE.MeshBasicMaterial({ color: ribHighlight, side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
-            const mRibSh = new THREE.MeshBasicMaterial({ color: ribShadow, side: THREE.DoubleSide, transparent: true, opacity: 0.75 });
-            // Wainscot-colored ribs (roof color) so the wall color doesn't bleed through the wainscot band
-            const _wsHr = hasWainscot ? Math.min(4 * Sc, sh) : 0;
-            const wsRibHex = pc(wainscotColorName);
-            const wsRR=(wsRibHex>>16)&0xff, wsRG=(wsRibHex>>8)&0xff, wsRB=wsRibHex&0xff;
-            const mRibWsHi = new THREE.MeshBasicMaterial({ color: ((Math.min(255,wsRR+55)<<16)|(Math.min(255,wsRG+55)<<8)|Math.min(255,wsRB+55)), side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
-            const mRibWsSh = new THREE.MeshBasicMaterial({ color: ((Math.max(0,wsRR-40)<<16)|(Math.max(0,wsRG-40)<<8)|Math.max(0,wsRB-40)), side: THREE.DoubleSide, transparent: true, opacity: 0.75 });
+            var mRibHi, mRibSh, mRibWsHi, mRibWsSh, _wsHr, _ribHasW;
+            function _setRibMats(wc){
+              var cn=(wc&&wc.wallColor)||wallColorName;
+              _ribHasW=(wc&&wc.wainscot!=null)?!!wc.wainscot:hasWainscot;
+              var wcn=(wc&&wc.wainscotColor)||(_ribHasW?roofColorName:cn);
+              var hx=pc(cn),r=(hx>>16)&0xff,g=(hx>>8)&0xff,b=hx&0xff;
+              mRibHi=new THREE.MeshBasicMaterial({color:((Math.min(255,r+55)<<16)|(Math.min(255,g+55)<<8)|Math.min(255,b+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
+              mRibSh=new THREE.MeshBasicMaterial({color:((Math.max(0,r-40)<<16)|(Math.max(0,g-40)<<8)|Math.max(0,b-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
+              var whx=pc(wcn),wr=(whx>>16)&0xff,wg=(whx>>8)&0xff,wb=whx&0xff;
+              mRibWsHi=new THREE.MeshBasicMaterial({color:((Math.min(255,wr+55)<<16)|(Math.min(255,wg+55)<<8)|Math.min(255,wb+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
+              mRibWsSh=new THREE.MeshBasicMaterial({color:((Math.max(0,wr-40)<<16)|(Math.max(0,wg-40)<<8)|Math.max(0,wb-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
+              _wsHr=_ribHasW?Math.min(4*Sc,sh):0;
+            }
+            _setRibMats(null);
             function addEaveWallRib(xb, z, yLo, yHi) {
                 function q(y0,y1,mHi,mSh){ grps.walls.add(mkQ([xb,y0,z, xb,y0,z+ribW, xb,y1,z+ribW, xb,y1,z], mHi)); grps.walls.add(mkQ([xb,y0,z+ribW, xb,y0,z+ribW*2, xb,y1,z+ribW*2, xb,y1,z+ribW], mSh)); }
-                if (hasWainscot && _wsHr>yLo && yHi>_wsHr) { q(yLo,_wsHr,mRibWsHi,mRibWsSh); q(_wsHr,yHi,mRibHi,mRibSh); }
-                else { const lo=hasWainscot && yHi<=_wsHr; q(yLo,yHi, lo?mRibWsHi:mRibHi, lo?mRibWsSh:mRibSh); }
+                if (_ribHasW && _wsHr>yLo && yHi>_wsHr) { q(yLo,_wsHr,mRibWsHi,mRibWsSh); q(_wsHr,yHi,mRibHi,mRibSh); }
+                else { const lo=_ribHasW && yHi<=_wsHr; q(yLo,yHi, lo?mRibWsHi:mRibHi, lo?mRibWsSh:mRibSh); }
             }
             function addGableWallRib(zb, x, yLo, yHi) {
                 function q(y0,y1,mHi,mSh){ grps.walls.add(mkQ([x,y0,zb, x+ribW,y0,zb, x+ribW,y1,zb, x,y1,zb], mHi)); grps.walls.add(mkQ([x+ribW,y0,zb, x+ribW*2,y0,zb, x+ribW*2,y1,zb, x+ribW,y1,zb], mSh)); }
-                if (hasWainscot && _wsHr>yLo && yHi>_wsHr) { q(yLo,_wsHr,mRibWsHi,mRibWsSh); q(_wsHr,yHi,mRibHi,mRibSh); }
-                else { const lo=hasWainscot && yHi<=_wsHr; q(yLo,yHi, lo?mRibWsHi:mRibHi, lo?mRibWsSh:mRibSh); }
+                if (_ribHasW && _wsHr>yLo && yHi>_wsHr) { q(yLo,_wsHr,mRibWsHi,mRibWsSh); q(_wsHr,yHi,mRibHi,mRibSh); }
+                else { const lo=_ribHasW && yHi<=_wsHr; q(yLo,yHi, lo?mRibWsHi:mRibHi, lo?mRibWsSh:mRibSh); }
             }
             const ribSpacing = 0.075; // ~9" panels
             const ribW = 0.006; // rib strip width
@@ -12364,6 +12398,7 @@ function applyVoiceQuote(parsed, overlay) {
                 if (s === 1 && rightOpen) return;
                 const eaveId = s === -1 ? 'left' : 'right';
                 const eaveWcfg = wallCfgs.find(w => w.id === eaveId);
+                _setRibMats(eaveWcfg);
                 const eavePartial = eaveWcfg && eaveWcfg.encl === 'partial';
                 const eaveRibBot = eavePartial ? sh - (eaveWcfg.partialH || Math.min(4, Q.h)) * Sc : 0;
                 const xBase = s * sw / 2;
@@ -12446,6 +12481,7 @@ function applyVoiceQuote(parsed, overlay) {
                 if (s === 1 && backOpen) return;
                 const gableId = s === -1 ? 'front' : 'back';
                 const gableWcfg = wallCfgs.find(w => w.id === gableId);
+                _setRibMats(gableWcfg);
                 const gablePartial = gableWcfg && gableWcfg.encl === 'partial';
                 var _gEaveScR = _hsOn ? ((s===-1 ? _hsSecs[0].h : _hsSecs[_hsSecs.length-1].h) * Sc) : sh;
                 var _gRidgeScR = _hsOn ? (_hsRidgeFt(s===-1 ? _hsSecs[0].h : _hsSecs[_hsSecs.length-1].h) * Sc) : sr;
