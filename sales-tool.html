@@ -3243,7 +3243,8 @@ function hsRev(){ var cb=document.getElementById('hsRevToggle'); window._hsRev =
 function hsActive(){ return !!(window._heightSections && window._heightSections.length); }
 function hsSections(){
   if (!hsActive()) return [{ len: Q.l, h: Q.h }];
-  return window._heightSections.map(function(s){ return { len: s.len, h: s.h }; });
+  var out = window._heightSections.filter(function(s){ return s.len > 0; }).map(function(s){ return { len: s.len, h: s.h }; });
+  return out.length ? out : [{ len: Q.l, h: Q.h }];
 }
 function hsEaveAt(zFt){
   var secs = hsSections(), acc = 0;
@@ -3280,7 +3281,9 @@ function hsRemove(i){
 function hsSetLen(i,v){
   var n = parseInt(v,10); if (isNaN(n)||n<2) return;
   if (!window._heightSections || !window._heightSections[i]) return;
-  window._heightSections[i].len = n; hsRecalcLast(); hsStatus(); scheduleBuild(); try { updateStripFromLocalCalc(); } catch(e){}
+  window._heightSections[i].len = n; hsRecalcLast();
+  var _al = document.getElementById('hsAutoLen'); if (_al && window._heightSections.length) _al.value = window._heightSections[window._heightSections.length-1].len;
+  hsStatus(); scheduleBuild(); try { updateStripFromLocalCalc(); } catch(e){}
 }
 function hsSetH(i,v){
   var n = parseInt(v,10); if (isNaN(n)||n<6) return;
@@ -3295,9 +3298,9 @@ function hsRender(){
   for (var i=0;i<secs.length;i++){
     var isLast = (i === secs.length-1);
     var lenInput = isLast
-      ? '<input class="dim-input" type="number" value="'+secs[i].len+'" readonly title="Auto-fills the remaining length" style="width:100%;opacity:.6;">'
+      ? '<input class="dim-input" id="hsAutoLen" type="number" value="'+secs[i].len+'" readonly title="Auto-fills the remaining length" style="width:100%;opacity:.6;">'
       : '<input class="dim-input" type="number" value="'+secs[i].len+'" min="2" step="2" oninput="hsSetLen('+i+',this.value)" style="width:100%;">';
-    var rm = (secs.length>1 && !isLast) ? '<button class="dim-btn" onclick="hsRemove('+i+')" title="Remove section">&times;</button>' : '<span></span>';
+    var rm = (secs.length>1) ? '<button class="dim-btn" onclick="hsRemove('+i+')" title="Remove section">&times;</button>' : '<span></span>';
     rows += '<div style="display:grid;grid-template-columns:16px 1fr 1fr 16px;gap:6px;align-items:center;margin-bottom:6px;">'
       + '<span style="font-size:9px;color:var(--muted);">'+(i+1)+'</span>'
       + '<div>'+lenInput+'</div>'
@@ -5662,6 +5665,8 @@ function renderSheds(){
           +'</select></div>'
           +'<div><div class="shed-label">Post Spacing</div>'
           +'<input class="shed-inp" type="number" value="'+(sc.gablePS||10)+'" min="1" step="1" onchange="setShedProp('+sc.id+',\'gablePS\',this.value);scheduleBuild()"></div></div>';
+        extraOptions+='<div class="shed-row"><div><div class="shed-label">Drop (ft)</div>'
+          +'<input class="shed-inp" type="number" value="'+(sc.dropFt||0)+'" min="0" max="6" step="1" onchange="setShedProp('+sc.id+',\'dropFt\',this.value);scheduleBuild()"><div style="font-size:8px;color:var(--muted);margin-top:2px;">Lowers the extension below the main eave</div></div></div>';
       } else {
         extraOptions+='<div class="shed-row"><div><div class="shed-label">Post Spacing</div>'
           +'<input class="shed-inp" type="number" value="'+(sc.gablePS||10)+'" min="1" step="1" onchange="setShedProp('+sc.id+',\'gablePS\',this.value);scheduleBuild()"></div>'
@@ -10322,6 +10327,7 @@ function applyVoiceQuote(parsed, overlay) {
         const slabH = 0.04; // 4" slab thickness in scene units
         const postBase = postsOnTop ? slabH : 0;
         const postH = postsOnTop ? sh - slabH : sh;
+        function _hsPostH(zScene){ if(!_hsOn) return postH; var _e=_hsEaveFtAtCenter(zScene/Sc)*Sc; return postsOnTop ? (_e - slabH) : _e; }
 
         // Bracket materials
         const mBracket = new THREE.MeshBasicMaterial({ color: 0x8A9098, side: THREE.DoubleSide });
@@ -10561,7 +10567,7 @@ function applyVoiceQuote(parsed, overlay) {
                         var _eaveCorner = Math.abs(Math.abs(z) - sl/2) < 1e-4;
                         var _inOpenRun = false;
                         if (wCfg && (parseFloat(wCfg.openLenFt)||0) > 0) { var _oRS = parseFloat(wCfg.openStartFt)||0, _oRE = _oRS + (parseFloat(wCfg.openLenFt)||0); _inOpenRun = (post.ft >= _oRS - 0.01 && post.ft <= _oRE + 0.01); }
-                        addMainPost(xSide, z, postH, _inOpenRun ? mPopen : mPeave, (wCfg && wCfg.encl === 'enclosed') && !_eaveCorner && !_inOpenRun);
+                        addMainPost(xSide, z, _hsPostH(z), _inOpenRun ? mPopen : mPeave, (wCfg && wCfg.encl === 'enclosed') && !_eaveCorner && !_inOpenRun);
                     }
                 });
             });
@@ -10591,7 +10597,7 @@ function applyVoiceQuote(parsed, overlay) {
                     if (_shedCoveredCorners.has(key)) return; // hidden behind shed gable cap
                     postPositions.add(key);
                     const distC = Math.abs(post.ft - Q.w / 2);
-                    const pH = (Q.h + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc;
+                    const pH = ((_hsOn ? (wallId==='front'?_hsSecs[0].h:_hsSecs[_hsSecs.length-1].h) : Q.h) + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc;
                     var _gInOpen = (_goLen > 0 && post.ft >= _goS - 1e-6 && post.ft <= _goE + 1e-6);
                     const mPgable = (_gInOpen || (wCfg && wCfg.encl === 'open')) ? mPopen : mPencl;
                     addMainPost(xPos, zPos, pH, mPgable, (!_gInOpen && wCfg && wCfg.encl === 'enclosed'));
@@ -10682,7 +10688,8 @@ function applyVoiceQuote(parsed, overlay) {
                         // Skip post at attachment wall (i=0) — main building wall already has posts
                         if (i === 0) continue;
                         // Front side eave post
-                        const _pfH = _isMono ? Math.max(0.01, sh - slabH) : sh;
+                        var _extDropSc = (sc.dropFt||0)*Sc;
+                        const _pfH = _isMono ? Math.max(0.01, (sh - _extDropSc) - slabH) : (sh - _extDropSc);
                         const pf = new THREE.Mesh(new THREE.BoxGeometry(ps, _pfH, ps), mP);
                         pf.position.set(xPos, shedPostBase + _pfH/2, z1); pf.castShadow = true; grps.posts.add(pf);
                         if (_isMono) addBracket(xPos, z1, grps.posts, slabH);
@@ -11381,15 +11388,16 @@ function applyVoiceQuote(parsed, overlay) {
         if (!isSingleSlope) {
         [[-1,-1],[-1,1],[1,-1],[1,1]].forEach(([sx,sz]) => {
             const cx = sx * sw / 2, cz = sz * sl / 2;
+            var _cSh = _hsOn ? ((sz===-1 ? _hsSecs[0].h : _hsSecs[_hsSecs.length-1].h)*Sc) : sh;
             const gableId = sz === -1 ? 'front' : 'back';
             const eaveId = sx === -1 ? 'left' : 'right';
             const cornerKey = Math.round(cx*1000) + ',' + Math.round(cz*1000);
             const shedCovers = _shedCoveredCorners.has(cornerKey);
             if (!_wOpen(gableId) && !shedCovers) {
-                grps.wallPanels.add(mkQ([cx, 0, cz + sz*co, cx - sx*trimW, 0, cz + sz*co, cx - sx*trimW, sh, cz + sz*co, cx, sh, cz + sz*co], mTrimPanel));
+                grps.wallPanels.add(mkQ([cx, 0, cz + sz*co, cx - sx*trimW, 0, cz + sz*co, cx - sx*trimW, _cSh, cz + sz*co, cx, _cSh, cz + sz*co], mTrimPanel));
             }
             if (!_wOpen(eaveId) && !shedCovers) {
-                grps.wallPanels.add(mkQ([cx + sx*co, 0, cz, cx + sx*co, 0, cz - sz*trimW, cx + sx*co, sh, cz - sz*trimW, cx + sx*co, sh, cz], mTrimPanel));
+                grps.wallPanels.add(mkQ([cx + sx*co, 0, cz, cx + sx*co, 0, cz - sz*trimW, cx + sx*co, _cSh, cz - sz*trimW, cx + sx*co, _cSh, cz], mTrimPanel));
             }
         });
         } // end !isSingleSlope corner trim
@@ -12069,6 +12077,19 @@ function applyVoiceQuote(parsed, overlay) {
             _tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-sw/2, _tSc, _zF, sw/2, _tSc, _zF, 0, _srT, _zF]), 3));
             _tg.setIndex([0,1,2]); _tg.computeVertexNormals();
             grps.walls.add(new THREE.Mesh(_tg, _mStep));
+            // metal ribs on the exposed step face
+            (function(){
+              var _sh0=pc(wallColorName), _r=(_sh0>>16)&0xff,_g=(_sh0>>8)&0xff,_b=_sh0&0xff;
+              var _mHi=new THREE.MeshBasicMaterial({color:((Math.min(255,_r+55)<<16)|(Math.min(255,_g+55)<<8)|Math.min(255,_b+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
+              var _mSh=new THREE.MeshBasicMaterial({color:((Math.max(0,_r-40)<<16)|(Math.max(0,_g-40)<<8)|Math.max(0,_b-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
+              var _w=0.006,_sp=0.075,_rz=_zF+((_hB>_hA)?-0.0012:0.0012);
+              for(var _x=-sw/2;_x<sw/2;_x+=_sp){
+                var _gh=_tSc+(Q.w/2-Math.abs(_x/Sc))*(Q.pitch/12)*Sc, _rt=Math.min(_gh,_srT);
+                if(_rt<=_sSc) continue;
+                grps.walls.add(mkQ([_x,_sSc,_rz,_x+_w,_sSc,_rz,_x+_w,_rt,_rz,_x,_rt,_rz],_mHi));
+                grps.walls.add(mkQ([_x+_w,_sSc,_rz,_x+_w*2,_sSc,_rz,_x+_w*2,_rt,_rz,_x+_w,_rt,_rz],_mSh));
+              }
+            })();
           }
         }
         } // end gable roof — single slope roof rendered via addLeanto() below
@@ -12121,7 +12142,7 @@ function applyVoiceQuote(parsed, overlay) {
         const _hasGableRight = (shedCfgs||[]).some(s=>s.type==='gable'&&s.wall==='right');
 
         // === RIDGE CAP — trim-colored strip along the roof peak (gable only) ===
-        if (!isSingleSlope) {
+        if (!isSingleSlope && !_hsOn) {
         const ridgeW = 0.03;
         // Main building ridge cap stops at its own gable ends.
         // Front/back gable extensions render their own ridge cap at the correct height.
@@ -12372,7 +12393,7 @@ function applyVoiceQuote(parsed, overlay) {
                 for (let z = -sl/2; z <= sl/2; z += ribSpacing) {
                     // Clamp rib top to attachH within enclosed shed span (scene units)
                     if (_eaveOpenLenR > 0 && z >= _eaveOpenZlo - 0.001 && z <= _eaveOpenZhi + 0.001) continue;
-                    let _ribTop = sh;
+                    let _ribTop = _hsOn ? (_hsEaveFtAtCenter(z/Sc)*Sc) : sh;
                     let _ribBot = eaveRibBot;
                     _eaveRibClamps.forEach(clamp => {
                         if (z >= clamp.zLo - ribSpacing && z <= clamp.zHi + ribSpacing) {
@@ -12408,8 +12429,10 @@ function applyVoiceQuote(parsed, overlay) {
                 const gableId = s === -1 ? 'front' : 'back';
                 const gableWcfg = wallCfgs.find(w => w.id === gableId);
                 const gablePartial = gableWcfg && gableWcfg.encl === 'partial';
-                const gableRibBot = gablePartial ? sh - (gableWcfg.partialH || Math.min(4, Q.h)) * Sc : 0;
-                if (gableRibBot >= sh) return;
+                var _gEaveScR = _hsOn ? ((s===-1 ? _hsSecs[0].h : _hsSecs[_hsSecs.length-1].h) * Sc) : sh;
+                var _gRidgeScR = _hsOn ? (_hsRidgeFt(s===-1 ? _hsSecs[0].h : _hsSecs[_hsSecs.length-1].h) * Sc) : sr;
+                const gableRibBot = gablePartial ? _gEaveScR - (gableWcfg.partialH || Math.min(4, Q.h)) * Sc : 0;
+                if (gableRibBot >= _gEaveScR) return;
                 const zBase = s * sl / 2;
                 const _gabRibOpen = (gableWcfg && parseFloat(gableWcfg.openLenFt)) || 0;
                 const _gabRibXlo = -sw/2 + (parseFloat(gableWcfg && gableWcfg.openStartFt)||0) * Sc;
@@ -12425,10 +12448,10 @@ function applyVoiceQuote(parsed, overlay) {
                     }).filter(Boolean);
                 for (let x = -sw/2 + ribSpacing; x < sw/2; x += ribSpacing) {
                     if (_gabRibOpen > 0 && x >= _gabRibXlo - 0.001 && x <= _gabRibXhi + 0.001) continue;
-                    const gableH = sh + (Q.w/2 - Math.abs(x/Sc)) * (Q.pitch/12) * Sc;
-                    const rH = Math.min(gableH, sr);
+                    const gableH = _gEaveScR + (Q.w/2 - Math.abs(x/Sc)) * (Q.pitch/12) * Sc;
+                    const rH = Math.min(gableH, _gRidgeScR);
                     const ribBot = gablePartial ? gableRibBot : 0;
-                    const ribTop = gablePartial ? sh : rH; // partial: stop at eave, not peak
+                    const ribTop = gablePartial ? _gEaveScR : rH; // partial: stop at eave, not peak
                     if (ribTop <= ribBot) continue;
                     // Check if this rib column is inside a framed opening
                     const inZone = gableFramedZones.find(z => x >= z.xMin - ribW && x < z.xMax);
@@ -12477,22 +12500,23 @@ function applyVoiceQuote(parsed, overlay) {
         const rrW = 0.005;
         if (!isSingleSlope) {
         for (let z = -sl/2; z <= sl/2; z += roofRibSpacing) {
+            var _rrSh = _hsOn ? (_hsEaveFtAtCenter(z/Sc)*Sc) : sh, _rrSr = _hsOn ? (_hsRidgeFt(_hsEaveFtAtCenter(z/Sc))*Sc) : sr;
             // Left slope highlight + shadow
-            const lEave = new THREE.Vector3(-sw/2 - ohE, sh - 0.004, z);
-            const lPeak = new THREE.Vector3(0, sr + 0.002, z);
-            const lEave2 = new THREE.Vector3(-sw/2 - ohE, sh - 0.004, z + rrW);
-            const lPeak2 = new THREE.Vector3(0, sr + 0.002, z + rrW);
-            const lEave3 = new THREE.Vector3(-sw/2 - ohE, sh - 0.004, z + rrW*2);
-            const lPeak3 = new THREE.Vector3(0, sr + 0.002, z + rrW*2);
+            const lEave = new THREE.Vector3(-sw/2 - ohE, _rrSh - 0.004, z);
+            const lPeak = new THREE.Vector3(0, _rrSr + 0.002, z);
+            const lEave2 = new THREE.Vector3(-sw/2 - ohE, _rrSh - 0.004, z + rrW);
+            const lPeak2 = new THREE.Vector3(0, _rrSr + 0.002, z + rrW);
+            const lEave3 = new THREE.Vector3(-sw/2 - ohE, _rrSh - 0.004, z + rrW*2);
+            const lPeak3 = new THREE.Vector3(0, _rrSr + 0.002, z + rrW*2);
             grps.roof.add(mkQ([lEave.x, lEave.y, lEave.z, lEave2.x, lEave2.y, lEave2.z, lPeak2.x, lPeak2.y, lPeak2.z, lPeak.x, lPeak.y, lPeak.z], mRoofRibHi));
             grps.roof.add(mkQ([lEave2.x, lEave2.y, lEave2.z, lEave3.x, lEave3.y, lEave3.z, lPeak3.x, lPeak3.y, lPeak3.z, lPeak2.x, lPeak2.y, lPeak2.z], mRoofRibSh));
             // Right slope
-            const rEave = new THREE.Vector3(sw/2 + ohE, sh - 0.004, z);
-            const rPeak = new THREE.Vector3(0, sr + 0.002, z);
-            const rEave2 = new THREE.Vector3(sw/2 + ohE, sh - 0.004, z + rrW);
-            const rPeak2 = new THREE.Vector3(0, sr + 0.002, z + rrW);
-            const rEave3 = new THREE.Vector3(sw/2 + ohE, sh - 0.004, z + rrW*2);
-            const rPeak3 = new THREE.Vector3(0, sr + 0.002, z + rrW*2);
+            const rEave = new THREE.Vector3(sw/2 + ohE, _rrSh - 0.004, z);
+            const rPeak = new THREE.Vector3(0, _rrSr + 0.002, z);
+            const rEave2 = new THREE.Vector3(sw/2 + ohE, _rrSh - 0.004, z + rrW);
+            const rPeak2 = new THREE.Vector3(0, _rrSr + 0.002, z + rrW);
+            const rEave3 = new THREE.Vector3(sw/2 + ohE, _rrSh - 0.004, z + rrW*2);
+            const rPeak3 = new THREE.Vector3(0, _rrSr + 0.002, z + rrW*2);
             grps.roof.add(mkQ([rEave.x, rEave.y, rEave.z, rPeak.x, rPeak.y, rPeak.z, rPeak2.x, rPeak2.y, rPeak2.z, rEave2.x, rEave2.y, rEave2.z], mRoofRibHi));
             grps.roof.add(mkQ([rEave2.x, rEave2.y, rEave2.z, rPeak2.x, rPeak2.y, rPeak2.z, rPeak3.x, rPeak3.y, rPeak3.z, rEave3.x, rEave3.y, rEave3.z], mRoofRibSh));
         }
@@ -13071,13 +13095,14 @@ function applyVoiceQuote(parsed, overlay) {
                 if (sc.wall === 'left' || sc.wall === 'right') {
                     // ── Eave-wall gable extension — ridge runs outward along X ──
                     var dir = sc.wall === 'left' ? -1 : 1;
+                    var _extEaveH = sh - (sc.dropFt||0)*Sc;
                     var aX = sc.wall === 'left' ? -sw/2 : sw/2;
                     var oX = aX + dir * ssw;
                     var halfLen = ssl / 2;
                     var z1 = -halfLen + sco;
                     var z2 =  halfLen + sco;
                     var zMid = sco;
-                    var extRidgeH = Math.min(sr, sh + (sc.l / 2) * (gablePitch / 12) * Sc);
+                    var extRidgeH = Math.min(sr, _extEaveH + (sc.l / 2) * (gablePitch / 12) * Sc);
                     var z1oh = z1 - oh, z2oh = z2 + oh;
                     var oXoh = oX + dir * oh;
 
@@ -13086,31 +13111,31 @@ function applyVoiceQuote(parsed, overlay) {
                     // Main roof height at X: sh + (sw/2 - |X|) * (sr-sh) / (sw/2)
                     // X where extRidgeH meets main roof: |Xv| = sw/2 - (extRidgeH-sh)*sw/(2*(sr-sh))
                     var mainSlope = (sr-sh)/(sw/2);
-                    var valleyDX = mainSlope > 0 ? (extRidgeH-sh)/mainSlope : 0;
-                    var valleyX = aX - dir*valleyDX; // X where ridge height = main roof height
+                    var valleyDX = (mainSlope > 0 && extRidgeH > sh) ? (extRidgeH-sh)/mainSlope : 0;
+                    var valleyX = aX - dir*valleyDX; // X where ridge height = main roof height (wall when dropped)
                     // Clamp to center: can't go past ridge
                     if (dir > 0 && valleyX < 0) valleyX = 0;
                     if (dir < 0 && valleyX > 0) valleyX = 0;
 
                     // Front roof panel: eave corner @ z1 → outer eave @ z1oh → outer ridge → valley point
-                    grps.shed.add(mkQ([aX,sh-.003,z1, oXoh,sh-.003,z1oh, oXoh,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid], mSh));
+                    grps.shed.add(mkQ([aX,_extEaveH-.003,z1, oXoh,_extEaveH-.003,z1oh, oXoh,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid], mSh));
                     // Back roof panel: mirror
-                    grps.shed.add(mkQ([valleyX,extRidgeH-.003,zMid, oXoh,extRidgeH-.003,zMid, oXoh,sh-.003,z2oh, aX,sh-.003,z2], mSh));
+                    grps.shed.add(mkQ([valleyX,extRidgeH-.003,zMid, oXoh,extRidgeH-.003,zMid, oXoh,_extEaveH-.003,z2oh, aX,_extEaveH-.003,z2], mSh));
                     // Valley fill: triangle from valley point down to front/back eave corners on main building
                     // Front valley: [valleyX,extRidgeH,zMid] → [aX,sh,z1] along main roof surface
-                    grps.shed.add(mkQ([valleyX,extRidgeH-.003,zMid, aX,sh-.003,z1, aX,sh-.003,z1, aX,sh-.003,z1], mSh));
+                    grps.shed.add(mkQ([valleyX,extRidgeH-.003,zMid, aX,_extEaveH-.003,z1, aX,_extEaveH-.003,z1, aX,_extEaveH-.003,z1], mSh));
                     // Back valley: mirror
-                    grps.shed.add(mkQ([aX,sh-.003,z2, valleyX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid], mSh));
+                    grps.shed.add(mkQ([aX,_extEaveH-.003,z2, valleyX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid], mSh));
                     // Roof framing — purlins on both slopes (matches main building)
-                    _extPurlins('x', aX, oXoh, z1, zMid, sh, extRidgeH);   // front slope
-                    _extPurlins('x', aX, oXoh, z2, zMid, sh, extRidgeH);   // back slope
+                    _extPurlins('x', aX, oXoh, z1, zMid, _extEaveH, extRidgeH);   // front slope
+                    _extPurlins('x', aX, oXoh, z2, zMid, _extEaveH, extRidgeH);   // back slope
 
                     // === GABLE RAKE TRIM — fascia along the outer gable-end slopes (x = oXoh) ===
                     { var _geRkH=0.04; var _mGeRake=new THREE.MeshBasicMaterial({color:pc(trimColorName),side:THREE.DoubleSide});
                       var _geXo=oXoh+dir*0.006;
                       var _geRkF=function(p1,p2){grps.shed.add(mkQ([p1[0],p1[1],p1[2], p2[0],p2[1],p2[2], p2[0],p2[1]-_geRkH,p2[2], p1[0],p1[1]-_geRkH,p1[2]],_mGeRake));};
-                      _geRkF([_geXo,sh,z1oh],[_geXo,extRidgeH,zMid]);   // front slope
-                      _geRkF([_geXo,extRidgeH,zMid],[_geXo,sh,z2oh]);   // back slope
+                      _geRkF([_geXo,_extEaveH,z1oh],[_geXo,extRidgeH,zMid]);   // front slope
+                      _geRkF([_geXo,extRidgeH,zMid],[_geXo,_extEaveH,z2oh]);   // back slope
                     }
 
                     // Ribs: along Z at each X (metal only — timber shows plain roof surface)
@@ -13128,7 +13153,7 @@ function applyVoiceQuote(parsed, overlay) {
                         const zHalf=Math.max(Math.abs(z2oh-zMid),0.001);
                         const tz=1-Math.abs(zr-zMid)/zHalf; // 0 at eave edges, 1 at ridge
                         // Both X and Z contribute to height
-                        return sh+(extRidgeH-sh)*Math.max(tx,tz)-0.004;
+                        return _extEaveH+(extRidgeH-_extEaveH)*Math.max(tx,tz)-0.004;
                       }
                       for (let xr=aX; dir*(xr-oXoh)<0; xr+=dir*rSp) {
                         // Front half: z1oh → zMid
@@ -15083,8 +15108,8 @@ function applyVoiceQuote(parsed, overlay) {
           // Build one truss profile at position z along the building
           function buildTruss(zPos) {
             const hw  = sw/2;
-            const eH  = sh;
-            const pkH = sr;
+            const eH  = _hsOn ? (_hsEaveFtAtCenter(zPos/Sc)*Sc) : sh;
+            const pkH = _hsOn ? (_hsRidgeFt(_hsEaveFtAtCenter(zPos/Sc))*Sc) : sr;
             const ohL = isSteel ? (Q.oh > 0 ? (18/12)*Sc : 0) : ohSc;
             const ohR = isSteel ? (Q.oh > 0 ? (18/12)*Sc : 0) : ohSc;
 
@@ -15450,21 +15475,24 @@ function applyVoiceQuote(parsed, overlay) {
 
           // ── WALL GIRTS — post frame only ──
           if (!isStudFrame) {
-            var numGirts = Math.floor(sh / spacing2);
+            var _hsMaxHsc = _hsOn ? Math.max.apply(null, _hsSecs.map(function(s){return s.h;}))*Sc : sh;
+            var numGirts = Math.floor(_hsMaxHsc / spacing2);
             for (var g = 1; g <= numGirts; g++) {
               var gy = g * spacing2;
-              if (gy > sh + 0.01) break;
+              if (gy > _hsMaxHsc + 0.01) break;
               // Eave walls
               [{id:'left',x:-hw2},{id:'right',x:hw2}].forEach(function(ew) {
                 var wall = WALLS.find(function(w){return w.id===ew.id;});
                 if (!wall || wall.encl === 'open') return;
                 var gaps = wallGaps(ew.id);
+                if (_hsOn) { var _ga=0; _hsSecs.forEach(function(_s){ var _gz0=_ga*Sc-sl/2,_gz1=(_ga+_s.len)*Sc-sl/2; _ga+=_s.len; if (_s.h*Sc < gy-0.001) gaps=gaps.concat([{start:_gz0,end:_gz1,topH:1e9}]); }); }
                 drawGirtSegmented('z', ew.x, gy, sl/2, gaps, girtMat);
               });
               // Gable walls
               [{id:'front',z:-sl/2},{id:'back',z:sl/2}].forEach(function(gw) {
                 var wall = WALLS.find(function(w){return w.id===gw.id;});
                 if (!wall || wall.encl === 'open') return;
+                if (_hsOn && gy > ((gw.id==='front'?_hsSecs[0].h:_hsSecs[_hsSecs.length-1].h)*Sc)+0.01) return;
                 var gaps = wallGaps(gw.id);
                 drawGirtSegmented('x', gw.z, gy, sw/2, gaps, girtMat);
               });
@@ -15493,6 +15521,7 @@ function applyVoiceQuote(parsed, overlay) {
           var slopeLen  = Math.sqrt(halfSpanH*halfSpanH + (sr-sh)*(sr-sh));
           // Purlin length: building length + 2 gable overhangs
           var purlinLen = sl + 2*oh;
+          if (!_hsOn) {
           var numPurlins = Math.floor(slopeLen / spacing2) - 1;
           for (var p = 1; p <= numPurlins; p++) {
             var frac = p / (numPurlins + 1);
@@ -15522,6 +15551,25 @@ function applyVoiceQuote(parsed, overlay) {
           var epR = new THREE.Mesh(new THREE.BoxGeometry(purlinW, purlinH, purlinLen), purlinMat);
           epR.position.set( hw2, sh, 0);
           grps.framing.add(epR);
+          } else {
+            var _pAcc=0;
+            _hsSecs.forEach(function(_s,_si){
+              var _z0=_pAcc*Sc-sl/2, _z1=(_pAcc+_s.len)*Sc-sl/2; _pAcc+=_s.len;
+              var _o0=(_si===0)?oh:0, _o1=(_si===_hsSecs.length-1)?oh:0;
+              var _pLen=(_z1-_z0)+_o0+_o1, _pCz=((_z0-_o0)+(_z1+_o1))/2;
+              var _shI=_s.h*Sc, _srI=_hsRidgeFt(_s.h)*Sc;
+              var _slopeLenI=Math.sqrt(halfSpanH*halfSpanH+(_srI-_shI)*(_srI-_shI));
+              var _nPI=Math.floor(_slopeLenI/spacing2)-1, _roI=purlinW*0.6;
+              for(var _pp=1;_pp<=_nPI;_pp++){
+                var _fr=_pp/(_nPI+1), _pxi=halfSpanH*(1-_fr), _pyi=_shI+(_srI-_shI)*_fr;
+                var _pmL=new THREE.Mesh(new THREE.BoxGeometry(purlinW,purlinH,_pLen),purlinMat); _pmL.position.set(-_pxi,_pyi,_pCz); grps.framing.add(_pmL);
+                var _pmR=new THREE.Mesh(new THREE.BoxGeometry(purlinW,purlinH,_pLen),purlinMat); _pmR.position.set(_pxi,_pyi,_pCz); grps.framing.add(_pmR);
+              }
+              [[-_roI,_srI],[_roI,_srI],[-hw2,_shI],[hw2,_shI]].forEach(function(_q){
+                var _pm=new THREE.Mesh(new THREE.BoxGeometry(purlinW,purlinH,_pLen),purlinMat); _pm.position.set(_q[0],_q[1],_pCz); grps.framing.add(_pm);
+              });
+            });
+          }
         }
         // ── SHED FRAMING — rafters/trusses + purlins on side sheds ──────────
         if (shedCfgs && shedCfgs.length) {
