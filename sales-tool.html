@@ -1424,38 +1424,17 @@ body.customer-mode #stab_specs { display: block !important; }
       <!-- STEP-DOWN SECTION -->
       <div class="sec" id="stepSec">
         <div class="sec-title" style="display:flex;align-items:center;justify-content:space-between;">
-          <span>Step-down Section</span>
+          <span>Height Sections</span>
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;font-weight:600;color:var(--navy);">
-            <input type="checkbox" id="stepToggle" onchange="toggleStepSection()" style="accent-color:#FF8200;width:15px;height:15px;">
+            <input type="checkbox" id="hsToggle" onchange="hsToggle()" style="accent-color:#FF8200;width:15px;height:15px;">
             Enable
           </label>
         </div>
-        <div id="stepInputs" style="display:none;margin-top:8px;">
-          <div style="font-size:9px;color:var(--muted);margin-bottom:8px;line-height:1.4;">Attaches to back gable end. Same width, pitch, truss &amp; colors.</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-            <div>
-              <div class="dim-label" style="font-size:9px;margin-bottom:4px;">Section Length</div>
-              <div class="dim-ctrl">
-                <button class="dim-btn" onclick="adjStepDim('length',-2)">−</button>
-                <input class="dim-input" id="inStepL" type="number" value="30" min="10" max="200" step="2" oninput="setStepDim('length',this.value)">
-                <span class="dim-unit">ft</span>
-                <button class="dim-btn" onclick="adjStepDim('length',2)">+</button>
-              </div>
-            </div>
-            <div>
-              <div class="dim-label" style="font-size:9px;margin-bottom:4px;">Section Height</div>
-              <div class="dim-ctrl">
-                <button class="dim-btn" onclick="adjStepDim('height',-2)">−</button>
-                <input class="dim-input" id="inStepH" type="number" value="12" min="8" max="20" step="2" oninput="setStepDim('height',this.value)">
-                <span class="dim-unit">ft</span>
-                <button class="dim-btn" onclick="adjStepDim('height',2)">+</button>
-              </div>
-            </div>
-          </div>
-          <div style="font-size:10px;color:var(--muted);margin-top:8px;padding:6px 8px;background:#f4f6f8;border-radius:6px;border:1px solid var(--border);">
-            Total: <strong id="stepTotalLabel">—</strong>
-          </div>
-          <button class="opening-add-btn" style="margin-top:8px;width:100%;" onclick="addStepShed()">+ Add Side Shed to Step-down</button>
+        <div id="hsInputs" style="display:none;margin-top:8px;">
+          <div style="font-size:9px;color:var(--muted);margin-bottom:8px;line-height:1.4;">Split the length into sections at different eave heights &mdash; same width, pitch, truss &amp; colors. The last section fills the remaining length.</div>
+          <div id="hsRows"></div>
+          <button class="opening-add-btn" style="margin-top:8px;width:100%;" onclick="hsAdd()">+ Add section</button>
+          <div id="hsStatus" style="font-size:10px;color:var(--muted);margin-top:8px;padding:6px 8px;background:#f4f6f8;border-radius:6px;border:1px solid var(--border);">&mdash;</div>
         </div>
       </div>
       <div class="sec">
@@ -3183,6 +3162,7 @@ function stepDim(k, dir) {
   document.getElementById('in'+k.toUpperCase()).value = Q[k];
   if(k==='w'||k==='l'){WALLS[0].len=WALLS[1].len=Q.w;WALLS[2].len=WALLS[3].len=Q.l;}
   scheduleBuild();
+  if(k==='l' && typeof hsOnLengthChange==='function') hsOnLengthChange();
   if(window._customerMode && (k==='w'||k==='l')) buildPSChips();
 }
 function adjDim(k,d){
@@ -3217,6 +3197,7 @@ function setDim(k,v){
   }
   updateStepLabel();
   scheduleBuild();
+  if(k==='l' && typeof hsOnLengthChange==='function') hsOnLengthChange();
   if(window._customerMode && (k==='w'||k==='l')) buildPSChips();
 }
 
@@ -3253,6 +3234,82 @@ function updateStepLabel() {
   var totalL = Q.l + window._stepSection.length;
   el.textContent = Q.w + "' × " + totalL + "' total  ·  " + Q.l + "' at " + Q.h + "'  +  " + window._stepSection.length + "' at " + window._stepSection.height + "'";
 }
+
+// ── HEIGHT SECTIONS ─ variable eave height along the length ──────────
+window._heightSections = null;
+function hsActive(){ return !!(window._heightSections && window._heightSections.length); }
+function hsSections(){
+  if (!hsActive()) return [{ len: Q.l, h: Q.h }];
+  return window._heightSections.map(function(s){ return { len: s.len, h: s.h }; });
+}
+function hsEaveAt(zFt){
+  var secs = hsSections(), acc = 0;
+  for (var i=0;i<secs.length;i++){ acc += secs[i].len; if (zFt <= acc + 1e-6) return secs[i].h; }
+  return secs[secs.length-1].h;
+}
+window.hsActive = hsActive; window.hsSections = hsSections; window.hsEaveAt = hsEaveAt;
+function hsRecalcLast(){
+  var secs = window._heightSections; if (!secs || !secs.length) return;
+  var sum = 0; for (var i=0;i<secs.length-1;i++) sum += (secs[i].len||0);
+  secs[secs.length-1].len = Math.max(0, Q.l - sum);
+}
+function hsOnLengthChange(){ if (!hsActive()) return; hsRecalcLast(); hsRender(); }
+function hsToggle(){
+  var cb = document.getElementById('hsToggle'); var box = document.getElementById('hsInputs');
+  if (cb.checked){ if (!hsActive()) window._heightSections = [{ len: Q.l, h: Q.h }]; if (box) box.style.display = 'block'; }
+  else { window._heightSections = null; if (box) box.style.display = 'none'; }
+  hsRender(); scheduleBuild(); try { updateStripFromLocalCalc(); } catch(e){}
+}
+function hsAdd(){
+  if (!window._heightSections) window._heightSections = [{ len: Q.l, h: Q.h }];
+  var last = window._heightSections[window._heightSections.length-1];
+  var give = Math.min(last.len, 10); last.len = Math.max(0, last.len - give);
+  window._heightSections.push({ len: give || 10, h: Q.h });
+  hsRecalcLast(); hsRender(); scheduleBuild(); try { updateStripFromLocalCalc(); } catch(e){}
+}
+function hsRemove(i){
+  if (!window._heightSections) return;
+  window._heightSections.splice(i,1);
+  if (!window._heightSections.length) window._heightSections = [{ len: Q.l, h: Q.h }];
+  hsRecalcLast(); hsRender(); scheduleBuild(); try { updateStripFromLocalCalc(); } catch(e){}
+}
+function hsSetLen(i,v){
+  var n = parseInt(v,10); if (isNaN(n)||n<2) return;
+  if (!window._heightSections || !window._heightSections[i]) return;
+  window._heightSections[i].len = n; hsRecalcLast(); hsStatus(); scheduleBuild(); try { updateStripFromLocalCalc(); } catch(e){}
+}
+function hsSetH(i,v){
+  var n = parseInt(v,10); if (isNaN(n)||n<6) return;
+  if (!window._heightSections || !window._heightSections[i]) return;
+  window._heightSections[i].h = n; hsStatus(); scheduleBuild(); try { updateStripFromLocalCalc(); } catch(e){}
+}
+function hsRender(){
+  var wrap = document.getElementById('hsRows'); if (!wrap) return;
+  var secs = window._heightSections || [];
+  var head = '<div style="display:grid;grid-template-columns:16px 1fr 1fr 16px;gap:6px;font-size:9px;color:var(--muted);margin-bottom:4px;"><span></span><span>Length (ft)</span><span>Height (ft)</span><span></span></div>';
+  var rows = '';
+  for (var i=0;i<secs.length;i++){
+    var isLast = (i === secs.length-1);
+    var lenInput = isLast
+      ? '<input class="dim-input" type="number" value="'+secs[i].len+'" readonly title="Auto-fills the remaining length" style="width:100%;opacity:.6;">'
+      : '<input class="dim-input" type="number" value="'+secs[i].len+'" min="2" step="2" oninput="hsSetLen('+i+',this.value)" style="width:100%;">';
+    var rm = (secs.length>1 && !isLast) ? '<button class="dim-btn" onclick="hsRemove('+i+')" title="Remove section">&times;</button>' : '<span></span>';
+    rows += '<div style="display:grid;grid-template-columns:16px 1fr 1fr 16px;gap:6px;align-items:center;margin-bottom:6px;">'
+      + '<span style="font-size:9px;color:var(--muted);">'+(i+1)+'</span>'
+      + '<div>'+lenInput+'</div>'
+      + '<div><input class="dim-input" type="number" value="'+secs[i].h+'" min="6" step="1" oninput="hsSetH('+i+',this.value)" style="width:100%;"></div>'
+      + rm + '</div>';
+  }
+  wrap.innerHTML = head + rows; hsStatus();
+}
+function hsStatus(){
+  var el = document.getElementById('hsStatus'); if (!el) return;
+  var secs = window._heightSections || []; var sum = 0; for (var i=0;i<secs.length;i++) sum += (secs[i].len||0);
+  if (sum === Q.l) el.innerHTML = '<span style="color:#16a34a;font-weight:700;">Sections total '+sum+" ft = building length \u2713</span>";
+  else if (sum < Q.l) el.innerHTML = '<span style="color:#d97706;">Sections total '+sum+' ft &mdash; '+(Q.l-sum)+' ft short of '+Q.l+' ft</span>';
+  else el.innerHTML = '<span style="color:#dc2626;">Sections total '+sum+' ft &mdash; '+(sum-Q.l)+' ft over '+Q.l+' ft</span>';
+}
+
 
 // ═══════════════════════════════════════════════════════
 // CHIP BUILDER
@@ -9983,6 +10040,11 @@ function applyVoiceQuote(parsed, overlay) {
             const sr = (Q.roofStyle === 'single') ? (Q.h * Sc) : (Q.h + (Q.w / 2) * (Q.pitch / 12)) * Sc, oh = (Q.oh / 12) * Sc;
             // Declare early — used throughout the build function
             var isSingleSlope = (Q.roofStyle === 'single');
+            // Height sections — variable eave height along the length (gable only, opt-in)
+            var _hsSecs = (typeof hsActive==='function' && hsActive() && !isSingleSlope) ? hsSections() : null;
+            var _hsOn = !!(_hsSecs && _hsSecs.length > 1);
+            function _hsEaveFtAtCenter(zFtC){ return (typeof hsEaveAt==='function') ? hsEaveAt(zFtC + Q.l/2) : Q.h; }
+            function _hsRidgeFt(hFt){ return hFt + (Q.w/2)*(Q.pitch/12); }
             var peakH = window.peakH || (Q.h + (Q.w/2)*(Q.pitch/12));
             // Wall open state — needed by roof geometry AND later sections
             // _wOpen is defined further down but wallCfgs is available from closure
@@ -11188,7 +11250,7 @@ function applyVoiceQuote(parsed, overlay) {
                 // Within the shed span, clamp the main wall to sSh so it doesn't
                 // show above the shed's outer eave height
                 function wallYTop(zFt) {
-                    let h = yTop;
+                    let h = _hsOn ? (_hsEaveFtAtCenter(zFt) * Sc) : yTop;
                     shedHeightClamps.forEach(clamp => {
                         if (zFt >= clamp.zLo - 0.05 && zFt <= clamp.zHi + 0.05) {
                             h = Math.min(h, clamp.maxH);
@@ -11969,8 +12031,38 @@ function applyVoiceQuote(parsed, overlay) {
         // Roof — gable (two planes) or single slope (uses lean-to geometry)
         if (!isSingleSlope) {
         // Standard gable roof — two panels meeting at ridge
+        if (!_hsOn) {
         grps.roof.add(mkQ([-sw / 2 - ohE, sh - .01, -sl / 2 - ohG, 0, sr, -sl / 2 - ohG, 0, sr, sl / 2 + ohG, -sw / 2 - ohE, sh - .01, sl / 2 + ohG], mR));
         grps.roof.add(mkQ([sw / 2 + ohE, sh - .01, sl / 2 + ohG, 0, sr, sl / 2 + ohG, 0, sr, -sl / 2 - ohG, sw / 2 + ohE, sh - .01, -sl / 2 - ohG], mR));
+        } else {
+          // Per-section stepped roof
+          var _accFt = 0;
+          _hsSecs.forEach(function(_s, _si){
+            var z0Ft = _accFt, z1Ft = _accFt + _s.len; _accFt = z1Ft;
+            var _z0 = z0Ft*Sc - sl/2, _z1 = z1Ft*Sc - sl/2;
+            var _o0 = (_si===0) ? ohG : 0, _o1 = (_si===_hsSecs.length-1) ? ohG : 0;
+            var _shS = _s.h*Sc, _srS = _hsRidgeFt(_s.h)*Sc;
+            grps.roof.add(mkQ([-sw/2 - ohE, _shS - .01, _z0 - _o0, 0, _srS, _z0 - _o0, 0, _srS, _z1 + _o1, -sw/2 - ohE, _shS - .01, _z1 + _o1], mR));
+            grps.roof.add(mkQ([ sw/2 + ohE, _shS - .01, _z1 + _o1, 0, _srS, _z1 + _o1, 0, _srS, _z0 - _o0,  sw/2 + ohE, _shS - .01, _z0 - _o0], mR));
+          });
+          // Step faces at interior height changes
+          var _accF2 = 0;
+          for (var _bi=0; _bi<_hsSecs.length-1; _bi++){
+            _accF2 += _hsSecs[_bi].len;
+            var _hA = _hsSecs[_bi].h, _hB = _hsSecs[_bi+1].h;
+            if (_hA === _hB) continue;
+            var _zB = _accF2*Sc - sl/2;
+            var _tall = Math.max(_hA,_hB), _short = Math.min(_hA,_hB);
+            var _zF = _zB + ((_hB > _hA) ? -0.006 : 0.006);
+            var _tSc=_tall*Sc, _sSc=_short*Sc, _srT=_hsRidgeFt(_tall)*Sc;
+            var _mStep = new THREE.MeshBasicMaterial({ color: pc(wallColorName), side: THREE.DoubleSide });
+            grps.walls.add(mkQ([-sw/2, _sSc, _zF, sw/2, _sSc, _zF, sw/2, _tSc, _zF, -sw/2, _tSc, _zF], _mStep));
+            var _tg = new THREE.BufferGeometry();
+            _tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-sw/2, _tSc, _zF, sw/2, _tSc, _zF, 0, _srT, _zF]), 3));
+            _tg.setIndex([0,1,2]); _tg.computeVertexNormals();
+            grps.walls.add(new THREE.Mesh(_tg, _mStep));
+          }
+        }
         } // end gable roof — single slope roof rendered via addLeanto() below
         if (Q.soffit && Q.oh > 0) {
             const fasciaH = 0.025;
