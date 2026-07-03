@@ -23977,9 +23977,20 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
       }
       return best || _epSecs[_epSecs.length - 1].h;
     }
+    // Step-down corners MUST have a post — inject one at each section boundary
+    // the spacing grid missed (interior boundaries only, not 0 or L)
+    var _epBounds = [];
+    (function(){ var _acc = 0; for (var _b = 0; _b < _epSecs.length - 1; _b++){ _acc += _epSecs[_b].len; if (_acc > 0.01 && _acc < Q.l - 0.01 && Math.abs(_epSecs[_b].h - _epSecs[_b+1].h) > 0.01) _epBounds.push(_acc); } })();
+    function _epWithBounds(posts){
+      var out = posts.slice();
+      _epBounds.forEach(function(bf){
+        if (!out.some(function(pp){ return Math.abs(pp.ft - bf) < 0.01; })) out.push({ ft: bf, jamb:false, corner:false });
+      });
+      return out;
+    }
     var _epGrp = {};
     function _epAdd(posts, size){
-      posts.forEach(function(pp){
+      _epWithBounds(posts).forEach(function(pp){
         var _eh  = _epEaveAt(pp.ft);
         var _pl  = onTop ? _eh : _eh + 4;
         _pl = SM.enforceMinPostLen(size, _pl);
@@ -24003,7 +24014,7 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
     Object.values(_epGrp).sort(function(a,b){ return a.len - b.len; }).forEach(function(g){
       if (g.qty <= 0) return;
       results.push({ category:'Yard', description:'Main Building Eave Posts', sku:g.sku, quantity:g.qty,
-        detail: g.size + ' × ' + g.len + 'ft' + _sufE + '  |  cut per height section' + (bjReduction>0?'  |  bar joist reduction applied':'') });
+        detail: g.size + ' × ' + g.len + 'ft' + _sufE + '  |  cut per height section  |  post at each step corner' + (bjReduction>0?'  |  bar joist reduction applied':'') });
     });
     return results;
   }
@@ -26082,7 +26093,19 @@ window.SauceMaterials.calcSteelPurlins = function(Q) {
   var cups = cupsMap[Q.w];
   if (!cups) return [];
 
-  var boards = fillLength(Q.l, spacing);
+  // Height sections: purlin runs break at each step (roof plane jumps) — fill per section
+  var _spSecs = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && !window._shedOnlyMode) ? window.hsSections() : null;
+  var boards;
+  if (_spSecs && _spSecs.length > 1) {
+    boards = {};
+    _spSecs.forEach(function(_s){
+      if (_s.len <= 0) return;
+      var _sb = fillLength(_s.len, spacing);
+      Object.keys(_sb).forEach(function(_k){ boards[_k] = (boards[_k]||0) + _sb[_k]; });
+    });
+  } else {
+    boards = fillLength(Q.l, spacing);
+  }
   var results = [];
 
   Object.keys(boards).forEach(function(len) {
@@ -26359,7 +26382,19 @@ window.SauceMaterials.calcWoodPurlins = function(Q) {
   var count  = _mLen ? ceilEven(_mLen) : (purlinsPerRun[Q.w] ? purlinsPerRun[Q.w][Q.oh===0?'noOH':(Q.oh<=12?'OH12':'OH18')+'_'+(Q.pitch<=4?'412':'612')] : null);
   if (!count) return [];
 
-  var boards  = fillLength(Q.l);
+  // Height sections: purlin runs break at each step (roof plane jumps) — fill per section
+  var _wpSecs = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && !window._shedOnlyMode) ? window.hsSections() : null;
+  var boards;
+  if (_wpSecs && _wpSecs.length > 1) {
+    boards = {};
+    _wpSecs.forEach(function(_s){
+      if (_s.len <= 0) return;
+      var _sb = fillLength(_s.len);
+      Object.keys(_sb).forEach(function(_k){ boards[_k] = (boards[_k]||0) + _sb[_k]; });
+    });
+  } else {
+    boards = fillLength(Q.l);
+  }
   var results = [];
 
   Object.keys(boards).forEach(function(len) {
@@ -26577,26 +26612,41 @@ window.SauceMaterials.calcWoodOHPurlins = function(Q) {
   var runBoards = {};
   runBoards[endBoard] = 2;
 
-  if (remaining > 0) {
+  function _ohFill(segLen) {
+    if (segLen <= 0) return;
     if (trussSpacing === 4) {
-      if (remaining % 12 === 0) { runBoards[12] = (runBoards[12]||0) + remaining/12; }
-      else {
-        var r4 = remaining;
-        if (r4 % 20 === 0) { runBoards[20]=(runBoards[20]||0)+r4/20; }
-        else {
-          if (r4 >= 20) { runBoards[20]=(runBoards[20]||0)+Math.floor(r4/20); r4=r4%20; }
-          if (r4 >= 12) { runBoards[12]=(runBoards[12]||0)+Math.floor(r4/12); r4=r4%12; }
-          if (r4 > 0.01){ runBoards[10]=(runBoards[10]||0)+Math.ceil(r4/10); }
-        }
-      }
+      if (segLen % 12 === 0) { runBoards[12] = (runBoards[12]||0) + segLen/12; return; }
+      var r4 = segLen;
+      if (r4 % 20 === 0) { runBoards[20]=(runBoards[20]||0)+r4/20; return; }
+      if (r4 >= 20) { runBoards[20]=(runBoards[20]||0)+Math.floor(r4/20); r4=r4%20; }
+      if (r4 >= 12) { runBoards[12]=(runBoards[12]||0)+Math.floor(r4/12); r4=r4%12; }
+      if (r4 > 0.01){ runBoards[10]=(runBoards[10]||0)+Math.ceil(r4/10); }
     } else {
-      var r5 = remaining;
-      if (r5 % 20 === 0) { runBoards[20]=(runBoards[20]||0)+r5/20; }
-      else {
-        if (r5 >= 20) { runBoards[20]=(runBoards[20]||0)+Math.floor(r5/20); r5=r5%20; }
-        if (r5 > 0.01){ runBoards[10]=(runBoards[10]||0)+Math.ceil(r5/10); }
-      }
+      var r5 = segLen;
+      if (r5 % 20 === 0) { runBoards[20]=(runBoards[20]||0)+r5/20; return; }
+      if (r5 >= 20) { runBoards[20]=(runBoards[20]||0)+Math.floor(r5/20); r5=r5%20; }
+      if (r5 > 0.01){ runBoards[10]=(runBoards[10]||0)+Math.ceil(r5/10); }
     }
+  }
+
+  // Height sections: runs break at each step. A section end is an OH GABLE END when it's
+  // a true building end OR the section is TALLER than its neighbor at that step (its roof
+  // overhangs the step face). Shorter sections die into the step face — no end board there.
+  // Each OH end gets an end board; runBoards[endBoard] adjusted from the uniform 2.
+  var _hpSecs = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && !window._shedOnlyMode) ? window.hsSections() : null;
+  if (_hpSecs && _hpSecs.length > 1) {
+    var _ohEndsTotal = 0;
+    for (var _pi2 = 0; _pi2 < _hpSecs.length; _pi2++) {
+      var _sH = _hpSecs[_pi2].h;
+      var _ohEnds = 0;
+      if (_pi2 === 0) _ohEnds++; else if (_sH > _hpSecs[_pi2 - 1].h + 0.01) _ohEnds++;
+      if (_pi2 === _hpSecs.length - 1) _ohEnds++; else if (_sH > _hpSecs[_pi2 + 1].h + 0.01) _ohEnds++;
+      _ohEndsTotal += _ohEnds;
+      _ohFill(Math.max(0, _hpSecs[_pi2].len - _ohEnds * coveragePerEnd));
+    }
+    runBoards[endBoard] = _ohEndsTotal; // replaces the uniform 2 — one per OH gable end
+  } else if (remaining > 0) {
+    _ohFill(remaining);
   }
 
   var _ohMLen = _ohPurlMetalLen(Q.w, Q.oh, Q.pitch);
@@ -28235,6 +28285,32 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
     var runLength = (Q.truss === 'Wood' && ohFt > 0) ? Q.l + ohFt * 2 : Q.l;
     runLength += gableExtDepth; // extend for gable-attached extensions
     var panelsPerRun = Math.ceil(runLength / 3);
+
+    // Height sections: roof runs break at each step — panels can't continue through a
+    // height change. Per section: run = length + OH at each OH GABLE END (a true building
+    // end, or a step edge where this section is the TALLER side — its roof overhangs the
+    // step face). Steel: OH affects panel length only, so runs are the bare section lengths.
+    // Example 36/44/20 @ 10/16/10, 12" OH: runs 21 + 46 + 37 = 104' → 7+16+13 panels/side.
+    var _rmSecsU = (typeof window.hsActive==='function' && window.hsActive() && !window._shedOnlyMode) ? window.hsSections() : null;
+    if (_rmSecsU && _rmSecsU.length > 1) {
+      var _rmSecs = (window._hsRev !== false) ? _rmSecsU.slice().reverse() : _rmSecsU.slice();
+      // Gable-attached extension depth extends the end section it hangs on
+      var _extFront = 0, _extBack = 0;
+      (shedCfgs||[]).forEach(function(sc){
+        if (isGableGableAttached(sc) && sc.w) { if (sc.wall === 'front') _extFront += sc.w; else _extBack += sc.w; }
+      });
+      panelsPerRun = 0;
+      for (var _mi = 0; _mi < _rmSecs.length; _mi++) {
+        var _mRun = _rmSecs[_mi].len;
+        if (Q.truss === 'Wood' && ohFt > 0) {
+          if (_mi === 0) _mRun += ohFt; else if (_rmSecs[_mi].h > _rmSecs[_mi - 1].h + 0.01) _mRun += ohFt;
+          if (_mi === _rmSecs.length - 1) _mRun += ohFt; else if (_rmSecs[_mi].h > _rmSecs[_mi + 1].h + 0.01) _mRun += ohFt;
+        }
+        if (_mi === 0) _mRun += _extFront;
+        if (_mi === _rmSecs.length - 1) _mRun += _extBack;
+        if (_mRun > 0) panelsPerRun += Math.ceil(_mRun / 3);
+      }
+    }
 
     if (Q.truss === 'Steel') {
       // Steel: check each eave side independently — only the side with a no-drop lean-to gets +1'
@@ -30442,12 +30518,12 @@ window.SauceMaterials.calcStudExteriorWallStuds = function(Q) {
     sku = skuMap2x6[len];
   }
 
-  // Height sections: split the perimeter by section so studs come in the right lengths.
-  // Eave walls: each section's footage (×2 walls) at that section's height.
-  // Gable ends: building width at each END section's height.
+  // Height sections: EACH SECTION IS ITS OWN 4-SIDED ENCLOSED BUILDING (safe rule) —
+  // e.g. 36/44/20 on a 40' building = 40x36 + 40x44 + 40x20, each with a full perimeter
+  // of studs at that section's wall height. Both faces at every step get full walls.
   var _stSecsU = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && !window._shedOnlyMode) ? window.hsSections() : null;
   if (_stSecsU && _stSecsU.length > 1) {
-    var _stSecs = (window._hsRev !== false) ? _stSecsU.slice().reverse() : _stSecsU.slice();
+    var _stSecs = _stSecsU.slice();
     function _studPick(hh){
       if (is2x4) {
         if (hh <= 12) return { sku:'SYP2412', len:12, dim:'2x4' };
@@ -30460,10 +30536,7 @@ window.SauceMaterials.calcStudExteriorWallStuds = function(Q) {
       return { sku:_map[_ln], len:_ln, dim:'2x6' };
     }
     var _lfByH = {};
-    _stSecs.forEach(function(_s){ if (_s.len > 0) _lfByH[_s.h] = (_lfByH[_s.h] || 0) + _s.len * 2; }); // both eave walls
-    var _feH = _stSecs[0].h, _beH = _stSecs[_stSecs.length - 1].h;
-    _lfByH[_feH] = (_lfByH[_feH] || 0) + Q.w; // front gable end
-    _lfByH[_beH] = (_lfByH[_beH] || 0) + Q.w; // back gable end
+    _stSecs.forEach(function(_s){ if (_s.len > 0) _lfByH[_s.h] = (_lfByH[_s.h] || 0) + (Q.w + _s.len) * 2; }); // full 4-sided perimeter per section
     var _stOut = [];
     Object.keys(_lfByH).map(Number).sort(function(a,b){return a-b;}).forEach(function(_hh){
       var _pk = _studPick(_hh);
@@ -30474,7 +30547,7 @@ window.SauceMaterials.calcStudExteriorWallStuds = function(Q) {
         description: 'Exterior Wall Studs',
         sku:         _pk.sku,
         quantity:    _q,
-        detail:      _lf + "' of " + _hh + "' wall  |  1/LF x 1.1 = " + _q + '  |  ' + _pk.len + "' " + _pk.dim + ' stud'
+        detail:      _lf + "' perimeter of " + _hh + "' sections (each 4-sided)  |  1/LF x 1.1 = " + _q + '  |  ' + _pk.len + "' " + _pk.dim + ' stud'
       });
     });
     return _stOut;
@@ -30523,10 +30596,29 @@ window.SauceMaterials.calcStudOSBWalls = function(Q, WALLS, shedCfgs) {
   if (!osbWalls || osbWalls === 'None') osbWalls = '7/16';
 
   var sqft = 0;
-  var eaveArea  = Q.l * Q.h * 2;
-  var peakH     = Q.h + (Q.w / 2) * (Q.pitch / 12);
-  var gableArea = (Q.h * Q.w + 0.5 * Q.w * (peakH - Q.h)) * 2;
-  sqft += eaveArea + gableArea;
+  var _osSecsU = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && !window._shedOnlyMode) ? window.hsSections() : null;
+  if (_osSecsU && _osSecsU.length > 1) {
+    // Height sections: stepped envelope —
+    //  eave walls: each section's length × its own height (×2 walls)
+    //  gable ends: full gable profile at each END section's height
+    //  exposed step faces: both roofs share the pitch, so each face is a constant
+    //  Δh band across the width (the gable triangles cancel) → Δh × W per step
+    var _osSecs = (window._hsRev !== false) ? _osSecsU.slice().reverse() : _osSecsU.slice();
+    var _osRise = (Q.w / 2) * (Q.pitch / 12);
+    _osSecs.forEach(function(_s){ if (_s.len > 0) sqft += _s.len * _s.h * 2; });
+    [_osSecs[0].h, _osSecs[_osSecs.length - 1].h].forEach(function(_eh){
+      sqft += _eh * Q.w + 0.5 * Q.w * _osRise;
+    });
+    for (var _oi = 0; _oi < _osSecs.length - 1; _oi++) {
+      var _odh = Math.abs(_osSecs[_oi].h - _osSecs[_oi + 1].h);
+      if (_odh > 0.01) sqft += _odh * Q.w; // exposed step-face band
+    }
+  } else {
+    var eaveArea  = Q.l * Q.h * 2;
+    var peakH     = Q.h + (Q.w / 2) * (Q.pitch / 12);
+    var gableArea = (Q.h * Q.w + 0.5 * Q.w * (peakH - Q.h)) * 2;
+    sqft += eaveArea + gableArea;
+  }
 
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.w || !sc.l) return;
@@ -30791,6 +30883,9 @@ window.SauceMaterials.calcStudNails = function() {
 window.SauceMaterials.calcStudBottomPlate = function(Q) {
   var is2x4 = (Q.studSize === '2x4');
   var perimeter = (Q.w + Q.l) * 2;
+  // Height sections: each section is its own 4-sided building — sum the section perimeters
+  var _bpSecs = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && !window._shedOnlyMode) ? window.hsSections() : null;
+  if (_bpSecs && _bpSecs.length > 1) perimeter = _bpSecs.reduce(function(s,_x){ return s + (Q.w + _x.len) * 2; }, 0);
   var qty = Math.ceil(perimeter / 16);
   var sku = is2x4 ? 'PT2416' : 'PT2616';
   var dim = is2x4 ? '2x4' : '2x6';
@@ -30810,6 +30905,9 @@ window.SauceMaterials.calcStudBottomPlate = function(Q) {
 window.SauceMaterials.calcStudTopPlates = function(Q) {
   var is2x4 = (Q.studSize === '2x4');
   var perimeter = (Q.w + Q.l) * 2;
+  // Height sections: each section is its own 4-sided building — sum the section perimeters
+  var _tpSecs = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && !window._shedOnlyMode) ? window.hsSections() : null;
+  if (_tpSecs && _tpSecs.length > 1) perimeter = _tpSecs.reduce(function(s,_x){ return s + (Q.w + _x.len) * 2; }, 0);
   var qty = Math.ceil(perimeter / 16) * 2;
   var sku = is2x4 ? 'SYP2416' : 'SPF2616';
   var dim = is2x4 ? '2x4' : '2x6';
