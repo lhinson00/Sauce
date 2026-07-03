@@ -23962,6 +23962,52 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
 
   var results = [];
 
+  // ── Height sections: each eave post cut to its section's eave height ──
+  var _epSecsU = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single') ? window.hsSections() : null;
+  if (_epSecsU && _epSecsU.length > 1) {
+    var _epSecs = (window._hsRev !== false) ? _epSecsU.slice().reverse() : _epSecsU.slice();
+    // Eave at a post position; a post on a step boundary takes the TALLER section
+    // (it must reach the taller eave to carry its girts and the step framing)
+    function _epEaveAt(ft){
+      var acc = 0, best = 0;
+      for (var _i = 0; _i < _epSecs.length; _i++){
+        var lo = acc, hi = acc + _epSecs[_i].len;
+        if (ft >= lo - 0.01 && ft <= hi + 0.01) best = Math.max(best, _epSecs[_i].h);
+        acc = hi;
+      }
+      return best || _epSecs[_epSecs.length - 1].h;
+    }
+    var _epGrp = {};
+    function _epAdd(posts, size){
+      posts.forEach(function(pp){
+        var _eh  = _epEaveAt(pp.ft);
+        var _pl  = onTop ? _eh : _eh + 4;
+        _pl = SM.enforceMinPostLen(size, _pl);
+        var _psku = (map[size] || 'PT66') + _pl;
+        if (!_epGrp[_psku]) _epGrp[_psku] = { sku:_psku, len:_pl, size:size, qty:0 };
+        _epGrp[_psku].qty++;
+      });
+    }
+    _epAdd(left,  leftSize);
+    _epAdd(right, rightSize);
+    // Bar joist reduction: remove from the largest group
+    if (bjReduction > 0) {
+      var _bgKeys = Object.keys(_epGrp).sort(function(a,b){ return _epGrp[b].qty - _epGrp[a].qty; });
+      var _rem = bjReduction;
+      for (var _bk = 0; _bk < _bgKeys.length && _rem > 0; _bk++){
+        var _take = Math.min(_rem, _epGrp[_bgKeys[_bk]].qty);
+        _epGrp[_bgKeys[_bk]].qty -= _take; _rem -= _take;
+      }
+    }
+    var _sufE = onTop ? ' (posts on top)' : ' (in-ground)';
+    Object.values(_epGrp).sort(function(a,b){ return a.len - b.len; }).forEach(function(g){
+      if (g.qty <= 0) return;
+      results.push({ category:'Yard', description:'Main Building Eave Posts', sku:g.sku, quantity:g.qty,
+        detail: g.size + ' × ' + g.len + 'ft' + _sufE + '  |  cut per height section' + (bjReduction>0?'  |  bar joist reduction applied':'') });
+    });
+    return results;
+  }
+
   function makeItem(wallLabel, wallPosts, wallSize, reduction) {
     var qty = Math.max(0, wallPosts.length - reduction);
     var useLen = SM.enforceMinPostLen(wallSize, len);
@@ -24005,9 +24051,15 @@ window.SauceMaterials.calcGablePosts = function(Q, WALLS, allDoors, sf) {
   var ground   = onTop ? 0 : 4;
   var skuGroups = {};
 
+  // Height sections: each end wall's posts rise to its END section's eave + gable slope
+  var _gpSecsU = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single') ? window.hsSections() : null;
+  var _gpOn = !!(_gpSecsU && _gpSecsU.length > 1);
+  var _gpSecs = _gpOn ? ((window._hsRev !== false) ? _gpSecsU.slice().reverse() : _gpSecsU.slice()) : null;
+
   ['front', 'back'].forEach(function(wallId) {
     var wCfg = (WALLS || []).find(function(w) { return w.id === wallId; }) || null;
     if (wCfg && wCfg.encl === 'open') return;
+    var _gpBaseH = _gpOn ? ((wallId === 'front') ? _gpSecs[0].h : _gpSecs[_gpSecs.length - 1].h) : Q.h;
     var postSize = SM.wallPostSizeFor(wallId, sf);
     var skuBase  = map[postSize] || 'PT66';
     var posts = SM.getPostsForWall(wallId, Q, WALLS, allDoors);
@@ -24018,7 +24070,7 @@ window.SauceMaterials.calcGablePosts = function(Q, WALLS, allDoors, sf) {
         totalH = Q.h + ground;
       } else {
         var distFromCorner = Math.min(p.ft, Q.w - p.ft);
-        totalH  = Q.h + (distFromCorner * Q.pitch / 12) + ground;
+        totalH  = _gpBaseH + (distFromCorner * Q.pitch / 12) + ground;
       }
       var postLen = Math.ceil(totalH / 2) * 2;
       postLen = SM.enforceMinPostLen(postSize, postLen);
@@ -24876,6 +24928,13 @@ window.SauceMaterials.calcWoodTrusses = function(Q, shedCfgs) {
   var gableCount    = 2;
   var regularCount  = totalTrusses - gableCount;
 
+  // Height sections: each exposed step face is framed with its own gable end truss
+  var _twSecs = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && !window._shedOnlyMode) ? window.hsSections() : null;
+  var _twSteps = 0;
+  if (_twSecs && _twSecs.length > 1) {
+    for (var _ti = 0; _ti < _twSecs.length - 1; _ti++) if (Math.abs(_twSecs[_ti].h - _twSecs[_ti+1].h) > 0.01) _twSteps++;
+  }
+
   var results = [];
 
   if (gableSKU && gableCount > 0) {
@@ -24885,6 +24944,16 @@ window.SauceMaterials.calcWoodTrusses = function(Q, shedCfgs) {
       sku:         gableSKU,
       quantity:    gableCount,
       detail:      Q.w + "' width  |  " + (hasOH ? '12" overhang' : 'no overhang')
+    });
+  }
+
+  if (gableSKU && _twSteps > 0) {
+    results.push({
+      category:    'Yard',
+      description: 'Gable Trusses — Step Faces',
+      sku:         gableSKU,
+      quantity:    _twSteps,
+      detail:      Q.w + "' width  |  1 per exposed step face  |  " + (hasOH ? '12" overhang' : 'no overhang')
     });
   }
 
@@ -27084,7 +27153,14 @@ window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
     var wallH   = wCfg.encl === 'partial'
       ? (wCfg.partialH || Math.min(4, Q.h))
       : Q.h;
-    addGirts(wallLen, wallH, ps);
+    var _sgSecs = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && wCfg.encl !== 'partial') ? window.hsSections() : null;
+    if (_sgSecs && _sgSecs.length > 1) {
+      // Stepped: girt rows per section (rows follow each section's eave height;
+      // runs break at each step — girts can't continue through a height change)
+      _sgSecs.forEach(function(_s){ if (_s.len > 0 && _s.h > 0) addGirts(_s.len, _s.h, ps); });
+    } else {
+      addGirts(wallLen, wallH, ps);
+    }
   });
 
   // Enclosed side sheds (outer eave wall)
@@ -27177,6 +27253,28 @@ window.SauceMaterials.calcGableGirts = function(Q, WALLS, shedCfgs) {
     });
   }
 
+  // Height sections: end walls use their end section's eave; each interior step face
+  // gets its own girts (rows = floor(Δh/2) across the building width) to hang the
+  // exposed main-gable metal.
+  var _ggSecsU = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single') ? window.hsSections() : null;
+  var _ggOn = !!(_ggSecsU && _ggSecsU.length > 1) && !window._shedOnlyMode;
+  var _ggSecs = _ggOn ? ((window._hsRev !== false) ? _ggSecsU.slice().reverse() : _ggSecsU.slice()) : null;
+  var _stepGirtGroups = {};
+  if (_ggOn) {
+    var _sgPS = Q.postSpacing || 10;
+    for (var _gi = 0; _gi < _ggSecs.length - 1; _gi++) {
+      var _gdh = Math.abs(_ggSecs[_gi].h - _ggSecs[_gi + 1].h);
+      if (_gdh < 0.01) continue;
+      var _gRows = Math.floor(_gdh / 2);
+      if (_gRows <= 0) continue;
+      var _gRuns = fillRuns(Q.w, _sgPS);
+      Object.keys(_gRuns).forEach(function(_len){
+        var _gsku = 'SYP26' + _len;
+        _stepGirtGroups[_gsku] = (_stepGirtGroups[_gsku]||0) + Math.ceil(_gRows * _gRuns[_len]);
+      });
+    }
+  }
+
   // Main building gable walls (front + back)
   ['front','back'].forEach(function(wallId) {
     var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
@@ -27186,6 +27284,10 @@ window.SauceMaterials.calcGableGirts = function(Q, WALLS, shedCfgs) {
     var wallH = wCfg.encl === 'partial'
       ? (wCfg.partialH || Math.min(4, Q.h))
       : Q.h;
+    if (_ggOn && wCfg.encl !== 'partial') {
+      // Stepped: each end wall at its own end-section eave height
+      wallH = (wallId === 'front') ? _ggSecs[0].h : _ggSecs[_ggSecs.length - 1].h;
+    }
     addGirts(Q.w, wallH, ps);
   });
 
@@ -27201,7 +27303,7 @@ window.SauceMaterials.calcGableGirts = function(Q, WALLS, shedCfgs) {
     addGirts(sc.l, Q.h, ps);
   });
 
-  return Object.keys(groups).sort().map(function(sku) {
+  var _ggOut = Object.keys(groups).sort().map(function(sku) {
     return {
       category:    'Yard',
       description: 'Gable End Girts',
@@ -27210,6 +27312,16 @@ window.SauceMaterials.calcGableGirts = function(Q, WALLS, shedCfgs) {
       detail:      'Every 2ft up wall'
     };
   });
+  Object.keys(_stepGirtGroups).sort().forEach(function(sku){
+    _ggOut.push({
+      category:    'Yard',
+      description: 'Step Face Girts',
+      sku:         sku,
+      quantity:    _stepGirtGroups[sku],
+      detail:      'Every 2ft up exposed step face'
+    });
+  });
+  return _ggOut;
 };
 
 // ── ITEM 24: UPPER GABLE GIRTS ───────────────────────────────────────────────
@@ -28305,6 +28417,10 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
     return rd >= 12 ? 12 : rd + 2;
   }
 
+  // ── Height sections: eave-wall metal splits per section; step faces added below ──
+  var _hsSecsSW = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single') ? window.hsSections() : null;
+  var _hsOnSW = !!(_hsSecsSW && _hsSecsSW.length > 1) && !window._shedOnlyMode;
+
   // Main building eave walls — check each side independently
   var hasOH = Q.oh > 0 && Q.truss === 'Wood';
   var mbBaseHeight = (hasOH ? Q.h : Q.h + 1) - (wainscot ? 4 : 0);
@@ -28350,7 +28466,16 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
     var _openLen = parseFloat(wallCfg && wallCfg.openLenFt) || 0;
     var _runLen = Math.max(0, Q.l - _openLen);
     if (_runLen <= 0) return;
-    add(wallHeight, Math.ceil(_runLen / 3));
+    if (_hsOnSW && _openLen <= 0 && !(wallCfg && wallCfg.encl === 'partial')) {
+      // Stepped: split eave-wall metal by section. Every non-partial height branch is
+      // (Q.h + const - wainscotAdj), so per-section height = wallHeight + (sec.h - Q.h). Exact.
+      _hsSecsSW.forEach(function(_sec){
+        var _secH = wallHeight + (_sec.h - Q.h);
+        if (_secH > 0 && _sec.len > 0) add(_secH, Math.ceil(_sec.len / 3));
+      });
+    } else {
+      add(wallHeight, Math.ceil(_runLen / 3));
+    }
   }); // end if (!shedOnlyMode) forEach
 
   // Enclosed side sheds — outer eave wall only
@@ -28363,7 +28488,7 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
     add(shedH, Math.ceil(wallLen / 3));
   });
 
-  return Object.keys(groups).sort().map(function(key) {
+  var _swRows = Object.keys(groups).sort().map(function(key) {
     var g = groups[key];
     return {
       category:    'Sidewall Metal',
@@ -28374,6 +28499,8 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
       detail:      displayType + "  |  3' wide panels"
     };
   });
+
+  return _swRows;
 };
 
 // ── ITEM 33: GABLE METAL (ENCLOSED) ─────────────────────────────────────────
@@ -28482,6 +28609,9 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
   var base       = (Q.h + baseAdder) - (wainscot ? 4 : 0);
   var increment  = 3 * Q.pitch / 12; // exact — no rounding
   var results   = [];
+  // Height sections: front end keys off the front section eave, back off the back.
+  var _gSecsU = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single') ? window.hsSections() : null;
+  var _gOn = !!(_gSecsU && _gSecsU.length > 1) && !window._shedOnlyMode;
 
   function fmtFtInExact(ft) {
     var totalIn = ft * 12;
@@ -28494,6 +28624,37 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
 
   // qty per piece: 2 per enclosed gable end × 2 sides = 4 if both enclosed, 2 if one enclosed
   var qtyPerPiece = enclCount * 2;
+
+  if (_gOn) {
+    // Stepped build: each end at its own section eave, matching the 3D's _hsRev placement.
+    // Equal ends merge into one row (qty 4); unequal ends split into their own rows.
+    var _gSecs = (window._hsRev !== false) ? _gSecsU.slice().reverse() : _gSecsU.slice();
+    var _fEave = _gSecs[0].h, _bEave = _gSecs[_gSecs.length - 1].h;
+    var _wainG = wainscot ? 4 : 0;
+    var _grp = {};
+    function _addEnd(eaveFt, encl){
+      if (!encl) return;
+      for (var _i = 0; _i < pieces; _i++){
+        var _L = (eaveFt + baseAdder) + _i * increment - _wainG;
+        if (_L <= 0) continue;
+        var _key = _L.toFixed(4);
+        _grp[_key] = (_grp[_key] || 0) + 2; // 2 sides of this end
+      }
+    }
+    _addEnd(_fEave, frontEncl);
+    _addEnd(_bEave, backEncl);
+    Object.keys(_grp).sort(function(a, b){ return parseFloat(a) - parseFloat(b); }).forEach(function(_key){
+      results.push({
+        category:    'Gable Metal',
+        description: 'Gable Metal',
+        sku:         skuPrefix,
+        quantity:    _grp[_key],
+        metalLength: fmtFtInExact(parseFloat(_key)),
+        detail:      displayType + "  |  3' wide panels  |  enclosed gable"
+      });
+    });
+    return results;
+  }
 
   for (var i = 0; i < pieces; i++) {
     var lenFt = base + i * increment;
@@ -28508,6 +28669,45 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
   }
 
   return results;
+};
+
+// ── STEP GABLE METAL ─ the main section's gable exposed at each interior step ──
+// At an interior height step the taller (main) section's gable is exposed above the shorter
+// section's roof. Exposed height = the height DIFFERENCE between the two sections; first piece
+// = difference + 2' (+2'6" at 6/12+), grading up 3×pitch/12. No wainscot (it's above the eave).
+// The building's actual front/back END walls are handled by calcGableMetal (section-aware),
+// so they are NOT repeated here — that avoids double-counting the end gables.
+window.SauceMaterials.calcStepGableMetal = function(Q) {
+  var _secs = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single') ? window.hsSections() : null;
+  if (!_secs || _secs.length < 2 || window._shedOnlyMode) return [];
+  var _gType = normalizeMetalType((document.getElementById('st_roofMetal')||{}).value || 'Tuff-Rib 29ga');
+  var _gSku  = getColoredSkuPrefix(_gType, 'wall');
+  var _gDisp = _gType === 'Galvalume' ? 'Painted' : _gType;
+  var _pieces = Math.ceil((Q.w / 2) / 3);
+  var _adder  = Q.pitch >= 6 ? 2.5 : 2;
+  var _incr   = 3 * Q.pitch / 12;
+  function _fmt(ft){ var t=Math.ceil(ft*12), f=Math.floor(t/12), i=t%12; return i===0 ? f+"'" : f+"'"+i+'"'; }
+  var _grp = {};
+  for (var _si = 0; _si < _secs.length - 1; _si++) {
+    var _dh = Math.abs(_secs[_si].h - _secs[_si + 1].h); // exposed gable height at this step
+    if (_dh < 0.01) continue; // no step at this boundary
+    for (var _pi = 0; _pi < _pieces; _pi++) {
+      var _L = (_dh + _adder) + _pi * _incr;
+      if (_L <= 0) continue;
+      var _k = _L.toFixed(4);
+      _grp[_k] = (_grp[_k] || 0) + 2; // two symmetric halves of this exposed face
+    }
+  }
+  return Object.keys(_grp).sort(function(a,b){return parseFloat(a)-parseFloat(b);}).map(function(_k){
+    return {
+      category:    'Gable Metal',
+      description: 'Gable Metal — Main (Exposed at Step)',
+      sku:         _gSku,
+      quantity:    _grp[_k],
+      metalLength: _fmt(parseFloat(_k)),
+      detail:      _gDisp + "  |  3' wide panels  |  main gable exposed above step-down"
+    };
+  });
 };
 
 // ── ITEM 34: LEAN-TO UPPER GABLE METAL ──────────────────────────────────────
@@ -29742,13 +29942,24 @@ window.SauceMaterials.calcEndWallFlashing = function(Q, WALLS, shedCfgs) {
     }
   });
 
+  // Height sections: at each interior step the shorter section's roof dies into the
+  // exposed step face — flashing follows the roof profile across the width (both slopes)
+  var _ewfSecs = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && !window._shedOnlyMode) ? window.hsSections() : null;
+  if (_ewfSecs && _ewfSecs.length > 1) {
+    var _ewfSlope = Q.w * Math.sqrt(1 + Math.pow((Q.pitch||4)/12, 2)); // both slopes, full width
+    var _ewfPS = wallPS('front');
+    for (var _ei = 0; _ei < _ewfSecs.length - 1; _ei++) {
+      if (Math.abs(_ewfSecs[_ei].h - _ewfSecs[_ei+1].h) > 0.01) addRun(_ewfSlope, _ewfPS);
+    }
+  }
+
   return Object.keys(groups).sort().map(function(sku) {
     return {
       category:    'Trim',
       description: 'End Wall Flashing',
       sku:         sku,
       quantity:    groups[sku],
-      detail:      'dropped eave lean-tos + gable wall lean-tos'
+      detail:      'dropped eave lean-tos + gable wall lean-tos' + (_ewfSecs && _ewfSecs.length > 1 ? ' + step-down roof-to-wall' : '')
     };
   });
 };
@@ -29964,19 +30175,25 @@ window.SauceMaterials.calcOutsideCornerTrim = function(Q, WALLS, shedCfgs) {
   var leftEncl  = wallEncl('left')  !== 'open';
   var rightEncl = wallEncl('right') !== 'open';
   var mbH = Q.h + 2;
+  // Height sections: front corners rise to the front section's eave, back to the back's
+  var _ocSecsU = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single') ? window.hsSections() : null;
+  var _ocOn = !!(_ocSecsU && _ocSecsU.length > 1);
+  var _ocSecs = _ocOn ? ((window._hsRev !== false) ? _ocSecsU.slice().reverse() : _ocSecsU.slice()) : null;
+  var _ocFrontH = _ocOn ? _ocSecs[0].h + 2 : mbH;
+  var _ocBackH  = _ocOn ? _ocSecs[_ocSecs.length - 1].h + 2 : mbH;
 
   var corners = [
-    { eave: leftEncl,  gable: frontEncl }, // front-left
-    { eave: rightEncl, gable: frontEncl }, // front-right
-    { eave: leftEncl,  gable: backEncl  }, // back-left
-    { eave: rightEncl, gable: backEncl  }, // back-right
+    { eave: leftEncl,  gable: frontEncl, h: _ocFrontH }, // front-left
+    { eave: rightEncl, gable: frontEncl, h: _ocFrontH }, // front-right
+    { eave: leftEncl,  gable: backEncl,  h: _ocBackH  }, // back-left
+    { eave: rightEncl, gable: backEncl,  h: _ocBackH  }, // back-right
   ];
 
   if (!window._shedOnlyMode) {
     corners.forEach(function(c) {
       if (c.eave || c.gable) {
-        addOC(mbH, 1);
-        if (c.eave !== c.gable) addFur(mbH, 1); // one enclosed, one open → furring
+        addOC(c.h, 1);
+        if (c.eave !== c.gable) addFur(c.h, 1); // one enclosed, one open → furring
       }
     });
   }
@@ -30135,6 +30352,14 @@ window.SauceMaterials.calcGableRakeTrim = function(Q, shedCfgs) {
   } else if (!window._shedOnlyMode && Q.roofStyle !== 'single') {
     var mbTopChord = getTopChord(Q.w);
     if (mbTopChord) addBoards(nextEven(mbTopChord), 4);
+    // Height sections: each interior step exposes the taller section's roof edge —
+    // one more rake set (2 boards, one per slope) per step
+    var _rtSecs = (typeof window.hsActive==='function' && window.hsActive()) ? window.hsSections() : null;
+    if (mbTopChord && _rtSecs && _rtSecs.length > 1) {
+      var _rtSteps = 0;
+      for (var _ri = 0; _ri < _rtSecs.length - 1; _ri++) if (Math.abs(_rtSecs[_ri].h - _rtSecs[_ri+1].h) > 0.01) _rtSteps++;
+      if (_rtSteps > 0) addBoards(nextEven(mbTopChord), _rtSteps * 2);
+    }
   }
 
   // Side sheds
@@ -30215,6 +30440,44 @@ window.SauceMaterials.calcStudExteriorWallStuds = function(Q) {
       return Math.abs(cur - h) < Math.abs(prev - h) ? cur : prev;
     });
     sku = skuMap2x6[len];
+  }
+
+  // Height sections: split the perimeter by section so studs come in the right lengths.
+  // Eave walls: each section's footage (×2 walls) at that section's height.
+  // Gable ends: building width at each END section's height.
+  var _stSecsU = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && !window._shedOnlyMode) ? window.hsSections() : null;
+  if (_stSecsU && _stSecsU.length > 1) {
+    var _stSecs = (window._hsRev !== false) ? _stSecsU.slice().reverse() : _stSecsU.slice();
+    function _studPick(hh){
+      if (is2x4) {
+        if (hh <= 12) return { sku:'SYP2412', len:12, dim:'2x4' };
+        if (hh <= 16) return { sku:'SYP2416', len:16, dim:'2x4' };
+        return { sku:'SYP2420', len:20, dim:'2x4' };
+      }
+      var _map = { 8:'SPF2692', 9:'SPF26104', 10:'SPF26116', 12:'SPF2612', 14:'SPF2614', 16:'SPF2616', 18:'SYP2818', 20:'SYP2820' };
+      var _hs2 = Object.keys(_map).map(Number).sort(function(a,b){return a-b;});
+      var _ln = _hs2.reduce(function(prev, cur) { return Math.abs(cur - hh) < Math.abs(prev - hh) ? cur : prev; });
+      return { sku:_map[_ln], len:_ln, dim:'2x6' };
+    }
+    var _lfByH = {};
+    _stSecs.forEach(function(_s){ if (_s.len > 0) _lfByH[_s.h] = (_lfByH[_s.h] || 0) + _s.len * 2; }); // both eave walls
+    var _feH = _stSecs[0].h, _beH = _stSecs[_stSecs.length - 1].h;
+    _lfByH[_feH] = (_lfByH[_feH] || 0) + Q.w; // front gable end
+    _lfByH[_beH] = (_lfByH[_beH] || 0) + Q.w; // back gable end
+    var _stOut = [];
+    Object.keys(_lfByH).map(Number).sort(function(a,b){return a-b;}).forEach(function(_hh){
+      var _pk = _studPick(_hh);
+      var _lf = _lfByH[_hh];
+      var _q  = Math.ceil(_lf * 1.1);
+      _stOut.push({
+        category:    'Yard',
+        description: 'Exterior Wall Studs',
+        sku:         _pk.sku,
+        quantity:    _q,
+        detail:      _lf + "' of " + _hh + "' wall  |  1/LF x 1.1 = " + _q + '  |  ' + _pk.len + "' " + _pk.dim + ' stud'
+      });
+    });
+    return _stOut;
   }
 
   var perimeter = (Q.w + Q.l) * 2;
@@ -31489,9 +31752,11 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
     var wallItems  = window.SauceMaterials.calcSidewallMetal(Q, WALLS, shedCfgs);
     var wainItems  = window.SauceMaterials.calcWainscotMetal(Q, WALLS, shedCfgs);
     var gableItems = window._shedOnlyMode ? [] : window.SauceMaterials.calcGableMetal(Q, WALLS);
+    var stepGItems = window.SauceMaterials.calcStepGableMetal(Q);
     wallLinFt = linearFtFromItems(wallItems)
               + linearFtFromItems(wainItems)
-              + linearFtFromItems(gableItems);
+              + linearFtFromItems(gableItems)
+              + linearFtFromItems(stepGItems);
   }
 
   var totalLinFt = roofLinFt + wallLinFt;
@@ -31639,6 +31904,7 @@ window.SauceMaterials.calcMetalScrews = function(Q, WALLS, shedCfgs) {
   var wallLF = [
     SM.calcSidewallMetal(Q, WALLS, shedCfgs),
     window._shedOnlyMode ? [] : SM.calcGableMetal(Q, WALLS),
+    SM.calcStepGableMetal(Q),
     SM.calcLeantoUpperGable(Q, shedCfgs),
     window._shedOnlyMode ? [] : SM.calcOpenGableMetal(Q, WALLS, shedCfgs),
     SM.calcWainscotMetal(Q, WALLS, shedCfgs),
@@ -33041,6 +33307,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     if (!noWallMetal) {
     SM.calcSidewallMetal(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcGableMetal(sfQ, WALLS).forEach(function(item) { items.push(item); });
+    SM.calcStepGableMetal(sfQ).forEach(function(item) { items.push(item); });
     SM.calcLeantoUpperGable(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcOpenGableMetal(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcWainscotMetal(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
@@ -33563,6 +33830,7 @@ window.SauceMaterials.calculate = function(forcedType) {
   if (!noWallMetal) {
   SM.calcSidewallMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcGableMetal(Q, WALLS).forEach(function(item) { items.push(item); });
+  SM.calcStepGableMetal(Q).forEach(function(item) { items.push(item); });
   SM.calcLeantoUpperGable(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcOpenGableMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
   SM.calcWainscotMetal(Q, WALLS, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
