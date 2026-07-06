@@ -12598,50 +12598,71 @@ function applyVoiceQuote(parsed, overlay) {
         }
         } // end gable-only roof ribs
 
-        // === CYPRESS WIDOW'S PEAK — decorative gable-peak truss bracket ===
-        // King-post bracket under the front gable peak: two top chords following the
-        // pitch, horizontal bottom chord, king post, and a sunburst fan with hub.
-        if (document.getElementById('st_widowsPeak')?.checked && !isSingleSlope && !frontOpen) {
-            const wpPeakY = (_hsOn ? _hsRidgeFt(_hsSecs[0].h) * Sc : sr);
-            const wpSpanFt = Math.min(10, Q.w * 0.28);          // bracket width (ft)
-            const wpB   = (wpSpanFt / 2) * Sc;                  // half-span (scene)
-            const wpSlp = Q.pitch / 12;
-            const wpTopY = wpPeakY - 0.35 * Sc;                 // tuck under roof underside
-            const wpBotY = wpTopY - wpB / Sc * wpSlp * Sc;      // chord ends at half-span drop
-            const wpZ   = -sl / 2 - 0.030;                      // proud of the front gable face
-            const wpDep = 0.030;                                // member depth (scene)
-            const wpThk = 0.045;                                // member thickness (scene ~5.4")
+        // === CYPRESS WIDOW'S PEAK — 4' gable roof extension with cypress truss ===
+        // Renders on the LOAD-FACING gable (camera initializes at +z, so that gable is
+        // z = +sl/2 — note: the wall-id system calls this geometric end 'back').
+        // The roof extends ~4' out past the gable at the peak; a cypress king-post +
+        // sunburst truss carries the outer edge, with knee braces back to the wall.
+        // Wood trusses with overhang only — matches the labor rule.
+        if (document.getElementById('st_widowsPeak')?.checked && !isSingleSlope
+            && Q.truss === 'Wood' && Q.oh > 0) {
+            const wpPeakY = (_hsOn ? _hsRidgeFt(_hsSecs[_hsSecs.length - 1].h) * Sc : sr);
+            const wpSpanFt = Math.min(10, Q.w * 0.28);          // extension width at the peak (ft)
+            const wpB    = (wpSpanFt / 2) * Sc;                 // half-span (scene)
+            const wpSlp  = Q.pitch / 12;
+            const wpZ0   = sl / 2;                              // gable wall face
+            const wpZ1   = sl / 2 + 4 * Sc;                     // 4' extension
+            const wpDep  = 0.030;
+            const wpThk  = 0.045;                               // ~5.4" members
             const wpMat  = new THREE.MeshBasicMaterial({ color: 0xc8a96e });
             const wpMatD = new THREE.MeshBasicMaterial({ color: 0xa8864a });
-            function wpBeam(ax, ay, bx, by, thk, mat) {
-                const dx = bx - ax, dy = by - ay;
-                const len = Math.sqrt(dx*dx + dy*dy);
+            const wpRoofY = function(x){ return wpPeakY - Math.abs(x) / Sc * wpSlp * Sc; };
+            // ── Extension roof planes (roof color, continuing the main slopes) ──
+            try {
+              [[-wpB, 0], [0, wpB]].forEach(function(seg){
+                var xa = seg[0], xb = seg[1];
+                grps.roof.add(mkQ([xa, wpRoofY(xa) + 0.004, wpZ0,  xb, wpRoofY(xb) + 0.004, wpZ0,
+                                   xb, wpRoofY(xb) + 0.004, wpZ1,  xa, wpRoofY(xa) + 0.004, wpZ1],
+                                   (typeof mRoofRibHi !== 'undefined' && mRoofRibHi) ? mRoofRibHi : wpMat));
+                // cypress soffit underside
+                grps.roof.add(mkQ([xa, wpRoofY(xa) - 0.006, wpZ0,  xb, wpRoofY(xb) - 0.006, wpZ0,
+                                   xb, wpRoofY(xb) - 0.006, wpZ1,  xa, wpRoofY(xa) - 0.006, wpZ1], wpMat));
+              });
+            } catch(e) {}
+            // ── Outer cypress truss at the extension face ──
+            const wpTopY = wpPeakY - 0.06;                      // tuck under the extended ridge
+            const wpBotY = wpTopY - wpB / Sc * wpSlp * Sc;      // chord-end height
+            const wpTz   = wpZ1 - wpThk;                        // truss plane, just inside outer edge
+            function wpBeam2(ax, ay, az, bx, by, bz, thk, mat) {
+                const dx = bx - ax, dy = by - ay, dz = bz - az;
+                const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
                 if (len < 0.0001) return;
-                const g = new THREE.BoxGeometry(len, thk, wpDep);
+                const g = new THREE.BoxGeometry(thk, thk, len);
                 const m = new THREE.Mesh(g, mat);
-                m.position.set((ax+bx)/2, (ay+by)/2, wpZ);
-                m.rotation.z = Math.atan2(dy, dx);
+                m.position.set((ax+bx)/2, (ay+by)/2, (az+bz)/2);
+                m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1), new THREE.Vector3(dx/len, dy/len, dz/len));
                 grps.roof.add(m);
             }
-            // Top chords (follow the pitch), slight overrun past the bottom-chord ends
-            wpBeam(-wpB - 0.02, wpBotY - 0.02/ (1/wpSlp), 0, wpTopY, wpThk, wpMat);
-            wpBeam(0, wpTopY,  wpB + 0.02, wpBotY - 0.02/(1/wpSlp), wpThk, wpMat);
-            // Bottom chord
-            wpBeam(-wpB, wpBotY, wpB, wpBotY, wpThk, wpMat);
-            // King post (bottom chord center to peak)
-            wpBeam(0, wpBotY, 0, wpTopY - wpThk/2, wpThk * 0.85, wpMat);
-            // Sunburst spokes from a hub at bottom-center to points along the top chords
+            // Top chords following the pitch
+            wpBeam2(-wpB, wpBotY, wpTz,  0, wpTopY, wpTz, wpThk, wpMat);
+            wpBeam2( 0, wpTopY, wpTz,  wpB, wpBotY, wpTz, wpThk, wpMat);
+            // Bottom chord + king post
+            wpBeam2(-wpB, wpBotY, wpTz,  wpB, wpBotY, wpTz, wpThk, wpMat);
+            wpBeam2(0, wpBotY, wpTz,  0, wpTopY - wpThk/2, wpTz, wpThk * 0.85, wpMat);
+            // Sunburst spokes + hub
             const wpHubY = wpBotY + wpThk * 0.6;
-            [-0.72, -0.4, 0.4, 0.72].forEach(fx => {
+            [-0.72, -0.4, 0.4, 0.72].forEach(function(fx){
                 const sx = fx * wpB;
                 const sy = wpTopY - Math.abs(fx) * wpB / Sc * wpSlp * Sc - wpThk * 0.5;
-                wpBeam(0, wpHubY, sx, sy, wpThk * 0.55, wpMatD);
+                wpBeam2(0, wpHubY, wpTz, sx, sy, wpTz, wpThk * 0.55, wpMatD);
             });
-            // Hub disc
             const wpHub = new THREE.Mesh(new THREE.CylinderGeometry(wpThk * 1.05, wpThk * 1.05, wpDep * 1.25, 20), wpMatD);
             wpHub.rotation.x = Math.PI / 2;
-            wpHub.position.set(0, wpHubY, wpZ);
+            wpHub.position.set(0, wpHubY, wpTz);
             grps.roof.add(wpHub);
+            // ── Knee braces from the chord ends back down to the gable wall ──
+            wpBeam2(-wpB, wpBotY, wpTz,  -wpB * 0.8, wpBotY - 1.4 * Sc, wpZ0, wpThk * 0.8, wpMat);
+            wpBeam2( wpB, wpBotY, wpTz,   wpB * 0.8, wpBotY - 1.4 * Sc, wpZ0, wpThk * 0.8, wpMat);
         }
 
         // === CUPOLA — decorative roof feature ===
