@@ -26194,9 +26194,19 @@ window.SauceMaterials.calcSteelPurlins = function(Q) {
   if (!cups) return [];
 
   // Height sections: purlin runs break at each step (roof plane jumps) — fill per section.
-  // Steel gable O/H: purlins EXTEND 18" past each gable-OH end (true building ends; on
-  // stepped builds also the taller side of each step). No soffit — steel is never finished.
+  // Steel gable O/H (Lain's shop rule, e.g. 24x40x12 @ 10' PS): each gable-OH end gets a
+  // dedicated END BOARD spanning the last bay + the 18" cantilever past the gable. A 12'
+  // board is NOT long enough to cover a 10' bay AND the O/H, so end stock is 10/14/16/20 —
+  // smallest ≥ spacing + O/H (10' PS → 14'). The middle (length minus the two end bays)
+  // fills with the normal 20s-then-10s logic. No soffit — steel is never finished.
   var _spGOH = (Q.steelGableOH && Q.oh > 0) ? Q.oh / 12 : 0;
+  function _spEndStock(){
+    var _need = spacing + _spGOH;
+    var _stk = [10, 14, 16, 20];
+    for (var _si2 = 0; _si2 < _stk.length; _si2++) if (_stk[_si2] >= _need) return _stk[_si2];
+    return 20;
+  }
+  function _spAdd(map, k, n){ map[k] = (map[k]||0) + n; }
   var _spSecs = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && !window._shedOnlyMode) ? window.hsSections() : null;
   var boards;
   if (_spSecs && _spSecs.length > 1) {
@@ -26204,15 +26214,28 @@ window.SauceMaterials.calcSteelPurlins = function(Q) {
     for (var _sj = 0; _sj < _spSecs.length; _sj++) {
       var _seg = _spSecs[_sj].len;
       if (_seg <= 0) continue;
+      var _ohEnds = 0;
       if (_spGOH > 0) {
-        if (_sj === 0) _seg += _spGOH; else if (_spSecs[_sj].h > _spSecs[_sj - 1].h + 0.01) _seg += _spGOH;
-        if (_sj === _spSecs.length - 1) _seg += _spGOH; else if (_spSecs[_sj].h > _spSecs[_sj + 1].h + 0.01) _seg += _spGOH;
+        if (_sj === 0) _ohEnds++; else if (_spSecs[_sj].h > _spSecs[_sj - 1].h + 0.01) _ohEnds++;
+        if (_sj === _spSecs.length - 1) _ohEnds++; else if (_spSecs[_sj].h > _spSecs[_sj + 1].h + 0.01) _ohEnds++;
       }
-      var _sb = fillLength(_seg, spacing);
-      Object.keys(_sb).forEach(function(_k){ boards[_k] = (boards[_k]||0) + _sb[_k]; });
+      if (_ohEnds > 0) _spAdd(boards, _spEndStock(), _ohEnds);
+      var _mid = _seg - _ohEnds * spacing;
+      if (_mid > 0.01) {
+        var _sb = fillLength(_mid, spacing);
+        Object.keys(_sb).forEach(function(_k){ _spAdd(boards, _k, _sb[_k]); });
+      }
+    }
+  } else if (_spGOH > 0) {
+    boards = {};
+    _spAdd(boards, _spEndStock(), 2); // one end board per gable end
+    var _midU = Q.l - 2 * spacing;    // middle between the two end bays
+    if (_midU > 0.01) {
+      var _sbU = fillLength(_midU, spacing);
+      Object.keys(_sbU).forEach(function(_k){ _spAdd(boards, _k, _sbU[_k]); });
     }
   } else {
-    boards = fillLength(Q.l + _spGOH * 2, spacing);
+    boards = fillLength(Q.l, spacing);
   }
   var results = [];
 
