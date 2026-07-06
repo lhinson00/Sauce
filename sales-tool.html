@@ -3376,7 +3376,7 @@ function buildTrussChips(){
     function(){return cfgTruss;},function(v){
       // Single slope only supports steel truss
       if (Q.roofStyle === 'single' && v !== 'Steel') { showToast('Single slope requires Steel truss','warn'); buildTrussChips(); return; }
-      cfgTruss=v;Q.truss=v;buildPitchChips();buildOHChips();applyRouteUI();
+      cfgTruss=v;Q.truss=v;if(v!=='Steel')Q.steelGableOH=false;buildPitchChips();buildOHChips();applyRouteUI();
     });
 }
 function buildPitchChips(){
@@ -3387,15 +3387,19 @@ function buildPitchChips(){
   chips('pitchChips',opts,function(){return Q.pitch;},function(v){Q.pitch=v;});
 }
 function buildOHChips(){
-  // Wood: none, 12", 18" soffit  |  Steel: none, 18" (no soffit)
+  // Wood: none, 12" soffit  |  Steel: none, 18" eave-only, 18" eave+gables (extended
+  // purlins past the gable ends — steel is NEVER finished with soffit)
   var wopts=[{val:0,label:'None'},{val:12,label:'12" Soffit'}];
-  var steelLabel = window._customerMode ? '18" No Soffit' : '18"';
-  var sopts=[{val:0,label:'None'},{val:18,label:steelLabel}];
+  var steelLabel = window._customerMode ? '18" Eave (No Soffit)' : '18" Eave';
+  var steelLabelG = window._customerMode ? '18" Eave+Gable (No Soffit)' : '18" Eave+Gable';
+  var sopts=[{val:0,label:'None'},{val:18,label:steelLabel},{val:'18G',label:steelLabelG}];
   var opts = cfgTruss==='Steel'?sopts:wopts;
-  if(!opts.find(function(o){return o.val===Q.oh;})){Q.oh=0;}
-  chips('ohChips',opts,function(){return Q.oh;},function(v){
-    Q.oh=v;
-    Q.soffit = (cfgTruss==='Wood' && v > 0);
+  var curVal = (cfgTruss==='Steel' && Q.oh===18 && Q.steelGableOH) ? '18G' : Q.oh;
+  if(!opts.find(function(o){return o.val===curVal;})){Q.oh=0;Q.steelGableOH=false;curVal=0;}
+  chips('ohChips',opts,function(){return (cfgTruss==='Steel' && Q.oh===18 && Q.steelGableOH) ? '18G' : Q.oh;},function(v){
+    if (v === '18G') { Q.oh = 18; Q.steelGableOH = true; }
+    else { Q.oh = v; Q.steelGableOH = false; }
+    Q.soffit = (cfgTruss==='Wood' && Q.oh > 0);
   });
 }
 function buildFrameChips(){
@@ -6133,7 +6137,7 @@ async function openActivityLog() {
 // ── CONFIG SERIALIZATION ─────────────────────────────────────────
 function serializeConfig() {
   return {
-    Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,truss:Q.truss,frameType:Q.frameType,roofStyle:Q.roofStyle||'gable'},
+    Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,steelGableOH:Q.steelGableOH||false,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,truss:Q.truss,frameType:Q.frameType,roofStyle:Q.roofStyle||'gable'},
     walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,partialH:w.partialH,openLenFt:w.openLenFt,openStartFt:w.openStartFt,openPS:w.openPS,wallColor:w.wallColor||null,wainscot:(w.wainscot!=null?!!w.wainscot:null),wainscotColor:w.wainscotColor||null};}),
     doors: allDoors,
     stallPosts: window._stallPosts || [],
@@ -10120,7 +10124,7 @@ function applyVoiceQuote(parsed, overlay) {
             var leftOpen  = _wOpenEarly('left'),  rightOpen = _wOpenEarly('right');
         // Steel truss: overhang on eaves only. Wood truss: overhang on eaves AND gables.
         const ohE = oh; // eave overhang (always)
-        const ohG = cfgTruss === 'Steel' ? 0 : oh; // gable overhang (wood only)
+        const ohG = cfgTruss === 'Steel' ? ((Q.steelGableOH && oh > 0) ? oh : 0) : oh; // gable OH: wood, or steel w/ extended purlins (never soffit)
 
         // Color name → hex lookup (matches Summertown Metals panel colors)
         const panelColors = {
@@ -17796,7 +17800,7 @@ async function generateQuotePDF() {
     } else {
       specRow2('Roof Pitch', (Q2.pitch||4) + '/12');
     }
-    specRow2('Truss Type', isSteel ? 'Steel Truss No Soffit' : (Q2.oh > 0 ? 'Wood Truss w/ 12" Soffit' : 'Wood Truss No Soffit'));
+    specRow2('Truss Type', isSteel ? ((Q2.steelGableOH && Q2.oh > 0) ? 'Steel Truss — 18" O/H Eaves + Gables, Extended Purlins (No Soffit)' : 'Steel Truss No Soffit') : (Q2.oh > 0 ? 'Wood Truss w/ 12" Soffit' : 'Wood Truss No Soffit'));
     if (!isSteel) {
       var ts = val2('st_trussSpacing') || val2('sf_trussSpacing') || '5';
       specRow2('Truss Spacing', ts + "' on center");
@@ -20229,7 +20233,7 @@ async function saveSalesQuote(overwriteMode) {
       var bld = [
         row('Size', (Qd.w||'?')+"' \u00D7 "+(Qd.l||'?')+"' \u00D7 "+(Qd.h||'?')+"'"),
         row('Roof', _ss ? 'Single Slope 1/12' : (ds.pitch||'4')+'/12 pitch'),
-        row('Truss', ds.truss==='Steel' ? 'Steel Truss No Soffit' : (parseFloat(ds.oh)>0 ? 'Wood Truss w/ 12" Soffit' : 'Wood Truss No Soffit')),
+        row('Truss', ds.truss==='Steel' ? ((ds.steelGableOH && parseFloat(ds.oh)>0) ? 'Steel Truss — 18" O/H Eaves + Gables (No Soffit)' : 'Steel Truss No Soffit') : (parseFloat(ds.oh)>0 ? 'Wood Truss w/ 12" Soffit' : 'Wood Truss No Soffit')),
         (ds.truss!=='Steel' && ds.trussSpacing) ? row('Truss Spacing', ds.trussSpacing+"' OC") : null,
         row('Overhang', parseFloat(ds.oh)>0 ? ds.oh+'"' : 'None'),
         ds.mbPostSize ? row('Posts', ds.mbPostSize + (ds.eavePostSpacing? '  @  '+ds.eavePostSpacing+"' OC":'')) : null
@@ -20866,7 +20870,7 @@ function buildSpecText() {
     row('Dimensions', (Q2.w||'?') + "' Wide x " + (Q2.l||'?') + "' Long x " + (Q2.h||'?') + "' Tall");
     row('Roof Pitch', (Q2.pitch||4) + '/12');
   }
-  row('Truss Type', isSteel ? 'Steel Truss No Soffit' : (Q.oh > 0 ? 'Wood Truss w/ 12" Soffit' : 'Wood Truss No Soffit'));
+  row('Truss Type', isSteel ? ((Q.steelGableOH && Q.oh > 0) ? 'Steel Truss — 18" O/H Eaves + Gables, Extended Purlins (No Soffit)' : 'Steel Truss No Soffit') : (Q.oh > 0 ? 'Wood Truss w/ 12" Soffit' : 'Wood Truss No Soffit'));
   if (!isSteel) {
     var ts = val2('st_trussSpacing') || val2('sf_trussSpacing') || '5';
     row('Truss Spacing', ts + "' on center");
@@ -26189,18 +26193,26 @@ window.SauceMaterials.calcSteelPurlins = function(Q) {
   var cups = cupsMap[Q.w];
   if (!cups) return [];
 
-  // Height sections: purlin runs break at each step (roof plane jumps) — fill per section
+  // Height sections: purlin runs break at each step (roof plane jumps) — fill per section.
+  // Steel gable O/H: purlins EXTEND 18" past each gable-OH end (true building ends; on
+  // stepped builds also the taller side of each step). No soffit — steel is never finished.
+  var _spGOH = (Q.steelGableOH && Q.oh > 0) ? Q.oh / 12 : 0;
   var _spSecs = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single' && !window._shedOnlyMode) ? window.hsSections() : null;
   var boards;
   if (_spSecs && _spSecs.length > 1) {
     boards = {};
-    _spSecs.forEach(function(_s){
-      if (_s.len <= 0) return;
-      var _sb = fillLength(_s.len, spacing);
+    for (var _sj = 0; _sj < _spSecs.length; _sj++) {
+      var _seg = _spSecs[_sj].len;
+      if (_seg <= 0) continue;
+      if (_spGOH > 0) {
+        if (_sj === 0) _seg += _spGOH; else if (_spSecs[_sj].h > _spSecs[_sj - 1].h + 0.01) _seg += _spGOH;
+        if (_sj === _spSecs.length - 1) _seg += _spGOH; else if (_spSecs[_sj].h > _spSecs[_sj + 1].h + 0.01) _seg += _spGOH;
+      }
+      var _sb = fillLength(_seg, spacing);
       Object.keys(_sb).forEach(function(_k){ boards[_k] = (boards[_k]||0) + _sb[_k]; });
-    });
+    }
   } else {
-    boards = fillLength(Q.l, spacing);
+    boards = fillLength(Q.l + _spGOH * 2, spacing);
   }
   var results = [];
 
@@ -28378,7 +28390,7 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
   if (metalLen && Q.roofStyle !== 'single') {
     // Wood with OH: add overhang to both gable ends for quantity
     // Steel with OH: overhang only affects panel length, not quantity
-    var runLength = (Q.truss === 'Wood' && ohFt > 0) ? Q.l + ohFt * 2 : Q.l;
+    var runLength = ((Q.truss === 'Wood' || (Q.truss === 'Steel' && Q.steelGableOH)) && ohFt > 0) ? Q.l + ohFt * 2 : Q.l;
     runLength += gableExtDepth; // extend for gable-attached extensions
     var panelsPerRun = Math.ceil(runLength / 3);
 
@@ -28398,7 +28410,7 @@ window.SauceMaterials.calcRoofMetal = function(Q, shedCfgs) {
       panelsPerRun = 0;
       for (var _mi = 0; _mi < _rmSecs.length; _mi++) {
         var _mRun = _rmSecs[_mi].len;
-        if (Q.truss === 'Wood' && ohFt > 0) {
+        if ((Q.truss === 'Wood' || (Q.truss === 'Steel' && Q.steelGableOH)) && ohFt > 0) {
           if (_mi === 0) _mRun += ohFt; else if (_rmSecs[_mi].h > _rmSecs[_mi - 1].h + 0.01) _mRun += ohFt;
           if (_mi === _rmSecs.length - 1) _mRun += ohFt; else if (_rmSecs[_mi].h > _rmSecs[_mi + 1].h + 0.01) _mRun += ohFt;
         }
