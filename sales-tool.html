@@ -12598,6 +12598,52 @@ function applyVoiceQuote(parsed, overlay) {
         }
         } // end gable-only roof ribs
 
+        // === CYPRESS WIDOW'S PEAK — decorative gable-peak truss bracket ===
+        // King-post bracket under the front gable peak: two top chords following the
+        // pitch, horizontal bottom chord, king post, and a sunburst fan with hub.
+        if (document.getElementById('st_widowsPeak')?.checked && !isSingleSlope && !frontOpen) {
+            const wpPeakY = (_hsOn ? _hsRidgeFt(_hsSecs[0].h) * Sc : sr);
+            const wpSpanFt = Math.min(10, Q.w * 0.28);          // bracket width (ft)
+            const wpB   = (wpSpanFt / 2) * Sc;                  // half-span (scene)
+            const wpSlp = Q.pitch / 12;
+            const wpTopY = wpPeakY - 0.35 * Sc;                 // tuck under roof underside
+            const wpBotY = wpTopY - wpB / Sc * wpSlp * Sc;      // chord ends at half-span drop
+            const wpZ   = -sl / 2 - 0.030;                      // proud of the front gable face
+            const wpDep = 0.030;                                // member depth (scene)
+            const wpThk = 0.045;                                // member thickness (scene ~5.4")
+            const wpMat  = new THREE.MeshBasicMaterial({ color: 0xc8a96e });
+            const wpMatD = new THREE.MeshBasicMaterial({ color: 0xa8864a });
+            function wpBeam(ax, ay, bx, by, thk, mat) {
+                const dx = bx - ax, dy = by - ay;
+                const len = Math.sqrt(dx*dx + dy*dy);
+                if (len < 0.0001) return;
+                const g = new THREE.BoxGeometry(len, thk, wpDep);
+                const m = new THREE.Mesh(g, mat);
+                m.position.set((ax+bx)/2, (ay+by)/2, wpZ);
+                m.rotation.z = Math.atan2(dy, dx);
+                grps.roof.add(m);
+            }
+            // Top chords (follow the pitch), slight overrun past the bottom-chord ends
+            wpBeam(-wpB - 0.02, wpBotY - 0.02/ (1/wpSlp), 0, wpTopY, wpThk, wpMat);
+            wpBeam(0, wpTopY,  wpB + 0.02, wpBotY - 0.02/(1/wpSlp), wpThk, wpMat);
+            // Bottom chord
+            wpBeam(-wpB, wpBotY, wpB, wpBotY, wpThk, wpMat);
+            // King post (bottom chord center to peak)
+            wpBeam(0, wpBotY, 0, wpTopY - wpThk/2, wpThk * 0.85, wpMat);
+            // Sunburst spokes from a hub at bottom-center to points along the top chords
+            const wpHubY = wpBotY + wpThk * 0.6;
+            [-0.72, -0.4, 0.4, 0.72].forEach(fx => {
+                const sx = fx * wpB;
+                const sy = wpTopY - Math.abs(fx) * wpB / Sc * wpSlp * Sc - wpThk * 0.5;
+                wpBeam(0, wpHubY, sx, sy, wpThk * 0.55, wpMatD);
+            });
+            // Hub disc
+            const wpHub = new THREE.Mesh(new THREE.CylinderGeometry(wpThk * 1.05, wpThk * 1.05, wpDep * 1.25, 20), wpMatD);
+            wpHub.rotation.x = Math.PI / 2;
+            wpHub.position.set(0, wpHubY, wpZ);
+            grps.roof.add(wpHub);
+        }
+
         // === CUPOLA — decorative roof feature ===
         const cupSz = document.getElementById('qgCupolaSize')?.value;
         const cupQty = parseInt(document.getElementById('qgCupolaQty')?.value) || 0;
@@ -24101,6 +24147,27 @@ window.SauceMaterials.calcGablePosts = function(Q, WALLS, allDoors, sf) {
   });
 };
 
+// ── Shed attach eave height on stepped buildings ───────────────────────
+// Mirrors the 3D: eave-attached sheds take the section at the shed's CENTER along the
+// wall (position/offset resolved the same way); front/back-attached sheds take their
+// end section's height. Uniform buildings return Q.h unchanged.
+window.SauceMaterials.shedAttachEaveFt = function(Q, sc) {
+  var secsU = (typeof window.hsActive==='function' && window.hsActive() && Q.roofStyle!=='single') ? window.hsSections() : null;
+  if (!secsU || secsU.length < 2) return Q.h;
+  var secs = (window._hsRev !== false) ? secsU.slice().reverse() : secsU.slice();
+  if (sc.wall === 'front') return secs[0].h;
+  if (sc.wall === 'back')  return secs[secs.length - 1].h;
+  var wallLen = Q.l, shedLen = sc.l || 0, pos = sc.position || 'center', off = 0;
+  if (shedLen >= wallLen) off = 0;
+  else if (pos === 'start') off = 0;
+  else if (pos === 'end') off = wallLen - shedLen;
+  else if (pos === 'custom') off = Math.max(0, Math.min(sc.offsetFt || 0, wallLen - shedLen));
+  else off = (wallLen - shedLen) / 2;
+  var centerFt = off + shedLen / 2, acc = 0;
+  for (var i = 0; i < secs.length; i++) { acc += secs[i].len; if (centerFt <= acc + 1e-6) return secs[i].h; }
+  return secs[secs.length - 1].h;
+};
+
 // ── ITEM 3: SIDE SHED POSTS ───────────────────────────────────────────────────
 
 window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
@@ -24138,7 +24205,7 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
 
     var isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
     var attachPS   = (sc.eavePS != null && sc.eavePS !== '') ? parseFloat(sc.eavePS) : wallPS(sc.wall);
-    var attachH    = Q.h - (sc.dropFt || 0);
+    var attachH    = window.SauceMaterials.shedAttachEaveFt(Q, sc) - (sc.dropFt || 0);
     var outerH     = attachH - (sc.w * (sc.ltPitch || 1) / 12);
     var totalH     = outerH + ground;
     var postLen    = Math.ceil(totalH / 2) * 2;
@@ -27220,8 +27287,8 @@ window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
     if (!(sc.enclWalls||[]).includes('outer')) return;
     var attachWall = (WALLS||[]).find(function(w){return w.id===sc.wall;});
     var ps = attachWall ? (attachWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
-    // Use main building eave height for shed girts
-    addGirts(sc.l, Q.h, ps);
+    // Use the attach-line eave height (section-aware on stepped buildings)
+    addGirts(sc.l, window.SauceMaterials.shedAttachEaveFt(Q, sc), ps);
   });
 
   // Enclosed side shed gable ends (lean-to) — girts run across the shed width.
@@ -27235,7 +27302,7 @@ window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
     if (_ends === 0) return;
     var _attachWallG = (WALLS||[]).find(function(w){return w.id===sc.wall;});
     var _psG     = sc.gablePS || (_attachWallG ? (_attachWallG.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10));
-    var _attachHG = Q.h - (sc.dropFt||0);
+    var _attachHG = window.SauceMaterials.shedAttachEaveFt(Q, sc) - (sc.dropFt||0);
     var _outerHG  = _attachHG - (sc.w * (sc.ltPitch||1)/12);
     var _avgHG    = (_attachHG + _outerHG) / 2;
     for (var _ge = 0; _ge < _ends; _ge++) {
@@ -27350,7 +27417,7 @@ window.SauceMaterials.calcGableGirts = function(Q, WALLS, shedCfgs) {
     if (!(sc.enclWalls||[]).includes('outer')) return;
     var attachWall = (WALLS||[]).find(function(w){return w.id===sc.wall;});
     var ps = attachWall ? (attachWall.postSpacing||Q.postSpacing||10) : (Q.postSpacing||10);
-    addGirts(sc.l, Q.h, ps);
+    addGirts(sc.l, window.SauceMaterials.shedAttachEaveFt(Q, sc), ps);
   });
 
   var _ggOut = Object.keys(groups).sort().map(function(sku) {
@@ -28559,7 +28626,7 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
     if (!sc.wall || !sc.w || !sc.l) return;
     if (sc.encl !== 'enclosed') return;
     if (!(sc.enclWalls||[]).includes('outer')) return;
-    var shedH = (Q.h + 1) - (sc.w * (sc.ltPitch||1) / 12) - (wainscot ? 4 : 0);
+    var shedH = (window.SauceMaterials.shedAttachEaveFt(Q, sc) + 1) - (sc.w * (sc.ltPitch||1) / 12) - (wainscot ? 4 : 0);
     var wallLen = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
     add(shedH, Math.ceil(wallLen / 3));
   });
@@ -30281,7 +30348,7 @@ window.SauceMaterials.calcOutsideCornerTrim = function(Q, WALLS, shedCfgs) {
     if (sc.encl !== 'enclosed') return;
     if (!(sc.enclWalls||[]).includes('outer')) return;
     var dropFt  = parseFloat(sc.dropFt||0);
-    var outerH  = (Q.h - dropFt) - (sc.w * (sc.ltPitch||1) / 12);
+    var outerH  = (window.SauceMaterials.shedAttachEaveFt(Q, sc) - dropFt) - (sc.w * (sc.ltPitch||1) / 12);
     addOC(outerH + 2, 2);
   });
 
