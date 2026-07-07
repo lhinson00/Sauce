@@ -2465,10 +2465,11 @@ var selRoof='Gloss Black', selWall='County Charcoal', selTrim='Gloss Black', sel
 
 // Walk door types
 var WALK_DOOR_TYPES = ['WHITE 3/0 PLYCO ALUMINUM FRAME','BLACK 3/0 PLYCO ALUMINUM FRAME','WHITE PLYCO 99 4/0 ALUM FRAME','WHITE 6/0 FRENCH ALUM FRAME','3/0 PLYCO 1/2 GLASS L.H.','BLACK 3/0 -1/2 GLASS PLYCO LH','3/0 9-LITE PLYCO RH','BLACK 3/0 9-LITE PLYCO LH','3/0 6 PANEL LH SMOOTH FIBERGLASS','3/0 1/2 GLASS LH SMOOTH FIBERGLASS','3/0 9 LITE LH SMOOTH FIBERGLASS','6/0 1/2 GLASS NO GRIDS LH','6/0 FULL VIEW NO GRIDS LH','6/0 FRENCH FULL BLINDS RH','CENTRAL WOODWORKS 3/0 MAHOGANY 3/4 GLASS 4-LITE LH','TEXTURED FIBERGLASS 4-LITE SDL RH BRONZE'];
-var WINDOW_TYPES = ['VW23','VW33','VW34','VW35','VW36','4x2','VWBL33','VWBL34','VWBL35','VWBL36','VWT34','VWT35','VWBLT35','VW34 - Double Hung','VW35 - Double Hung','3056.0','3056 TWIN','3030 TEMPERED','3060 DH BL','3056 DH BL','3036 DH BL','2850 DH BL','6036 Slider','3036 Fixed Trapezoid','2/8 x 6/10 Fixed Trapezoid','5x5 Picture','5x5 slider','4x2 Picture BL'];
+var WINDOW_TYPES = ['VW23','VW33','VW34','VW35','VW36','VWC33','VWC34','VWC35','4x2','VWBL33','VWBL34','VWBL35','VWBL36','VWT34','VWT35','VWBLT35','VW34 - Double Hung','VW35 - Double Hung','3056.0','3056 TWIN','3030 TEMPERED','3060 DH BL','3056 DH BL','3036 DH BL','2850 DH BL','6036 Slider','3036 Fixed Trapezoid','2/8 x 6/10 Fixed Trapezoid','5x5 Picture','5x5 slider','4x2 Picture BL'];
 
 // Infer frame color from window type when not explicitly set
 function _winFrameColor(type, explicit) {
+  if (type && ('' + type).indexOf('VWC') === 0) return 'Clay'; // Clay vinyl windows
   if (explicit && explicit !== 'White') return explicit; // trust explicit non-white
   if (type && (type.startsWith('VWBL') || type.startsWith('VWBLT') || 
       type.indexOf('BL') !== -1 && type.indexOf('BL') < 6)) return 'Black';
@@ -2489,6 +2490,7 @@ function wdWidth(t) {
   return 3;
 }
 function winDims(t) {
+  if (t==='VWC'||t==='VWC35') return {w:3,h:5}; // Clay 3/0 x 5/0 (SKU VWC on export)
   if (t==='5x5 Casement') return {w:5,h:5,casement:true};
   if (t==='5x7 Casement') return {w:5,h:7,casement:true};
   if (t==='4x2') return {w:4,h:2};
@@ -12042,6 +12044,11 @@ function applyVoiceQuote(parsed, overlay) {
             const isG = (wi.wall === 'front' || wi.wall === 'back');
             const wLen = isG ? Q.w : Q.l;
             const dims = winDims(wi.type);
+            // Resolve frame color (Clay vinyl windows keyed off the VWC* type, not the
+            // White/Black button). Clay renders a tan frame, no grid, single-hung rail.
+            const _fcR = (typeof _winFrameColor === 'function') ? _winFrameColor(wi.type, wi.frameColor) : wi.frameColor;
+            const _isClayW = (_fcR === 'Clay');
+            const _frameHex = _fcR === 'Black' ? 0x1a1a1a : (_isClayW ? 0xc9b18c : 0xf5f5f5);
             const ww = dims.w * Sc, wh = dims.h * Sc;
             const sillY = (wi.sillH || 4) * Sc;
             const center = ((-wLen / 2) + (wi.offset || 0) + dims.w / 2) * Sc;
@@ -12070,7 +12077,7 @@ function applyVoiceQuote(parsed, overlay) {
                 const zo = wi.wall === 'front' ? -0.016 : 0.016;
                 // Frame — color driven by wi.frameColor
                 const framePad = 0.02;
-                const mWF1 = new THREE.MeshBasicMaterial({ color: (wi.frameColor==='Black'?0x1a1a1a:0xf5f5f5), side: THREE.DoubleSide });
+                const mWF1 = new THREE.MeshBasicMaterial({ color: _frameHex, side: THREE.DoubleSide });
                 const frameMesh = new THREE.Mesh(new THREE.PlaneGeometry(ww + framePad * 2, wh + framePad * 2), mWF1);
                 frameMesh.position.set(center, sillY + wh / 2, zP + zo * 0.9);
                 if (wi.wall === 'back') frameMesh.rotation.y = Math.PI;
@@ -12083,21 +12090,26 @@ function applyVoiceQuote(parsed, overlay) {
                 // Frame outline + cross
                 const hw = ww / 2, fz = zP + zo * 1.2;
                 grps.doors.add(mkL([new THREE.Vector3(center - hw, sillY, fz), new THREE.Vector3(center - hw, sillY + wh, fz), new THREE.Vector3(center + hw, sillY + wh, fz), new THREE.Vector3(center + hw, sillY, fz), new THREE.Vector3(center - hw, sillY, fz)], mTrimLine));
-                // Dividers — casement: vertical only; others: cross — only if grids enabled
-                if (wi.grids !== false) {
+                // Dividers. Clay = single hung: one horizontal meeting rail, no grid.
+                // Others: casement = vertical only; standard = cross — only if grids on.
+                if (_isClayW) {
+                var mWDc = new THREE.LineBasicMaterial({ color: 0xc9b18c, transparent: true, opacity: .8 });
+                grps.doors.add(mkL([new THREE.Vector3(center - hw, sillY + wh / 2, fz), new THREE.Vector3(center + hw, sillY + wh / 2, fz)], mWDc));
+                } else if (wi.grids !== false) {
                 var mWD1 = new THREE.LineBasicMaterial({ color: (wi.frameColor==='Black'?0x1a1a1a:0xffffff), transparent: true, opacity: .7 });
                 var isCasement = winDims(wi.type).casement;
                 if (!isCasement) grps.doors.add(mkL([new THREE.Vector3(center - hw, sillY + wh / 2, fz), new THREE.Vector3(center + hw, sillY + wh / 2, fz)], mWD1));
                 grps.doors.add(mkL([new THREE.Vector3(center, sillY, fz), new THREE.Vector3(center, sillY + wh, fz)], mWD1));
                 }
-                // Trim-colored sill
+                // Sill — clay windows get a clay sill so the bottom edge isn't trim-black
                 const sillD = 0.03;
-                grps.doors.add(mkQ([center-hw-framePad, sillY-sillD, zP+zo*1.5, center+hw+framePad, sillY-sillD, zP+zo*1.5, center+hw+framePad, sillY, zP+zo*1.5, center-hw-framePad, sillY, zP+zo*1.5], mTrimPanel));
+                const mSillW = _isClayW ? new THREE.MeshBasicMaterial({ color: 0xc9b18c, side: THREE.DoubleSide }) : mTrimPanel;
+                grps.doors.add(mkQ([center-hw-framePad, sillY-sillD, zP+zo*1.5, center+hw+framePad, sillY-sillD, zP+zo*1.5, center+hw+framePad, sillY, zP+zo*1.5, center-hw-framePad, sillY, zP+zo*1.5], mSillW));
             } else {
                 const xo = wi.wall === 'left' ? -0.016 : 0.016;
                 const framePad = 0.02;
                 // Frame
-                const mWF2 = new THREE.MeshBasicMaterial({ color: (wi.frameColor==='Black'?0x1a1a1a:0xf5f5f5), side: THREE.DoubleSide });
+                const mWF2 = new THREE.MeshBasicMaterial({ color: _frameHex, side: THREE.DoubleSide });
                 const frameMesh = new THREE.Mesh(new THREE.PlaneGeometry(ww + framePad * 2, wh + framePad * 2), mWF2);
                 frameMesh.position.set(xP + xo * 0.9, sillY + wh / 2, center);
                 frameMesh.rotation.y = wi.wall === 'left' ? Math.PI / 2 : -Math.PI / 2;
@@ -12110,8 +12122,11 @@ function applyVoiceQuote(parsed, overlay) {
                 // Frame outline
                 const hw = ww / 2, fx = xP + xo * 1.2;
                 grps.doors.add(mkL([new THREE.Vector3(fx, sillY, center - hw), new THREE.Vector3(fx, sillY + wh, center - hw), new THREE.Vector3(fx, sillY + wh, center + hw), new THREE.Vector3(fx, sillY, center + hw), new THREE.Vector3(fx, sillY, center - hw)], mTrimLine));
-                // Cross dividers — only if grids enabled
-                if (wi.grids !== false) {
+                // Dividers. Clay = single hung: one horizontal meeting rail, no grid.
+                if (_isClayW) {
+                var mWDc2 = new THREE.LineBasicMaterial({ color: 0xc9b18c, transparent: true, opacity: .8 });
+                grps.doors.add(mkL([new THREE.Vector3(fx, sillY + wh/2, center - hw), new THREE.Vector3(fx, sillY + wh/2, center + hw)], mWDc2));
+                } else if (wi.grids !== false) {
                 var mWD2 = new THREE.LineBasicMaterial({ color: (wi.frameColor==='Black'?0x1a1a1a:0xffffff), transparent: true, opacity: .7 });
                 var isCasement2 = winDims(wi.type).casement;
                 if (!isCasement2) grps.doors.add(mkL([new THREE.Vector3(fx, sillY + wh/2, center - hw), new THREE.Vector3(fx, sillY + wh/2, center + hw)], mWD2));
@@ -14201,7 +14216,8 @@ function applyVoiceQuote(parsed, overlay) {
                             // Frame + glass matching main building window rendering
                             const framePad = 0.02;
                             const czW = (opZ1c + opZ2c) / 2;
-                            const frameCol = op.frameColor === 'Black' ? 0x1a1a1a : 0xf5f5f5;
+                            const _isClayOp = (op.frameColor === 'Clay');
+                            const frameCol = op.frameColor === 'Black' ? 0x1a1a1a : (_isClayOp ? 0xc9b18c : 0xf5f5f5);
                             const mWF = new THREE.MeshBasicMaterial({ color: frameCol, side: THREE.DoubleSide });
                             const frameMesh = new THREE.Mesh(new THREE.PlaneGeometry(opW + framePad*2, opH + framePad*2), mWF);
                             frameMesh.position.set(oX + s*0.013, sillY + opH/2, czW);
@@ -14214,13 +14230,18 @@ function applyVoiceQuote(parsed, overlay) {
                             // Outline + dividers — same logic as main building
                             const fx = oX + s*0.019;
                             grps.doors.add(mkL([new THREE.Vector3(fx, sillY, opZ1c), new THREE.Vector3(fx, winTop, opZ1c), new THREE.Vector3(fx, winTop, opZ2c), new THREE.Vector3(fx, sillY, opZ2c), new THREE.Vector3(fx, sillY, opZ1c)], mTrimLineShed));
-                            if (op.grids !== false) {
+                            if (_isClayOp) {
+                                // Clay = single hung: one horizontal meeting rail, no grid
+                                const mWDivC = new THREE.LineBasicMaterial({ color: 0xc9b18c, transparent: true, opacity: 0.8 });
+                                grps.doors.add(mkL([new THREE.Vector3(fx, sillY + opH/2, opZ1c), new THREE.Vector3(fx, sillY + opH/2, opZ2c)], mWDivC));
+                            } else if (op.grids !== false) {
                                 const mWDiv = new THREE.LineBasicMaterial({ color: frameCol, transparent: true, opacity: 0.7 });
                                 if (!op.casement) grps.doors.add(mkL([new THREE.Vector3(fx, sillY + opH/2, opZ1c), new THREE.Vector3(fx, sillY + opH/2, opZ2c)], mWDiv));
                                 grps.doors.add(mkL([new THREE.Vector3(fx, sillY, czW), new THREE.Vector3(fx, winTop, czW)], mWDiv));
                             }
-                            // Sill
-                            grps.doors.add(mkQ([oX+s*0.022, sillY-0.025, opZ1c-0.01, oX+s*0.022, sillY-0.025, opZ2c+0.01, oX+s*0.022, sillY, opZ2c+0.01, oX+s*0.022, sillY, opZ1c-0.01], mTrimShed));
+                            // Sill — clay windows get a clay sill (not trim-black)
+                            const mSillOp = _isClayOp ? new THREE.MeshBasicMaterial({ color: 0xc9b18c, side: THREE.DoubleSide }) : mTrimShed;
+                            grps.doors.add(mkQ([oX+s*0.022, sillY-0.025, opZ1c-0.01, oX+s*0.022, sillY-0.025, opZ2c+0.01, oX+s*0.022, sillY, opZ2c+0.01, oX+s*0.022, sillY, opZ1c-0.01], mSillOp));
                             curZ = opZ2c;
                             return;
                         }
@@ -31497,7 +31518,8 @@ window.SauceMaterials.calcWindows = function() {
   var groups = {};
   var actualWins = 0;
   var windowSkuMap = {
-    '4x2': 'VW42'
+    '4x2': 'VW42',
+    'VWC35': 'VWC'   // 3x5 clay shows as VWC35, exports as custom SKU VWC
   };
   windows.forEach(function(w) {
     if (w.framedOpening) return; // framed opening — no window SKU or tape
@@ -31508,14 +31530,20 @@ window.SauceMaterials.calcWindows = function() {
 
   if (!actualWins) return [];
 
+  // Clay vinyl windows price off Lain's SKU chart. VWC is the custom SKU (inventory
+  // cost 0) that must always price at $460; VWC33/VWC34 pinned to chart cost too so
+  // pricing is correct whether or not inventory carries them.
+  var _CLAY_WIN_PRICE = { 'VWC': 460, 'VWC33': 176.65, 'VWC34': 204.78 };
   var results = Object.keys(groups).sort().map(function(sku) {
-    return {
+    var _it = {
       category:    'Windows',
-      description: 'Window',
+      description: (_CLAY_WIN_PRICE[sku] != null ? 'Clay Window' : 'Window'),
       sku:         sku,
       quantity:    groups[sku],
-      detail:      'window'
+      detail:      (_CLAY_WIN_PRICE[sku] != null ? 'clay  |  single hung  |  no grid' : 'window')
     };
+    if (_CLAY_WIN_PRICE[sku] != null) _it._ovUnit = _CLAY_WIN_PRICE[sku];
+    return _it;
   });
 
   results.push({
@@ -31632,16 +31660,20 @@ window.SauceMaterials.calcShedOpenings = function() {
     });
 
     // ── Windows — type IS the SKU, same as main calcWindows ──
+    var _CLAY_WIN_PRICE_S = { 'VWC': 460, 'VWC33': 176.65, 'VWC34': 204.78 };
     (sc.windows||[]).forEach(function(win) {
       if (win.framedOpening) return;
       var sku = win.type || 'VW33';
-      results.push({
+      if (sku === 'VWC35') sku = 'VWC'; // 3x5 clay exports as custom SKU VWC
+      var _wIt = {
         category:    'Windows',
-        description: 'Shed Window',
+        description: (_CLAY_WIN_PRICE_S[sku] != null ? 'Shed Clay Window' : 'Shed Window'),
         sku:         sku,
         quantity:    1,
         detail:      sku + '  |  shed'
-      });
+      };
+      if (_CLAY_WIN_PRICE_S[sku] != null) _wIt._ovUnit = _CLAY_WIN_PRICE_S[sku];
+      results.push(_wIt);
       totalWindows++;
     });
   });
