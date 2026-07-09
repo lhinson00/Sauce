@@ -10408,27 +10408,29 @@ function applyVoiceQuote(parsed, overlay) {
         const mBracket = new THREE.MeshBasicMaterial({ color: 0x8A9098, side: THREE.DoubleSide });
         const mBracketDark = new THREE.MeshBasicMaterial({ color: 0x5A6268 });
 
-        // Helper: draw bracket at (x, z) on a given group, sitting on slab at slabY
-        function addBracket(x, z, group, slabY) {
+        // Helper: draw bracket at (x, z) on a given group, sitting on slab at slabY.
+        // _hideBW: if true, tag meshes so they hide with the enclosed post they belong to.
+        function addBracket(x, z, group, slabY, _hideBW) {
             const sy = slabY !== undefined ? slabY : slabH;
+            function _add(m){ if(_hideBW){ m.userData = m.userData || {}; m.userData.hideBehindWall = true; } group.add(m); return m; }
             // Wide base plate
             const plate = new THREE.Mesh(new THREE.BoxGeometry(ps * 2.8, 0.008, ps * 2.8), mBracket);
             plate.position.set(x, sy + 0.004, z);
-            group.add(plate);
+            _add(plate);
             // Two flanges on Z axis (front/back of post — visible from the side)
             const flange = new THREE.BoxGeometry(ps * 0.12, ps * 0.9, ps);
             const fl1 = new THREE.Mesh(flange, mBracketDark);
             fl1.position.set(x - ps * 0.6, sy + ps * 0.45, z);
-            group.add(fl1);
+            _add(fl1);
             const fl2 = new THREE.Mesh(flange, mBracketDark);
             fl2.position.set(x + ps * 0.6, sy + ps * 0.45, z);
-            group.add(fl2);
+            _add(fl2);
             // Anchor bolt stubs
             const boltGeo = new THREE.BoxGeometry(0.006, 0.018, 0.006);
             [[-ps*0.7,-ps*0.7],[ps*0.7,-ps*0.7],[-ps*0.7,ps*0.7],[ps*0.7,ps*0.7]].forEach(function(off) {
                 const bolt = new THREE.Mesh(boltGeo, mBracketDark);
                 bolt.position.set(x + off[0], sy - 0.009, z + off[1]);
-                group.add(bolt);
+                _add(bolt);
             });
         }
 
@@ -10737,7 +10739,7 @@ function applyVoiceQuote(parsed, overlay) {
             const shedPostBase = _isMono ? slabH : 0;
             const shedPostH = _isMono ? Math.max(0.01, shedShClamped - slabH) : shedShClamped;
 
-            function addPostLineAligned(oX, oZ, isAlongZ, shedLength, wallPS, postH, customCenterOff, postSzOverride, postMatOverride) {
+            function addPostLineAligned(oX, oZ, isAlongZ, shedLength, wallPS, postH, customCenterOff, postSzOverride, postMatOverride, enclTest) {
                 // Default to shedPostH (already slab-adjusted) so posts don't overshoot roofline
                 const h = (postH !== undefined && postH !== null) ? postH : shedPostH;
                 const hAdj = Math.max(0.01, h);
@@ -10748,11 +10750,15 @@ function applyVoiceQuote(parsed, overlay) {
                 for (let i = 0; i <= numBays; i++) {
                     const ft = i * (shedLength / numBays);
                     const pos = (-shedLength / 2 + ft) * Sc;
+                    const _lz = pos + cOff; // coordinate along the shed length axis
                     const p = new THREE.Mesh(new THREE.BoxGeometry(_pSz, hAdj, _pSz), _pMat);
-                    if (isAlongZ) { p.position.set(oX, shedPostBase + hAdj / 2, pos + cOff); }
-                    else          { p.position.set(pos + cOff, shedPostBase + hAdj / 2, oZ); }
-                    p.castShadow = true; grps.posts.add(p);
-                    if (_isMono) { if (isAlongZ) addBracket(oX, pos + cOff, grps.posts, slabH); else addBracket(pos + cOff, oZ, grps.posts, slabH); }
+                    if (isAlongZ) { p.position.set(oX, shedPostBase + hAdj / 2, _lz); }
+                    else          { p.position.set(_lz, shedPostBase + hAdj / 2, oZ); }
+                    p.castShadow = true;
+                    var _grpPL = grps.posts;
+                    if (enclTest && enclTest(_lz)) { p.userData = p.userData || {}; p.userData.hideBehindWall = true; _grpPL = grps.mainPosts; }
+                    _grpPL.add(p);
+                    if (_isMono) { if (isAlongZ) addBracket(oX, _lz, _grpPL, slabH, _grpPL===grps.mainPosts); else addBracket(_lz, oZ, _grpPL, slabH, _grpPL===grps.mainPosts); }
                 }
             }
 
@@ -11012,6 +11018,23 @@ function applyVoiceQuote(parsed, overlay) {
                     const _enclFt = (sc.encl === 'enclosed' && sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt * Sc : null;
                     const _enclFrom = sc.enclFrom || 'start';
                     const _ew = sc.enclWalls || [];
+                    // Universal shed-post routing (any attachment wall): a post whose coordinate
+                    // along the shed LENGTH axis (Z for eave sheds, X for gable-attached) lands in
+                    // the enclosed span goes to mainPosts tagged hideBehindWall (hidden until
+                    // "Show Posts"); posts in the open/roof-only span go to posts (always shown).
+                    function _shedEnclSpan(lz) {
+                        if (sc.encl !== 'enclosed') return false;
+                        if (_enclFt == null) return true;
+                        if (_enclFrom === 'start') return (lz <= (-ssl/2 + shedCenterOff) + _enclFt + 0.01);
+                        return (lz >= (ssl/2 + shedCenterOff) - _enclFt - 0.01);
+                    }
+                    function _shedPostGrp(lz) { return _shedEnclSpan(lz) ? grps.mainPosts : grps.posts; }
+                    function _shedAddPost(mesh, lz) {
+                        var _t = _shedPostGrp(lz);
+                        if (_t === grps.mainPosts) { mesh.userData = mesh.userData || {}; mesh.userData.hideBehindWall = true; }
+                        _t.add(mesh);
+                        return _t;
+                    }
                     if (sc.wall === 'left' || sc.wall === 'right') {
                         const oX = sc.wall === 'left' ? -sw/2 - ssw : sw/2 + ssw;
                         const aX = sc.wall === 'left' ? -sw/2 : sw/2;
@@ -11030,25 +11053,28 @@ function applyVoiceQuote(parsed, overlay) {
                                 const zPos = (-ssl/2 + ft * Sc) + shedCenterOff;
                                 const p = new THREE.Mesh(new THREE.BoxGeometry(_postSzEW, shedPostH, _postSzEW), _cyMat8ew);
                                 p.position.set(oX, shedPostBase + shedPostH/2, zPos); p.castShadow = true;
-                                grps.posts.add(p);
-                                if (_isMono) addBracket(oX, zPos, grps.posts, slabH);
+                                var _pgEW = _shedAddPost(p, zPos);
+                                if (_isMono) addBracket(oX, zPos, _pgEW, slabH, _pgEW === grps.mainPosts);
                             }
                         // Gable end posts — corner post at oX + intermediate posts across shed width
                         const xDir = sc.wall === 'left' ? -1 : 1;
                         const numGableBays = Math.max(1, Math.floor(sc.w / attachPS));
                         function addGableEndRow(gz) {
+                            var _rg = _shedPostGrp(gz);
+                            var _rgHide = (_rg === grps.mainPosts);
+                            function _addG(mesh){ if (_rgHide) { mesh.userData = mesh.userData || {}; mesh.userData.hideBehindWall = true; } _rg.add(mesh); }
                             // Corner post at outer edge (oX side)
                             const gp0 = new THREE.Mesh(new THREE.BoxGeometry(ps, shedPostH, ps), _cyMat8ew);
                             gp0.position.set(oX, shedPostBase + shedPostH/2, gz); gp0.castShadow = true;
-                            grps.posts.add(gp0);
+                            _addG(gp0);
                             // Intermediate posts across the shed width
                             for (let gi = 1; gi < numGableBays; gi++) {
                                 const gx = aX + xDir * (gi * sc.w / numGableBays) * Sc;
                                 const _interH = Math.max(0.01, (attachHP - (gi/numGableBays)*(attachHP-shedShClamped)) - (_isMono ? slabH : 0));
                                 const gp = new THREE.Mesh(new THREE.BoxGeometry(ps, _interH, ps), _cyMat8ew);
                                 gp.position.set(gx, shedPostBase + _interH/2, gz); gp.castShadow = true;
-                                grps.posts.add(gp);
-                                if (_isMono) addBracket(gx, gz, grps.posts, slabH);
+                                _addG(gp);
+                                if (_isMono) addBracket(gx, gz, _rg, slabH, _rgHide);
                             }
                             // Corner post at attach wall (aX side) — only if not already placed
                             const cornerKey = Math.round(aX*1000) + ',' + Math.round(gz*1000);
@@ -11056,8 +11082,8 @@ function applyVoiceQuote(parsed, overlay) {
                                 const _attachPostH = Math.max(0.01, attachHP - (_isMono ? slabH : 0));
                                 const gpA = new THREE.Mesh(new THREE.BoxGeometry(ps, _attachPostH, ps), _cyMat8ew);
                                 gpA.position.set(aX, shedPostBase + _attachPostH/2, gz); gpA.castShadow = true;
-                                grps.posts.add(gpA);
-                                if (_isMono) addBracket(aX, gz, grps.posts, slabH);
+                                _addG(gpA);
+                                if (_isMono) addBracket(aX, gz, _rg, slabH, _rgHide);
                             }
                         }
                         var _shedHasWallsEW = (sc.encl !== 'open' && sc.encl !== 'roofonly'); // open/roofonly = no gable infill posts
@@ -11081,31 +11107,34 @@ function applyVoiceQuote(parsed, overlay) {
                         const _shedWallOpenFB  = _attachWallCfgFB && _attachWallCfgFB.encl === 'open';
                         const _mPshedFB = _shedWallOpenFB ? mPopen : mPencl;
                         const _cyMatFBP = _cyFB ? new THREE.MeshLambertMaterial({ color: 0x8B6914 }) : _mPshedFB;
-                        addPostLineAligned(0, oZ, false, sc.l, attachPS, undefined, undefined, _cyFB ? _ps8FB : undefined, _cyMatFBP);
+                        addPostLineAligned(0, oZ, false, sc.l, attachPS, undefined, undefined, _cyFB ? _ps8FB : undefined, _cyMatFBP, _shedEnclSpan);
                         // Gable end posts for front/back attached sheds
                         const zDir = sc.wall === 'front' ? -1 : 1;
                         const numGableBaysZ = Math.max(1, Math.floor(sc.w / attachPS));
                         function addGableEndRowZ(gx) {
                             const _pszGEB = _cyFB ? _ps8FB : ps;
                             const _pmatGEB = _cyFB ? _cyMatFBP : mP;
+                            var _rgZ = _shedPostGrp(gx); // length axis is X for gable-attached sheds
+                            var _rgZHide = (_rgZ === grps.mainPosts);
+                            function _addGZ(mesh){ if (_rgZHide) { mesh.userData = mesh.userData || {}; mesh.userData.hideBehindWall = true; } _rgZ.add(mesh); }
                             const gp0 = new THREE.Mesh(new THREE.BoxGeometry(_pszGEB, shedPostH, _pszGEB), _pmatGEB);
                             gp0.position.set(gx, shedPostBase + shedPostH/2, oZ); gp0.castShadow = true;
-                            grps.posts.add(gp0);
+                            _addGZ(gp0);
                             for (let gi = 1; gi < numGableBaysZ; gi++) {
                                 const gz = aZ + zDir * (gi * sc.w / numGableBaysZ) * Sc;
                                 const _interHZ = Math.max(0.01, (attachHP - (gi/numGableBaysZ)*(attachHP-shedShClamped)) - (_isMono ? slabH : 0));
                                 const gp = new THREE.Mesh(new THREE.BoxGeometry(ps, _interHZ, ps), _pmatGEB);
                                 gp.position.set(gx, shedPostBase + _interHZ/2, gz); gp.castShadow = true;
-                                grps.posts.add(gp);
-                                if (_isMono) addBracket(gx, gz, grps.posts, slabH);
+                                _addGZ(gp);
+                                if (_isMono) addBracket(gx, gz, _rgZ, slabH, _rgZHide);
                             }
                             const cornerKey = Math.round(gx*1000) + ',' + Math.round(aZ*1000);
                             if (!postPositions.has(cornerKey)) {
                                 const _attachPostHZ = Math.max(0.01, attachHP - (_isMono ? slabH : 0));
                                 const gpA = new THREE.Mesh(new THREE.BoxGeometry(ps, _attachPostHZ, ps), _pmatGEB);
                                 gpA.position.set(gx, shedPostBase + _attachPostHZ/2, aZ); gpA.castShadow = true;
-                                grps.posts.add(gpA);
-                                if (_isMono) addBracket(gx, aZ, grps.posts, slabH);
+                                _addGZ(gpA);
+                                if (_isMono) addBracket(gx, aZ, _rgZ, slabH, _rgZHide);
                             }
                         }
                         var _shedHasWallsFB = (sc.encl !== 'open' && sc.encl !== 'roofonly'); // open/roofonly = no gable infill posts
