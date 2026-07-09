@@ -36874,26 +36874,37 @@ window.openPriceManager = function() {
 // BUILDING KITS
 // ====================================================================
 
-// Pull the preview image (og:image) from a Summertown package page URL. Resolved once at
-// save time; the resolved image URL is stored, so displaying it later needs no fetch.
-window.fetchPackagePreview = async function(url) {
+// Read a package page's og:image. Browsers can't read summertownmetals.com directly (no
+// CORS), so try several public proxies; first that returns the meta tag wins.
+window.resolvePackageImage = async function(url) {
   if (!url) return '';
-  // 1) microlink returns the page's og:image as JSON (CORS-enabled)
-  try {
-    var r = await fetch('https://api.microlink.io/?url=' + encodeURIComponent(url));
-    if (r.ok) { var d = await r.json(); var img = d && d.data && d.data.image && d.data.image.url; if (img) return img; }
-  } catch(e) {}
-  // 2) fallback: fetch the HTML through a CORS proxy and read og:image
-  try {
-    var r2 = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url));
-    if (r2.ok) {
-      var html = await r2.text();
+  var proxies = [
+    'https://api.allorigins.win/raw?url=',
+    'https://api.codetabs.com/v1/proxy/?quest=',
+    'https://corsproxy.io/?url='
+  ];
+  for (var i = 0; i < proxies.length; i++) {
+    try {
+      var r = await fetch(proxies[i] + encodeURIComponent(url));
+      if (!r.ok) continue;
+      var html = await r.text();
       var m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
-           || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
-      if (m && m[1]) return m[1];
-    }
+           || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i)
+           || html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i);
+      if (m && m[1]) return m[1].replace(/&amp;/g, '&');
+    } catch(e) {}
+  }
+  // last resort: microlink JSON API
+  try {
+    var rm = await fetch('https://api.microlink.io/?url=' + encodeURIComponent(url));
+    if (rm.ok) { var d = await rm.json(); var im = d && d.data && d.data.image && d.data.image.url; if (im) return im; }
   } catch(e) {}
   return '';
+};
+window.fetchPackagePreview = window.resolvePackageImage; // save-time alias
+// Cache a resolved preview image onto a kit (preview_image only)
+window.sbSetKitPreview = async function(kitId, img) {
+  try { return await sbFetch('kits?id=eq.' + encodeURIComponent(kitId), { method: 'PATCH', body: JSON.stringify({ preview_image: img }) }); } catch(e) { return null; }
 };
 window.closeKitsModal = function() {
   var el = document.getElementById('sauceKitsModal');
@@ -37079,12 +37090,19 @@ window.openKitsModal = function() {
           if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(url).then(done).catch(function(){ window.prompt('Copy this preview link:', url); }); }
           else { window.prompt('Copy this preview link:', url); }
         };
-        if (kit.previewImage) {
+        if (kit.previewImage || kit.packageUrl) {
           var thumb = document.createElement('img');
-          thumb.src = kit.previewImage;
           thumb.alt = '';
           thumb.style.cssText = 'width:56px;height:56px;object-fit:cover;border-radius:6px;flex:0 0 auto;background:#0f172a;';
           thumb.onerror = function(){ thumb.style.display='none'; };
+          if (kit.previewImage) {
+            thumb.src = kit.previewImage;
+          } else {
+            thumb.style.display = 'none';
+            window.resolvePackageImage(kit.packageUrl).then(function(img){
+              if (img) { thumb.src = img; thumb.style.display = ''; if (window.sbSetKitPreview) window.sbSetKitPreview(kit.kitId, img); }
+            });
+          }
           row.appendChild(thumb);
         }
         row.appendChild(info); row.appendChild(loadBtn); row.appendChild(linkBtn);
