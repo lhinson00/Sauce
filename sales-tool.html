@@ -19070,20 +19070,20 @@ async function sbFetch(path, opts) {
 
 // Building kits — stored in Supabase (kits table), never GAS
 async function sbGetKits() {
-  var rows = await sbFetch('kits?select=id,name,description,config_encoded,created_at&order=created_at.desc', { method: 'GET' });
+  var rows = await sbFetch('kits?select=id,name,description,config_encoded,package_url,preview_image,created_at&order=created_at.desc', { method: 'GET' });
   return (rows || []).map(function(r){
-    return { kitId: r.id, name: r.name, description: r.description || '', date: (r.created_at||'').substring(0,10), configEncoded: r.config_encoded || '' };
+    return { kitId: r.id, name: r.name, description: r.description || '', date: (r.created_at||'').substring(0,10), configEncoded: r.config_encoded || '', packageUrl: r.package_url || '', previewImage: r.preview_image || '' };
   });
 }
-async function sbSaveKit(name, description, configEncoded) {
+async function sbSaveKit(name, description, configEncoded, packageUrl, previewImage) {
   var id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('kit_' + Date.now() + '_' + Math.random().toString(36).slice(2,8));
-  var row = { id: id, name: name, description: description || '', config_encoded: configEncoded || '', username: (window.currentUser||{}).username || 'lain.hinson', created_at: new Date().toISOString() };
+  var row = { id: id, name: name, description: description || '', config_encoded: configEncoded || '', package_url: packageUrl || '', preview_image: previewImage || '', username: (window.currentUser||{}).username || 'lain.hinson', created_at: new Date().toISOString() };
   var res = await sbFetch('kits', { method: 'POST', body: JSON.stringify(row) });
   return res === null ? null : ((res && res[0]) ? res[0] : row);
 }
-async function sbUpdateKit(kitId, name, description, configEncoded) {
+async function sbUpdateKit(kitId, name, description, configEncoded, packageUrl, previewImage) {
   return await sbFetch('kits?id=eq.' + encodeURIComponent(kitId), { method: 'PATCH',
-    body: JSON.stringify({ name: name, description: description || '', config_encoded: configEncoded || '' }) });
+    body: JSON.stringify({ name: name, description: description || '', config_encoded: configEncoded || '', package_url: packageUrl || '', preview_image: previewImage || '' }) });
 }
 async function sbDeleteKit(kitId) {
   return await sbFetch('kits?id=eq.' + encodeURIComponent(kitId), { method: 'DELETE',
@@ -36914,7 +36914,13 @@ window.openKitsModal = function() {
     var descInput = document.createElement('input');
     descInput.placeholder = 'Description (optional)';
     descInput.style.cssText = nameInput.style.cssText;
-    if (_editing) { nameInput.value = _editing.name || ''; descInput.value = _editing.description || ''; }
+    var packageInput = document.createElement('input');
+    packageInput.placeholder = 'Summertown package URL (optional)';
+    packageInput.style.cssText = nameInput.style.cssText;
+    var previewInput = document.createElement('input');
+    previewInput.placeholder = 'Preview image URL (optional)';
+    previewInput.style.cssText = nameInput.style.cssText;
+    if (_editing) { nameInput.value = _editing.name || ''; descInput.value = _editing.description || ''; packageInput.value = _editing.packageUrl || ''; previewInput.value = _editing.previewImage || ''; }
     var saveBtn = document.createElement('button');
     saveBtn.textContent = _editing ? 'Update Kit' : 'Save Kit';
     saveBtn.style.cssText = 'padding:8px;border-radius:8px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.15);color:#FF8200;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
@@ -36933,9 +36939,11 @@ window.openKitsModal = function() {
       saveStatus.textContent = _editing ? 'Updating...' : 'Saving...'; saveStatus.style.color='#888';
       safeEncodeCompressed(window.serializeConfig ? serializeConfig() : {}).then(function(encoded) {
         var _desc = descInput.value.trim();
+        var _pkg = packageInput.value.trim();
+        var _prev = previewInput.value.trim();
         var _p = (_editing && _editing.kitId)
-          ? sbUpdateKit(_editing.kitId, name, _desc, encoded)
-          : sbSaveKit(name, _desc, encoded);
+          ? sbUpdateKit(_editing.kitId, name, _desc, encoded, _pkg, _prev)
+          : sbSaveKit(name, _desc, encoded, _pkg, _prev);
         _p.then(function(res){
           if (res !== null) {
             if (_editing && _editing.kitId) {
@@ -36945,7 +36953,7 @@ window.openKitsModal = function() {
             } else {
               saveStatus.textContent = '✓ Saved as "' + name + '"';
               saveStatus.style.color = '#4ade80';
-              nameInput.value = ''; descInput.value = '';
+              nameInput.value = ''; descInput.value = ''; packageInput.value = ''; previewInput.value = '';
             }
             loadKitsList(listWrap, isLain);
           } else {
@@ -36957,6 +36965,7 @@ window.openKitsModal = function() {
       });
     };
     saveWrap.appendChild(nameInput); saveWrap.appendChild(descInput);
+    saveWrap.appendChild(packageInput); saveWrap.appendChild(previewInput);
     saveWrap.appendChild(saveBtn); saveWrap.appendChild(saveStatus);
     if (cancelEdit) saveWrap.appendChild(cancelEdit);
     panel.appendChild(saveWrap);
@@ -36970,6 +36979,25 @@ window.openKitsModal = function() {
 
   var listWrap = document.createElement('div');
   listWrap.style.cssText = 'overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:6px;';
+  // Search bar — filters the kit rows by name/description
+  var kitSearch = document.createElement('input');
+  kitSearch.placeholder = 'Search kits by name or description...';
+  kitSearch.style.cssText = 'padding:7px 10px;border-radius:7px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;margin-bottom:2px;';
+  kitSearch.oninput = function() {
+    var term = kitSearch.value.toLowerCase().trim();
+    var rows = listWrap.querySelectorAll('[data-search]');
+    var anyVisible = false;
+    rows.forEach(function(r){
+      var show = !term || r.getAttribute('data-search').indexOf(term) > -1;
+      r.style.display = show ? '' : 'none';
+      if (show) anyVisible = true;
+    });
+    var nm = listWrap.querySelector('.kit-nomatch');
+    if (!anyVisible && rows.length) {
+      if (!nm) { nm = document.createElement('div'); nm.className = 'kit-nomatch'; nm.style.cssText = 'font-size:11px;color:#888;padding:8px 0;'; nm.textContent = 'No kits match your search.'; listWrap.appendChild(nm); }
+    } else if (nm) { nm.remove(); }
+  };
+  panel.appendChild(kitSearch);
   panel.appendChild(listWrap);
 
   function loadKitsList(wrap, lain) {
@@ -36984,6 +37012,7 @@ window.openKitsModal = function() {
       kits.forEach(function(kit) {
         var row = document.createElement('div');
         row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;background:#1e293b;border-radius:8px;';
+        row.setAttribute('data-search', ((kit.name||'') + ' ' + (kit.description||'')).toLowerCase());
         var info = document.createElement('div');
         info.style.cssText = 'flex:1;';
         var kitName = document.createElement('div');
@@ -37014,7 +37043,33 @@ window.openKitsModal = function() {
           }
         };
 
-        row.appendChild(info); row.appendChild(loadBtn);
+        var linkBtn = document.createElement('button');
+        linkBtn.textContent = 'Link';
+        linkBtn.title = 'Copy an online preview link to this kit';
+        linkBtn.style.cssText = 'padding:6px 10px;border-radius:6px;border:1px solid rgba(96,165,250,.4);background:rgba(96,165,250,.12);color:#93c5fd;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;';
+        linkBtn.onclick = function() {
+          var url = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + (kit.configEncoded || '');
+          var done = function(){ linkBtn.textContent = 'Copied!'; setTimeout(function(){ linkBtn.textContent = 'Link'; }, 1400); };
+          if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(url).then(done).catch(function(){ window.prompt('Copy this preview link:', url); }); }
+          else { window.prompt('Copy this preview link:', url); }
+        };
+        if (kit.previewImage) {
+          var thumb = document.createElement('img');
+          thumb.src = kit.previewImage;
+          thumb.alt = '';
+          thumb.style.cssText = 'width:44px;height:44px;object-fit:cover;border-radius:6px;flex:0 0 auto;background:#0f172a;';
+          thumb.onerror = function(){ thumb.style.display='none'; };
+          row.appendChild(thumb);
+        }
+        row.appendChild(info); row.appendChild(loadBtn); row.appendChild(linkBtn);
+        if (kit.packageUrl) {
+          var pkgBtn = document.createElement('button');
+          pkgBtn.textContent = 'Package';
+          pkgBtn.title = 'Open the Summertown package page';
+          pkgBtn.style.cssText = 'padding:6px 10px;border-radius:6px;border:1px solid rgba(74,222,128,.4);background:rgba(74,222,128,.12);color:#4ade80;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;';
+          pkgBtn.onclick = function(){ window.open(kit.packageUrl, '_blank', 'noopener'); };
+          row.appendChild(pkgBtn);
+        }
 
         if (lain) {
           var editBtn = document.createElement('button');
@@ -37027,7 +37082,7 @@ window.openKitsModal = function() {
                 if (cfg) {
                   restoreConfig(cfg);
                   window._savedQuoteId = null;
-                  window._kitEditing = { kitId: kit.kitId, name: kit.name, description: kit.description || '' };
+                  window._kitEditing = { kitId: kit.kitId, name: kit.name, description: kit.description || '', packageUrl: kit.packageUrl || '', previewImage: kit.previewImage || '' };
                   var statusEl = document.getElementById('saveQuoteStatus');
                   if (statusEl) { statusEl.textContent = 'Editing kit: ' + kit.name + ' — make your changes, then reopen Kits and press Update Kit.'; statusEl.style.display='block'; statusEl.style.color='#FF8200'; }
                 }
