@@ -36874,6 +36874,27 @@ window.openPriceManager = function() {
 // BUILDING KITS
 // ====================================================================
 
+// Pull the preview image (og:image) from a Summertown package page URL. Resolved once at
+// save time; the resolved image URL is stored, so displaying it later needs no fetch.
+window.fetchPackagePreview = async function(url) {
+  if (!url) return '';
+  // 1) microlink returns the page's og:image as JSON (CORS-enabled)
+  try {
+    var r = await fetch('https://api.microlink.io/?url=' + encodeURIComponent(url));
+    if (r.ok) { var d = await r.json(); var img = d && d.data && d.data.image && d.data.image.url; if (img) return img; }
+  } catch(e) {}
+  // 2) fallback: fetch the HTML through a CORS proxy and read og:image
+  try {
+    var r2 = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url));
+    if (r2.ok) {
+      var html = await r2.text();
+      var m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+           || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+      if (m && m[1]) return m[1];
+    }
+  } catch(e) {}
+  return '';
+};
 window.closeKitsModal = function() {
   var el = document.getElementById('sauceKitsModal');
   if (el) el.remove();
@@ -36918,9 +36939,12 @@ window.openKitsModal = function() {
     packageInput.placeholder = 'Summertown package URL (optional)';
     packageInput.style.cssText = nameInput.style.cssText;
     var previewInput = document.createElement('input');
-    previewInput.placeholder = 'Preview image URL (optional)';
+    previewInput.placeholder = 'Preview image URL override (optional — blank = use the package page photo)';
     previewInput.style.cssText = nameInput.style.cssText;
-    if (_editing) { nameInput.value = _editing.name || ''; descInput.value = _editing.description || ''; packageInput.value = _editing.packageUrl || ''; previewInput.value = _editing.previewImage || ''; }
+    if (_editing) {
+      nameInput.value = _editing.name || ''; descInput.value = _editing.description || ''; packageInput.value = _editing.packageUrl || '';
+      previewInput.value = ''; // blank override; the package page photo is (re-)pulled on save
+    }
     var saveBtn = document.createElement('button');
     saveBtn.textContent = _editing ? 'Update Kit' : 'Save Kit';
     saveBtn.style.cssText = 'padding:8px;border-radius:8px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.15);color:#FF8200;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
@@ -36937,10 +36961,12 @@ window.openKitsModal = function() {
       var name = nameInput.value.trim();
       if (!name) { saveStatus.textContent = 'Please enter a kit name.'; saveStatus.style.color='#ef4444'; return; }
       saveStatus.textContent = _editing ? 'Updating...' : 'Saving...'; saveStatus.style.color='#888';
-      safeEncodeCompressed(window.serializeConfig ? serializeConfig() : {}).then(function(encoded) {
+      safeEncodeCompressed(window.serializeConfig ? serializeConfig() : {}).then(async function(encoded) {
         var _desc = descInput.value.trim();
         var _pkg = packageInput.value.trim();
         var _prev = previewInput.value.trim();
+        if (!_prev && _pkg) { saveStatus.textContent = (_editing ? 'Updating' : 'Saving') + ' (fetching package image)...'; _prev = await window.fetchPackagePreview(_pkg); }
+        if (!_prev && _editing) { _prev = _editing.previewImage || ''; }
         var _p = (_editing && _editing.kitId)
           ? sbUpdateKit(_editing.kitId, name, _desc, encoded, _pkg, _prev)
           : sbSaveKit(name, _desc, encoded, _pkg, _prev);
@@ -37057,7 +37083,7 @@ window.openKitsModal = function() {
           var thumb = document.createElement('img');
           thumb.src = kit.previewImage;
           thumb.alt = '';
-          thumb.style.cssText = 'width:44px;height:44px;object-fit:cover;border-radius:6px;flex:0 0 auto;background:#0f172a;';
+          thumb.style.cssText = 'width:56px;height:56px;object-fit:cover;border-radius:6px;flex:0 0 auto;background:#0f172a;';
           thumb.onerror = function(){ thumb.style.display='none'; };
           row.appendChild(thumb);
         }
