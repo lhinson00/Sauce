@@ -19068,6 +19068,28 @@ async function sbFetch(path, opts) {
   } catch(e) { console.warn('[SB] fetch error:', e.message); return null; }
 }
 
+// Building kits — stored in Supabase (kits table), never GAS
+async function sbGetKits() {
+  var rows = await sbFetch('kits?select=id,name,description,config_encoded,created_at&order=created_at.desc', { method: 'GET' });
+  return (rows || []).map(function(r){
+    return { kitId: r.id, name: r.name, description: r.description || '', date: (r.created_at||'').substring(0,10), configEncoded: r.config_encoded || '' };
+  });
+}
+async function sbSaveKit(name, description, configEncoded) {
+  var id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('kit_' + Date.now() + '_' + Math.random().toString(36).slice(2,8));
+  var row = { id: id, name: name, description: description || '', config_encoded: configEncoded || '', username: (window.currentUser||{}).username || 'lain.hinson', created_at: new Date().toISOString() };
+  var res = await sbFetch('kits', { method: 'POST', body: JSON.stringify(row) });
+  return res === null ? null : ((res && res[0]) ? res[0] : row);
+}
+async function sbUpdateKit(kitId, name, description, configEncoded) {
+  return await sbFetch('kits?id=eq.' + encodeURIComponent(kitId), { method: 'PATCH',
+    body: JSON.stringify({ name: name, description: description || '', config_encoded: configEncoded || '' }) });
+}
+async function sbDeleteKit(kitId) {
+  return await sbFetch('kits?id=eq.' + encodeURIComponent(kitId), { method: 'DELETE',
+    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=representation' } });
+}
+
 // Upsert a quote row to Supabase
 async function sbSaveQuote(snap) {
   var row = {
@@ -36879,41 +36901,55 @@ window.openKitsModal = function() {
   hdr.appendChild(xBtn);
   panel.appendChild(hdr);
 
-  // Save as kit — lain only
+  // Save as kit / update an edited kit — lain only
   if (isLain) {
+    var _editing = window._kitEditing || null;
     var saveWrap = document.createElement('div');
     saveWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;padding:12px;background:rgba(255,130,0,.06);border:1px solid rgba(255,130,0,.2);border-radius:10px;';
-    saveWrap.innerHTML = '<div style="font-size:10px;font-weight:700;color:rgba(255,130,0,.8);text-transform:uppercase;letter-spacing:1px;">Save Current Design as Kit</div>';
+    var _secTitle = _editing ? ('Update Kit: ' + _editing.name) : 'Save Current Design as Kit';
+    saveWrap.innerHTML = '<div style="font-size:10px;font-weight:700;color:rgba(255,130,0,.8);text-transform:uppercase;letter-spacing:1px;">' + _secTitle + '</div>';
     var nameInput = document.createElement('input');
     nameInput.placeholder = 'Kit name (e.g. "40x60 Enclosed Standard")';
     nameInput.style.cssText = 'padding:7px 10px;border-radius:7px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;';
     var descInput = document.createElement('input');
     descInput.placeholder = 'Description (optional)';
     descInput.style.cssText = nameInput.style.cssText;
+    if (_editing) { nameInput.value = _editing.name || ''; descInput.value = _editing.description || ''; }
     var saveBtn = document.createElement('button');
-    saveBtn.textContent = 'Save Kit';
+    saveBtn.textContent = _editing ? 'Update Kit' : 'Save Kit';
     saveBtn.style.cssText = 'padding:8px;border-radius:8px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.15);color:#FF8200;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
     var saveStatus = document.createElement('div');
     saveStatus.style.cssText = 'font-size:10px;color:#888;min-height:14px;';
+    var cancelEdit = null;
+    if (_editing) {
+      cancelEdit = document.createElement('button');
+      cancelEdit.textContent = 'Cancel edit — save as a new kit instead';
+      cancelEdit.style.cssText = 'background:none;border:none;color:#888;font-size:10px;cursor:pointer;text-decoration:underline;align-self:flex-start;padding:0;font-family:Outfit,sans-serif;';
+      cancelEdit.onclick = function(){ window._kitEditing = null; window.openKitsModal(); };
+    }
     saveBtn.onclick = function() {
       var name = nameInput.value.trim();
       if (!name) { saveStatus.textContent = 'Please enter a kit name.'; saveStatus.style.color='#ef4444'; return; }
-      saveStatus.textContent = 'Saving...'; saveStatus.style.color='#888';
+      saveStatus.textContent = _editing ? 'Updating...' : 'Saving...'; saveStatus.style.color='#888';
       safeEncodeCompressed(window.serializeConfig ? serializeConfig() : {}).then(function(encoded) {
-        fetch(API_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({ action: 'saveKit', token: getToken(), username: 'lain.hinson', name: name, description: descInput.value.trim(), configEncoded: encoded })
-        })
-        .then(function(r){ return r.json(); })
-        .then(function(d){
-          if (d.success) {
-            saveStatus.textContent = '✓ Saved as "' + name + '"';
-            saveStatus.style.color = '#4ade80';
-            nameInput.value = ''; descInput.value = '';
+        var _desc = descInput.value.trim();
+        var _p = (_editing && _editing.kitId)
+          ? sbUpdateKit(_editing.kitId, name, _desc, encoded)
+          : sbSaveKit(name, _desc, encoded);
+        _p.then(function(res){
+          if (res !== null) {
+            if (_editing && _editing.kitId) {
+              saveStatus.textContent = '✓ Updated "' + name + '"';
+              saveStatus.style.color = '#4ade80';
+              window._kitEditing = null;
+            } else {
+              saveStatus.textContent = '✓ Saved as "' + name + '"';
+              saveStatus.style.color = '#4ade80';
+              nameInput.value = ''; descInput.value = '';
+            }
             loadKitsList(listWrap, isLain);
           } else {
-            saveStatus.textContent = 'Error: ' + (d.error||'unknown');
+            saveStatus.textContent = 'Save failed — check the Supabase kits table / policy.';
             saveStatus.style.color = '#ef4444';
           }
         })
@@ -36922,6 +36958,7 @@ window.openKitsModal = function() {
     };
     saveWrap.appendChild(nameInput); saveWrap.appendChild(descInput);
     saveWrap.appendChild(saveBtn); saveWrap.appendChild(saveStatus);
+    if (cancelEdit) saveWrap.appendChild(cancelEdit);
     panel.appendChild(saveWrap);
   }
 
@@ -36937,19 +36974,14 @@ window.openKitsModal = function() {
 
   function loadKitsList(wrap, lain) {
     wrap.innerHTML = '<div style="font-size:11px;color:#888;padding:8px 0;">Loading kits...</div>';
-    fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({ action: 'getKits', token: getToken(), username: (window.currentUser||{}).username||'' })
-    })
-    .then(function(r){ return r.json(); })
-    .then(function(d){
+    sbGetKits()
+    .then(function(kits){
       wrap.innerHTML = '';
-      if (!d.success || !d.kits || !d.kits.length) {
+      if (!kits || !kits.length) {
         wrap.innerHTML = '<div style="font-size:11px;color:#888;padding:8px 0;">No kits saved yet.</div>';
         return;
       }
-      d.kits.forEach(function(kit) {
+      kits.forEach(function(kit) {
         var row = document.createElement('div');
         row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;background:#1e293b;border-radius:8px;';
         var info = document.createElement('div');
@@ -36985,6 +37017,25 @@ window.openKitsModal = function() {
         row.appendChild(info); row.appendChild(loadBtn);
 
         if (lain) {
+          var editBtn = document.createElement('button');
+          editBtn.textContent = 'Edit';
+          editBtn.style.cssText = 'padding:6px 12px;border-radius:6px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.05);color:#cbd5e1;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;';
+          editBtn.onclick = function() {
+            try {
+              var decodeP = safeDecodeAsync ? safeDecodeAsync(kit.configEncoded).catch(function(){ return safeDecode(kit.configEncoded); }) : Promise.resolve(safeDecode(kit.configEncoded));
+              decodeP.then(function(cfg) {
+                if (cfg) {
+                  restoreConfig(cfg);
+                  window._savedQuoteId = null;
+                  window._kitEditing = { kitId: kit.kitId, name: kit.name, description: kit.description || '' };
+                  var statusEl = document.getElementById('saveQuoteStatus');
+                  if (statusEl) { statusEl.textContent = 'Editing kit: ' + kit.name + ' — make your changes, then reopen Kits and press Update Kit.'; statusEl.style.display='block'; statusEl.style.color='#FF8200'; }
+                }
+                window.closeKitsModal();
+              });
+            } catch(e) { alert('Could not load kit for editing: ' + e.message); }
+          };
+          row.appendChild(editBtn);
           var delBtn = document.createElement('button');
           delBtn.textContent = '×';
           delBtn.style.cssText = 'background:none;border:none;color:#555;font-size:16px;cursor:pointer;padding:0 4px;';
@@ -36992,13 +37043,7 @@ window.openKitsModal = function() {
           delBtn.onmouseout  = function(){ delBtn.style.color='#555'; };
           delBtn.onclick = function() {
             if (!confirm('Delete kit "' + kit.name + '"?')) return;
-            fetch(API_URL, {
-              method: 'POST',
-              headers: { 'Content-Type': 'text/plain' },
-              body: JSON.stringify({ action: 'deleteKit', token: getToken(), username: 'lain.hinson', kitId: kit.kitId })
-            })
-            .then(function(r){ return r.json(); })
-            .then(function(d){ if (d.success) loadKitsList(wrap, lain); });
+            sbDeleteKit(kit.kitId).then(function(){ loadKitsList(wrap, lain); });
           };
           row.appendChild(delBtn);
         }
