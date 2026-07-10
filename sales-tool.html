@@ -36902,6 +36902,54 @@ window.resolvePackageImage = async function(url) {
   return '';
 };
 window.fetchPackagePreview = window.resolvePackageImage; // save-time alias
+// Live package details from a Summertown package page: image + prices + specs.
+// One fetch, parsed from the page HTML. Prices are read live (never cached).
+window.fetchPackageMeta = async function(url) {
+  var out = { image:'', exteriorShell:null, materialsOnly:null, dimensions:'', garageDoors:[], walkDoors:0, windows:0, html:false };
+  if (!url) return out;
+  var proxies = ['https://api.codetabs.com/v1/proxy/?quest=','https://api.allorigins.win/raw?url=','https://corsproxy.io/?url='];
+  var raw = '';
+  for (var i=0;i<proxies.length;i++){
+    try { var r = await fetch(proxies[i] + encodeURIComponent(url)); if (r.ok) { var t = await r.text(); if (t && t.length > 500) { raw = t; break; } } } catch(e) {}
+  }
+  if (!raw) return out;
+  out.html = true;
+  var og = raw.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) || raw.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+  if (og) out.image = og[1].replace(/&amp;/g,'&');
+  var text = raw.replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ')
+                .replace(/&#x27;/g,"'").replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/&#34;/g,'"').replace(/&amp;/g,'&').replace(/&nbsp;/g,' ').replace(/\s+/g,' ');
+  var voided = /NULL AND VOID/i.test(text);
+  if (!voided) {
+    // Plain "Exterior Shell:" only — colon right after, so concrete-bundled variants are ignored on purpose.
+    var mShell = text.match(/Exterior Shell\s*:\s*\$\s*([0-9][0-9,]*)/i);
+    if (mShell) out.exteriorShell = parseInt(mShell[1].replace(/,/g,''),10);
+    var mMat = text.match(/Materials Only\s*:?\s*\$\s*([0-9][0-9,]*)/i);
+    if (mMat) out.materialsOnly = parseInt(mMat[1].replace(/,/g,''),10);
+  }
+  var dim = text.match(/Dimensions\s*:?\s*([0-9]+\s*x\s*[0-9]+\s*x\s*[0-9]+)/i);
+  if (dim) out.dimensions = dim[1].replace(/\s+/g,'');
+  var gdRe = /\((\d+)\)\s*Garage\s*doors?\s*\(([^)]+)\)/ig, gm;
+  while ((gm = gdRe.exec(text)) !== null) { out.garageDoors.push({ qty: parseInt(gm[1],10), size: gm[2].trim() }); }
+  var wdRe = /\((\d+)\)[^()]{0,40}?Walk[\s-]*(?:in)?\s*door/ig, wm;
+  while ((wm = wdRe.exec(text)) !== null) { out.walkDoors += parseInt(wm[1],10); }
+  var winRe = /\((\d+)\)[^()]{0,40}?windows?\b/ig, im;
+  while ((im = winRe.exec(text)) !== null) { out.windows += parseInt(im[1],10); }
+  return out;
+};
+// Throttle package fetches so a full gallery doesn't fire dozens of proxy requests at once.
+window._pkgQ = { running: 0, max: 3, q: [] };
+function _pkgDrain() {
+  var Q = window._pkgQ;
+  while (Q.running < Q.max && Q.q.length) {
+    (function(job){
+      Q.running++;
+      window.fetchPackageMeta(job[0]).then(job[1], function(){ job[1]({ image:'', exteriorShell:null, materialsOnly:null, dimensions:'', garageDoors:[], walkDoors:0, windows:0, html:false }); }).then(function(){ Q.running--; _pkgDrain(); });
+    })(Q.q.shift());
+  }
+}
+window.queuePackageMeta = function(url) {
+  return new Promise(function(resolve){ window._pkgQ.q.push([url, resolve]); _pkgDrain(); });
+};
 // Cache a resolved preview image onto a kit (preview_image only)
 window.sbSetKitPreview = async function(kitId, img) {
   try { return await sbFetch('kits?id=eq.' + encodeURIComponent(kitId), { method: 'PATCH', body: JSON.stringify({ preview_image: img }) }); } catch(e) { return null; }
@@ -37063,17 +37111,13 @@ window.openKitsModal = function() {
           thumb.src = kit.previewImage; imgWrap.appendChild(thumb);
         } else if (kit.packageUrl) {
           imgWrap.textContent = 'Loading preview...';
-          window.resolvePackageImage(kit.packageUrl).then(function(img){
-            if (img) { imgWrap.innerHTML = ''; thumb.src = img; imgWrap.appendChild(thumb); if (window.sbSetKitPreview) window.sbSetKitPreview(kit.kitId, img); }
-            else { _noPrev(); }
-          });
         } else {
           _noPrev();
         }
         card.appendChild(imgWrap);
         // Body
         var body = document.createElement('div');
-        body.style.cssText = 'padding:9px 10px;flex:1;display:flex;flex-direction:column;gap:3px;';
+        body.style.cssText = 'padding:9px 10px;display:flex;flex-direction:column;gap:3px;';
         var kitName = document.createElement('div');
         kitName.style.cssText = 'font-size:12px;font-weight:700;color:#f0f3f7;line-height:1.2;';
         kitName.textContent = kit.name;
@@ -37081,7 +37125,37 @@ window.openKitsModal = function() {
         kitDesc.style.cssText = 'font-size:10px;color:#888;';
         kitDesc.textContent = kit.description || kit.date || '';
         body.appendChild(kitName); body.appendChild(kitDesc);
+        var metaEl = null;
+        if (kit.packageUrl) {
+          metaEl = document.createElement('div');
+          metaEl.style.cssText = 'font-size:10px;color:#94a3b8;line-height:1.4;margin-top:2px;';
+          metaEl.textContent = 'Loading price\u2026';
+          body.appendChild(metaEl);
+        }
         card.appendChild(body);
+        if (kit.packageUrl) {
+          window.queuePackageMeta(kit.packageUrl).then(function(pm){
+            if (!kit.previewImage) {
+              if (pm.image) { imgWrap.innerHTML = ''; thumb.src = pm.image; imgWrap.appendChild(thumb); if (window.sbSetKitPreview) window.sbSetKitPreview(kit.kitId, pm.image); }
+              else { _noPrev(); }
+            }
+            if (metaEl) {
+              metaEl.textContent = '';
+              var specBits = [];
+              if (pm.dimensions) specBits.push(pm.dimensions);
+              if (pm.garageDoors && pm.garageDoors.length) specBits.push(pm.garageDoors.map(function(g){ return g.qty + '\u00d7 ' + g.size; }).join(', ') + ' OHD');
+              if (pm.walkDoors) specBits.push(pm.walkDoors + ' walk');
+              if (pm.windows) specBits.push(pm.windows + ' window' + (pm.windows > 1 ? 's' : ''));
+              if (specBits.length) { var sEl = document.createElement('div'); sEl.textContent = specBits.join('  \u00b7  '); metaEl.appendChild(sEl); }
+              var pBits = [];
+              if (pm.exteriorShell != null) pBits.push('Shell $' + pm.exteriorShell.toLocaleString());
+              if (pm.materialsOnly != null) pBits.push('Mat $' + pm.materialsOnly.toLocaleString());
+              if (pm.exteriorShell != null && pm.materialsOnly != null) pBits.push('Labor $' + (pm.exteriorShell - pm.materialsOnly).toLocaleString());
+              if (pBits.length) { var pEl = document.createElement('div'); pEl.style.cssText = 'margin-top:2px;color:#4ade80;font-weight:700;'; pEl.textContent = pBits.join('  \u00b7  '); metaEl.appendChild(pEl); }
+              if (!specBits.length && !pBits.length) metaEl.textContent = pm.html ? 'No price listed' : 'Details unavailable';
+            }
+          });
+        }
         // Actions
         var acts = document.createElement('div');
         acts.style.cssText = 'padding:0 10px 10px;display:flex;flex-wrap:wrap;gap:5px;align-items:center;';
