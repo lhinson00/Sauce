@@ -4780,7 +4780,37 @@ async function importCompetitorPDF(input) {
     }
     if (!pdfText.trim()) throw new Error('Could not extract text from PDF. Make sure it is a text-based PDF, not a scanned image.');
 
-    btn.textContent = '⏳ Parsing...';
+    // Render the ELEVATION page (the one with the lettered A/B/C/D views) to a JPEG so the
+    // parser can SEE which wall each door/window is on. The wall letters exist only in the
+    // page images, never in the PDF text — without this the parser has no wall data at all.
+    var elevImg = '';
+    try {
+      if (window.pdfjsLib && typeof pdf !== 'undefined' && pdf) {
+        var _elevPg = 0;
+        // Prefer the page that mentions the pricing disclaimer block (that's the elevation
+        // page on these estimates); otherwise fall back to page 4, then the first image page.
+        for (var _p2 = 1; _p2 <= pdf.numPages; _p2++) {
+          var _pg2 = await pdf.getPage(_p2);
+          var _tc2 = await _pg2.getTextContent();
+          var _t2 = _tc2.items.map(function(i){ return i.str; }).join(' ');
+          if (/Price does not include tax or shipping|subject to change without notice/i.test(_t2)) { _elevPg = _p2; break; }
+        }
+        if (!_elevPg && pdf.numPages >= 4) _elevPg = 4;
+        if (_elevPg) {
+          var _page = await pdf.getPage(_elevPg);
+          var _vp = _page.getViewport({ scale: 1 });
+          var _scale = Math.min(2, 1400 / Math.max(_vp.width, _vp.height));
+          var _vp2 = _page.getViewport({ scale: _scale });
+          var _cv = document.createElement('canvas');
+          _cv.width = Math.round(_vp2.width); _cv.height = Math.round(_vp2.height);
+          await _page.render({ canvasContext: _cv.getContext('2d'), viewport: _vp2 }).promise;
+          elevImg = _cv.toDataURL('image/jpeg', 0.72).split(',')[1] || '';
+          console.log('[Import] elevation page ' + _elevPg + ' rendered, ' + Math.round(elevImg.length/1024) + 'KB');
+        }
+      }
+    } catch(e) { console.warn('[Import] elevation render failed:', e.message); }
+
+    btn.textContent = '\u23f3 Parsing...';
 
     // Route through GAS (required — browser can't call api.anthropic.com directly due to CORS)
     // Text-only payload is ~5KB vs ~500KB for base64 PDF — eliminates overload errors
@@ -4794,7 +4824,7 @@ async function importCompetitorPDF(input) {
       var resp = await fetchWithTimeout(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ action: 'parsePdfText', token: getToken(), pdfText: pdfText.slice(0, 8000) })
+        body: JSON.stringify({ action: 'parsePdfText', token: getToken(), pdfText: pdfText.slice(0, 8000), elevationImage: elevImg, elevationLegend: 'A=front gable, B=left eave, C=back gable, D=right eave' })
       }, 45000);
       data = await safeJson(resp);
       if (data.success) break;
