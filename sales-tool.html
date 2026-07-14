@@ -2421,6 +2421,23 @@ window._walkDoors = [];
 window._walkDoorsFieldLocated = true;
 window._windowsFieldLocated   = true;
 window._windows = [];
+// Custom shed bay spacing. Accepts "12-12-6", "12,12,6", "12 12 6".
+// Returns post POSITIONS (ft from the shed start), or null when not used. Needed when a
+// lean-to runs over garage doors and the posts must miss the openings.
+window.shedCustomBays = function(sc, len) {
+  var raw = sc && sc.customBays;
+  if (!raw || !String(raw).trim()) return null;
+  var bays = String(raw).split(/[^0-9.]+/).map(parseFloat).filter(function(n){ return n > 0; });
+  if (!bays.length) return null;
+  var pos = [0], run = 0;
+  for (var i = 0; i < bays.length; i++) {
+    run += bays[i];
+    if (run > len + 0.01) break;
+    pos.push(Math.round(run * 1000) / 1000);
+  }
+  if (Math.abs(pos[pos.length-1] - len) > 0.01) pos.push(len);
+  return pos;
+};
 window._awnings = [];
 var nextAwnId = 1;
 // Awning catalog: gable-style (walk door / window) and single-slope (over garage doors).
@@ -5805,6 +5822,11 @@ function renderSheds(){
       var _effEavePS=sc.eavePS||(_attW&&_attW.postSpacing)||Q.postSpacing||10;
       extraOptions+='<div class="shed-row"><div><div class="shed-label">Post Spacing</div>'
         +'<input class="shed-inp" type="number" value="'+_effEavePS+'" min="1" step="1" onchange="setShedProp('+sc.id+',\'eavePS\',this.value);scheduleBuild()">'
+        +'</div></div>';
+      // Custom bay spacing - for a lean-to over garage doors the posts must miss the
+      // openings, e.g. a 30' shed laid out 12-12-6. Blank = normal even spacing.
+      extraOptions+='<div class="shed-row"><div><div class="shed-label">Custom Bays (ft)</div>'
+        +'<input class="shed-inp" type="text" placeholder="blank = even, e.g. 12-12-6" value="'+(sc.customBays||'')+'" onchange="setShedProp('+sc.id+',\'customBays\',this.value);scheduleBuild()">'
         +'</div></div>';
     }
     if(isWrap){
@@ -11205,14 +11227,15 @@ function applyVoiceQuote(parsed, overlay) {
                         const _ps8ew = (8/12) * Sc;
                         const _postSzEW = _cyPostEW ? _ps8ew : ps;
                         const numBays = Math.max(1, Math.floor(sc.l / attachPS));
-                            for (let i = 0; i <= numBays; i++) {
-                                const ft = i * (sc.l / numBays);
+                            var _cbEW = window.shedCustomBays ? window.shedCustomBays(sc, sc.l) : null;
+                            var _ptsEW = _cbEW || (function(){ var a=[]; for (let i=0;i<=numBays;i++) a.push(i*(sc.l/numBays)); return a; })();
+                            _ptsEW.forEach(function(ft) {
                                 const zPos = (-ssl/2 + ft * Sc) + shedCenterOff;
                                 const p = new THREE.Mesh(new THREE.BoxGeometry(_postSzEW, shedPostH, _postSzEW), _cyMat8ew);
                                 p.position.set(oX, shedPostBase + shedPostH/2, zPos); p.castShadow = true;
                                 var _pgEW = _shedAddPost(p, zPos);
                                 if (_isMono) addBracket(oX, zPos, _pgEW, slabH, _pgEW === grps.mainPosts);
-                            }
+                            });
                         // Gable end posts — corner post at oX + intermediate posts across shed width
                         const xDir = sc.wall === 'left' ? -1 : 1;
                         const numGableBays = Math.max(1, Math.floor(sc.w / attachPS));
@@ -24743,7 +24766,10 @@ window.SauceMaterials.calcShedPosts = function(Q, WALLS, shedCfgs, sf) {
 
     if (sc.type === 'leanto') {
       var wallCapL = sc.wall.charAt(0).toUpperCase() + sc.wall.slice(1);
-      allPosts.push({ sku: sku, postLen: postLen, quantity: lineCount(sc.l, attachPS), label: 'Side Shed Posts — ' + wallCapL });
+      // Custom bay spacing (e.g. 12-12-6 so posts miss garage doors) overrides even spacing.
+      var _cbL = (typeof window !== 'undefined' && window.shedCustomBays) ? window.shedCustomBays(sc, sc.l) : null;
+      var _outerCount = _cbL ? _cbL.length : lineCount(sc.l, attachPS);
+      allPosts.push({ sku: sku, postLen: postLen, quantity: _outerCount, label: 'Side Shed Posts — ' + wallCapL });
       // Enclosed gable ends — intermediate posts across the shed width (stepped heights from
       // outer eave up to attach wall). Outer & attach corners are already counted by the outer-
       // wall posts above and the main building's wall posts, so only interior posts are added here.
