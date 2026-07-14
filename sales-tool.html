@@ -1565,6 +1565,13 @@ body.customer-mode #stab_specs { display: block !important; }
         <button class="opening-add-btn" onclick="openWindowQuickAdd()">+ Add Windows</button>
       </div>
 
+      <!-- AWNINGS -->
+      <div class="sec">
+        <div class="sec-title">Awnings</div>
+        <div id="awningList"></div>
+        <button class="opening-add-btn" onclick="addAwning()">+ Add Awning</button>
+      </div>
+
       <!-- SIDE SHEDS -->
       <div class="sec">
         <div class="sec-title">Side Sheds & Extensions</div>
@@ -2036,6 +2043,12 @@ body.customer-mode #stab_specs { display: block !important; }
         </div>
         <div style="margin-top:10px;">
           <div class="sub-label">Awnings</div>
+          <div style="font-size:10px;color:var(--muted);line-height:1.5;padding:4px 0 6px;">
+            Awnings are now placed on the building. Use the <b>Awnings</b> section in the
+            builder panel (under Windows) to add one, pick its wall, and slide it into position.
+            The quantities below still feed pricing and are kept in sync automatically.
+          </div>
+          <button type="button" onclick="try{var s=document.getElementById('awningList'); if(s){s.scrollIntoView({behavior:'smooth',block:'center'});} addAwning();}catch(e){}" style="width:100%;padding:7px;border-radius:7px;border:1px solid rgba(255,130,0,.5);background:rgba(255,130,0,.10);color:#FF8200;font-size:11px;font-weight:700;cursor:pointer;font-family:'Outfit',sans-serif;margin-bottom:8px;">+ Add &amp; Place an Awning</button>
           <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
             <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:100px;">
               <div style="font-size:9px;color:var(--muted);font-weight:600;">Walk Door</div>
@@ -2436,6 +2449,104 @@ window._walkDoors = [];
 window._walkDoorsFieldLocated = true;
 window._windowsFieldLocated   = true;
 window._windows = [];
+window._awnings = [];
+var nextAwnId = 1;
+// Awning catalog: gable-style (walk door / window) and single-slope (over garage doors).
+// proj = how far it sticks out from the wall (ft). w = width along the wall (ft).
+var AWNING_TYPES = {
+  'RCCWDGA5':  { label:"Walk Door Gable 5'",  style:'gable',  w:5,  proj:3.0 },
+  'RCCWDGA6':  { label:"Walk Door Gable 6'",  style:'gable',  w:6,  proj:3.5 },
+  'RCCWDGA8':  { label:"Walk Door Gable 8'",  style:'gable',  w:8,  proj:4.0 },
+  'RCCWGA4':   { label:"Window Gable 4'",     style:'gable',  w:4,  proj:2.5 },
+  'RCCWGA5':   { label:"Window Gable 5'",     style:'gable',  w:5,  proj:3.0 },
+  'RCCWGA6':   { label:"Window Gable 6'",     style:'gable',  w:6,  proj:3.5 },
+  'RCCWGA8':   { label:"Window Gable 8'",     style:'gable',  w:8,  proj:4.0 },
+  'RCCSS4':    { label:"Single Slope 4'",     style:'slope',  w:4,  proj:2.5 },
+  'RCCSS5':    { label:"Single Slope 5'",     style:'slope',  w:5,  proj:2.5 },
+  'RCCSS6':    { label:"Single Slope 6'",     style:'slope',  w:6,  proj:3.0 },
+  'RCCSS8':    { label:"Single Slope 8'",     style:'slope',  w:8,  proj:3.0 },
+  'RCCSS10':   { label:"Single Slope 10'",    style:'slope',  w:10, proj:3.5 },
+  'RCCSS12':   { label:"Single Slope 12'",    style:'slope',  w:12, proj:3.5 },
+  'RCCSS14':   { label:"Single Slope 14'",    style:'slope',  w:14, proj:4.0 }
+};
+function awnDims(t){ return AWNING_TYPES[t] || AWNING_TYPES['RCCWDGA6']; }
+function addAwning(){
+  var wall = WALLS.find(function(w){ return w.id==='back'; }) || { len:Q.w };
+  var d = { id: nextAwnId++, type:'RCCWDGA6', wall:'back', offset:0, height:8 };
+  d.offset = Math.round((wall.len - awnDims(d.type).w)/2*12)/12;
+  window._awnings.push(d);
+  renderAwnings(); scheduleBuild();
+}
+function removeAwning(id){
+  window._awnings = window._awnings.filter(function(d){ return d.id!==id; });
+  renderAwnings(); scheduleBuild();
+}
+function setAwnProp(id, prop, val){
+  var d = window._awnings.find(function(a){ return a.id===id; }); if(!d) return;
+  if (prop==='wall'){
+    d.wall = val;
+    var wl = WALLS.find(function(w){ return w.id===val; }) || { len:Q.l };
+    d.offset = Math.round((wl.len - awnDims(d.type).w)/2*12)/12;
+  } else if (prop==='offset' || prop==='height'){
+    d[prop] = parseFloat(val) || 0;
+  } else { d[prop] = val; }
+  renderAwnings(); scheduleBuild();
+}
+// Keep the sales-field awning QTY/type inputs (pricing) in sync with placed awnings.
+function syncAwningSalesFields(){
+  try {
+    var groups = { wd: [], win: [], ss: [] };
+    (window._awnings || []).forEach(function(a){
+      if (a.type.indexOf('RCCWDGA') === 0) groups.wd.push(a.type);
+      else if (a.type.indexOf('RCCWGA') === 0) groups.win.push(a.type);
+      else if (a.type.indexOf('RCCSS') === 0) groups.ss.push(a.type);
+    });
+    function _set(selId, qtyId, list){
+      var sel = document.getElementById(selId), qty = document.getElementById(qtyId);
+      if (qty) qty.value = list.length;
+      if (sel) sel.value = list.length ? list[0] : 'None';
+    }
+    _set('sf_wdAwning',  'sf_wdAwningQty',  groups.wd);
+    _set('sf_winAwning', 'sf_winAwningQty', groups.win);
+    _set('sf_ssAwning',  'sf_ssAwningQty',  groups.ss);
+    if (typeof updateStripFromLocalCalc === 'function') updateStripFromLocalCalc();
+  } catch(e) {}
+}
+function renderAwnings(){
+  syncAwningSalesFields();
+  var list = document.getElementById('awningList'); if(!list) return;
+  list.innerHTML = '';
+  window._awnings.forEach(function(d, idx){
+    var wall = WALLS.find(function(w){ return w.id===d.wall; }) || { len:Q.l };
+    var dim = awnDims(d.type);
+    var maxOff = Math.max(0, wall.len - dim.w);
+    var div = document.createElement('div'); div.className='opening-card';
+    var wallOpts = ['back','front','left','right'].map(function(wid){
+      var wl = WALLS.find(function(w){ return w.id===wid; });
+      return '<option value="'+wid+'"'+(d.wall===wid?' selected':'')+'>'+wl.label+'</option>';
+    }).join('');
+    var typeOpts = Object.keys(AWNING_TYPES).map(function(t){
+      return '<option value="'+t+'"'+(t===d.type?' selected':'')+'>'+AWNING_TYPES[t].label+'</option>';
+    }).join('');
+    var h = [];
+    h.push('<div class="opening-hdr"><span class="opening-lbl">Awning '+(idx+1)+'</span>'
+      +'<button class="opening-rm" onclick="removeAwning('+d.id+')">&#x2715;</button></div>');
+    h.push('<div class="opening-grid opening-full"><select class="opening-sel opening-full" onchange="setAwnProp('+d.id+',\'type\',this.value)">'+typeOpts+'</select></div>');
+    h.push('<div class="opening-grid"><select class="opening-sel" onchange="setAwnProp('+d.id+',\'wall\',this.value)">'+wallOpts+'</select></div>');
+    h.push('<div style="display:flex;gap:8px;align-items:center;padding:4px 0 2px;">'
+      +'<span style="font-size:10px;color:var(--muted);font-weight:600;min-width:42px;">Along</span>'
+      +'<input type="range" min="0" max="'+maxOff+'" step="0.5" value="'+Math.min(d.offset,maxOff)+'" oninput="setAwnProp('+d.id+',\'offset\',this.value)" style="flex:1;">'
+      +'<input type="number" min="0" max="'+maxOff+'" step="0.5" value="'+d.offset+'" onchange="setAwnProp('+d.id+',\'offset\',this.value)" style="width:58px;font-size:11px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);font-family:Outfit,sans-serif;">'
+      +'<span style="font-size:9px;color:var(--muted);">ft</span></div>');
+    h.push('<div style="display:flex;gap:8px;align-items:center;padding:2px 0 4px;">'
+      +'<span style="font-size:10px;color:var(--muted);font-weight:600;min-width:42px;">Height</span>'
+      +'<input type="range" min="4" max="'+Math.max(6,Q.h)+'" step="0.5" value="'+d.height+'" oninput="setAwnProp('+d.id+',\'height\',this.value)" style="flex:1;">'
+      +'<input type="number" min="0" step="0.5" value="'+d.height+'" onchange="setAwnProp('+d.id+',\'height\',this.value)" style="width:58px;font-size:11px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);font-family:Outfit,sans-serif;">'
+      +'<span style="font-size:9px;color:var(--muted);">ft</span></div>');
+    div.innerHTML = h.join('');
+    list.appendChild(div);
+  });
+}
 window._shedConfigs = [];
 window._buildGen = 0;
 
@@ -6201,6 +6312,7 @@ function serializeConfig() {
     stallPosts: window._stallPosts || [],
     walkDoors: window._walkDoors,
     windows: window._windows,
+    awnings: window._awnings,
     sheds: window._shedConfigs||[],
     lofts: window._loftConfigs||[],
     interiorWalls: window._interiorWalls||[],
@@ -6375,6 +6487,9 @@ function restoreConfig(cfg) {
     })();
     window._walkDoors = cfg.walkDoors || [];
     window._windows   = cfg.windows   || [];
+    window._awnings   = cfg.awnings   || [];
+    try { nextAwnId = (window._awnings.reduce(function(m,a){ return Math.max(m, a.id||0); }, 0) || 0) + 1; } catch(e) { nextAwnId = 1; }
+    try { renderAwnings(); } catch(e) {}
     window._shedConfigs = [];
     if(cfg.sheds) cfg.sheds.forEach(function(s){
       if(s.cypressPosts    === undefined) s.cypressPosts    = false;
@@ -12153,6 +12268,147 @@ function applyVoiceQuote(parsed, overlay) {
                 grps.doors.add(dbMesh2);
             }
         });
+
+        // === AWNINGS (3D rendering) ===
+        // Timber-frame awnings modeled on the real product photos: a gable whose RIDGE runs
+        // OUT from the wall, two full roof planes meeting at that ridge, a horizontal tie
+        // beam, a king post, and big knee braces sweeping down the wall face.
+        const _AWN_D = {
+            'RCCWDGA5':{style:'gable',w:5,proj:4.0},  'RCCWDGA6':{style:'gable',w:6,proj:4.5},
+            'RCCWDGA8':{style:'gable',w:8,proj:5.0},  'RCCWGA4':{style:'gable',w:4,proj:2.0},
+            'RCCWGA5':{style:'gable',w:5,proj:2.25},  'RCCWGA6':{style:'gable',w:6,proj:2.5},
+            'RCCWGA8':{style:'gable',w:8,proj:3.0},   'RCCSS4':{style:'slope',w:4,proj:3.0},
+            'RCCSS5':{style:'slope',w:5,proj:3.0},    'RCCSS6':{style:'slope',w:6,proj:3.5},
+            'RCCSS8':{style:'slope',w:8,proj:3.5},    'RCCSS10':{style:'slope',w:10,proj:4.0},
+            'RCCSS12':{style:'slope',w:12,proj:4.0},  'RCCSS14':{style:'slope',w:14,proj:4.5}
+        };
+        try {
+        console.log('[3D] awnings to render:', (window._awnings||[]).length);
+        (window._awnings || []).forEach(function(aw) {
+            const ad    = _AWN_D[aw.type] || _AWN_D['RCCWDGA6'];
+            const isG   = (aw.wall === 'front' || aw.wall === 'back');
+            const wLen  = isG ? Q.w : Q.l;
+            const aTh   = 0.036;                                  // cypress timbers (slimmer)
+            const cyMat = new THREE.MeshBasicMaterial({ color: 0xc8a96e });
+            const cyDk  = new THREE.MeshBasicMaterial({ color: 0xa8864a });
+            const rfMat = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
+            const aW    = ad.w * Sc;
+            const aP    = ad.proj * Sc;
+            const yPl   = (parseFloat(aw.height) || 8) * Sc;      // tie-beam / plate height
+            const maxOff= Math.max(0, wLen - ad.w);
+            const off   = Math.max(0, Math.min(parseFloat(aw.offset) || 0, maxOff));
+            const u0    = (-wLen/2 + off) * Sc;
+            const u1    = u0 + aW;
+            const uM    = (u0 + u1) / 2;
+            const sgn   = (aw.wall === 'front' || aw.wall === 'left') ? -1 : 1;
+            const wPos  = isG ? (aw.wall === 'front' ? -sl/2 : sl/2)
+                              : (aw.wall === 'left'  ? -sw/2 : sw/2);
+            const v0    = 0.006;
+
+            // local (u along wall, y up, v out from wall) -> world
+            function P(u, y, v) {
+                const o = wPos + sgn * v;
+                return isG ? new THREE.Vector3(u, y, o) : new THREE.Vector3(o, y, u);
+            }
+            function T(ua, ya, va, ub, yb, vb, thk, mat) {
+                const a = P(ua, ya, va), b = P(ub, yb, vb);
+                const dx=b.x-a.x, dy=b.y-a.y, dz=b.z-a.z;
+                const len = Math.sqrt(dx*dx+dy*dy+dz*dz);
+                if (len < 0.0001) return;
+                const m = new THREE.Mesh(new THREE.BoxGeometry(thk, thk, len), mat || cyMat);
+                m.position.set((a.x+b.x)/2, (a.y+b.y)/2, (a.z+b.z)/2);
+                m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1), new THREE.Vector3(dx/len, dy/len, dz/len));
+                m.castShadow = true;
+                grps.doors.add(m);
+            }
+            function quad(a,b,c,d,mat) {
+                const g = new THREE.BufferGeometry();
+                g.setAttribute('position', new THREE.Float32BufferAttribute([
+                    a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z,
+                    a.x,a.y,a.z, c.x,c.y,c.z, d.x,d.y,d.z ], 3));
+                g.computeVertexNormals();
+                const m = new THREE.Mesh(g, mat); m.castShadow = true;
+                grps.doors.add(m);
+            }
+            // Knee brace sweeping down the wall (the big angled legs in the photo)
+            function knee(u) {
+                const yK = yPl - aTh*0.9;              // top of the knee, tucked UNDER the beam
+                const vB = yK - aP * 0.55;             // how far down the wall it drops
+                T(u, yK, v0,  u, vB, v0, aTh*0.95);              // vertical leg on the wall
+                T(u, vB, v0,  u, yK, aP*0.5, aTh*0.95);          // diagonal up/out to the beam
+                T(u, yK, v0,  u, yK, aP*0.5, aTh*0.8);           // short horizontal under beam
+            }
+
+            if (ad.style === 'gable') {
+                const rise = aW * 0.42;             // ridge rise above the tie beam
+                const yRd  = yPl + rise;            // ridge height
+                const ovr  = aTh * 1.2;             // slight roof overhang past the timbers
+                // Tie beam across the wall (horizontal member at plate height)
+                T(u0 - aTh*0.4, yPl, v0,  u1 + aTh*0.4, yPl, v0, aTh);
+                // RIDGE runs OUT from the wall - sits just BELOW the roof surface
+                T(uM, yRd - aTh*0.55, v0,  uM, yRd - aTh*0.55, aP, aTh);
+                // Rafters at the WALL face: ridge down to each end of the tie beam
+                T(uM, yRd, v0,  u0, yPl, v0, aTh*0.9);
+                T(uM, yRd, v0,  u1, yPl, v0, aTh*0.9);
+                // Rafters at the OUTER face (the visible truss end)
+                T(uM, yRd, aP,  u0, yPl, aP, aTh*0.9);
+                T(uM, yRd, aP,  u1, yPl, aP, aTh*0.9);
+                // Outer tie beam + king post = the timber truss you see from the front
+                T(u0, yPl, aP,  u1, yPl, aP, aTh*0.9);
+                T(uM, yPl, aP,  uM, yRd - aTh*0.5, aP, aTh*0.85);
+                // Eave purlins along each side, wall -> outer face
+                T(u0, yPl, v0,  u0, yPl, aP, aTh*0.8);
+                T(u1, yPl, v0,  u1, yPl, aP, aTh*0.8);
+                // TWO FULL ROOF PLANES meeting at the ridge, spanning wall -> outer end
+                const rOff = aTh * 0.85;   // roof metal sits ON TOP of the rafters
+                const RW = P(uM, yRd + rOff, v0),           RO = P(uM, yRd + rOff, aP + ovr);
+                const LW = P(u0 - ovr, yPl + rOff, v0),     LO = P(u0 - ovr, yPl + rOff, aP + ovr);
+                const GW = P(u1 + ovr, yPl + rOff, v0),     GO = P(u1 + ovr, yPl + rOff, aP + ovr);
+                quad(RW, LW, LO, RO, rfMat);      // left plane
+                quad(RW, RO, GO, GW, rfMat);      // right plane
+                // Purlin ends poking past the truss (visible in the photo)
+                T(u0 + aW*0.25, yPl + rise*0.42, aP,  u0 + aW*0.25, yPl + rise*0.42, aP + ovr*1.2, aTh*0.55, cyDk);
+                T(u1 - aW*0.25, yPl + rise*0.42, aP,  u1 - aW*0.25, yPl + rise*0.42, aP + ovr*1.2, aTh*0.55, cyDk);
+                knee(u0 + aTh);
+                knee(u1 - aTh);
+            } else {
+                // SINGLE SLOPE — shed roof over a garage door (reference photo).
+                // Structure: a HEAVY horizontal header beam across the wall, RAFTERS RIDING
+                // ON TOP of it (their ends show as the regular blocks along the front), and
+                // the roof metal laid over those rafters.
+                const ovr   = aTh * 1.2;
+                const hdrT  = aTh * 2.40;               // header is the beefiest member
+                const yHdr  = yPl;                      // header centerline at the wall
+                const yHTop = yHdr + hdrT * 0.5;        // top of the header
+                const yOut  = yHTop - aP * 0.30;        // outer (low) end of the rafters
+                // Heavy header beam spanning the opening, sitting flat on the wall
+                T(u0 - hdrT*0.5, yHdr, v0 + hdrT*0.35,  u1 + hdrT*0.5, yHdr, v0 + hdrT*0.35, hdrT);
+                // Rafters ON TOP of the header, sloping out and down. Their butt ends are
+                // what you see as the evenly spaced blocks in the photo.
+                const nR  = Math.max(3, Math.round(ad.w / 1.5));
+                const rTh = aTh * 0.72;
+                // Rafter CENTERLINE runs from (v0, yRIn) to (aP+ovr, yROut).
+                const yRIn  = yHTop + rTh*0.5;
+                const yROut = yOut  + rTh*0.5;
+                for (let i = 0; i <= nR; i++) {
+                    const u = u0 + (i/nR) * aW;
+                    T(u, yRIn, v0,  u, yROut, aP + ovr, rTh);
+                }
+                // Thin fascia closing the outer rafter ends
+                T(u0 - ovr, yOut, aP + ovr,  u1 + ovr, yOut, aP + ovr, aTh*0.5);
+                // Roof metal laid ON TOP of the rafters: plane sits a full half-thickness
+                // above the rafter CENTERLINE at BOTH ends, so nothing can poke through.
+                const rClr = rTh * 0.72;                 // clearance above centerline
+                const A = P(u0 - ovr, yRIn  + rClr, v0), B = P(u1 + ovr, yRIn  + rClr, v0);
+                const C = P(u1 + ovr, yROut + rClr, aP + ovr), D = P(u0 - ovr, yROut + rClr, aP + ovr);
+                quad(A, D, C, B, rfMat);
+                // Knee brackets under each end of the header
+                knee(u0 + aTh);
+                knee(u1 - aTh);
+            }
+
+        });
+        } catch(e) { console.warn('[3D] awning render failed:', e && e.message); }
 
         // === WINDOWS (3D rendering) ===
         const mWindowGlass = new THREE.MeshBasicMaterial({ color: 0x87ceeb, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
