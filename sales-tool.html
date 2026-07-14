@@ -2427,13 +2427,26 @@ window._windows = [];
 window.shedCustomBays = function(sc, len) {
   var raw = sc && sc.customBays;
   if (!raw || !String(raw).trim()) return null;
-  var bays = String(raw).split(/[^0-9.]+/).map(parseFloat).filter(function(n){ return n > 0; });
+  // Scan the string for bay lengths. Accepts decimal feet (10.5) and feet-inches
+  // (10'6", 10' 6", 10ft6in). Separators can be dashes, commas or spaces:
+  //   "12-12-6"   "10'6\" 10'6\" 9"   "10.5, 10.5, 9"
+  var s = String(raw);
+  var re = /([0-9]*\.?[0-9]+)\s*(?:'|ft|feet)?\s*(?:([0-9]*\.?[0-9]+)\s*(?:"|in\b|inch|inches))?/gi;
+  var bays = [], m;
+  while ((m = re.exec(s)) !== null) {
+    if (!m[0].trim()) { re.lastIndex++; continue; }
+    var v = parseFloat(m[1]);
+    if (isNaN(v)) continue;
+    // Only treat the 2nd number as inches when an inch mark was actually present.
+    if (m[2] && /["]|in/i.test(m[0].slice(m[0].indexOf(m[2])))) v += parseFloat(m[2]) / 12;
+    if (v > 0) bays.push(v);
+  }
   if (!bays.length) return null;
   var pos = [0], run = 0;
   for (var i = 0; i < bays.length; i++) {
     run += bays[i];
     if (run > len + 0.01) break;
-    pos.push(Math.round(run * 1000) / 1000);
+    pos.push(Math.round(run * 96) / 96);   // snap to 1/8 inch
   }
   if (Math.abs(pos[pos.length-1] - len) > 0.01) pos.push(len);
   return pos;
@@ -25379,7 +25392,31 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
       }
       return;
     }
-    if (sc.type === 'leanto') { addShedPieces(sc.l, 2, _legEavePS); return; }
+    if (sc.type === 'leanto') {
+      // Custom bays (e.g. 12-12-6 so posts miss garage doors): each header must span its OWN
+      // bay, so size a board per bay instead of assuming a uniform spacing.
+      var _cbH = (typeof window !== 'undefined' && window.shedCustomBays) ? window.shedCustomBays(sc, sc.l) : null;
+      if (_cbH && _cbH.length > 1) {
+        for (var _bi = 1; _bi < _cbH.length; _bi++) {
+          var _span = _cbH[_bi] - _cbH[_bi-1];
+          if (_span <= 0.01) continue;
+          var _bl = Math.ceil(_span / 2) * 2;          // stock comes in even lengths
+          if (_bl < 8) _bl = 8;
+          if (_span > 12) {
+            var _k = 'LVL' + _bl;                      // over 12' the bay needs LVL
+            shedGroups[_k] = shedGroups[_k] || { len: _bl, qty: 0, isLVL: true };
+            shedGroups[_k].qty += 2;                   // inside + outside
+          } else {
+            var _k2 = 'SYP212' + _bl;
+            shedGroups[_k2] = shedGroups[_k2] || { len: _bl, qty: 0, isLVL: false };
+            shedGroups[_k2].qty += 2;
+          }
+        }
+        return;
+      }
+      addShedPieces(sc.l, 2, _legEavePS);
+      return;
+    }
     if (sc.type === 'wrap4') {
       // Full wrap-around: 4 sides, each hip-tip to hip-tip.
       // Board length chosen by post spacing: 8'→10', 10'→20', 12'→12'.
