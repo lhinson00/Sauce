@@ -1667,6 +1667,12 @@ body.customer-mode #stab_specs { display: block !important; }
                 <option value="No">No</option><option value="Yes">Yes</option>
               </select>
             </div>
+            <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:110px;">
+              <div style="font-size:9px;color:var(--muted);font-weight:600;">Post Base</div>
+              <select id="st_postBaseType" onchange="scheduleBuild()" title="Base hardware used when posts are set on top of the slab" style="font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);">
+                <option value="bracket">Heavy Duty Brackets</option><option value="perma">Perma-Columns</option>
+              </select>
+            </div>
             <input type="hidden" id="st_mbPostSize" value="6x6">
           </div>
           <div style="font-size:9px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:1px;margin:8px 0 5px;">Truss Spacing</div>
@@ -6367,6 +6373,7 @@ function serializeConfig() {
       ssPostSize:(document.getElementById('st_ssPostSize')||{}).value||'6x6',
       wallPostSizes: getWallPostSizeMap(),
       postsOnTop:(document.getElementById('st_postsOnTop')||{}).value||'No',
+      postBaseType:(document.getElementById('st_postBaseType')||{}).value||'bracket',
       eavePS:    (document.getElementById('st_eavePS')||{}).value||'10',
       trussSpacing:(document.getElementById('st_trussSpacing')||{}).value||'5',
       steelPS:   (document.getElementById('st_steelPS')||{}).value||'10',
@@ -6661,6 +6668,7 @@ function restoreConfig(cfg) {
         });
       }
       _sv('st_postsOnTop',sf.postsOnTop);
+      _sv('st_postBaseType',sf.postBaseType);
       _sv('st_eavePS',    sf.eavePS);
       _sv('st_trussSpacing',sf.trussSpacing);
       _sv('st_steelPS',   sf.steelPS);
@@ -10616,18 +10624,48 @@ function applyVoiceQuote(parsed, overlay) {
         const _ss4ConcreteVal = (document.getElementById('st_ss4Concrete')||{}).value || 'None';
         const _ssConcVals = [_ss1ConcreteVal, _ss2ConcreteVal, _ss3ConcreteVal, _ss4ConcreteVal];
         const slabH = 0.04; // 4" slab thickness in scene units
-        const postBase = postsOnTop ? slabH : 0;
-        const postH = postsOnTop ? sh - slabH : sh;
-        function _hsPostH(zScene){ if(!_hsOn) return postH; var _e=_hsEaveFtAtCenter(zScene/Sc)*Sc; return postsOnTop ? (_e - slabH) : _e; }
+        // Perma-Column base: a precast concrete pillar ~2' out of the ground that the wood
+        // post seats onto via a steel wrap bracket. When selected, posts start atop the pillar.
+        const _permaMode = ((document.getElementById('st_postBaseType')||{}).value === 'perma');
+        const pillarH = 2 * Sc; // ~2 ft out of the ground
+        const _pBaseH = _permaMode ? pillarH : slabH;
+        const postBase = postsOnTop ? _pBaseH : 0;
+        const postH = postsOnTop ? sh - _pBaseH : sh;
+        function _hsPostH(zScene){ if(!_hsOn) return postH; var _e=_hsEaveFtAtCenter(zScene/Sc)*Sc; return postsOnTop ? (_e - _pBaseH) : _e; }
 
         // Bracket materials
         const mBracket = new THREE.MeshBasicMaterial({ color: 0x8A9098, side: THREE.DoubleSide });
         const mBracketDark = new THREE.MeshBasicMaterial({ color: 0x5A6268 });
+        const mPerma   = new THREE.MeshBasicMaterial({ color: 0xb4b8bf }); // precast concrete
+        const mPermaDk = new THREE.MeshBasicMaterial({ color: 0x969ba3 });
 
         // Helper: draw bracket at (x, z) on a given group, sitting on slab at slabY.
         // _hideBW: if true, tag meshes so they hide with the enclosed post they belong to.
-        function addBracket(x, z, group, slabY, _hideBW) {
+        // _perma: draw a Perma-Column (concrete pillar + steel wrap) instead of a flat bracket.
+        function addBracket(x, z, group, slabY, _hideBW, _perma) {
             const sy = slabY !== undefined ? slabY : slabH;
+            if (_permaMode) {
+                function _addP(m){ if(_hideBW){ m.userData = m.userData || {}; m.userData.hideBehindWall = true; } m.castShadow = true; group.add(m); }
+                const colW = ps * 1.05;
+                var col = new THREE.Mesh(new THREE.BoxGeometry(colW, pillarH, colW), mPerma);
+                col.position.set(x, pillarH/2, z); _addP(col);
+                var cap = new THREE.Mesh(new THREE.BoxGeometry(colW*1.1, 0.012, colW*1.1), mPermaDk);
+                cap.position.set(x, pillarH + 0.006, z); _addP(cap);
+                var brkH = 1.0 * Sc; // steel wrap ~1' tall around the post base
+                var side = new THREE.BoxGeometry(ps * 0.10, brkH, ps * 1.04);
+                var s1 = new THREE.Mesh(side, mBracket); s1.position.set(x - ps*0.55, pillarH + brkH/2, z); _addP(s1);
+                var s2 = new THREE.Mesh(side, mBracket); s2.position.set(x + ps*0.55, pillarH + brkH/2, z); _addP(s2);
+                var fb = new THREE.BoxGeometry(ps * 1.04, brkH, ps * 0.10);
+                var f1 = new THREE.Mesh(fb, mBracket); f1.position.set(x, pillarH + brkH/2, z - ps*0.55); _addP(f1);
+                var f2 = new THREE.Mesh(fb, mBracket); f2.position.set(x, pillarH + brkH/2, z + ps*0.55); _addP(f2);
+                [-brkH*0.25, brkH*0.28].forEach(function(by){
+                    var b1 = new THREE.Mesh(new THREE.BoxGeometry(ps*0.14, 0.012, 0.012), mBracketDark);
+                    b1.position.set(x - ps*0.55 - 0.003, pillarH + brkH/2 + by, z); _addP(b1);
+                    var b2 = new THREE.Mesh(new THREE.BoxGeometry(ps*0.14, 0.012, 0.012), mBracketDark);
+                    b2.position.set(x + ps*0.55 + 0.003, pillarH + brkH/2 + by, z); _addP(b2);
+                });
+                return;
+            }
             function _add(m){ if(_hideBW){ m.userData = m.userData || {}; m.userData.hideBehindWall = true; } group.add(m); return m; }
             // Wide base plate
             const plate = new THREE.Mesh(new THREE.BoxGeometry(ps * 2.8, 0.008, ps * 2.8), mBracket);
@@ -10658,7 +10696,7 @@ function applyVoiceQuote(parsed, overlay) {
             p.castShadow = true;
             p.userData.hideBehindWall = !!hideBehindWall;
             grps.mainPosts.add(p);
-            if (postsOnTop) addBracket(x, z, grps.mainPosts, slabH);
+            if (postsOnTop) addBracket(x, z, grps.mainPosts, slabH, _permaMode ? !!hideBehindWall : false, _permaMode);
         }
 
         // Interior / stall posts — slab to truss bottom (eave height), in grps.mainPosts
@@ -10900,7 +10938,7 @@ function applyVoiceQuote(parsed, overlay) {
                     if (_shedCoveredCorners.has(key)) return; // hidden behind shed gable cap
                     postPositions.add(key);
                     const distC = Math.abs(post.ft - Q.w / 2);
-                    const pH = ((_hsOn ? (wallId==='front'?_hsSecs[0].h:_hsSecs[_hsSecs.length-1].h) : Q.h) + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc;
+                    const pH = (((_hsOn ? (wallId==='front'?_hsSecs[0].h:_hsSecs[_hsSecs.length-1].h) : Q.h) + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc) - postBase;
                     var _gInOpen = (_goLen > 0 && post.ft >= _goS - 1e-6 && post.ft <= _goE + 1e-6);
                     const mPgable = (_gInOpen || (wCfg && wCfg.encl === 'open')) ? mPopen : mPencl;
                     addMainPost(xPos, zPos, pH, mPgable, (!_gInOpen && wCfg && wCfg.encl === 'enclosed'));
@@ -10951,8 +10989,9 @@ function applyVoiceQuote(parsed, overlay) {
 
             // Place posts along the shed's length only (not full wall)
             // _isMono resolved above (early) — shedPostBase and shedPostH use shedShClamped
-            const shedPostBase = _isMono ? slabH : 0;
-            const shedPostH = _isMono ? Math.max(0.01, shedShClamped - slabH) : shedShClamped;
+            const _shedBaseH = _permaMode ? pillarH : slabH;
+            const shedPostBase = _isMono ? _shedBaseH : 0;
+            const shedPostH = _isMono ? Math.max(0.01, shedShClamped - _shedBaseH) : shedShClamped;
 
             function addPostLineAligned(oX, oZ, isAlongZ, shedLength, wallPS, postH, customCenterOff, postSzOverride, postMatOverride, enclTest) {
                 // Default to shedPostH (already slab-adjusted) so posts don't overshoot roofline
@@ -10998,7 +11037,7 @@ function applyVoiceQuote(parsed, overlay) {
                         var _extDropSc = (sc.dropFt||0)*Sc;
                         var _pSecFt = (_hsOn && typeof _hsEaveFtAtCenter==='function') ? _hsEaveFtAtCenter(shedCenterOff/Sc) : Q.h;
                         var _pShB = (_hsOn ? _pSecFt*Sc : sh) - _extDropSc;
-                        const _pfH = _isMono ? Math.max(0.01, _pShB - slabH) : _pShB;
+                        const _pfH = _isMono ? Math.max(0.01, _pShB - _shedBaseH) : _pShB;
                         const pf = new THREE.Mesh(new THREE.BoxGeometry(ps, _pfH, ps), mP);
                         pf.position.set(xPos, shedPostBase + _pfH/2, z1); pf.castShadow = true; grps.posts.add(pf);
                         if (_isMono) addBracket(xPos, z1, grps.posts, slabH);
@@ -11019,7 +11058,7 @@ function applyVoiceQuote(parsed, overlay) {
                         const zFt = i * (sc.w / numBays);
                         const zPos = baseZ + dir * zFt * Sc;
                         if (i === 0) continue;
-                        const _plH = _isMono ? Math.max(0.01, sh - slabH) : sh;
+                        const _plH = _isMono ? Math.max(0.01, sh - _shedBaseH) : sh;
                         const pl = new THREE.Mesh(new THREE.BoxGeometry(ps, _plH, ps), mP);
                         pl.position.set(x1, shedPostBase + _plH/2, zPos); pl.castShadow = true; grps.posts.add(pl);
                         if (_isMono) addBracket(x1, zPos, grps.posts, slabH);
@@ -23510,6 +23549,7 @@ function buildPricePayload(calcType) {
       postProtectors: (document.getElementById('st_postProtectors') && document.getElementById('st_postProtectors').checked) ? 'Yes' : 'No',
       gutters: (document.getElementById('st_gutters') && document.getElementById('st_gutters').checked) ? 'Yes' : 'No',
       postsOnTop: (document.getElementById('st_postsOnTop')||{}).value || 'No',
+      postBracketType: (document.getElementById('st_postBaseType')||{}).value || 'bracket',
       garageDoorOpeners: (document.getElementById('sf_gdOpener')||{}).value || 'None',
       garageDoorOpenersQty: parseInt((document.getElementById('sf_gdOpenerQty')||{}).value||0) || 0,
       garageDoorWindows: (document.getElementById('sf_gdWindows') && document.getElementById('sf_gdWindows').checked) ? 'Yes' : 'No',
@@ -23697,6 +23737,7 @@ function buildPricePayload(calcType) {
     garageDoorOpenersQty: parseInt((document.getElementById('sf_gdOpenerQty')||{}).value||0) || 0,
     garageDoorWindows: (document.getElementById('sf_gdWindows') && document.getElementById('sf_gdWindows').checked) ? 'Yes' : 'No',
     postsOnTop: (document.getElementById('st_postsOnTop')||{}).value || 'No',
+    postBracketType: (document.getElementById('st_postBaseType')||{}).value || 'bracket',
     walkDoorAwning: (document.getElementById('sf_wdAwning')||{}).value || 'None',
     walkDoorAwningQty: parseInt((document.getElementById('sf_wdAwningQty')||{}).value||0) || 0,
     windowAwning: (document.getElementById('sf_winAwning')||{}).value || 'None',
@@ -25205,6 +25246,9 @@ window.SauceMaterials.calcPostBrackets = function(Q, WALLS, allDoors, shedCfgs, 
          :                    'PBKT6.6';
   }
   function decorativeSku(size) { return size === '8x8' ? 'DPBKTAPB88' : 'DPBKTAPB66'; }
+  // Perma-Column base: one precast column per post (replaces brackets when selected).
+  var permaMode = ((sf.postBracketType || 'bracket') === 'perma');
+  function permaSku(size) { return (size === '8x8' || size === '10x10') ? 'PBPC88' : 'PBPC66'; }
 
   var groups = {};
   function add(sku, count) { if (count > 0) groups[sku] = (groups[sku] || 0) + count; }
@@ -25216,8 +25260,21 @@ window.SauceMaterials.calcPostBrackets = function(Q, WALLS, allDoors, shedCfgs, 
   //   walk door jamb post (any wall)                 -> singleSku x2
   //   all other posts                                -> regularSku x1
   if (onTop && !sf.isStudFrame) {
-    // Fixed: 4 building corners always get 2 single-sided each = 8 total
     var cornerSize = SM.wallPostSizeFor('left', sf);
+    if (permaMode) {
+      // Perma-Columns: exactly ONE column per post, sized to that post.
+      add(permaSku(cornerSize), 4); // 4 building corners
+      ['left', 'right', 'front', 'back'].forEach(function(wallId) {
+        var wCfg = (WALLS||[]).find(function(w){ return w.id === wallId; });
+        if (wCfg && wCfg.encl === 'open') return;
+        var wallSize = SM.wallPostSizeFor(wallId, sf);
+        SM.getPostsForWall(wallId, Q, WALLS, allDoors).forEach(function(p) {
+          if (p.corner) return; // corners already counted
+          add(permaSku(wallSize), 1);
+        });
+      });
+    } else {
+    // Fixed: 4 building corners always get 2 single-sided each = 8 total
     add(singleSku(cornerSize), 8); // 4 corners x2
 
     // All walls: interior posts regular, garage jambs single x4, walk jambs single x2
@@ -25239,6 +25296,7 @@ window.SauceMaterials.calcPostBrackets = function(Q, WALLS, allDoors, shedCfgs, 
         }
       });
     });
+    }
   }
 
   // ── Side sheds — per-shed when mono concrete, independent of postsOnTop ──
@@ -25258,7 +25316,9 @@ window.SauceMaterials.calcPostBrackets = function(Q, WALLS, allDoors, shedCfgs, 
     // Determine bracket type based on enclosure:
     // Open/roofonly → decorative; enclosed/partial → regular
     var isOpen = (sc.encl === 'open' || sc.encl === 'roofonly');
-    if (isOpen) {
+    if (permaMode) {
+      add(permaSku(ssSize), count); // one Perma-Column per shed post
+    } else if (isOpen) {
       add(decorativeSku(ssSize), count);
     } else {
       // Enclosed/partial: corner posts get single-sided, others get regular
@@ -25277,7 +25337,8 @@ window.SauceMaterials.calcPostBrackets = function(Q, WALLS, allDoors, shedCfgs, 
   if (!Object.keys(groups).length) return [];
 
   return Object.keys(groups).sort().map(function(sku) {
-    var desc = sku.indexOf('HDSSPB') >= 0  ? '10×10 Post Bracket (Single-Sided)'
+    var desc = sku.indexOf('PBPC') >= 0     ? ('Perma-Column (' + (sku === 'PBPC88' ? '8×8' : '6×6') + ')')
+             : sku.indexOf('HDSSPB') >= 0  ? '10×10 Post Bracket (Single-Sided)'
              : sku.indexOf('HDPB') >= 0    ? '10×10 Post Bracket (Heavy Duty)'
              : sku.indexOf('ONESIDED') >= 0 ? 'Post Bracket (Single-Sided)'
              : sku.indexOf('DPBKT') >= 0    ? 'Decorative Post Bracket'
@@ -33944,6 +34005,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     mbPostSize: (document.getElementById('st_mbPostSize')||{}).value || '6x6',
     ssPostSize: (document.getElementById('st_ssPostSize')||{}).value || '6x6',
     postsOnTop: (document.getElementById('st_postsOnTop')||{}).value || 'No',
+    postBracketType: (document.getElementById('st_postBaseType')||{}).value || 'bracket',
     wallPostSize: typeof getWallPostSizeMap === 'function' ? getWallPostSizeMap() : null
   };
   var noRoofMetal = !!(document.getElementById('st_noRoofMetal')||{}).checked;
