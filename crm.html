@@ -60,6 +60,7 @@ function route(name,sX,los){ const inw=sX<CX?1:-1,out=-inw,P=[];
     case 'swing':P.push([44,los-1],[50,los+5]);break; case 'check':P.push([sX,los-1],[sX+2,los+5]);break;
     default:P.push([sX,los+8]); } return P; }
 
+const SYM=[{l:'A',c:'#4ade80'},{l:'B',c:'#f0645c'},{l:'X',c:'#5aa2ff'},{l:'Y',c:'#ffcf4a'},{l:'C',c:'#c07af0'}];
 const PASS=[
   { name:'FOUR VERTS', tag:'vs 1-high', r:{X:'go',TE:'seam',Y:'seam',Z:'go',RB:'block'} },
   { name:'SMASH', tag:'hi-low vs zone', r:{X:'dig',TE:'curl',Y:'flat',Z:'corner',RB:'block'} },
@@ -67,6 +68,8 @@ const PASS=[
   { name:'FLOOD', tag:'3 levels', r:{X:'dig',TE:'flat',Y:'out',Z:'go',RB:'block'} },
   { name:'SLANTS', tag:'quick vs blitz', r:{X:'slant',TE:'hitch',Y:'slant',Z:'slant',RB:'check'} },
   { name:'DRIVE', tag:'shallow + dig', r:{X:'post',TE:'dig',Y:'shallow',Z:'comeback',RB:'check'} },
+  { name:'STICK', tag:'quick vs zone', r:{X:'out',TE:'hitch',Y:'flat',Z:'hitch',RB:'check'} },
+  { name:'PA BOOT', tag:'play-action roll', pa:true, roll:'R', r:{X:'post',TE:'flat',Y:'corner',Z:'comeback',RB:'block'} },
 ];
 const RUN=[
   { name:'DIVE', tag:'A-gap quick', poa:CX,   pull:null, delay:0.42 },
@@ -75,6 +78,8 @@ const RUN=[
   { name:'STRETCH RT', tag:'reach & read', poa:35, pull:null, delay:0.45, stretch:true },
   { name:'TOSS RT', tag:'get the edge', poa:42, pull:'RG', delay:0.4, toss:true },
   { name:'DRAW', tag:'delayed', poa:CX, pull:null, delay:0.75, draw:true },
+  { name:'TRAP RT', tag:'trap block', poa:28, pull:'LG', delay:0.5 },
+  { name:'STRETCH LT', tag:'reach & read', poa:18, pull:null, delay:0.45, stretch:true },
 ];
 const COVS=[
   {name:'MAN',tag:'press · 1 deep'},{name:'COVER 2',tag:'2 deep halves'},{name:'COVER 3',tag:'3 deep zone'},
@@ -93,7 +98,7 @@ function setupPlay(){
   let P, isRun;
   if(G.userSide==='off'){ isRun=(G.tab==='run'); P=(isRun?RUN:PASS)[G.sel[G.tab]]; }
   else { isRun=Math.random()<0.45; P=(isRun?RUN:PASS)[(Math.random()*(isRun?RUN:PASS).length)|0]; }
-  G.isRun=isRun; G.play=P; aim=null; G.t=0; G.ball=null; G.carrier=null; G.puff=null;
+  G.isRun=isRun; G.play=P; aim=null; G.t=0; G.ball=null; G.carrier=null; G.puff=null; G.pa=!!P.pa; G.roll=P.roll||null; G.paT=P.pa?0.5:0;
   const C_=mk(CX,L-1,'OL','55'),LG=mk(23.4,L-1,'OL','66'),RG=mk(29.9,L-1,'OL','68'),LT=mk(20.4,L-1,'OL','70'),RT=mk(32.9,L-1,'OL','74');
   G.ol=[LT,LG,C_,RG,RT]; G.qb=mk(CX,L-4,'QB','7');
   const X=mk(6,L-1,'WR','11'),TE=mk(18,L-1,'TE','88'),Y=mk(40,L-2,'WR','83'),Z=mk(47,L-1,'WR','80');
@@ -103,7 +108,7 @@ function setupPlay(){
   } else { G.rb=mk(24,L-7,'RB','22'); G.pull=null; G.recv=[];
     for(const k of ['X','TE','Y','Z']){ const pl=G.skill[k],rn=P.r[k]; if(rn&&rn!=='block'){ pl.route=route(rn,pl.x,L); pl.wp=0; G.recv.push(pl); } else pl.block=true; }
     const rbr=P.r.RB; if(rbr&&rbr!=='block'){ G.rb.route=route(rbr,G.rb.x,L); G.rb.wp=0; G.recv.push(G.rb); } else G.rb.block=true; }
-  G.off=[...G.ol,G.qb,G.rb,X,TE,Y,Z];
+  G.recv.forEach((r,i)=>{ r.btn=SYM[i%SYM.length]; }); G.off=[...G.ol,G.qb,G.rb,X,TE,Y,Z];
   const LE=mk(21,L+1,'DL','91'),DTa=mk(24.5,L+1,'DL','94'),DTb=mk(28.8,L+1,'DL','97'),RE=mk(32,L+1,'DL','99');
   G.dl=[LE,DTa,DTb,RE];
   const WLB=mk(18,L+4.5,'LB','52'),MLB=mk(CX,L+5,'LB','54'),SLB=mk(36,L+4.5,'LB','58');
@@ -177,29 +182,38 @@ addEventListener('keydown', e=>{ const k=e.key.toLowerCase();
       if(k===' '||k==='enter') setupPlay(); }
   } else if(G.phase==='presnap' && (k===' '||k==='enter')) snap();
   else if(G.phase==='dead' && (k===' '||k==='enter')) G.phase='select';
+  else if(/^[1-5]$/.test(k) && G.phase==='live' && !G.offCPU){ const r=(G.recv||[])[(+k)-1]; if(r) throwToReceiver(r); }
   else if(k==='e' && G.defUser && (G.phase==='live'||G.phase==='air'||G.phase==='run'||G.phase==='handoff')) switchDefender();
-  else if(G.phase==='run' && k===' ' && offenseIsUser()) triggerJuke();
+  else if(k===' ' && (G.phase==='run'||G.phase==='handoff'||G.phase==='live'||G.phase==='air')){ if(offenseIsUser()){ if(G.phase==='run') triggerJuke(); } else userDive(); }
 });
 addEventListener('keyup', e=>{ keys[e.key.toLowerCase()]=false; });
 function switchDefender(){ const ref=G.carrier||(G.ball?{x:G.ball.tx,y:G.ball.ty}:G.qb); let best=null,bd=9e9;
   for(const d of G.def){ if(d===G.control||d.blocked||(d.down||0)>0)continue; const dd=dist(d,ref); if(dd<bd){bd=dd;best=d;} } if(best) G.control=best; }
-let joyId=null,joyCx=0,joyCy=0,joyVec={x:0,y:0},JR=72;
+let joyId=null,joyCx=0,joyCy=0,joyVec={x:0,y:0},JR=76;
+const BTN={ main:{x:W-76,y:H-120,r:58}, sub:{x:W-76,y:H-236,r:48}, scr:{x:84,y:H-120,r:54} };
+function recvButtons(){ const arr=[],cx=W-96,cy=H-152,pos=[[0,-48],[-48,2],[48,2],[-26,50],[26,50]];
+  const rc=G.recv||[]; for(let i=0;i<rc.length;i++){ const q=pos[i]||[0,0]; arr.push({x:cx+q[0],y:cy+q[1],r:31,recv:rc[i],btn:rc[i].btn}); } return arr; }
+function inBtn(p,b){ return Math.hypot(p.x-b.x,p.y-b.y)<b.r*1.08; }
+function nearestRecv(fx,fy){ let best=null,bd=9e9; for(const r of (G.recv||[])){ if(r===G.carrier)continue; const d=Math.hypot(r.x-fx,r.y-fy); if(d<bd){bd=d;best=r;} } return best; }
+function throwToReceiver(r){ if(!r||G.phase!=='live') return; let t=dist(G.qb,r)/BALLSPD; for(let i=0;i<2;i++){ const px=r.x+(r.vx||0)*t,py=r.y+(r.vy||0)*t; t=Math.hypot(px-G.qb.x,py-G.qb.y)/BALLSPD; } throwBall(r.x+(r.vx||0)*t*1.05, r.y+(r.vy||0)*t*1.08); }
+function userDive(){ const d=G.control; if(d&&!d.dive&&(d.down||0)<=0&&G.carrier){ d.dive={t:0.36,dx:G.carrier.x+(G.carrier.vx||0)*0.16,dy:G.carrier.y+(G.carrier.vy||0)*0.16}; } }
+function userTuck(){ if(G.phase==='live'&&!G.offCPU){ G.carrier=G.qb; G.phase='run'; } }
 function evPos(e){ const r=cv.getBoundingClientRect(); return {x:(e.clientX-r.left)*(W/r.width),y:(e.clientY-r.top)*(H/r.height)}; }
 function updateJoy(p){ let dx=p.x-joyCx,dy=p.y-joyCy,m=Math.hypot(dx,dy)||1; const c=Math.min(m,JR)/JR; joyVec={x:dx/m*c,y:dy/m*c}; }
-cv.addEventListener('pointerdown', e=>{ cv.setPointerCapture(e.pointerId); const p=evPos(e),mouse=(e.pointerType==='mouse');
+function joyStart(p,e){ joyId=e.pointerId; joyCx=p.x; joyCy=p.y; joyVec={x:0,y:0}; }
+cv.addEventListener('pointerdown', e=>{ cv.setPointerCapture(e.pointerId); const p=evPos(e);
   if(G.phase==='select'){ if(G.userSide==='def'){ const i=defCardHit(p); if(i>=0){ G.selDef=i; setupPlay(); } return; }
     const tb=tabHit(p); if(tb){ G.tab=tb; return; } const i=cardHit(p); if(i>=0){ G.sel[G.tab]=i; setupPlay(); } return; }
   if(G.phase==='presnap'){ snap(); return; } if(G.phase==='dead'){ G.phase='select'; return; }
-  if(G.defUser){ // defense: joystick to move controlled defender, tap right = switch
-    if(mouse){ switchDefender(); return; }
-    joyId=e.pointerId; joyCx=p.x; joyCy=p.y; joyVec={x:0,y:0}; return; }
-  if(G.phase==='run'){ if(mouse){ triggerJuke(); return; } joyId=e.pointerId; joyCx=p.x; joyCy=p.y; joyVec={x:0,y:0}; return; }
-  if(G.phase==='live'){ if(mouse){ aim={tx:toFX(p.x),ty:toFY(p.y),id:e.pointerId}; return; }
-    if(p.x<W*0.5){ joyId=e.pointerId; joyCx=p.x; joyCy=p.y; joyVec={x:0,y:0}; } else aim={tx:toFX(p.x),ty:toFY(p.y),id:e.pointerId}; } });
+  if(G.defUser){ if(inBtn(p,BTN.main)){ switchDefender(); return; } if(inBtn(p,BTN.sub)){ userDive(); return; } joyStart(p,e); return; }
+  if(G.phase==='live'){ for(const b of recvButtons()){ if(inBtn(p,b)){ throwToReceiver(b.recv); return; } }
+    if(inBtn(p,BTN.scr)){ userTuck(); return; }
+    const r=nearestRecv(toFX(p.x),toFY(p.y)); if(r&&Math.hypot(sx(r.x)-p.x,sy(r.y)-p.y)<PPY*3.2) throwToReceiver(r); return; }
+  if(G.phase==='run'||G.phase==='handoff'){ if(inBtn(p,BTN.main)){ triggerJuke(); return; } joyStart(p,e); return; } });
 cv.addEventListener('pointermove', e=>{ const p=evPos(e);
   if(G.phase==='select'){ if(G.userSide==='def'){ const i=defCardHit(p); if(i>=0) G.selDef=i; return; } const i=cardHit(p); if(i>=0) G.sel[G.tab]=i; return; }
-  if(e.pointerId===joyId){ updateJoy(p); return; } if(aim&&e.pointerId===aim.id){ aim.tx=toFX(p.x); aim.ty=toFY(p.y); } });
-function pEnd(e){ if(e.pointerId===joyId){ joyId=null; joyVec={x:0,y:0}; return; } if(aim&&e.pointerId===aim.id){ throwBall(aim.tx,aim.ty); aim=null; } }
+  if(e.pointerId===joyId) updateJoy(p); });
+function pEnd(e){ if(e.pointerId===joyId){ joyId=null; joyVec={x:0,y:0}; } }
 cv.addEventListener('pointerup', pEnd); cv.addEventListener('pointercancel', pEnd);
 function tabHit(p){ const y=168; if(p.y<y-22||p.y>y+8) return null; if(p.x>W/2-150&&p.x<W/2-6) return 'pass'; if(p.x>W/2+6&&p.x<W/2+150) return 'run'; return null; }
 function cardHit(p){ const list=(G.tab==='run'?RUN:PASS); for(let i=0;i<list.length;i++){ const r=cardRect(i); if(p.x>r.x&&p.x<r.x+r.w&&p.y>r.y&&p.y<r.y+r.h) return i; } return -1; }
@@ -208,7 +222,7 @@ function defCardHit(p){ for(let i=0;i<COVS.length;i++){ const r=defCardRect(i); 
 function snap(){ if(G.phase!=='presnap') return; G.t=0; if(G.isRun){ G.phase='handoff'; G.carrier=G.qb; G.qb.hasBall=true; } else { G.phase='live'; G.dropDone=false; } }
 function throwBall(tx,ty){ if(G.phase!=='live') return; tx=Math.max(1,Math.min(FW-1,tx)); ty=Math.max(1,Math.min(FL-1,ty));
   const d=Math.hypot(tx-G.qb.x,ty-G.qb.y); G.ball={x:G.qb.x,y:G.qb.y,sxp:G.qb.x,syp:G.qb.y,tx,ty,t:0,dur:Math.max(.4,d/BALLSPD)}; G.phase='air'; }
-function triggerJuke(){ const c=G.carrier; if(!c||(c._jukeCd||0)>0) return; c._jukeT=0.3; c._jukeCd=1.1; bumpShake(2); }
+function triggerJuke(){ const c=G.carrier; if(!c||(c._jukeCd||0)>0) return; c._jukeT=0.42; c._jukeCd=0.85; bumpShake(2); }
 function setFlash(t,c){ flash=t; flashCol=c; flashT=1.1; } function bumpShake(a){ shake=Math.max(shake,a); }
 function puffAt(x,y){ G.puff={x,y,t:0.35}; }
 function controlVec(){ let x=0,y=0;
@@ -265,7 +279,7 @@ function cpuRun(c,dt){ let nd=null,nb=9e9; for(const d of G.def){ if(d.blocked)c
   steer(c,tx-c.x,(c.y+9)-c.y,c.spd,c.acc*1.3,dt); if(nb<2.1&&(c._jukeCd||0)<=0) triggerJuke(); }
 
 /* user-controlled defender */
-function userDefMove(d,dt){ const v=controlVec(); const des=Math.hypot(v.x,v.y)>0.05?d.spd*1.05:0; steer(d,v.x,v.y,des,d.acc*1.5,dt);
+function userDefMove(d,dt){ const v=controlVec(); const des=Math.hypot(v.x,v.y)>0.05?d.spd*1.08:0; steer(d,v.x,v.y,des,d.acc*2.5,dt);
   if(keys[' '] && !d.dive && (d.down||0)<=0 && G.carrier && dist(d,G.carrier)<3.2){ d.dive={t:0.34,dx:G.carrier.x+(G.carrier.vx||0)*0.15,dy:G.carrier.y+(G.carrier.vy||0)*0.15}; } }
 
 /* run fit AI */
@@ -287,15 +301,18 @@ function update(dt){
   if(!G.isRun){ for(const r of G.recv){ if(r===G.carrier) continue; moveReceiver(r,dt); (r.hist=r.hist||[]).push({x:r.x,y:r.y}); if(r.hist.length>22) r.hist.shift(); } }
 
   if(G.phase==='live'){
-    if(!G.dropDone){ seek(G.qb,CX,G.los-7,0.85,dt); if(dist(G.qb,{x:CX,y:G.los-7})<0.6||G.t>0.95) G.dropDone=true; }
+    if(G.pa&&G.paT>0){ G.paT-=dt; seek(G.qb,CX,G.los-3,0.5,dt); }              // ride the fake
+    else if(G.roll&&G.t<1.85){ G.dropDone=true; seek(G.qb,G.roll==='R'?38:16,G.los-3,0.9,dt); }  // bootleg rollout
+    else if(!G.dropDone){ seek(G.qb,CX,G.los-7,0.85,dt); if(dist(G.qb,{x:CX,y:G.los-7})<0.6||G.t>0.95) G.dropDone=true; }
     else if(G.offCPU){ cpuQB(dt); }
-    else { const v=controlVec(),des=Math.hypot(v.x,v.y)>0.05?G.qb.spd*sprintF():0; steer(G.qb,v.x,v.y,des,G.qb.acc*1.3,dt);
+    else { const v=controlVec(),des=Math.hypot(v.x,v.y)>0.05?G.qb.spd*sprintF():0; steer(G.qb,v.x,v.y,des,G.qb.acc*2.1,dt);
       G.qb.x=Math.max(2,Math.min(FW-2,G.qb.x)); G.qb.y=Math.max(G.los-16,G.qb.y); if(G.qb.y>G.los+0.3){ G.carrier=G.qb; G.phase='run'; } } }
 
   if(G.phase==='live'||G.phase==='air'){
     resolveBlocks(dt,true); const rushOn=G.t>G.rushFree;
     for(const d of G.def){ const J=d.job; if(!J||d.blocked) continue;
       if(d===G.control){ userDefMove(d,dt); continue; }
+      if(G.pa&&G.paT>0&&d.pos==='LB'&&(J.t==='zoneU'||J.t==='man'||J.t==='carry')){ seek(d,d.x,G.los+2,0.9,dt); continue; }
       if((d.down||0)>0){ d.down-=dt; continue; }
       if(J.t==='rush'){ if(rushOn) seek(d,G.qb.x,G.qb.y,1,dt); if(G.phase==='live'&&dist(d,G.qb)<1.0){ puffAt(G.qb.x,G.qb.y); return endPlay('SACK',G.qb.y); }
       } else if(J.t==='spy'){ seek(d,G.qb.x,Math.min(G.qb.y+3,G.los+3),0.9,dt);
@@ -313,15 +330,15 @@ function update(dt){
       if(G.handoffT<=0){ G.qb.hasBall=false; G.carrier=G.rb; G.rb.hasBall=true; G.phase='run'; } }
     else { const c=G.carrier;
       if(G.offCPU){ cpuRun(c,dt); } else { const v=controlVec(); if((c._jukeCd||0)>0)c._jukeCd-=dt; if((c._jukeT||0)>0)c._jukeT-=dt;
-        const jb=(c._jukeT>0)?1.55:1, des=Math.hypot(v.x,v.y)>0.05?c.spd*sprintF()*jb:0; steer(c,v.x,v.y,des,c.acc*1.4,dt); }
+        const jb=(c._jukeT>0)?1.75:1, des=Math.hypot(v.x,v.y)>0.05?c.spd*sprintF()*jb:0; steer(c,v.x,v.y,des,c.acc*2.5,dt); }
       c.x=Math.max(1,Math.min(FW-1,c.x)); focusY=c.y; }
     resolveBlocks(dt,false);
     const c=G.carrier;
     for(const d of G.def){ if(d.blocked) continue;
       if((d.down||0)>0){ d.down-=dt; continue; }
-      if(d.dive){ d.dive.t-=dt; steer(d,d.dive.dx-d.x,d.dive.dy-d.y,d.spd*1.8,d.acc*2.4,dt); if(dist(d,c)<1.55){ puffAt(c.x,c.y); return endPlay('TACKLE',c.y); } if(d.dive.t<=0){ d.dive=null; d.down=0.6; } continue; }
+      if(d.dive){ d.dive.t-=dt; steer(d,d.dive.dx-d.x,d.dive.dy-d.y,d.spd*1.8,d.acc*2.4,dt); if(dist(d,c)<1.55){ puffAt(c.x,c.y); return endPlay('TACKLE',c.y); } if(d.dive.t<=0){ d.dive=null; d.down=0.85; } continue; }
       if(d===G.control){ userDefMove(d,dt); }
-      else { runFit(d,c,dt); if(G.phase==='run'&&dist(d,c)<2.4&&dist(d,c)>1.0&&Math.random()<0.09){ d.dive={t:0.32,dx:c.x+(c.vx||0)*0.16,dy:c.y+(c.vy||0)*0.16}; } }
+      else { runFit(d,c,dt); if(G.phase==='run'&&dist(d,c)<2.4&&dist(d,c)>1.0&&Math.random()<0.07){ d.dive={t:0.32,dx:c.x+(c.vx||0)*0.16,dy:c.y+(c.vy||0)*0.16}; } }
       const dd=dist(d,c), tackR=(c._jukeT>0)?0.7:1.15; if(dd<=tackR){ puffAt(c.x,c.y); return endPlay('TACKLE',c.y); } }
     if(c.y>=110) return score();
   } else if(G.phase==='live'){ focusY+=(G.los+6-focusY)*Math.min(1,dt*4); }
@@ -418,13 +435,13 @@ function draw(){ ctx.save(); if(shake>0) ctx.translate((Math.random()-.5)*shake,
     ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.ellipse(sx(b.x),sy(b.y),5,3,0,0,7); ctx.fill(); ctx.fillStyle='#8a5a2b'; ctx.strokeStyle='#f4e6c8'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.ellipse(bx,by,6,4,0,0,7); ctx.fill(); ctx.stroke(); }
   if(G.puff&&G.puff.t>0){ const k=1-G.puff.t/0.35; ctx.globalAlpha=(1-k)*0.8; ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(sx(G.puff.x),sy(G.puff.y),PPY*(0.5+k*2.2),0,7); ctx.stroke(); ctx.globalAlpha=1; }
   if(joyId!==null){ ctx.fillStyle='rgba(255,255,255,0.08)'; ctx.beginPath(); ctx.arc(joyCx,joyCy,JR,0,7); ctx.fill(); ctx.strokeStyle='rgba(255,255,255,0.18)'; ctx.lineWidth=2; ctx.stroke(); ctx.fillStyle='rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.arc(joyCx+joyVec.x*JR*0.65,joyCy+joyVec.y*JR*0.65,20,0,7); ctx.fill(); }
-  ctx.restore(); drawHUD();
+  ctx.restore(); drawHUD(); drawTouchUI();
   if((G.phase==='presnap'||G.phase==='live')){ const label=(G.userSide==='def')?('YOUR CALL: '+G.cov):('DEF: '+G.cov); if(!G.isRun||G.userSide==='def'){ ctx.textAlign='center'; ctx.fillStyle='rgba(10,13,16,0.7)'; ctx.fillRect(W/2-118,58,236,26); ctx.fillStyle=gv('--amber'); ctx.font="10px 'Press Start 2P',monospace"; ctx.fillText(label,W/2,75); ctx.textAlign='left'; } }
   if(flashT>0) drawFlash();
   if(G.phase==='presnap') banner('▶  SNAP', G.userSide==='def'?'space — CPU hikes · control the highlighted man':(G.isRun?'space to hike — read the hole':'read the safeties — space to hike'));
   if(G.phase==='handoff') banner('HANDOFF','');
   if(G.phase==='dead') banner(G.deadTxt||'', 'space for next play'); }
-function cardRect(i){ const w=230,h=118,gx=20,gy=14,x0=(W-w*2-gx)/2,y0=200; return {x:x0+(i%2)*(w+gx),y:y0+((i/2)|0)*(h+gy),w,h}; }
+function cardRect(i){ const w=230,h=100,gx=20,gy=10,x0=(W-w*2-gx)/2,y0=186; return {x:x0+(i%2)*(w+gx),y:y0+((i/2)|0)*(h+gy),w,h}; }
 function defCardRect(i){ const w=230,h=86,gx=20,gy=12,x0=(W-w*2-gx)/2,y0=196; return {x:x0+(i%2)*(w+gx),y:y0+((i/2)|0)*(h+gy),w,h}; }
 function drawPlaybook(){ ctx.fillStyle='rgba(8,12,20,0.74)'; ctx.fillRect(0,0,W,H); ctx.textAlign='center';
   ctx.fillStyle=gv('--amber'); ctx.font="20px 'Press Start 2P',monospace"; ctx.fillText('PLAYBOOK',W/2,116);
@@ -471,12 +488,22 @@ function drawHUD(){ const h=54; ctx.fillStyle='rgba(10,13,16,0.92)'; ctx.fillRec
 function banner(big,small){ ctx.textAlign='center'; ctx.fillStyle='rgba(10,13,16,0.55)'; ctx.fillRect(0,H*0.44,W,86);
   ctx.fillStyle=gv('--amber'); ctx.font="18px 'Press Start 2P',monospace"; ctx.fillText(big,W/2,H*0.44+40);
   if(small){ ctx.fillStyle='#cdd8e2'; ctx.font='11px ui-monospace,monospace'; ctx.fillText(small,W/2,H*0.44+66);} ctx.textAlign='left'; }
+function drawBtn(b,label,col){ ctx.fillStyle='rgba(10,13,16,0.58)'; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,7); ctx.fill(); ctx.strokeStyle=col; ctx.lineWidth=3; ctx.stroke(); ctx.fillStyle=col; ctx.textAlign='center'; ctx.font="10px 'Press Start 2P',monospace"; ctx.fillText(label,b.x,b.y+4); ctx.textAlign='left'; }
+function badge(x,y,b){ const px=sx(x),py=sy(y)-PPY*2.0; ctx.fillStyle=b.c; ctx.strokeStyle='rgba(0,0,0,0.55)'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.arc(px,py,9.5,0,7); ctx.fill(); ctx.stroke(); ctx.fillStyle='#0a0d10'; ctx.font="bold 9px 'Press Start 2P',monospace"; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(b.l,px,py+1); ctx.textBaseline='alphabetic'; ctx.textAlign='left'; }
+function drawTouchUI(){ if(G.phase==='select'||G.phase==='dead') return;
+  if(G.defUser){ if(G.phase!=='presnap') { drawBtn(BTN.main,'SWITCH',gv('--cyan')); drawBtn(BTN.sub,'DIVE',gv('--amber')); } return; }
+  if((G.phase==='presnap'||G.phase==='live')&&!G.isRun){ for(const r of (G.recv||[])){ if(r!==G.carrier&&r.btn) badge(r.x,r.y,r.btn); } }
+  if(G.phase==='presnap') return;
+  if(G.phase==='live'){ drawBtn(BTN.scr,'RUN',gv('--good'));
+    for(const b of recvButtons()){ ctx.fillStyle='rgba(10,13,16,0.62)'; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,7); ctx.fill(); ctx.strokeStyle=b.btn.c; ctx.lineWidth=3.5; ctx.stroke(); ctx.fillStyle=b.btn.c; ctx.textAlign='center'; ctx.font="bold 15px 'Press Start 2P',monospace"; ctx.fillText(b.btn.l,b.x,b.y+6); ctx.textAlign='left'; } return; }
+  if(G.phase==='run'||G.phase==='handoff'){ drawBtn(BTN.main,'JUKE',gv('--amber')); } }
 function drawFlash(){ const a=Math.min(1,flashT/0.5); ctx.globalAlpha=a; ctx.textAlign='center'; ctx.fillStyle=flashCol; ctx.font="24px 'Press Start 2P',monospace"; ctx.fillText(flash,W/2,H*0.36); ctx.globalAlpha=1; ctx.textAlign='left'; }
 
 function frame(now){ const dt=Math.min(0.033,(now-last)/1000); last=now; update(dt); draw(); requestAnimationFrame(frame); }
 requestAnimationFrame(frame);
-hintEl.innerHTML='<b>OFFENSE</b> WASD move · hold+drag mouse to throw · Space juke · Tab pass/run &nbsp;|&nbsp; <b>DEFENSE</b> WASD move your man · <b>E</b> switch · <b>Space</b> dive';
-if(typeof globalThis!=='undefined') globalThis.__hooks={ setupPlay,snap,throwBall,update,draw,getG:()=>G,keys:()=>keys,pick:(tab,idx)=>{G.tab=tab;G.sel[tab]=idx;},setSide:s=>{G.userSide=s;},setDef:i=>{G.selDef=i;},sw:switchDefender };
+hintEl.innerHTML='<b>PASS</b> tap a receiver to throw · SCRMBL to tuck &amp; run &nbsp;|&nbsp; <b>RUN</b> drag to steer · JUKE to cut &nbsp;|&nbsp; <b>DEFENSE</b> drag to move · SWITCH · DIVE &nbsp;(desktop: WASD, click a receiver, Space, E)';
+if(typeof globalThis!=='undefined') globalThis.__hooks={ setupPlay,snap,throwBall,update,draw,getG:()=>G,keys:()=>keys,pick:(tab,idx)=>{G.tab=tab;G.sel[tab]=idx;},setSide:s=>{G.userSide=s;},setDef:i=>{G.selDef=i;},sw:switchDefender, throwToReceiver:(r)=>throwToReceiver(r), nearestRecv:(x,y)=>nearestRecv(x,y) };
 </script>
 </body>
 </html>
