@@ -5943,6 +5943,14 @@ function renderSheds(){
         +'<div class=\"toggle-info\"><div class=\"toggle-lbl\">Shed Posts On Top</div><div class=\"toggle-sub\">Posts on slab — removes sackcrete, pads & lag bolts; adds brackets</div></div>'
         +'<label class=\"tog\"><input type=\"checkbox\" id=\"shedPostsOnTop_'+sc.id+'\" '+(sc.postsOnTop?'checked':'')+' onchange=\"setShedProp('+sc.id+',\'postsOnTop\',this.checked);scheduleBuild()\"><span class=\"tog-track\"></span></label>'
         +'</div>'
+        +(sc.postsOnTop ? (
+          '<div class=\"shed-row\"><div><div class=\"shed-label\">Shed Post Base</div>'
+          +'<select class=\"shed-inp\" onchange=\"setShedProp('+sc.id+',\'postBaseType\',this.value);scheduleBuild();try{updateStripFromLocalCalc();}catch(e){}\">'
+          +'<option value=\"\"'+(!sc.postBaseType?' selected':'')+'>Match Main Building</option>'
+          +'<option value=\"bracket\"'+(sc.postBaseType==='bracket'?' selected':'')+'>Heavy Duty Brackets</option>'
+          +'<option value=\"perma\"'+(sc.postBaseType==='perma'?' selected':'')+'>Perma-Columns</option>'
+          +'</select></div></div>'
+        ) : '')
       ) : '')
       // —— CYPRESS UPGRADE TOGGLES ——
       +(isLeanto ? buildCypressToggles(sc) : '')
@@ -10638,13 +10646,18 @@ function applyVoiceQuote(parsed, overlay) {
         const mBracketDark = new THREE.MeshBasicMaterial({ color: 0x5A6268 });
         const mPerma   = new THREE.MeshBasicMaterial({ color: 0xb4b8bf }); // precast concrete
         const mPermaDk = new THREE.MeshBasicMaterial({ color: 0x969ba3 });
+        // Whether the bracket currently being drawn is a Perma-Column. Main-post calls pass
+        // this explicitly; shed-post calls rely on _activePerma, which the shed loop sets to
+        // that shed's own Post Base so a shed can differ from the main building.
+        var _activePerma = _permaMode;
 
         // Helper: draw bracket at (x, z) on a given group, sitting on slab at slabY.
         // _hideBW: if true, tag meshes so they hide with the enclosed post they belong to.
         // _perma: draw a Perma-Column (concrete pillar + steel wrap) instead of a flat bracket.
         function addBracket(x, z, group, slabY, _hideBW, _perma) {
             const sy = slabY !== undefined ? slabY : slabH;
-            if (_permaMode) {
+            var _isPerma = (_perma !== undefined) ? _perma : _activePerma;
+            if (_isPerma) {
                 function _addP(m){ if(_hideBW){ m.userData = m.userData || {}; m.userData.hideBehindWall = true; } m.castShadow = true; group.add(m); }
                 const colW = ps * 1.05;
                 var col = new THREE.Mesh(new THREE.BoxGeometry(colW, pillarH, colW), mPerma);
@@ -10989,7 +11002,9 @@ function applyVoiceQuote(parsed, overlay) {
 
             // Place posts along the shed's length only (not full wall)
             // _isMono resolved above (early) — shedPostBase and shedPostH use shedShClamped
-            const _shedBaseH = _permaMode ? pillarH : slabH;
+            const _shedPermaR = sc.postBaseType ? (sc.postBaseType === 'perma') : _permaMode;
+            _activePerma = _shedPermaR; // shed's own Post Base governs its bracket calls
+            const _shedBaseH = _shedPermaR ? pillarH : slabH;
             const shedPostBase = _isMono ? _shedBaseH : 0;
             const shedPostH = _isMono ? Math.max(0.01, shedShClamped - _shedBaseH) : shedShClamped;
 
@@ -11414,6 +11429,7 @@ function applyVoiceQuote(parsed, overlay) {
             grps.posts.children.slice(_ssShedPostStart).forEach(function(o){ grps.shed.add(o); });
             grps.mainPosts.children.slice(_ssShedMainPostStart).forEach(function(o){ grps.shed.add(o); });
         }
+        _activePerma = _permaMode; // sheds done — remaining posts follow the main building's Post Base
 
         // Walls with door cutouts
         function buildWS(wallId) {
@@ -25247,7 +25263,9 @@ window.SauceMaterials.calcPostBrackets = function(Q, WALLS, allDoors, shedCfgs, 
   }
   function decorativeSku(size) { return size === '8x8' ? 'DPBKTAPB88' : 'DPBKTAPB66'; }
   // Perma-Column base: one precast column per post (replaces brackets when selected).
-  var permaMode = ((sf.postBracketType || 'bracket') === 'perma');
+  var _pbtDom = (typeof document !== 'undefined' && document.getElementById('st_postBaseType')) ? document.getElementById('st_postBaseType').value : null;
+  var permaMode = ((_pbtDom || sf.postBracketType || 'bracket') === 'perma');
+  try { console.log('[PERMA] dom=' + _pbtDom + ' | sf=' + sf.postBracketType + ' | permaMode=' + permaMode + ' | onTop=' + onTop + ' | studFrame=' + !!sf.isStudFrame); } catch(e){}
   function permaSku(size) { return (size === '8x8' || size === '10x10') ? 'PBPC88' : 'PBPC66'; }
 
   var groups = {};
@@ -25316,7 +25334,10 @@ window.SauceMaterials.calcPostBrackets = function(Q, WALLS, allDoors, shedCfgs, 
     // Determine bracket type based on enclosure:
     // Open/roofonly → decorative; enclosed/partial → regular
     var isOpen = (sc.encl === 'open' || sc.encl === 'roofonly');
-    if (permaMode) {
+    // Per-shed Post Base overrides the main setting (blank = match main). Lets a customer
+    // put the main building on brackets but the concrete-free shed on Perma-Columns.
+    var _shedPerma = sc.postBaseType ? (sc.postBaseType === 'perma') : permaMode;
+    if (_shedPerma) {
       add(permaSku(ssSize), count); // one Perma-Column per shed post
     } else if (isOpen) {
       add(decorativeSku(ssSize), count);
