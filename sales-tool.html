@@ -10482,6 +10482,30 @@ function applyVoiceQuote(parsed, overlay) {
             addSlab(new THREE.BoxGeometry(sw + .04, .04, sl + .04), 0, .02, 0);
         }
 
+        // Concrete APRONS / sidewalks — placed slabs on the ground. Each apron sits against a
+        // wall, positioned along it, spanning W (along the wall) and projecting Depth outward.
+        // Independent of the main slab, so a sidewalk can exist with no floor poured.
+        try {
+            var _aprons = (window._lastConcreteOpts && window._lastConcreteOpts.aprons) || [];
+            _aprons.forEach(function(a){
+                if (!a || a.included === false) return;
+                var aw = parseFloat(a.w) || 0, al = parseFloat(a.l) || 0;
+                if (aw <= 0 || al <= 0) return;
+                var awS = aw * Sc, alS = al * Sc;
+                var wall = a.wall || 'back';
+                var isEW = (wall === 'left' || wall === 'right');
+                var alongLen = isEW ? Q.l : Q.w;                 // wall run length
+                var offC = Math.max(0, Math.min(parseFloat(a.offset) || 0, Math.max(0, alongLen - aw)));
+                var alongCtr = (-alongLen/2 + offC + aw/2) * Sc;
+                var px, pz, geo;
+                if (wall === 'left')       { px = -sw/2 - alS/2; pz = alongCtr; geo = new THREE.BoxGeometry(alS, .038, awS); }
+                else if (wall === 'right') { px =  sw/2 + alS/2; pz = alongCtr; geo = new THREE.BoxGeometry(alS, .038, awS); }
+                else if (wall === 'front') { px = alongCtr; pz = -sl/2 - alS/2; geo = new THREE.BoxGeometry(awS, .038, alS); }
+                else                       { px = alongCtr; pz =  sl/2 + alS/2; geo = new THREE.BoxGeometry(awS, .038, alS); }
+                addSlab(geo, px, .019, pz);
+            });
+        } catch(e) { console.warn('[3D] apron render failed:', e && e.message); }
+
         // Shed slabs
         (shedCfgs || []).forEach(sc => {
             const ssw = sc.w * Sc, ssl = sc.l * Sc;
@@ -39348,11 +39372,11 @@ window.openConcreteModal = function(forcedType) {
       inp.oninput = recalc;
       return inp;
     }
-    var wInp = dimInp('W (ft)', savedEntry && savedEntry.w);
+    var wInp = dimInp('W along wall', savedEntry && savedEntry.w);
     var xLbl = document.createElement('div');
     xLbl.textContent = '×';
     xLbl.style.cssText = 'color:#888;font-size:12px;font-weight:700;';
-    var lInp = dimInp('L (ft)', savedEntry && savedEntry.l);
+    var lInp = dimInp('Depth out', savedEntry && savedEntry.l);
     var sqftLbl = document.createElement('div');
     sqftLbl.style.cssText = 'font-size:10px;color:#888;font-weight:600;white-space:nowrap;min-width:50px;';
     function updateSqft() {
@@ -39364,6 +39388,27 @@ window.openConcreteModal = function(forcedType) {
     dimRow.appendChild(wInp); dimRow.appendChild(xLbl); dimRow.appendChild(lInp); dimRow.appendChild(sqftLbl);
     entry.appendChild(dimRow);
     updateSqft();
+
+    // Placement — which wall the apron sits against + how far along that wall it starts.
+    // Lets the salesman locate it in the render (apron in front of doors, or a sidewalk).
+    var placeRow = document.createElement('div');
+    placeRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
+    var wallSel = document.createElement('select');
+    wallSel.style.cssText = 'flex:1;padding:6px 8px;border-radius:7px;border:1.5px solid rgba(255,130,0,.35);background:rgba(255,130,0,.06);color:#FF8200;font-size:12px;font-weight:700;font-family:Outfit,sans-serif;outline:none;min-width:0;';
+    [['back','Front Gable'],['left','Left Eave'],['front','Back Gable'],['right','Right Eave']].forEach(function(w){
+      var o = document.createElement('option'); o.value = w[0]; o.textContent = w[1];
+      if (savedEntry && savedEntry.wall === w[0]) o.selected = true;
+      wallSel.appendChild(o);
+    });
+    wallSel.onchange = recalc;
+    var offInp = document.createElement('input');
+    offInp.type = 'number'; offInp.min = '0'; offInp.placeholder = 'Position (ft)';
+    offInp.value = (savedEntry && savedEntry.offset != null) ? savedEntry.offset : '';
+    offInp.title = 'Feet from the corner, along the chosen wall';
+    offInp.style.cssText = 'flex:1;padding:6px 8px;border-radius:7px;border:1.5px solid rgba(255,130,0,.35);background:rgba(255,130,0,.06);color:#FF8200;font-size:13px;font-weight:800;font-family:Outfit,sans-serif;outline:none;min-width:0;';
+    offInp.oninput = recalc;
+    placeRow.appendChild(wallSel); placeRow.appendChild(offInp);
+    entry.appendChild(placeRow);
 
     // Concrete opts (reuse buildOptsUI but embedded)
     var optsWrap = buildOptsUI('', 0, savedEntry, recalc);
@@ -39381,6 +39426,7 @@ window.openConcreteModal = function(forcedType) {
         if (!sq) return null;
         var base = (optsWrap.getOpts ? optsWrap.getOpts() : null) || { included: true };
         base.w = w; base.l = l; base.sqft = sq;
+        base.wall = wallSel.value; base.offset = parseFloat(offInp.value) || 0;
         return base;
       }
     };
