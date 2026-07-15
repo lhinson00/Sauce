@@ -33,6 +33,19 @@ function clampCam(){ const t=H*0.60/PPY,b=H*0.40/PPY; focusY=Math.max(b,Math.min
 const sx=fx=>fx*PPY, sy=fy=>H*0.60-(fy-focusY)*PPY, toFX=px=>px/PPY, toFY=py=>focusY+(H*0.60-py)/PPY;
 
 function rnd(a,b){ return a+Math.random()*(b-a); }
+function accFor(pos){ return {WR:40,CB:40,RB:43,TE:34,S:36,LB:33,QB:38,DL:30,OL:26}[pos]||36; }
+function spdFromRating(sr){ return Math.max(5.4, sr*0.12 - 1.5); }
+function ratingsFor(pos){ const R=(a,b)=>Math.round(rnd(a,b)); switch(pos){
+  case 'WR': return {spd:R(84,95),str:R(52,68),sta:R(80,92),cat:R(80,93),acc:0,tps:0,tkl:R(45,60)};
+  case 'CB': return {spd:R(85,95),str:R(52,66),sta:R(80,90),cat:R(62,80),acc:0,tps:0,tkl:R(60,74)};
+  case 'RB': return {spd:R(83,93),str:R(70,86),sta:R(78,90),cat:R(60,78),acc:0,tps:0,tkl:R(45,58)};
+  case 'TE': return {spd:R(72,82),str:R(78,90),sta:R(75,86),cat:R(72,86),acc:0,tps:0,tkl:R(55,68)};
+  case 'S' : return {spd:R(80,89),str:R(68,82),sta:R(78,88),cat:R(66,80),acc:0,tps:0,tkl:R(76,88)};
+  case 'LB': return {spd:R(75,85),str:R(80,92),sta:R(78,88),cat:R(52,66),acc:0,tps:0,tkl:R(84,94)};
+  case 'QB': return {spd:R(68,80),str:R(58,72),sta:R(80,90),cat:0,acc:R(74,93),tps:R(76,95),tkl:R(40,55)};
+  case 'DL': return {spd:R(66,79),str:R(86,96),sta:R(72,84),cat:0,acc:0,tps:0,tkl:R(80,92)};
+  case 'OL': return {spd:R(58,70),str:R(84,95),sta:R(74,86),cat:0,acc:0,tps:0,tkl:R(50,62)};
+  default: return {spd:78,str:75,sta:80,cat:70,acc:70,tps:70,tkl:70}; } }
 function speedFor(pos){ switch(pos){
   case 'WR': return {spd:rnd(8.2,8.9),acc:40}; case 'CB': return {spd:rnd(8.2,8.7),acc:40};
   case 'RB': return {spd:rnd(8.1,8.7),acc:43}; case 'TE': return {spd:rnd(7.4,7.9),acc:34};
@@ -89,7 +102,7 @@ const COVS=[
 const FRONTS=['BASE','CRASH','LB BLITZ','CONTAIN','SLANT RT','SLANT LT','SAFETY DOWN'];
 
 let G, keys={}, aim=null, shake=0, flash=null, flashT=0, flashCol='#fff', assist=false;
-function mk(x,y,pos,num,extra){ const s=speedFor(pos); return Object.assign({x,y,pos,num,x0:x,y0:y,vx:0,vy:0,spd:s.spd,acc:s.acc,down:0},extra||{}); }
+function mk(x,y,pos,num,extra){ const rt=ratingsFor(pos); return Object.assign({x,y,pos,num,x0:x,y0:y,vx:0,vy:0,rt,spd:spdFromRating(rt.spd),acc:accFor(pos),down:0},extra||{}); }
 function offenseIsUser(){ return G.userSide==='off'; }
 
 function setupPlay(){
@@ -182,20 +195,26 @@ addEventListener('keydown', e=>{ const k=e.key.toLowerCase();
       if(k===' '||k==='enter') setupPlay(); }
   } else if(G.phase==='presnap' && (k===' '||k==='enter')) snap();
   else if(G.phase==='dead' && (k===' '||k==='enter')) G.phase='select';
-  else if(/^[1-5]$/.test(k) && G.phase==='live' && !G.offCPU){ const r=(G.recv||[])[(+k)-1]; if(r) throwToReceiver(r); }
-  else if(k==='e' && G.defUser && (G.phase==='live'||G.phase==='air'||G.phase==='run'||G.phase==='handoff')) switchDefender();
+  else if(/^[1-5]$/.test(k) && G.phase==='live' && !G.offCPU){ const r=(G.recv||[])[(+k)-1]; if(r&&!G.charge) G.charge={recv:r,dur:0,key:k}; }
+  else if(k==='e' && G.defUser && (G.phase==='presnap'||G.phase==='live'||G.phase==='air'||G.phase==='run'||G.phase==='handoff')) switchDefender();
   else if(k===' ' && (G.phase==='run'||G.phase==='handoff'||G.phase==='live'||G.phase==='air')){ if(offenseIsUser()){ if(G.phase==='run') triggerJuke(); } else userDive(); }
 });
-addEventListener('keyup', e=>{ keys[e.key.toLowerCase()]=false; });
+addEventListener('keyup', e=>{ const k=e.key.toLowerCase(); keys[k]=false; if(G.charge&&G.charge.key===k) releaseThrow(); });
 function switchDefender(){ const ref=G.carrier||(G.ball?{x:G.ball.tx,y:G.ball.ty}:G.qb); let best=null,bd=9e9;
   for(const d of G.def){ if(d===G.control||d.blocked||(d.down||0)>0)continue; const dd=dist(d,ref); if(dd<bd){bd=dd;best=d;} } if(best) G.control=best; }
 let joyId=null,joyCx=0,joyCy=0,joyVec={x:0,y:0},JR=76;
 const BTN={ main:{x:W-76,y:H-120,r:58}, sub:{x:W-76,y:H-236,r:48}, scr:{x:84,y:H-120,r:54} };
-function recvButtons(){ const arr=[],cx=W-96,cy=H-152,pos=[[0,-48],[-48,2],[48,2],[-26,50],[26,50]];
-  const rc=G.recv||[]; for(let i=0;i<rc.length;i++){ const q=pos[i]||[0,0]; arr.push({x:cx+q[0],y:cy+q[1],r:31,recv:rc[i],btn:rc[i].btn}); } return arr; }
+function recvButtons(){ const arr=[],cx=W-100,cy=H-150,rc=G.recv||[];
+  const L={1:[[0,0]],2:[[-42,0],[42,0]],3:[[0,-52],[-48,30],[48,30]],4:[[0,-60],[-60,0],[60,0],[0,60]],5:[[0,-66],[-62,-16],[62,-16],[-40,56],[40,56]]}[Math.min(5,rc.length)]||[];
+  for(let i=0;i<rc.length;i++){ const q=L[i]||[0,0]; arr.push({x:cx+q[0],y:cy+q[1],r:30,recv:rc[i],btn:rc[i].btn}); } return arr; }
 function inBtn(p,b){ return Math.hypot(p.x-b.x,p.y-b.y)<b.r*1.08; }
 function nearestRecv(fx,fy){ let best=null,bd=9e9; for(const r of (G.recv||[])){ if(r===G.carrier)continue; const d=Math.hypot(r.x-fx,r.y-fy); if(d<bd){bd=d;best=r;} } return best; }
-function throwToReceiver(r){ if(!r||G.phase!=='live') return; let t=dist(G.qb,r)/BALLSPD; for(let i=0;i<2;i++){ const px=r.x+(r.vx||0)*t,py=r.y+(r.vy||0)*t; t=Math.hypot(px-G.qb.x,py-G.qb.y)/BALLSPD; } throwBall(r.x+(r.vx||0)*t*1.05, r.y+(r.vy||0)*t*1.08); }
+function throwToReceiver(r,power){ if(!r||G.phase!=='live') return; power=power==null?0.6:power;
+  let t=dist(G.qb,r)/BALLSPD; for(let i=0;i<2;i++){ const px=r.x+(r.vx||0)*t,py=r.y+(r.vy||0)*t; t=Math.hypot(px-G.qb.x,py-G.qb.y)/BALLSPD; }
+  let tx=r.x+(r.vx||0)*t*1.05, ty=r.y+(r.vy||0)*t*1.08;
+  const acc=(G.qb.rt?G.qb.rt.acc:84); const err=(1-acc/99)*3.2*(0.5+power);   // low accuracy & lasers scatter
+  tx+=(Math.random()*2-1)*err; ty+=(Math.random()*2-1)*err; throwBall(tx,ty,power); }
+function releaseThrow(){ if(!G.charge) return; const p=Math.min(1,G.charge.dur/0.45); throwToReceiver(G.charge.recv,p); G.charge=null; }
 function userDive(){ const d=G.control; if(d&&!d.dive&&(d.down||0)<=0&&G.carrier){ d.dive={t:0.36,dx:G.carrier.x+(G.carrier.vx||0)*0.16,dy:G.carrier.y+(G.carrier.vy||0)*0.16}; } }
 function userTuck(){ if(G.phase==='live'&&!G.offCPU){ G.carrier=G.qb; G.phase='run'; } }
 function evPos(e){ const r=cv.getBoundingClientRect(); return {x:(e.clientX-r.left)*(W/r.width),y:(e.clientY-r.top)*(H/r.height)}; }
@@ -204,24 +223,27 @@ function joyStart(p,e){ joyId=e.pointerId; joyCx=p.x; joyCy=p.y; joyVec={x:0,y:0
 cv.addEventListener('pointerdown', e=>{ cv.setPointerCapture(e.pointerId); const p=evPos(e);
   if(G.phase==='select'){ if(G.userSide==='def'){ const i=defCardHit(p); if(i>=0){ G.selDef=i; setupPlay(); } return; }
     const tb=tabHit(p); if(tb){ G.tab=tb; return; } const i=cardHit(p); if(i>=0){ G.sel[G.tab]=i; setupPlay(); } return; }
-  if(G.phase==='presnap'){ snap(); return; } if(G.phase==='dead'){ G.phase='select'; return; }
+  if(G.phase==='presnap'){ if(G.defUser){ if(inBtn(p,BTN.main)){ snap(); return; } const nd=nearestDef({x:toFX(p.x),y:toFY(p.y)}); if(nd&&Math.hypot(sx(nd.x)-p.x,sy(nd.y)-p.y)<PPY*3.5){ G.control=nd; return; } snap(); return; } snap(); return; }
+  if(G.phase==='dead'){ G.phase='select'; return; }
   if(G.defUser){ if(inBtn(p,BTN.main)){ switchDefender(); return; } if(inBtn(p,BTN.sub)){ userDive(); return; } joyStart(p,e); return; }
-  if(G.phase==='live'){ for(const b of recvButtons()){ if(inBtn(p,b)){ throwToReceiver(b.recv); return; } }
+  if(G.phase==='live'){ for(const b of recvButtons()){ if(inBtn(p,b)){ G.charge={recv:b.recv,dur:0,id:e.pointerId}; return; } }
     if(inBtn(p,BTN.scr)){ userTuck(); return; }
-    const r=nearestRecv(toFX(p.x),toFY(p.y)); if(r&&Math.hypot(sx(r.x)-p.x,sy(r.y)-p.y)<PPY*3.2) throwToReceiver(r); return; }
+    const r=nearestRecv(toFX(p.x),toFY(p.y)); if(r&&Math.hypot(sx(r.x)-p.x,sy(r.y)-p.y)<PPY*3.2){ G.charge={recv:r,dur:0,id:e.pointerId}; } return; }
   if(G.phase==='run'||G.phase==='handoff'){ if(inBtn(p,BTN.main)){ triggerJuke(); return; } joyStart(p,e); return; } });
 cv.addEventListener('pointermove', e=>{ const p=evPos(e);
   if(G.phase==='select'){ if(G.userSide==='def'){ const i=defCardHit(p); if(i>=0) G.selDef=i; return; } const i=cardHit(p); if(i>=0) G.sel[G.tab]=i; return; }
   if(e.pointerId===joyId) updateJoy(p); });
-function pEnd(e){ if(e.pointerId===joyId){ joyId=null; joyVec={x:0,y:0}; } }
+function pEnd(e){ if(G.charge&&e.pointerId===G.charge.id){ releaseThrow(); return; } if(e.pointerId===joyId){ joyId=null; joyVec={x:0,y:0}; } }
 cv.addEventListener('pointerup', pEnd); cv.addEventListener('pointercancel', pEnd);
 function tabHit(p){ const y=168; if(p.y<y-22||p.y>y+8) return null; if(p.x>W/2-150&&p.x<W/2-6) return 'pass'; if(p.x>W/2+6&&p.x<W/2+150) return 'run'; return null; }
 function cardHit(p){ const list=(G.tab==='run'?RUN:PASS); for(let i=0;i<list.length;i++){ const r=cardRect(i); if(p.x>r.x&&p.x<r.x+r.w&&p.y>r.y&&p.y<r.y+r.h) return i; } return -1; }
 function defCardHit(p){ for(let i=0;i<COVS.length;i++){ const r=defCardRect(i); if(p.x>r.x&&p.x<r.x+r.w&&p.y>r.y&&p.y<r.y+r.h) return i; } return -1; }
 
 function snap(){ if(G.phase!=='presnap') return; G.t=0; if(G.isRun){ G.phase='handoff'; G.carrier=G.qb; G.qb.hasBall=true; } else { G.phase='live'; G.dropDone=false; } }
-function throwBall(tx,ty){ if(G.phase!=='live') return; tx=Math.max(1,Math.min(FW-1,tx)); ty=Math.max(1,Math.min(FL-1,ty));
-  const d=Math.hypot(tx-G.qb.x,ty-G.qb.y); G.ball={x:G.qb.x,y:G.qb.y,sxp:G.qb.x,syp:G.qb.y,tx,ty,t:0,dur:Math.max(.4,d/BALLSPD)}; G.phase='air'; }
+function throwBall(tx,ty,power){ if(G.phase!=='live') return; power=power==null?0.6:power; tx=Math.max(1,Math.min(FW-1,tx)); ty=Math.max(1,Math.min(FL-1,ty));
+  const d=Math.hypot(tx-G.qb.x,ty-G.qb.y), tps=(G.qb.rt?G.qb.rt.tps:82);
+  const spd=BALLSPD*(0.62+0.55*power)*(0.82+0.36*(tps/99));
+  G.ball={x:G.qb.x,y:G.qb.y,sxp:G.qb.x,syp:G.qb.y,tx,ty,t:0,dur:Math.max(.35,d/spd),power,arc:(1-power)*4.6+1.6}; G.phase='air'; G.charge=null; }
 function triggerJuke(){ const c=G.carrier; if(!c||(c._jukeCd||0)>0) return; c._jukeT=0.42; c._jukeCd=0.85; bumpShake(2); }
 function setFlash(t,c){ flash=t; flashCol=c; flashT=1.1; } function bumpShake(a){ shake=Math.max(shake,a); }
 function puffAt(x,y){ G.puff={x,y,t:0.35}; }
@@ -270,8 +292,8 @@ function resolveBlocks(dt,isPass){
 function cpuQB(dt){
   let bestR=null,bestSep=-1; for(const r of G.recv){ let m=9e9; for(const d of G.def) m=Math.min(m,dist(d,r)); if(m>bestSep){bestSep=m;bestR=r;} }
   const pressure=G.def.some(d=>d.job&&d.job.t==='rush'&&!d.blocked&&dist(d,G.qb)<2.6);
-  if(G.t>1.1 && bestR && bestSep>2.7){ throwBall(bestR.x+(bestR.vx||0)*0.35,bestR.y+(bestR.vy||0)*0.4); return; }
-  if((pressure||G.t>3.6) && bestR){ if(bestSep>1.9){ throwBall(bestR.x+(bestR.vx||0)*0.3,bestR.y+(bestR.vy||0)*0.35); return; } G.qb._scr=true; }
+  if(G.t>1.1 && bestR && bestSep>2.7){ const dp=(bestR.y-G.los)>22?0.25:0.8; throwToReceiver(bestR,dp); return; }
+  if((pressure||G.t>3.6) && bestR){ if(bestSep>1.9){ throwToReceiver(bestR,0.7); return; } G.qb._scr=true; }
   if(G.qb._scr){ seek(G.qb, G.qb.x+(G.qb.x<CX?4:-4), G.los-1, 0.85, dt); if(G.qb.y>G.los+0.3){ G.carrier=G.qb; G.phase='run'; } }
 }
 function cpuRun(c,dt){ let nd=null,nb=9e9; for(const d of G.def){ if(d.blocked)continue; const dd=dist(d,c); if(dd<nb){nb=dd;nd=d;} }
@@ -296,7 +318,7 @@ let last=performance.now();
 function update(dt){
   if(shake>0) shake=Math.max(0,shake-dt*60); if(flashT>0) flashT-=dt; if(G.puff&&G.puff.t>0) G.puff.t-=dt;
   if(G.phase==='presnap'||G.phase==='select'||G.phase==='dead') return;
-  G.t+=dt; const carry=(G.phase==='run'||G.phase==='handoff');
+  G.t+=dt; const carry=(G.phase==='run'||G.phase==='handoff'); if(G.charge){ if(G.phase==='live') G.charge.dur+=dt; else G.charge=null; }
 
   if(!G.isRun){ for(const r of G.recv){ if(r===G.carrier) continue; moveReceiver(r,dt); (r.hist=r.hist||[]).push({x:r.x,y:r.y}); if(r.hist.length>22) r.hist.shift(); } }
 
@@ -339,7 +361,10 @@ function update(dt){
       if(d.dive){ d.dive.t-=dt; steer(d,d.dive.dx-d.x,d.dive.dy-d.y,d.spd*1.8,d.acc*2.4,dt); if(dist(d,c)<1.55){ puffAt(c.x,c.y); return endPlay('TACKLE',c.y); } if(d.dive.t<=0){ d.dive=null; d.down=0.85; } continue; }
       if(d===G.control){ userDefMove(d,dt); }
       else { runFit(d,c,dt); if(G.phase==='run'&&dist(d,c)<2.4&&dist(d,c)>1.0&&Math.random()<0.07){ d.dive={t:0.32,dx:c.x+(c.vx||0)*0.16,dy:c.y+(c.vy||0)*0.16}; } }
-      const dd=dist(d,c), tackR=(c._jukeT>0)?0.7:1.15; if(dd<=tackR){ puffAt(c.x,c.y); return endPlay('TACKLE',c.y); } }
+      const dd=dist(d,c), tackR=(c._jukeT>0)?0.7:1.15;
+      if(dd<=tackR){ const tk=(d.rt?d.rt.tkl:80), st=(c.rt?c.rt.str:75); const pr=0.74+(tk-st)*0.006;
+        if(c.pos==='QB'||Math.random()<pr){ puffAt(c.x,c.y); return endPlay('TACKLE',c.y,d); }
+        else { d.down=0.55; bumpShake(3); setFlash('BROKE FREE!','#4ade80'); } } }
     if(c.y>=110) return score();
   } else if(G.phase==='live'){ focusY+=(G.los+6-focusY)*Math.min(1,dt*4); }
   clampCam();
@@ -347,19 +372,26 @@ function update(dt){
 function resolveCatch(){ const {tx,ty}=G.ball;
   let bW=null,bw=9e9; for(const w of G.recv){ const d=Math.hypot(w.x-tx,w.y-ty); if(d<bw){bw=d;bW=w;} }
   let bD=null,bd=9e9; for(const d of G.def){ const q=Math.hypot(d.x-tx,d.y-ty); if(q<bd){bd=q;bD=d;} }
-  const CATCH=2.8,CONTEST=2.3, userPick=(bD&&bD===G.control);
+  const CATCH=2.9,CONTEST=2.3, userPick=(bD&&bD===G.control);
   if(bW&&bw<=CATCH){ if(bD&&bd<bw&&bd<CONTEST){ if(Math.random()<(userPick?0.55:0.30)){ endPlay('INTERCEPTED',ty); return; } endPlay('INCOMPLETE',G.los); return; }
+    const cat=(bW.rt?bW.rt.cat:78), pw=(G.ball?G.ball.power:0.6);
+    let drop=0.03 + (1-cat/99)*0.20 + (pw>0.72?0.05:0) + (bD&&bd<3.4?0.06:0);
+    if(Math.random()<drop){ endPlay('DROP',G.los); return; }
     bW.caught=true; G.carrier=bW; G.phase='run'; return; }
   endPlay('INCOMPLETE',G.los); }
 function score(){ if(offenseIsUser()) G.you+=7; else G.cpu+=7; bumpShake(9); setFlash('TOUCHDOWN!','#ffcf4a'); flipPossession(); G.phase='dead'; G.deadTxt='TOUCHDOWN'; }
-function endPlay(kind,spotY){ if(G.phase==='dead') return; bumpShake(kind==='SACK'||kind==='TACKLE'?6:3); let turn=false;
+function endPlay(kind,spotY,by){ if(G.phase==='dead') return; bumpShake(kind==='SACK'||kind==='TACKLE'?6:3); let turn=false;
+  if(kind==='TACKLE'&&G.carrier&&G.carrier.pos!=='QB'){ const st=(G.carrier.rt?G.carrier.rt.str:75), tk=(by&&by.rt?by.rt.tkl:80);
+    const fum=0.035 + Math.max(0,(78-st))*0.0018 + Math.max(0,(tk-80))*0.0018;
+    if(Math.random()<fum){ const defBall=Math.random()<0.45; setFlash(defBall?'FUMBLE — LOST!':'FUMBLE!', defBall?'#d85852':'#ffcf4a');
+      if(defBall){ flipPossession(); G.deadTxt='FUMBLE  •  turnover'; G.phase='dead'; return; } } }
   if(kind==='INTERCEPTED'){ turn=true; setFlash(offenseIsUser()?'PICKED OFF':'INTERCEPTED!',offenseIsUser()?'#d85852':'#4ade80'); }
-  else if(kind==='SACK') setFlash('SACK!','#d85852'); else if(kind==='INCOMPLETE') setFlash('INCOMPLETE','#dfe8ff');
+  else if(kind==='SACK') setFlash('SACK!','#d85852'); else if(kind==='INCOMPLETE') setFlash('INCOMPLETE','#dfe8ff'); else if(kind==='DROP') setFlash('DROPPED','#dfe8ff');
   const gain=Math.round(spotY-G.los);
   if(turn){ flipPossession(); G.deadTxt='TURNOVER'; G.phase='dead'; return; }
   if(spotY>=110){ score(); return; } G.los=Math.max(1,Math.min(109,spotY));
   if(G.los>=G.first){ G.down=1; G.first=Math.min(G.los+10,110); G.deadTxt=`FIRST DOWN  •  ${kind==='TACKLE'?(gain>=0?'+'+gain:''+gain)+' yds':kind}`; }
-  else { G.down++; if(G.down>4){ flipPossession(); G.deadTxt='TURNOVER ON DOWNS'; G.phase='dead'; return; } G.deadTxt=kind==='TACKLE'?(gain>=0?`+${gain} yds`:`${gain} yds`):kind; }
+  else { G.down++; if(G.down>4){ flipPossession(); G.deadTxt='TURNOVER ON DOWNS'; G.phase='dead'; return; } G.deadTxt=kind==='TACKLE'?(gain>=0?`+${gain} yds`:`${gain} yds`):(kind==='DROP'?'DROPPED':kind); }
   G.phase='dead'; }
 
 /* sprites */
@@ -431,7 +463,7 @@ function draw(){ ctx.save(); if(shake>0) ctx.translate((Math.random()-.5)*shake,
   if(aim&&G.phase==='live'&&!G.offCPU){ const qx=sx(G.qb.x),qy=sy(G.qb.y),tp=sx(aim.tx),yp=sy(aim.ty);
     ctx.strokeStyle='rgba(255,207,74,0.85)'; ctx.lineWidth=2; ctx.setLineDash([6,6]); ctx.beginPath(); ctx.moveTo(qx,qy); ctx.lineTo(tp,yp); ctx.stroke(); ctx.setLineDash([]);
     ctx.strokeStyle='#ffcf4a'; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(tp,yp,10,0,7); ctx.stroke(); ctx.beginPath(); ctx.moveTo(tp-6,yp); ctx.lineTo(tp+6,yp); ctx.moveTo(tp,yp-6); ctx.lineTo(tp,yp+6); ctx.stroke(); }
-  if(G.phase==='air'){ const b=G.ball,u=Math.min(1,b.t/b.dur),arc=Math.sin(u*Math.PI)*PPY*4,bx=sx(b.x),by=sy(b.y)-arc;
+  if(G.phase==='air'){ const b=G.ball,u=Math.min(1,b.t/b.dur),arc=Math.sin(u*Math.PI)*PPY*(b.arc||4),bx=sx(b.x),by=sy(b.y)-arc;
     ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.ellipse(sx(b.x),sy(b.y),5,3,0,0,7); ctx.fill(); ctx.fillStyle='#8a5a2b'; ctx.strokeStyle='#f4e6c8'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.ellipse(bx,by,6,4,0,0,7); ctx.fill(); ctx.stroke(); }
   if(G.puff&&G.puff.t>0){ const k=1-G.puff.t/0.35; ctx.globalAlpha=(1-k)*0.8; ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(sx(G.puff.x),sy(G.puff.y),PPY*(0.5+k*2.2),0,7); ctx.stroke(); ctx.globalAlpha=1; }
   if(joyId!==null){ ctx.fillStyle='rgba(255,255,255,0.08)'; ctx.beginPath(); ctx.arc(joyCx,joyCy,JR,0,7); ctx.fill(); ctx.strokeStyle='rgba(255,255,255,0.18)'; ctx.lineWidth=2; ctx.stroke(); ctx.fillStyle='rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.arc(joyCx+joyVec.x*JR*0.65,joyCy+joyVec.y*JR*0.65,20,0,7); ctx.fill(); }
@@ -492,17 +524,18 @@ function drawBtn(b,label,col){ ctx.fillStyle='rgba(10,13,16,0.58)'; ctx.beginPat
 function badge(x,y,b){ const px=sx(x),py=sy(y)-PPY*2.0; ctx.fillStyle=b.c; ctx.strokeStyle='rgba(0,0,0,0.55)'; ctx.lineWidth=1.5;
   ctx.beginPath(); ctx.arc(px,py,9.5,0,7); ctx.fill(); ctx.stroke(); ctx.fillStyle='#0a0d10'; ctx.font="bold 9px 'Press Start 2P',monospace"; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(b.l,px,py+1); ctx.textBaseline='alphabetic'; ctx.textAlign='left'; }
 function drawTouchUI(){ if(G.phase==='select'||G.phase==='dead') return;
-  if(G.defUser){ if(G.phase!=='presnap') { drawBtn(BTN.main,'SWITCH',gv('--cyan')); drawBtn(BTN.sub,'DIVE',gv('--amber')); } return; }
+  if(G.defUser){ if(G.phase==='presnap'){ drawBtn(BTN.main,'SNAP',gv('--good')); } else { drawBtn(BTN.main,'SWITCH',gv('--cyan')); drawBtn(BTN.sub,'DIVE',gv('--amber')); } return; }
   if((G.phase==='presnap'||G.phase==='live')&&!G.isRun){ for(const r of (G.recv||[])){ if(r!==G.carrier&&r.btn) badge(r.x,r.y,r.btn); } }
   if(G.phase==='presnap') return;
   if(G.phase==='live'){ drawBtn(BTN.scr,'RUN',gv('--good'));
+    if(G.charge){ const p=Math.min(1,G.charge.dur/0.45),bx=W/2-72,by=H-42; ctx.fillStyle='rgba(10,13,16,0.6)'; ctx.fillRect(bx,by,144,12); ctx.fillStyle=p>0.66?'#f0645c':(p>0.33?'#ffcf4a':'#4ade80'); ctx.fillRect(bx,by,144*p,12); ctx.strokeStyle='#2c3742'; ctx.strokeRect(bx,by,144,12); ctx.fillStyle='#cdd8e2'; ctx.font='8px ui-monospace,monospace'; ctx.textAlign='center'; ctx.fillText(p<0.4?'LOB':(p>0.7?'LASER':'TOUCH'),W/2,by-4); ctx.textAlign='left'; }
     for(const b of recvButtons()){ ctx.fillStyle='rgba(10,13,16,0.62)'; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,7); ctx.fill(); ctx.strokeStyle=b.btn.c; ctx.lineWidth=3.5; ctx.stroke(); ctx.fillStyle=b.btn.c; ctx.textAlign='center'; ctx.font="bold 15px 'Press Start 2P',monospace"; ctx.fillText(b.btn.l,b.x,b.y+6); ctx.textAlign='left'; } return; }
   if(G.phase==='run'||G.phase==='handoff'){ drawBtn(BTN.main,'JUKE',gv('--amber')); } }
 function drawFlash(){ const a=Math.min(1,flashT/0.5); ctx.globalAlpha=a; ctx.textAlign='center'; ctx.fillStyle=flashCol; ctx.font="24px 'Press Start 2P',monospace"; ctx.fillText(flash,W/2,H*0.36); ctx.globalAlpha=1; ctx.textAlign='left'; }
 
 function frame(now){ const dt=Math.min(0.033,(now-last)/1000); last=now; update(dt); draw(); requestAnimationFrame(frame); }
 requestAnimationFrame(frame);
-hintEl.innerHTML='<b>PASS</b> tap a receiver to throw · SCRMBL to tuck &amp; run &nbsp;|&nbsp; <b>RUN</b> drag to steer · JUKE to cut &nbsp;|&nbsp; <b>DEFENSE</b> drag to move · SWITCH · DIVE &nbsp;(desktop: WASD, click a receiver, Space, E)';
+hintEl.innerHTML='<b>PASS</b> press a receiver button — quick tap = <b>LOB</b>, hold = <b>LASER</b> · RUN to scramble &nbsp;|&nbsp; <b>RUN</b> drag to steer · JUKE &nbsp;|&nbsp; <b>DEFENSE</b> presnap: tap a defender / E to pick your man, then SNAP · drag to move · SWITCH · DIVE &nbsp;(desktop: keys 1-5 throw, hold for laser)';
 if(typeof globalThis!=='undefined') globalThis.__hooks={ setupPlay,snap,throwBall,update,draw,getG:()=>G,keys:()=>keys,pick:(tab,idx)=>{G.tab=tab;G.sel[tab]=idx;},setSide:s=>{G.userSide=s;},setDef:i=>{G.selDef=i;},sw:switchDefender, throwToReceiver:(r)=>throwToReceiver(r), nearestRecv:(x,y)=>nearestRecv(x,y) };
 </script>
 </body>
