@@ -50,8 +50,8 @@ function clampCam(){ const t=H*0.60/PPY,b=H*0.40/PPY; focusY=Math.max(b,Math.min
 const sx=fx=>fx*PPY, sy=fy=>H*0.60-(fy-focusY)*PPY, toFX=px=>px/PPY, toFY=py=>focusY+(H*0.60-py)/PPY;
 
 function rnd(a,b){ return a+Math.random()*(b-a); }
-function accFor(pos){ return {WR:40,CB:40,RB:43,TE:34,S:36,LB:33,QB:38,DL:30,OL:26}[pos]||36; }
-function spdFromRating(sr){ return Math.max(5.4, sr*0.12 - 1.5); }
+function accFor(pos){ return ({WR:40,CB:40,RB:43,TE:34,S:36,LB:33,QB:38,DL:30,OL:26}[pos]||36)*1.5; }
+function spdFromRating(sr){ return (Math.max(5.4, sr*0.12 - 1.5))*1.42; }
 function ratingsFor(pos){ const R=(a,b)=>Math.round(rnd(a,b)); switch(pos){
   case 'WR': return {spd:R(84,95),str:R(52,68),sta:R(80,92),cat:R(80,93),acc:0,tps:0,tkl:R(45,60)};
   case 'CB': return {spd:R(85,95),str:R(52,66),sta:R(80,90),cat:R(62,80),acc:0,tps:0,tkl:R(60,74)};
@@ -69,7 +69,7 @@ function speedFor(pos){ switch(pos){
   case 'S' : return {spd:rnd(7.5,8.1),acc:36}; case 'LB': return {spd:rnd(7.1,7.8),acc:33};
   case 'QB': return {spd:rnd(6.9,7.5),acc:38}; case 'DL': return {spd:rnd(6.4,7.1),acc:30};
   case 'OL': return {spd:rnd(5.9,6.6),acc:26}; default: return {spd:8,acc:36}; } }
-const BALLSPD=40;
+const BALLSPD=48;
 function steer(o,dx,dy,des,acc,dt){ const m=Math.hypot(dx,dy); let tvx=0,tvy=0;
   if(m>1e-4){ tvx=dx/m*des; tvy=dy/m*des; } o.vx=o.vx||0; o.vy=o.vy||0;
   const ax=tvx-o.vx,ay=tvy-o.vy,am=Math.hypot(ax,ay),mx=acc*dt;
@@ -119,7 +119,8 @@ const COVS=[
 const FRONTS=['BASE','CRASH','LB BLITZ','CONTAIN','SLANT RT','SLANT LT','SAFETY DOWN'];
 
 let G, keys={}, aim=null, shake=0, flash=null, flashT=0, flashCol='#fff', assist=false;
-function mk(x,y,pos,num,extra){ const rt=ratingsFor(pos); return Object.assign({x,y,pos,num,x0:x,y0:y,vx:0,vy:0,rt,spd:spdFromRating(rt.spd),acc:accFor(pos),down:0},extra||{}); }
+const MASS={OL:2.5,DL:2.3,LB:1.8,TE:1.7,RB:1.45,S:1.35,QB:1.25,CB:1.15,WR:1.05};
+function mk(x,y,pos,num,extra){ const rt=ratingsFor(pos); return Object.assign({x,y,pos,num,x0:x,y0:y,vx:0,vy:0,rt,spd:spdFromRating(rt.spd),acc:accFor(pos),down:0,_mass:(MASS[pos]||1.4)},extra||{}); }
 function offenseIsUser(){ return G.userSide==='off'; }
 
 function setupPlay(){
@@ -149,7 +150,7 @@ function setupPlay(){
   G.front = FRONTS[(Math.random()*FRONTS.length)|0];
   assignCoverage(G.cov,refs); assignFront(G.front,refs);
   if(G.defUser){ G.control = nearestDef(G.qb); }
-  G.rushFree=0.2; G.phase='presnap'; focusY=L+6;
+  G.rushFree=0.35; G.phase='presnap'; focusY=L+6;
 }
 function job(d,o){ d.job=o; } function place(d,x,y){ d.x=x; d.y=y; d.x0=x; d.y0=y; }
 function nearestDef(ref){ let best=null,bd=9e9; for(const d of G.def){ const dd=dist(d,ref); if(dd<bd){bd=dd;best=d;} } return best; }
@@ -344,6 +345,16 @@ function runFit(d,c,dt){ const f=d.fit; if(!f){ seek(d,c.x,c.y,1,dt); return; }
   if(!committed) seek(d,f.gap,G.los+0.5,0.95,dt); else seek(d,c.x,c.y,1,dt); }
 
 let last=performance.now();
+function collide(){ const P=G.off.concat(G.def), n=P.length;
+  for(let i=0;i<n;i++){ const a=P[i]; if((a.down||0)>0||a.dive) continue;
+    for(let j=i+1;j<n;j++){ const b=P[j]; if((b.down||0)>0||b.dive) continue;
+      let dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy);
+      if(d<1e-3){ dx=Math.random()-0.5; dy=Math.random()-0.5; d=Math.hypot(dx,dy)||0.01; }
+      if(d<1.05){ const ov=(1.05-d)/d; let ma=a._mass||1.4, mb=b._mass||1.4;
+        if(a===G.carrier) ma*=2.0; if(b===G.carrier) mb*=2.0;
+        const tot=ma+mb, pa=mb/tot*0.5, pb=ma/tot*0.5;
+        a.x-=dx*ov*pa; a.y-=dy*ov*pa; b.x+=dx*ov*pb; b.y+=dy*ov*pb;
+        a.x=Math.max(1,Math.min(FW-1,a.x)); b.x=Math.max(1,Math.min(FW-1,b.x)); } } } }
 function update(dt){
   if(shake>0) shake=Math.max(0,shake-dt*60); if(flashT>0) flashT-=dt; if(G.puff&&G.puff.t>0) G.puff.t-=dt; if(G.catchPop&&G.catchPop.t>0) G.catchPop.t-=dt; if(G.qb&&(G.qb._throwT||0)>0) G.qb._throwT-=dt;
   if(G.phase==='presnap'||G.phase==='select'||G.phase==='dead') return;
@@ -403,6 +414,7 @@ function update(dt){
         else { d.down=0.55; bumpShake(3); setFlash('BROKE FREE!','#4ade80'); } } }
     if(c.y>=110) return score();
   } else if(G.phase==='live'){ focusY+=(G.los+6-focusY)*Math.min(1,dt*4); }
+  collide();
   clampCam();
 }
 function resolveCatch(){ const {tx,ty}=G.ball;
@@ -442,15 +454,16 @@ function drawPlayer(o,jersey,opts){ opts=opts||{};
   const px=sx(o.x),py=sy(o.y),R=PPY*1.5*(opts.big?1.08:1);
   if(o._ang===undefined) o._ang=opts.def?Math.PI/2:-Math.PI/2;
   const sp=Math.hypot(o.vx||0,o.vy||0), moving=sp>0.4;
-  if(moving){ o._ang=lerpAng(o._ang,Math.atan2(-(o.vy||0),(o.vx||0)),0.3); o._leg=(o._leg||0)+sp*0.04; }
+  if(moving){ o._ang=lerpAng(o._ang,Math.atan2(-(o.vy||0),(o.vx||0)),0.34); o._leg=(o._leg||0)+sp*0.06; }
   const a=o._ang+(o._spin||0), diving=opts.diving, bulk=(o.pos==='OL'||o.pos==='DL')?1.18:((o.pos==='LB'||o.pos==='TE')?1.07:1.0);
   const hbase=opts.def?'#2f343b':'#e7ebf2', skin='#c68e63';
   const st=diving?1.5:1, sw=moving?Math.sin(o._leg):0;
   ctx.save(); ctx.globalAlpha=0.26; ctx.fillStyle='#000'; ctx.beginPath(); ctx.ellipse(px+R*0.08,py+R*0.55,R*0.9,R*0.4,0,0,7); ctx.fill(); ctx.restore();
   if(opts.ctrl){ ctx.fillStyle='rgba(56,224,224,0.16)'; ctx.beginPath(); ctx.arc(px,py,R*1.5,0,7); ctx.fill(); }
   if(opts.fire){ ctx.fillStyle='rgba(255,138,60,0.35)'; ctx.beginPath(); ctx.arc(px,py,R*1.5+Math.sin(performance.now()/70)*R*0.3,0,7); ctx.fill(); ctx.fillStyle='rgba(255,210,60,0.3)'; ctx.beginPath(); ctx.arc(px,py-R*0.5,R*0.9,0,7); ctx.fill(); }
-  ctx.save(); ctx.translate(px,py); ctx.rotate(a); if(opts.down) ctx.globalAlpha=0.78; ctx.lineCap='round'; ctx.lineJoin='round';
-  for(const s of [1,-1]){ const swing=sw*s*R*0.42, hipX=-R*0.1,hipY=s*R*0.24, kneeX=-R*0.34+swing*0.5,kneeY=s*R*0.34, footX=-R*0.58+swing,footY=s*R*0.34;
+  const bob=moving?Math.abs(Math.sin(o._leg))*R*0.12:0;
+  ctx.save(); ctx.translate(px,py-bob); ctx.rotate(a); if(opts.down) ctx.globalAlpha=0.78; ctx.lineCap='round'; ctx.lineJoin='round';
+  for(const s of [1,-1]){ const swing=sw*s*R*0.56, hipX=-R*0.1,hipY=s*R*0.24, kneeX=-R*0.34+swing*0.5,kneeY=s*R*0.34, footX=-R*0.58+swing,footY=s*R*0.34;
     const lg=ctx.createLinearGradient(hipX,hipY-R*0.15,hipX,hipY+R*0.15); lg.addColorStop(0,shade(jersey,-26)); lg.addColorStop(1,shade(jersey,-56));
     ctx.strokeStyle=lg; ctx.lineWidth=R*0.31; ctx.beginPath(); ctx.moveTo(hipX,hipY); ctx.lineTo(kneeX,kneeY); ctx.lineTo(footX,footY); ctx.stroke();
     ctx.fillStyle='#141619'; ctx.beginPath(); ctx.ellipse(footX-R*0.04,footY,R*0.15,R*0.09,0,0,7); ctx.fill(); }
