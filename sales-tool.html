@@ -11362,6 +11362,14 @@ function applyVoiceQuote(parsed, overlay) {
                     // "Show Posts"); posts in the open/roof-only span go to posts (always shown).
                     function _shedEnclSpan(lz) {
                         if (sc.encl !== 'enclosed') return false;
+                        // Partial WALL enclosure: if any of the shed's walls is left open, its
+                        // posts are exposed to view and must render on load rather than hiding
+                        // behind the "Show Posts" toggle.
+                        var _ewAll = ['outer','gable1','gable2'];
+                        var _ewList = sc.enclWalls || _ewAll;
+                        for (var _ei = 0; _ei < _ewAll.length; _ei++) {
+                            if (_ewList.indexOf(_ewAll[_ei]) === -1) return false;
+                        }
                         if (_enclFt == null) return true;
                         if (_enclFrom === 'start') return (lz <= (-ssl/2 + shedCenterOff) + _enclFt + 0.01);
                         return (lz >= (ssl/2 + shedCenterOff) - _enclFt - 0.01);
@@ -15308,6 +15316,87 @@ function applyVoiceQuote(parsed, overlay) {
                         grps.wallPanels.add(mkQ([x, 0, oZ + s*0.003, x + sRibW, 0, oZ + s*0.003, x + sRibW, outerWH, oZ + s*0.003, x, outerWH, oZ + s*0.003], sRibHi));
                         grps.wallPanels.add(mkQ([x + sRibW, 0, oZ + s*0.003, x + sRibW*2, 0, oZ + s*0.003, x + sRibW*2, outerWH, oZ + s*0.003, x + sRibW, outerWH, oZ + s*0.003], sRibSh));
                     }
+                    }
+                    // ── OPENINGS on a GABLE-ATTACHED shed outer wall ───────────────────────
+                    // The eave-attached branch has its own opening renderer; this mirrors it for
+                    // sheds hung on a gable wall, where the outer wall runs along X at Z = oZ.
+                    // Openings are drawn proud of the wall face (same approach as the eave side).
+                    if (hasWall('outer')) {
+                      try {
+                        const _gz  = oZ + s * 0.012;
+                        const _gz2 = oZ + s * 0.016;
+                        const _mDoorG  = new THREE.MeshBasicMaterial({ color: pc('White'), side: THREE.DoubleSide });
+                        const _mTrimG  = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
+                        const _mWallG  = new THREE.MeshBasicMaterial({ color: pc(wallColorName), side: THREE.DoubleSide });
+                        const _mGlassG = new THREE.MeshBasicMaterial({ color: 0x87ceeb, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+                        const _mLineG  = new THREE.LineBasicMaterial({ color: pc(trimColorName), transparent: true, opacity: 0.85 });
+                        function _gq(xa, ya, xb, yb, mat, zz) {
+                            const z = (zz === undefined) ? _gz : zz;
+                            grps.doors.add(mkQ([xa, ya, z, xa, yb, z, xb, yb, z, xb, ya, z], mat));
+                        }
+                        function _gline(xa, ya, xb, yb) {
+                            grps.doors.add(mkL([new THREE.Vector3(xa, ya, _gz2), new THREE.Vector3(xa, yb, _gz2),
+                                                new THREE.Vector3(xb, yb, _gz2), new THREE.Vector3(xb, ya, _gz2)], _mLineG));
+                        }
+                        const _gOpen = [];
+                        (sc.doors||[]).filter(function(d){return (d.wall||'outer')==='outer';}).forEach(function(d){
+                            var p = (d.size||'10x10').split('x');
+                            _gOpen.push({ t:'garage', w:parseFloat(p[0])||10, h:parseFloat(p[1])||10, off:d.offset||0 });
+                        });
+                        (sc.walkDoors||[]).filter(function(d){return (d.wall||'outer')==='outer';}).forEach(function(d){
+                            _gOpen.push({ t:'walk', w:wdWidth(d.type||'WHITE 3/0 PLYCO ALUMINUM FRAME'), h:WD_HEIGHT, off:d.offset||0 });
+                        });
+                        (sc.barnDoors||[]).forEach(function(d){
+                            var p = (d.size||'12x10').split('x');
+                            _gOpen.push({ t:'barn', w:parseFloat(p[0])||12, h:parseFloat(p[1])||10, split:!!d.split, off:d.offset||0 });
+                        });
+                        (sc.windows||[]).forEach(function(d){
+                            var dm = winDims(d.type||'VW33');
+                            _gOpen.push({ t:'window', w:dm.w, h:dm.h, off:d.offset||0, sill:(d.sillH!=null?d.sillH:4) });
+                        });
+                        _gOpen.forEach(function(o){
+                            var ow = o.w * Sc, oh2 = o.h * Sc;
+                            var xa = x1 + (o.off * Sc), xb = xa + ow;
+                            if (xb < x1 - 0.001 || xa > x2 + 0.001) return;
+                            if (o.t === 'window') {
+                                var yb = (o.sill||4) * Sc, yt = yb + oh2;
+                                _gq(xa, yb, xb, yt, _mGlassG); _gline(xa, yb, xb, yt);
+                                var mull = (xa + xb) / 2;
+                                _gq(mull - 0.006, yb, mull + 0.006, yt, _mTrimG, _gz2);
+                            } else if (o.t === 'walk') {
+                                _gq(xa, 0, xb, oh2, _mDoorG); _gline(xa, 0, xb, oh2);
+                                var kx = xb - 0.035, ky = oh2 * 0.45;
+                                _gq(kx - 0.012, ky - 0.012, kx + 0.012, ky + 0.012, _mTrimG, _gz2);
+                            } else if (o.t === 'garage') {
+                                _gq(xa, 0, xb, oh2, _mDoorG); _gline(xa, 0, xb, oh2);
+                                var rows = Math.max(3, Math.round(o.h / 2));
+                                for (var r = 1; r < rows; r++) {
+                                    var ry = (r / rows) * oh2;
+                                    grps.doors.add(mkL([new THREE.Vector3(xa, ry, _gz2), new THREE.Vector3(xb, ry, _gz2)], _mLineG));
+                                }
+                            } else {
+                                var tk = 0.018;
+                                _gq(xa - 0.03, oh2 + tk*0.6, xb + 0.03, oh2 + tk*1.9, _mTrimG, _gz2);
+                                var panels = o.split ? 2 : 1;
+                                for (var pi = 0; pi < panels; pi++) {
+                                    var pa = xa + (pi * ow / panels), pb = pa + (ow / panels);
+                                    _gq(pa, 0, pb, oh2, _mWallG);
+                                    _gq(pa, 0, pa + tk, oh2, _mTrimG, _gz2);
+                                    _gq(pb - tk, 0, pb, oh2, _mTrimG, _gz2);
+                                    _gq(pa, oh2 - tk, pb, oh2, _mTrimG, _gz2);
+                                    _gq(pa, 0, pb, tk, _mTrimG, _gz2);
+                                    var my = oh2 * 0.5;
+                                    _gq(pa, my - tk/2, pb, my + tk/2, _mTrimG, _gz2);
+                                    grps.doors.add(mkL([new THREE.Vector3(pa+tk, tk, _gz2), new THREE.Vector3(pb-tk, my-tk/2, _gz2)], _mLineG));
+                                    grps.doors.add(mkL([new THREE.Vector3(pa+tk, my-tk/2, _gz2), new THREE.Vector3(pb-tk, tk, _gz2)], _mLineG));
+                                    grps.doors.add(mkL([new THREE.Vector3(pa+tk, my+tk/2, _gz2), new THREE.Vector3(pb-tk, oh2-tk, _gz2)], _mLineG));
+                                    grps.doors.add(mkL([new THREE.Vector3(pa+tk, oh2-tk, _gz2), new THREE.Vector3(pb-tk, my+tk/2, _gz2)], _mLineG));
+                                }
+                                _gline(xa, 0, xb, oh2);
+                            }
+                        });
+                        if (_gOpen.length) console.log('[3D] gable-shed openings rendered:', _gOpen.length);
+                      } catch(e) { console.warn('[3D] gable-shed opening render failed:', e && e.message); }
                     }
                     if (isGableExt) {
                         // Gable extension off gable wall: end walls are full height rectangles
