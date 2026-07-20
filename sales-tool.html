@@ -5622,6 +5622,11 @@ function setShedBarnDoor(shedId, idx, prop, val) {
   if (!sc || !sc.barnDoors || !sc.barnDoors[idx]) return;
   if (prop === 'offset') val = parseFloat(val) || 0;
   if (prop === 'size' && parseInt(val.split('x')[0]) >= 16) sc.barnDoors[idx].split = true;
+  if (prop === 'size') {
+    var _p3 = String(val).split('x'), _BK3 = (window.SauceMaterials&&window.SauceMaterials._barnDoorKits)||{};
+    if (!_BK3['XSD'+_p3[0]+_p3[1]+'S']) sc.barnDoors[idx].split = false;   // no split kit for this size
+    else if (!_BK3['XSD'+_p3[0]+_p3[1]]) sc.barnDoors[idx].split = true;   // split-only size
+  }
   sc.barnDoors[idx][prop] = val;
   renderSheds(); scheduleBuild(); try{updateStripFromLocalCalc();}catch(e){}
 }
@@ -6080,6 +6085,11 @@ function renderSheds(){
           var w = parseInt((bd.size||'12x10').split('x')[0]);
           var h = parseInt((bd.size||'12x10').split('x')[1]);
           var splitOnly = w >= 16 || (w === 14 && h >= 16);
+          // Only offer Split/Single combinations that actually have a kit in _barnDoorKits.
+          // e.g. 8x8 has XSD88 but no XSD88S, so Split must not be selectable.
+          var _BK = (window.SauceMaterials && window.SauceMaterials._barnDoorKits) || {};
+          var singleOnly = !splitOnly && !_BK['XSD'+w+h+'S'] && !!_BK['XSD'+w+h];
+          if (singleOnly && bd.split) { bd.split = false; }
           var sizeOpts = BARN_SIZES.map(function(s){ return '<option'+(s===bd.size?' selected':'')+'>'+s+'</option>'; }).join('');
           var dc3 = bd.doorColor||'White';
           var bdColor = [['White','#f5f5f5'],['Black','#1a1a1a'],['Brown','#5c3a1e']].map(function(c){
@@ -6087,6 +6097,8 @@ function renderSheds(){
           }).join('');
           var typeBtn = splitOnly
             ? '<span style="font-size:10px;color:#92400e;font-weight:700;padding:2px 6px;border-radius:4px;border:1px solid #92400e;background:rgba(146,64,14,.1);">Split Only</span>'
+            : singleOnly
+            ? '<span style="font-size:10px;color:#92400e;font-weight:700;padding:2px 6px;border-radius:4px;border:1px solid #92400e;background:rgba(146,64,14,.1);">Single Only</span>'
             : '<button style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid '+(bd.split?'#5e5e5e':'#92400e')+';background:'+(bd.split?'transparent':'rgba(146,64,14,.1)')+';color:'+(bd.split?'#888':'#92400e')+';cursor:pointer;font-weight:700;" onclick="setShedBarnDoor('+sid+','+bi+',\'split\',false)">Single</button>'
               +'<button style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid '+(bd.split?'#92400e':'#5e5e5e')+';background:'+(bd.split?'rgba(146,64,14,.1)':'transparent')+';color:'+(bd.split?'#92400e':'#888')+';cursor:pointer;font-weight:700;" onclick="setShedBarnDoor('+sid+','+bi+',\'split\',true)">Split</button>';
           return '<div style="'+rowStyle+'">'
@@ -29191,7 +29203,11 @@ window.SauceMaterials.calcBarnDoors = function() {
     var parts_arr = sizeKey.split('x');
     var kitKey = 'XSD' + parts_arr[0] + parts_arr[1] + (isSplit ? 'S' : '');
     var kit = SM._barnDoorKits[kitKey];
-    if (!kit) { console.warn('[MATERIALS] no barn door kit for', kitKey); return; }
+    if (!kit) {
+      var _alt = 'XSD' + parts_arr[0] + parts_arr[1] + (isSplit ? '' : 'S');
+      kit = SM._barnDoorKits[_alt];
+      if (!kit) { console.warn('[MATERIALS] no barn door kit for', kitKey); return; }
+    }
     kit.forEach(function(part) {
       parts[part.sku] = (parts[part.sku]||0) + part.qty * doorQty;
     });
@@ -32629,8 +32645,17 @@ window.SauceMaterials.calcShedOpenings = function() {
     (sc.barnDoors||[]).forEach(function(bd) {
       var parts_arr = (bd.size||'12x10').split('x');
       var kitKey = 'XSD' + parts_arr[0] + parts_arr[1] + (bd.split ? 'S' : '');
-      var kit = window.SauceMaterials._barnDoorKits && window.SauceMaterials._barnDoorKits[kitKey];
-      if (!kit) { console.warn('[MATERIALS] no barn door kit for', kitKey, '- shed'); return; }
+      var _BKS = (window.SauceMaterials && window.SauceMaterials._barnDoorKits) || {};
+      var kit = _BKS[kitKey];
+      if (!kit) {
+        // Saved quotes can hold a split/single combo that has no kit (e.g. 8x8 Split).
+        // Fall back to the kit that DOES exist for this size so real, priceable parts are
+        // still quoted instead of the door silently vanishing.
+        var _alt = 'XSD' + parts_arr[0] + parts_arr[1] + (bd.split ? '' : 'S');
+        kit = _BKS[_alt];
+        if (kit) { kitKey = _alt; }
+        else { console.warn('[MATERIALS] no barn door kit for', kitKey, '- shed'); return; }
+      }
       kit.forEach(function(part) {
         var lvlM = (part.sku||'').match(/^LVL117\/8(\d+)$/);
         var item = {
