@@ -15309,7 +15309,26 @@ function applyVoiceQuote(parsed, overlay) {
                         });
                     }
                     // Outer wall
-                    if (hasWall('outer')) {
+                    // Openings on this gable-attached shed's outer wall (sorted along X).
+                    // When present, the wall is drawn as spans around them instead of solid.
+                    const _gOpen = [];
+                    (sc.doors||[]).filter(function(d){return (d.wall||'outer')==='outer';}).forEach(function(d){
+                        var p2=(d.size||'10x10').split('x');
+                        _gOpen.push({t:'garage',w:parseFloat(p2[0])||10,h:parseFloat(p2[1])||10,off:d.offset||0});
+                    });
+                    (sc.walkDoors||[]).filter(function(d){return (d.wall||'outer')==='outer';}).forEach(function(d){
+                        _gOpen.push({t:'walk',w:wdWidth(d.type||'WHITE 3/0 PLYCO ALUMINUM FRAME'),h:WD_HEIGHT,off:d.offset||0});
+                    });
+                    (sc.barnDoors||[]).forEach(function(d){
+                        var p2=(d.size||'12x10').split('x');
+                        _gOpen.push({t:'barn',w:parseFloat(p2[0])||12,h:parseFloat(p2[1])||10,split:!!d.split,off:d.offset||0});
+                    });
+                    (sc.windows||[]).forEach(function(d){
+                        var dm=winDims(d.type||'VW33');
+                        _gOpen.push({t:'window',w:dm.w,h:dm.h,off:d.offset||0,sill:(d.sillH!=null?d.sillH:4)});
+                    });
+                    _gOpen.sort(function(a,b){return (a.off||0)-(b.off||0);});
+                    if (hasWall('outer') && !_gOpen.length) {
                     grps.wallPanels.add(mkQ([x1, 0, oZ, x1, outerWH, oZ, x2, outerWH, oZ, x2, 0, oZ], mW));
                     grps.wallPanels.add(mkL([new THREE.Vector3(x1, 0, oZ), new THREE.Vector3(x1, outerWH, oZ), new THREE.Vector3(x2, outerWH, oZ), new THREE.Vector3(x2, 0, oZ)], mTrimLine));
                     for (let x = x1; x <= x2; x += sRibSp) {
@@ -15318,84 +15337,123 @@ function applyVoiceQuote(parsed, overlay) {
                     }
                     }
                     // ── OPENINGS on a GABLE-ATTACHED shed outer wall ───────────────────────
-                    // The eave-attached branch has its own opening renderer; this mirrors it for
-                    // sheds hung on a gable wall, where the outer wall runs along X at Z = oZ.
-                    // Openings are drawn proud of the wall face (same approach as the eave side).
-                    if (hasWall('outer')) {
+                    // Mirrors the eave-attached renderer onto the X axis: the wall is drawn as
+                    // SPANS between openings (a real hole), with a header panel above each and
+                    // the door/window drawn in the hole — same as a regular building wall.
+                    if (hasWall('outer') && _gOpen.length) {
                       try {
-                        const _gz  = oZ + s * 0.012;
-                        const _gz2 = oZ + s * 0.016;
+                        const _sD = s;                       // outward normal (-1 front / +1 back)
+                        const _fz = oZ;                      // wall plane
+                        const _pz = oZ + _sD * 0.004;        // proud face for door leaves
                         const _mDoorG  = new THREE.MeshBasicMaterial({ color: pc('White'), side: THREE.DoubleSide });
                         const _mTrimG  = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
                         const _mWallG  = new THREE.MeshBasicMaterial({ color: pc(wallColorName), side: THREE.DoubleSide });
                         const _mGlassG = new THREE.MeshBasicMaterial({ color: 0x87ceeb, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
                         const _mLineG  = new THREE.LineBasicMaterial({ color: pc(trimColorName), transparent: true, opacity: 0.85 });
-                        function _gq(xa, ya, xb, yb, mat, zz) {
-                            const z = (zz === undefined) ? _gz : zz;
+                        const _mDarkG  = new THREE.MeshBasicMaterial({ color: 0x2b2b2b, side: THREE.DoubleSide });
+
+                        // Wall span along X at fixed Z, with wainscot band + ribs (mirror of
+                        // drawShedWallSpan, which runs along Z at fixed X).
+                        // shedWsH lives in the eave branch; recompute the same value here.
+                        const _wsHg = (typeof hasWainscot !== 'undefined' && hasWainscot)
+                            ? (outerWH > 4 * Sc ? 4 * Sc : outerWH * 0.3) : 0;
+                        function _spanX(xa, xb, yBot, yTop) {
+                            if (xb - xa < 0.0005 || yTop - yBot < 0.0005) return;
+                            const wH = (_wsHg > 0 && _wsHg > yBot && _wsHg < yTop - 0.001) ? _wsHg : 0;
+                            if (wH > 0) {
+                                grps.wallPanels.add(mkQ([xa, yBot, _fz, xa, wH, _fz, xb, wH, _fz, xb, yBot, _fz], mWainscot));
+                                grps.wallPanels.add(mkQ([xa, wH, _fz, xa, yTop, _fz, xb, yTop, _fz, xb, wH, _fz], mW));
+                            } else {
+                                grps.wallPanels.add(mkQ([xa, yBot, _fz, xa, yTop, _fz, xb, yTop, _fz, xb, yBot, _fz], mW));
+                            }
+                            const rz = _fz + _sD * 0.003;
+                            for (let x = xa; x < xb - 0.0005; x += sRibSp) {
+                                const xr1 = Math.min(x + sRibW, xb), xr2 = Math.min(x + sRibW*2, xb);
+                                if (wH > 0) {
+                                    grps.wallPanels.add(mkQ([x, yBot, rz, x, wH, rz, xr1, wH, rz, xr1, yBot, rz], sRibWsHi));
+                                    grps.wallPanels.add(mkQ([xr1, yBot, rz, xr1, wH, rz, xr2, wH, rz, xr2, yBot, rz], sRibWsSh));
+                                    grps.wallPanels.add(mkQ([x, wH, rz, x, yTop, rz, xr1, yTop, rz, xr1, wH, rz], sRibHi));
+                                    grps.wallPanels.add(mkQ([xr1, wH, rz, xr1, yTop, rz, xr2, yTop, rz, xr2, wH, rz], sRibSh));
+                                } else {
+                                    grps.wallPanels.add(mkQ([x, yBot, rz, x, yTop, rz, xr1, yTop, rz, xr1, yBot, rz], sRibHi));
+                                    grps.wallPanels.add(mkQ([xr1, yBot, rz, xr1, yTop, rz, xr2, yTop, rz, xr2, yBot, rz], sRibSh));
+                                }
+                            }
+                        }
+                        function _q(xa, ya, xb, yb, mat, zz) {
+                            const z = (zz === undefined) ? _pz : zz;
                             grps.doors.add(mkQ([xa, ya, z, xa, yb, z, xb, yb, z, xb, ya, z], mat));
                         }
-                        function _gline(xa, ya, xb, yb) {
-                            grps.doors.add(mkL([new THREE.Vector3(xa, ya, _gz2), new THREE.Vector3(xa, yb, _gz2),
-                                                new THREE.Vector3(xb, yb, _gz2), new THREE.Vector3(xb, ya, _gz2)], _mLineG));
+                        function _outline(xa, ya, xb, yb) {
+                            const z = _pz + _sD * 0.002;
+                            grps.doors.add(mkL([new THREE.Vector3(xa, ya, z), new THREE.Vector3(xa, yb, z),
+                                                new THREE.Vector3(xb, yb, z), new THREE.Vector3(xb, ya, z),
+                                                new THREE.Vector3(xa, ya, z)], _mLineG));
                         }
-                        const _gOpen = [];
-                        (sc.doors||[]).filter(function(d){return (d.wall||'outer')==='outer';}).forEach(function(d){
-                            var p = (d.size||'10x10').split('x');
-                            _gOpen.push({ t:'garage', w:parseFloat(p[0])||10, h:parseFloat(p[1])||10, off:d.offset||0 });
-                        });
-                        (sc.walkDoors||[]).filter(function(d){return (d.wall||'outer')==='outer';}).forEach(function(d){
-                            _gOpen.push({ t:'walk', w:wdWidth(d.type||'WHITE 3/0 PLYCO ALUMINUM FRAME'), h:WD_HEIGHT, off:d.offset||0 });
-                        });
-                        (sc.barnDoors||[]).forEach(function(d){
-                            var p = (d.size||'12x10').split('x');
-                            _gOpen.push({ t:'barn', w:parseFloat(p[0])||12, h:parseFloat(p[1])||10, split:!!d.split, off:d.offset||0 });
-                        });
-                        (sc.windows||[]).forEach(function(d){
-                            var dm = winDims(d.type||'VW33');
-                            _gOpen.push({ t:'window', w:dm.w, h:dm.h, off:d.offset||0, sill:(d.sillH!=null?d.sillH:4) });
-                        });
+
+                        // Walk the wall left→right: wall span, opening, wall span, ...
+                        let cx = x1;
                         _gOpen.forEach(function(o){
-                            var ow = o.w * Sc, oh2 = o.h * Sc;
-                            var xa = x1 + (o.off * Sc), xb = xa + ow;
-                            if (xb < x1 - 0.001 || xa > x2 + 0.001) return;
+                            const ow = o.w * Sc, ohh = o.h * Sc;
+                            let xa = x1 + (o.off * Sc); let xb = xa + ow;
+                            if (xa < x1) xa = x1; if (xb > x2) xb = x2;
+                            if (xb <= xa) return;
+                            const yb = (o.t === 'window') ? ((o.sill != null ? o.sill : 4) * Sc) : 0;
+                            const yt = Math.min(yb + ohh, outerWH);
+                            _spanX(cx, xa, 0, outerWH);                 // wall before opening
+                            if (yt < outerWH) _spanX(xa, xb, yt, outerWH); // header above opening
+                            if (yb > 0) _spanX(xa, xb, 0, yb);            // wall below a window
+                            // Recessed jamb/head trim around the hole
+                            const jt = 0.012;
+                            _q(xa, yb, xa + jt, yt, _mTrimG, _fz + _sD*0.006);
+                            _q(xb - jt, yb, xb, yt, _mTrimG, _fz + _sD*0.006);
+                            _q(xa, yt - jt, xb, yt, _mTrimG, _fz + _sD*0.006);
+
                             if (o.t === 'window') {
-                                var yb = (o.sill||4) * Sc, yt = yb + oh2;
-                                _gq(xa, yb, xb, yt, _mGlassG); _gline(xa, yb, xb, yt);
-                                var mull = (xa + xb) / 2;
-                                _gq(mull - 0.006, yb, mull + 0.006, yt, _mTrimG, _gz2);
+                                _q(xa + jt, yb, xb - jt, yt, _mGlassG);
+                                const mull = (xa + xb) / 2;
+                                _q(mull - 0.005, yb, mull + 0.005, yt, _mTrimG, _pz + _sD*0.002);
+                                _outline(xa, yb, xb, yt);
                             } else if (o.t === 'walk') {
-                                _gq(xa, 0, xb, oh2, _mDoorG); _gline(xa, 0, xb, oh2);
-                                var kx = xb - 0.035, ky = oh2 * 0.45;
-                                _gq(kx - 0.012, ky - 0.012, kx + 0.012, ky + 0.012, _mTrimG, _gz2);
+                                _q(xa + jt, 0, xb - jt, yt, _mDoorG);
+                                const kx = xb - 0.05, ky = yt * 0.45;
+                                _q(kx - 0.011, ky - 0.011, kx + 0.011, ky + 0.011, _mTrimG, _pz + _sD*0.002);
+                                _outline(xa, 0, xb, yt);
                             } else if (o.t === 'garage') {
-                                _gq(xa, 0, xb, oh2, _mDoorG); _gline(xa, 0, xb, oh2);
-                                var rows = Math.max(3, Math.round(o.h / 2));
-                                for (var r = 1; r < rows; r++) {
-                                    var ry = (r / rows) * oh2;
-                                    grps.doors.add(mkL([new THREE.Vector3(xa, ry, _gz2), new THREE.Vector3(xb, ry, _gz2)], _mLineG));
+                                _q(xa + jt, 0, xb - jt, yt, _mDoorG);
+                                const rows = Math.max(3, Math.round(o.h / 2));
+                                const lz = _pz + _sD * 0.002;
+                                for (let r = 1; r < rows; r++) {
+                                    const ry = (r / rows) * yt;
+                                    grps.doors.add(mkL([new THREE.Vector3(xa + jt, ry, lz), new THREE.Vector3(xb - jt, ry, lz)], _mLineG));
                                 }
-                            } else {
-                                var tk = 0.018;
-                                _gq(xa - 0.03, oh2 + tk*0.6, xb + 0.03, oh2 + tk*1.9, _mTrimG, _gz2);
-                                var panels = o.split ? 2 : 1;
-                                for (var pi = 0; pi < panels; pi++) {
-                                    var pa = xa + (pi * ow / panels), pb = pa + (ow / panels);
-                                    _gq(pa, 0, pb, oh2, _mWallG);
-                                    _gq(pa, 0, pa + tk, oh2, _mTrimG, _gz2);
-                                    _gq(pb - tk, 0, pb, oh2, _mTrimG, _gz2);
-                                    _gq(pa, oh2 - tk, pb, oh2, _mTrimG, _gz2);
-                                    _gq(pa, 0, pb, tk, _mTrimG, _gz2);
-                                    var my = oh2 * 0.5;
-                                    _gq(pa, my - tk/2, pb, my + tk/2, _mTrimG, _gz2);
-                                    grps.doors.add(mkL([new THREE.Vector3(pa+tk, tk, _gz2), new THREE.Vector3(pb-tk, my-tk/2, _gz2)], _mLineG));
-                                    grps.doors.add(mkL([new THREE.Vector3(pa+tk, my-tk/2, _gz2), new THREE.Vector3(pb-tk, tk, _gz2)], _mLineG));
-                                    grps.doors.add(mkL([new THREE.Vector3(pa+tk, my+tk/2, _gz2), new THREE.Vector3(pb-tk, oh2-tk, _gz2)], _mLineG));
-                                    grps.doors.add(mkL([new THREE.Vector3(pa+tk, oh2-tk, _gz2), new THREE.Vector3(pb-tk, my+tk/2, _gz2)], _mLineG));
+                                _outline(xa, 0, xb, yt);
+                            } else { // SLIDING BARN — leaves hang on a track, in wall color w/ trim
+                                const tk = 0.016;
+                                _q(xa - 0.035, yt + tk*0.5, xb + 0.035, yt + tk*2.0, _mTrimG, _pz + _sD*0.004); // track
+                                _q(xa + jt, 0, xb - jt, yt, _mDarkG, _fz + _sD*0.001);                          // opening shadow
+                                const leaves = o.split ? 2 : 1;
+                                for (let li = 0; li < leaves; li++) {
+                                    const pa = xa + (li * ow / leaves), pb = pa + (ow / leaves);
+                                    _q(pa, 0, pb, yt, _mWallG);
+                                    _q(pa, 0, pa + tk, yt, _mTrimG, _pz + _sD*0.002);
+                                    _q(pb - tk, 0, pb, yt, _mTrimG, _pz + _sD*0.002);
+                                    _q(pa, yt - tk, pb, yt, _mTrimG, _pz + _sD*0.002);
+                                    _q(pa, 0, pb, tk, _mTrimG, _pz + _sD*0.002);
+                                    const my = yt * 0.5;
+                                    _q(pa, my - tk/2, pb, my + tk/2, _mTrimG, _pz + _sD*0.002);
+                                    const lz2 = _pz + _sD * 0.003;
+                                    grps.doors.add(mkL([new THREE.Vector3(pa+tk, tk, lz2), new THREE.Vector3(pb-tk, my-tk/2, lz2)], _mLineG));
+                                    grps.doors.add(mkL([new THREE.Vector3(pa+tk, my-tk/2, lz2), new THREE.Vector3(pb-tk, tk, lz2)], _mLineG));
+                                    grps.doors.add(mkL([new THREE.Vector3(pa+tk, my+tk/2, lz2), new THREE.Vector3(pb-tk, yt-tk, lz2)], _mLineG));
+                                    grps.doors.add(mkL([new THREE.Vector3(pa+tk, yt-tk, lz2), new THREE.Vector3(pb-tk, my+tk/2, lz2)], _mLineG));
                                 }
-                                _gline(xa, 0, xb, oh2);
+                                _outline(xa, 0, xb, yt);
                             }
+                            cx = xb;
                         });
-                        if (_gOpen.length) console.log('[3D] gable-shed openings rendered:', _gOpen.length);
+                        _spanX(cx, x2, 0, outerWH);   // remaining wall after the last opening
+                        console.log('[3D] gable-shed openings rendered:', _gOpen.length);
                       } catch(e) { console.warn('[3D] gable-shed opening render failed:', e && e.message); }
                     }
                     if (isGableExt) {
