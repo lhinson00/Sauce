@@ -19909,6 +19909,91 @@ var _SB_KEY  = 'sb_publishable_JFnksTNbexbFQ0LZtC3Olg_Tf2baKx4';
 var _SB_ON   = true; // flip to false to disable Supabase entirely
 
 // Low-level Supabase REST helper
+// ═══ PLAN-VIEW CAPTURE — draw the post layout to a canvas from live data ═══
+// The 3D capture depends on WebGL being warm and often returns a blank frame
+// during backfill. The post layout is computed from Q / WALLS / sheds / doors,
+// so it renders deterministically the moment a config is restored.
+function capturePostLayoutPNG(W, H) {
+  try {
+    W = W || 420; H = H || 300;
+    var cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    var g = cv.getContext('2d');
+    g.fillStyle = '#0b1020'; g.fillRect(0, 0, W, H);
+
+    var bw = parseFloat(Q.w) || 0, bl = parseFloat(Q.l) || 0;
+    if (!bw || !bl) return null;
+
+    // Bounds include any sheds hanging off the walls
+    var minX = 0, maxX = bl, minY = 0, maxY = bw;
+    var sheds = (window._shedConfigs || []).filter(function (s) { return s && s.w && s.l; });
+    sheds.forEach(function (s) {
+      var d = parseFloat(s.w) || 0;
+      if (s.wall === 'left') maxY = Math.max(maxY, bw + d);
+      else if (s.wall === 'right') minY = Math.min(minY, -d);
+      else if (s.wall === 'front') minX = Math.min(minX, -d);
+      else maxX = Math.max(maxX, bl + d);
+    });
+
+    var pad = 18;
+    var sc = Math.min((W - pad * 2) / (maxX - minX), (H - pad * 2) / (maxY - minY));
+    var ox = pad + ((W - pad * 2) - (maxX - minX) * sc) / 2;
+    var oy = pad + ((H - pad * 2) - (maxY - minY) * sc) / 2;
+    function X(ft) { return ox + (ft - minX) * sc; }
+    function Y(ft) { return oy + (maxY - ft) * sc; }
+
+    // Sheds first (behind the main slab)
+    g.fillStyle = 'rgba(255,130,0,.10)'; g.strokeStyle = 'rgba(255,130,0,.45)'; g.lineWidth = 1;
+    sheds.forEach(function (s) {
+      var d = parseFloat(s.w) || 0, ln = parseFloat(s.l) || 0, off = parseFloat(s.offset) || 0, x, y, ww, hh;
+      if (s.wall === 'left')       { x = X(off); y = Y(bw + d); ww = ln * sc; hh = d * sc; }
+      else if (s.wall === 'right') { x = X(off); y = Y(0);      ww = ln * sc; hh = d * sc; }
+      else if (s.wall === 'front') { x = X(-d);  y = Y(off + ln); ww = d * sc; hh = ln * sc; }
+      else                         { x = X(bl);  y = Y(off + ln); ww = d * sc; hh = ln * sc; }
+      g.fillRect(x, y, ww, hh); g.strokeRect(x, y, ww, hh);
+    });
+
+    // Main building slab
+    g.fillStyle = 'rgba(255,255,255,.07)';
+    g.strokeStyle = '#FF8200'; g.lineWidth = 2;
+    g.fillRect(X(0), Y(bw), bl * sc, bw * sc);
+    g.strokeRect(X(0), Y(bw), bl * sc, bw * sc);
+
+    // Posts from the same generator the layout PDF and materials use
+    var SM = window.SauceMaterials, doors = window._allDoors || [];
+    function put(px, py, jamb) {
+      g.fillStyle = jamb ? '#ef4444' : '#e8edf5';
+      g.beginPath(); g.arc(px, py, jamb ? 3.2 : 2.4, 0, 6.2832); g.fill();
+    }
+    if (SM && SM.getPostsForWall) {
+      (SM.getPostsForWall('left',  Q, WALLS, doors) || []).forEach(function (p) { put(X(p.ft), Y(bw), p.jamb); });
+      (SM.getPostsForWall('right', Q, WALLS, doors) || []).forEach(function (p) { put(X(p.ft), Y(0),  p.jamb); });
+      (SM.getPostsForWall('front', Q, WALLS, doors) || []).forEach(function (p) { put(X(0),  Y(p.ft), p.jamb); });
+      (SM.getPostsForWall('back',  Q, WALLS, doors) || []).forEach(function (p) { put(X(bl), Y(p.ft), p.jamb); });
+    }
+
+    // Door openings drawn as gaps on their wall
+    g.strokeStyle = '#22c55e'; g.lineWidth = 3;
+    doors.forEach(function (d) {
+      var off = parseFloat(d.offset) || 0, dw = parseFloat(d.w) || 0;
+      if (!dw) return;
+      g.beginPath();
+      if (d.wall === 'left')       { g.moveTo(X(off), Y(bw)); g.lineTo(X(off + dw), Y(bw)); }
+      else if (d.wall === 'right') { g.moveTo(X(off), Y(0));  g.lineTo(X(off + dw), Y(0)); }
+      else if (d.wall === 'front') { g.moveTo(X(0),  Y(off)); g.lineTo(X(0),  Y(off + dw)); }
+      else                         { g.moveTo(X(bl), Y(off)); g.lineTo(X(bl), Y(off + dw)); }
+      g.stroke();
+    });
+
+    // Size caption
+    g.fillStyle = '#FF8200';
+    g.font = '700 13px Outfit, sans-serif';
+    g.textAlign = 'right';
+    g.fillText(bw + "' x " + bl + "' x " + (Q.h || '?') + "'", W - 8, H - 8);
+    return cv.toDataURL('image/jpeg', 0.72);
+  } catch (e) { console.warn('[Backfill] plan capture failed:', e); return null; }
+}
+
 // ═══ SNAPSHOT BACKFILL — generate real 3D previews for existing quotes ═══
 // Loads each quote's saved config into the builder, renders it, captures the
 // same 4 views the save path captures, and PATCHes them onto the quote row.
@@ -19936,7 +20021,8 @@ window.backfillPreviews = async function (limit) {
       triggerBuild();
       // let the 3D build settle before capturing
       await new Promise(function (res) { setTimeout(res, 1100); });
-      var snaps = captureBuildingViews();
+      var plan = capturePostLayoutPNG(420, 300);
+      var snaps = plan ? [plan] : captureBuildingViews();
       if (!snaps || !snaps.length) { fail++; continue; }
       var res2 = await sbFetch('quotes?id=eq.' + encodeURIComponent(r.id), {
         method: 'PATCH',
@@ -20471,7 +20557,7 @@ function promoPreviewSVG(ff, ds, specs) {
   function num(v) { var n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.]/g, '')); return isFinite(n) ? n : 0; }
   var w = num(ff.width), l = num(ff.length), ht = num(ff.height), pitch = num(ff.pitch) || 4;
   if ((!w || !l) && specs) { var p = String(specs).split(/[x\u00d7]/i); w = w || num(p[0]); l = l || num(p[1]); ht = ht || num(p[2]); }
-  if (!w || !l) return '';
+  if (!w) w = 30; if (!l) l = 40;   // always draw something rather than a blank card
   if (!ht) ht = 12;
   var COL = {
     'matte black': '#1c1c1c', 'gloss black': '#141414', 'black': '#161616',
@@ -20836,6 +20922,8 @@ function _renderDesignList(quotes, list, append) {
         if (_img && typeof _img === 'object') _img = _img.data || _img.img || _img.src || '';
       }
       var _pv = '';
+      if (!window._pvLogged) { window._pvLogged = 1;
+        console.log('[Preview] snapshots?', !!_sn, '| specs:', d.specs, '| ff.width:', (ff||{}).width, '| ff.length:', (ff||{}).length); }
       if (_img) {
         if (String(_img).indexOf('data:') !== 0) _img = 'data:image/jpeg;base64,' + _img;
         _pv = '<img src="' + _img + '" alt="building preview" loading="lazy" style="width:100%;display:block;">';
