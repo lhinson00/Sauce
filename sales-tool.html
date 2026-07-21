@@ -20012,46 +20012,62 @@ window.usableSnap = function (sn) {
   }
   return '';
 };
-window.autoGeneratePreviews = async function (rows) {
-  if (window._autoPrevRunning) return;
-  var todo = (rows || []).filter(function (r) { return r.configEncoded && !usableSnap(r.snapshots); });
-  console.log('[AutoPrev] rows:', (rows||[]).length, '| need preview:', todo.length,
-    '| withCfg:', (rows||[]).filter(function(r){return r.configEncoded;}).length);
-  if (!todo.length) { console.log('[AutoPrev] nothing to do'); return; }
-  window._autoPrevRunning = true;
-  var mine = null;
-  try { mine = serializeConfig(); } catch (e) {}
-  var done = 0;
-  try {
-    for (var i = 0; i < todo.length; i++) {
-      if (!document.getElementById('savedDesignList')) break;
-      var r = todo[i];
-      try {
-        var cfg = await safeDecodeAsync(r.configEncoded);
-        if (!cfg) { console.warn('[AutoPrev] decode failed', r.quoteId); continue; }
-        restoreConfig(cfg); triggerBuild();
-        var ready = await waitFor3DReady(9000);
-        console.log('[AutoPrev]', r.quoteId, 'ready=', ready);
-        if (!ready) continue;
-        var snaps = captureBuildingViews();
-        console.log('[AutoPrev]', r.quoteId, 'snaps=', snaps && snaps.length);
-        if (!snaps || !snaps.length) continue;
-        sbFetch('quotes?id=eq.' + encodeURIComponent(r.quoteId), {
-          method: 'PATCH', body: JSON.stringify({ snapshots: snaps }),
-          headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
-                     'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
-        });
-        var slot = document.querySelector('[data-prev-qid="' + r.quoteId + '"]');
-        console.log('[AutoPrev] slot found?', !!slot, r.quoteId);
-        if (slot) slot.innerHTML = '<img src="' + snaps[0] + '" style="width:100%;display:block;">';
-        done++;
-      } catch (e) { console.warn('[AutoPrev]', r.quoteId, e); }
-    }
-  } finally {
-    try { if (mine) { restoreConfig(mine); triggerBuild(); } } catch (e) {}
-    window._autoPrevRunning = false;
-    console.log('[AutoPrev] generated', done, 'preview(s)');
+window._snapCache = {};
+window._snapBusy = {};
+// Capture one quote's views in a hidden iframe (?capture=1), exactly how the CRM does it.
+// Nothing touches the live builder, and only the cards you can actually see get captured.
+window.requestCardSnap = function (qid) {
+  if (!qid || window._snapCache[qid] || window._snapBusy[qid]) return;
+  if (Object.keys(window._snapBusy).length >= 2) return;      // at most 2 at a time
+  window._snapBusy[qid] = 1;
+  var fr = document.createElement('iframe');
+  fr.id = '_capfr_' + qid;
+  fr.src = location.pathname + '?capture=1&quote=' + encodeURIComponent(qid);
+  fr.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:800px;height:600px;border:none;opacity:0;pointer-events:none;';
+  document.body.appendChild(fr);
+  setTimeout(function () {                                    // never leave one hanging
+    var f = document.getElementById('_capfr_' + qid);
+    if (f) { f.remove(); delete window._snapBusy[qid]; }
+  }, 25000);
+};
+window.addEventListener('message', function (e) {
+  if (!e.data || e.data.type !== 'crm_snapshots') return;
+  var qid = e.data.id, snaps = e.data.snapshots;
+  var fr = document.getElementById('_capfr_' + qid);
+  if (fr) fr.remove();
+  delete window._snapBusy[qid];
+  if (e.data.error) { console.warn('[CardSnap]', qid, e.data.error); }
+  if (snaps && snaps.length) {
+    window._snapCache[qid] = snaps;
+    var slot = document.querySelector('[data-prev-qid="' + qid + '"]');
+    if (slot) slot.innerHTML = '<img src="' + snaps[0] + '" style="width:100%;display:block;">';
+    // persist so it only ever happens once per quote
+    try {
+      sbFetch('quotes?id=eq.' + encodeURIComponent(qid), {
+        method: 'PATCH', body: JSON.stringify({ snapshots: snaps }),
+        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+                   'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+      });
+    } catch (err) {}
   }
+  observeCardPreviews();                                      // let the next one start
+});
+// Only capture cards that are actually scrolled into view.
+window.observeCardPreviews = function () {
+  var slots = document.querySelectorAll('[data-prev-qid][data-needs-snap="1"]');
+  if (!slots.length) return;
+  if (!window._prevObs) {
+    window._prevObs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        var qid = en.target.getAttribute('data-prev-qid');
+        window._prevObs.unobserve(en.target);
+        en.target.removeAttribute('data-needs-snap');
+        requestCardSnap(qid);
+      });
+    }, { root: document.getElementById('savedDesignList') ? document.getElementById('savedDesignList').parentNode : null, rootMargin: '200px' });
+  }
+  Array.prototype.forEach.call(slots, function (s) { window._prevObs.observe(s); });
 };
 window.backfillPreviews = async function (limit) {
   if (!confirm('Backfill previews?\n\nThis loads each saved quote into the builder one at a time to capture its 3D views. Your current build will be replaced - save anything you want to keep first.')) return;
@@ -20557,7 +20573,7 @@ async function searchAllHistory() {
     try { var _ws=rows.filter(function(x){return x.snapshots;}).length;
       console.log('[Snap] rows:', rows.length, '| with snapshots:', _ws,
         _ws? ('| shape: '+(Array.isArray(rows.filter(function(x){return x.snapshots;})[0].snapshots)?'array':typeof rows.filter(function(x){return x.snapshots;})[0].snapshots)) : '| none stored'); } catch(e){}
-    try { setTimeout(function(){ autoGeneratePreviews(results); }, 400); } catch(e){}
+    try { setTimeout(function(){ observeCardPreviews(); }, 200); } catch(e){}
     try {
       var _miss = rows.filter(function(x){ return x.config_encoded && !x.snapshots; }).length;
       var _row = document.getElementById('bfRow'), _note = document.getElementById('bfNote');
@@ -21024,7 +21040,13 @@ function _renderDesignList(quotes, list, append) {
       } else {
         _pv = promoPreviewSVG(ff || {}, ds || {}, d.specs || '');
       }
-      if (_pv) card += '<div data-prev-qid="' + esc(qid) + '" style="margin-top:8px;border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,.10);">' + _pv + '</div>';
+      var _cached = (window._snapCache && window._snapCache[qid]) ? window._snapCache[qid][0] : '';
+      if (_cached) _img = _cached;
+      var _need = _img ? '' : ' data-needs-snap="1"';
+      var _inner = _img
+        ? '<img src="' + _img + '" style="width:100%;display:block;">'
+        : '<div style="padding:22px;text-align:center;color:#5d6878;font-size:11px;font-weight:600;background:#0b1020;">Loading preview...</div>';
+      card += '<div data-prev-qid="' + esc(qid) + '"' + _need + ' style="margin-top:8px;border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,.10);min-height:60px;">' + _inner + '</div>';
     } catch(e) {}
     // Action buttons
     card += '<div style="display:flex;gap:6px;margin-top:9px;">';
