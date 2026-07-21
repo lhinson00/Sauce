@@ -17993,6 +17993,10 @@ function applyVoiceQuote(parsed, overlay) {
       <input id="loadDesignSearch" type="text" placeholder="Search name, phone, city, quote ID..." oninput="filterLoadDesigns(this.value)" style="flex:1;box-sizing:border-box;padding:8px 12px;background:#2e2e2e;border:1px solid #5e5e5e;border-radius:8px;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;outline:none;">
       <button onclick="searchAllHistory()" style="padding:8px 14px;background:rgba(255,130,0,.15);color:#FF8200;border:1px solid rgba(255,130,0,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Search All History</button>
     </div>
+    <div id="bfRow" style="display:none;justify-content:space-between;align-items:center;margin-bottom:10px;padding:6px 8px;border:1px solid rgba(255,130,0,.25);border-radius:8px;background:rgba(255,130,0,.06);">
+      <div id="bfNote" style="font-size:11px;color:#cbd5e1;font-weight:600;"></div>
+      <button onclick="backfillPreviews()" style="padding:6px 12px;background:rgba(255,130,0,.18);color:#FF8200;border:1px solid rgba(255,130,0,.35);border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Generate Previews</button>
+    </div>
     <div id="savedDesignList" style="display:flex;flex-direction:column;gap:8px;">
       <div style="color:#888888;font-size:13px;text-align:center;padding:20px;">Loading...</div>
     </div>
@@ -19905,6 +19909,77 @@ var _SB_KEY  = 'sb_publishable_JFnksTNbexbFQ0LZtC3Olg_Tf2baKx4';
 var _SB_ON   = true; // flip to false to disable Supabase entirely
 
 // Low-level Supabase REST helper
+// ═══ SNAPSHOT BACKFILL — generate real 3D previews for existing quotes ═══
+// Loads each quote's saved config into the builder, renders it, captures the
+// same 4 views the save path captures, and PATCHes them onto the quote row.
+// This is what gives older quotes the previews the CRM already displays.
+window.backfillPreviews = async function (limit) {
+  if (!confirm('Backfill previews?\n\nThis loads each saved quote into the builder one at a time to capture its 3D views. Your current build will be replaced - save anything you want to keep first.')) return;
+  var host = document.getElementById('bfNote') || document.getElementById('pmStatus') || document.getElementById('pmResults');
+  function say(t) { console.log('[Backfill]', t); if (host) host.textContent = t; }
+
+  var rows = await sbFetch('quotes?select=id,name,config_encoded,snapshots&order=updated_at.desc&limit=' + (limit || 200), { method: 'GET' });
+  if (rows === null) { say('Could not reach the quote database.'); return; }
+  if (!Array.isArray(rows)) rows = [];
+  var todo = rows.filter(function (r) { return r.config_encoded && !r.snapshots; });
+  say('Found ' + rows.length + ' quotes, ' + todo.length + ' need previews.');
+  if (!todo.length) { say('Nothing to backfill - all quotes already have previews.'); return; }
+
+  var ok = 0, fail = 0;
+  for (var i = 0; i < todo.length; i++) {
+    var r = todo[i];
+    say('Capturing ' + (i + 1) + ' of ' + todo.length + '  (' + (r.name || r.id) + ')');
+    try {
+      var cfg = await safeDecodeAsync(r.config_encoded);
+      if (!cfg) { fail++; continue; }
+      restoreConfig(cfg);
+      triggerBuild();
+      // let the 3D build settle before capturing
+      await new Promise(function (res) { setTimeout(res, 1100); });
+      var snaps = captureBuildingViews();
+      if (!snaps || !snaps.length) { fail++; continue; }
+      var res2 = await sbFetch('quotes?id=eq.' + encodeURIComponent(r.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ snapshots: snaps }),
+        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+      });
+      ok++;
+    } catch (e) { console.warn('[Backfill] failed on', r.id, e); fail++; }
+  }
+  say('Done - ' + ok + ' preview' + (ok===1?'':'s') + ' generated' + (fail ? ', ' + fail + ' failed' : ''));
+  try { if (document.getElementById('savedDesignList') && typeof openLoadDesignModal==='function') openLoadDesignModal(); } catch(e){}
+};
+
+// Capture the same 4 views the save path uses. Returns an array of JPEG data URLs.
+function captureBuildingViews() {
+  try {
+    var d3 = window._3d;
+    if (!(d3 && d3.rrx && d3.scene && d3.cam)) { console.warn('[Backfill] no 3D renderer'); return null; }
+    var oTh = d3.th, oPh = d3.ph, oDi = d3.di;
+    d3.rrx.setSize(320, 213);
+    if (d3.dimLabels) d3.dimLabels.forEach(function (l) { l.visible = false; });
+    var views = [
+      { th: 0, ph: Math.PI * 0.08, di: 13 },
+      { th: Math.PI * 1.5, ph: Math.PI * 0.08, di: 13 },
+      { th: Math.PI * 1.0, ph: Math.PI * 0.08, di: 13 },
+      { th: Math.PI * 0.5, ph: Math.PI * 0.08, di: 13 }
+    ];
+    var out = [];
+    for (var i = 0; i < views.length; i++) {
+      d3.th = views[i].th; d3.ph = views[i].ph; d3.di = views[i].di; d3.setC();
+      d3.rrx.render(d3.scene, d3.cam);
+      out.push(d3.rrx.domElement.toDataURL('image/jpeg', 0.6));
+    }
+    var vp = document.getElementById('qgRV') || document.querySelector('.vp-container');
+    d3.rrx.setSize(vp ? vp.clientWidth : window.innerWidth, vp ? vp.clientHeight : 400);
+    d3.rrx.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    d3.th = oTh; d3.ph = oPh; d3.di = oDi; d3.setC();
+    d3.rrx.render(d3.scene, d3.cam);
+    if (d3.dimLabels) d3.dimLabels.forEach(function (l) { l.visible = true; });
+    return out;
+  } catch (e) { console.warn('[Backfill] capture error:', e); return null; }
+}
+
 // ═══ PROMO CAMPAIGN — find saved quotes matching promo criteria and email them ═══
 window._promoRows = [];
 function promoZipOf(r) {
@@ -19955,6 +20030,7 @@ window.openPromoModal = function() {
     + '<textarea id="pmMsg" rows="4" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #ccc;border-radius:7px;font-family:Outfit,sans-serif;font-size:12px;"></textarea>'
     + '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">'
     + '<div id="pmStatus" style="font-size:11px;color:#666;font-weight:700;"></div>'
+    + '<button onclick="backfillPreviews()" style="padding:8px 14px;background:#334;color:#cbd5e1;border:none;border-radius:7px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;margin-right:8px;">Backfill Previews</button>'
     + '<button id="pmSendBtn" onclick="sendPromoEmails()" style="padding:8px 18px;background:#0d1b3e;color:#FF8200;border:none;border-radius:7px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Send to Selected</button>'
     + '</div></div></div>';
   document.body.appendChild(ov);
@@ -20315,6 +20391,20 @@ async function searchAllHistory() {
         salesman:       r.salesman        || ''
       };
     });
+    try { var _ws=rows.filter(function(x){return x.snapshots;}).length;
+      console.log('[Snap] rows:', rows.length, '| with snapshots:', _ws,
+        _ws? ('| shape: '+(Array.isArray(rows.filter(function(x){return x.snapshots;})[0].snapshots)?'array':typeof rows.filter(function(x){return x.snapshots;})[0].snapshots)) : '| none stored'); } catch(e){}
+    try {
+      var _miss = rows.filter(function(x){ return x.config_encoded && !x.snapshots; }).length;
+      var _row = document.getElementById('bfRow'), _note = document.getElementById('bfNote');
+      var _isLain = ((window.currentUser||{}).username === 'lain.hinson');
+      if (_row) {
+        if (_miss > 0 && _isLain) {
+          _row.style.display = 'flex';
+          if (_note) _note.textContent = _miss + ' quote' + (_miss===1?'':'s') + ' without a 3D preview';
+        } else { _row.style.display = 'none'; }
+      }
+    } catch(e){}
 
     // Merge into _savedDesigns so load works correctly
     results.forEach(function(r) {
@@ -20371,6 +20461,69 @@ function filterLoadDesigns(q) {
   list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">Search Searching all history…</div>';
   clearTimeout(window._searchHistoryTimer);
   window._searchHistoryTimer = setTimeout(function() { searchAllHistory(); }, 500);
+}
+
+// ═══ QUOTE CARD PREVIEW — drawn live from the quote's specs ═══
+// Existing quotes have no stored 3D snapshot, so we draw a lightweight SVG
+// elevation from width/length/height/pitch/colors. Works on every quote,
+// old or new, with no backfill. A stored snapshot (newer quotes) wins.
+function promoPreviewSVG(ff, ds, specs) {
+  function num(v) { var n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.]/g, '')); return isFinite(n) ? n : 0; }
+  var w = num(ff.width), l = num(ff.length), ht = num(ff.height), pitch = num(ff.pitch) || 4;
+  if ((!w || !l) && specs) { var p = String(specs).split(/[x\u00d7]/i); w = w || num(p[0]); l = l || num(p[1]); ht = ht || num(p[2]); }
+  if (!w || !l) return '';
+  if (!ht) ht = 12;
+  var COL = {
+    'matte black': '#1c1c1c', 'gloss black': '#141414', 'black': '#161616',
+    'pure white': '#f2f2f2', 'white': '#f0f0f0', 'county charcoal': '#3b3f45',
+    'charcoal': '#3b3f45', 'burnished slate': '#4a3b34', 'buckskin': '#a58a63',
+    'tan': '#c2ad8b', 'light stone': '#cfc6b4', 'ash gray': '#9aa0a3',
+    'gray': '#8d9296', 'brown': '#4e3c30', 'barn red': '#7b2d26', 'red': '#8c2f28',
+    'forest green': '#28402f', 'green': '#2f4a36', 'hawaiian blue': '#22506e',
+    'blue': '#2b5878', 'galvalume': '#b9bec4', 'rustic red': '#7a2f28'
+  };
+  function pc2(name, dflt) {
+    var k = String(name || '').toLowerCase().trim();
+    if (COL[k]) return COL[k];
+    for (var key in COL) { if (k && k.indexOf(key) > -1) return COL[key]; }
+    return dflt;
+  }
+  var wallC = pc2(ff.wallColor || ds.wallColor, '#8d9296');
+  var roofC = pc2(ff.roofColor || ds.roofColor, '#2a2a2a');
+  var trimC = pc2(ff.trimColor || ds.trimColor, '#1c1c1c');
+
+  // Scale the building into a 300x150 box (gable end on the left, eave running right)
+  var VW = 300, VH = 150, pad = 14;
+  var rise = (w / 2) * (pitch / 12);
+  var totalH = ht + rise;
+  var depth = Math.min(l * 0.55, w * 1.9);            // foreshortened length
+  var unit = Math.min((VW - pad * 2) / (w + depth * 0.62), (VH - pad * 2) / (totalH + depth * 0.30));
+  var W = w * unit, H = ht * unit, R = rise * unit, D = depth * unit;
+  var dx = D * 0.62, dy = -D * 0.30;                   // isometric offset
+  var x0 = pad, y0 = VH - pad;                          // front-left ground corner
+  var fx = x0, fy = y0;
+  function pt(x, y) { return (x).toFixed(1) + ',' + (y).toFixed(1); }
+  var gA = pt(fx, fy), gB = pt(fx + W, fy), gC = pt(fx + W, fy - H), gD = pt(fx, fy - H);
+  var peakF = pt(fx + W / 2, fy - H - R);
+  var bA = pt(fx + dx, fy + dy), bB = pt(fx + W + dx, fy + dy);
+  var bC = pt(fx + W + dx, fy - H + dy), bD = pt(fx + dx, fy - H + dy);
+  var peakB = pt(fx + W / 2 + dx, fy - H - R + dy);
+  var s = '<svg viewBox="0 0 ' + VW + ' ' + VH + '" width="100%" style="display:block;background:#0b1020;">';
+  s += '<rect x="0" y="0" width="' + VW + '" height="' + VH + '" fill="#0b1020"/>';
+  // side wall (eave), slightly darker for depth
+  s += '<polygon points="' + gB + ' ' + bB + ' ' + bC + ' ' + gC + '" fill="' + wallC + '" opacity="0.72" stroke="' + trimC + '" stroke-width="1"/>';
+  // side roof plane
+  s += '<polygon points="' + gC + ' ' + peakF + ' ' + peakB + ' ' + bC + '" fill="' + roofC + '" opacity="0.85" stroke="' + trimC + '" stroke-width="1"/>';
+  // gable end wall + gable triangle
+  s += '<polygon points="' + gA + ' ' + gB + ' ' + gC + ' ' + gD + '" fill="' + wallC + '" stroke="' + trimC + '" stroke-width="1"/>';
+  s += '<polygon points="' + gD + ' ' + gC + ' ' + peakF + '" fill="' + wallC + '" stroke="' + trimC + '" stroke-width="1"/>';
+  // roof edge over the gable
+  s += '<polyline points="' + gD + ' ' + peakF + ' ' + gC + '" fill="none" stroke="' + roofC + '" stroke-width="3"/>';
+  // size caption
+  s += '<text x="' + (VW - 8) + '" y="' + (VH - 7) + '" text-anchor="end" font-family="Outfit,sans-serif" font-size="11" font-weight="800" fill="#FF8200">'
+     + (w || '?') + "'x" + (l || '?') + "'x" + (ht || '?') + "'</text>";
+  s += '</svg>';
+  return s;
 }
 
 function _renderDesignList(quotes, list, append) {
@@ -20671,22 +20824,25 @@ function _renderDesignList(quotes, list, append) {
       card += '<div style="margin-top:4px;">'+breakdownLines+'</div>';
     }
 
-    // Building preview - first stored 3D snapshot (saved with every quote)
+    // Building preview - stored 3D snapshot when one exists, otherwise draw it
+    // live from the quote's own specs so EVERY saved quote gets a preview.
     try {
       var _sn = d.snapshots || (d.snapshot && d.snapshot.snapshots) || null;
       var _img = '';
       if (_sn) {
         if (typeof _sn === 'string') _img = _sn;
         else if (Array.isArray(_sn)) _img = _sn[0];
-        else _img = _sn.front || _sn.f || _sn.a || _sn[Object.keys(_sn)[0]];
+        else _img = _sn.front || _sn[Object.keys(_sn)[0]];
         if (_img && typeof _img === 'object') _img = _img.data || _img.img || _img.src || '';
       }
+      var _pv = '';
       if (_img) {
         if (String(_img).indexOf('data:') !== 0) _img = 'data:image/jpeg;base64,' + _img;
-        card += '<div style="margin-top:8px;border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,.10);background:#0b1020;">'
-              + '<img src="' + _img + '" alt="building preview" loading="lazy" style="width:100%;display:block;">'
-              + '</div>';
+        _pv = '<img src="' + _img + '" alt="building preview" loading="lazy" style="width:100%;display:block;">';
+      } else {
+        _pv = promoPreviewSVG(ff || {}, ds || {}, d.specs || '');
       }
+      if (_pv) card += '<div style="margin-top:8px;border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,.10);">' + _pv + '</div>';
     } catch(e) {}
     // Action buttons
     card += '<div style="display:flex;gap:6px;margin-top:9px;">';
