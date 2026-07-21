@@ -19998,6 +19998,45 @@ function capturePostLayoutPNG(W, H) {
 // Loads each quote's saved config into the builder, renders it, captures the
 // same 4 views the save path captures, and PATCHes them onto the quote row.
 // This is what gives older quotes the previews the CRM already displays.
+// Auto-generate previews with no button: stash the user's current build, load each
+// quote that has no capture, snapshot the real 3D, PATCH it, then restore their build.
+window._autoPrevRunning = false;
+window.autoGeneratePreviews = async function (rows) {
+  if (window._autoPrevRunning) return;
+  var todo = (rows || []).filter(function (r) { return r.configEncoded && !r.snapshots; });
+  if (!todo.length) return;
+  window._autoPrevRunning = true;
+  var mine = null;
+  try { mine = serializeConfig(); } catch (e) {}
+  var done = 0;
+  try {
+    for (var i = 0; i < todo.length; i++) {
+      if (!document.getElementById('savedDesignList')) break;
+      var r = todo[i];
+      try {
+        var cfg = await safeDecodeAsync(r.configEncoded);
+        if (!cfg) continue;
+        restoreConfig(cfg); triggerBuild();
+        var ready = await waitFor3DReady(9000);
+        if (!ready) continue;
+        var snaps = captureBuildingViews();
+        if (!snaps || !snaps.length) continue;
+        sbFetch('quotes?id=eq.' + encodeURIComponent(r.quoteId), {
+          method: 'PATCH', body: JSON.stringify({ snapshots: snaps }),
+          headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+                     'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+        });
+        var slot = document.querySelector('[data-prev-qid="' + r.quoteId + '"]');
+        if (slot) slot.innerHTML = '<img src="' + snaps[0] + '" style="width:100%;display:block;">';
+        done++;
+      } catch (e) { console.warn('[AutoPrev]', r.quoteId, e); }
+    }
+  } finally {
+    try { if (mine) { restoreConfig(mine); triggerBuild(); } } catch (e) {}
+    window._autoPrevRunning = false;
+    console.log('[AutoPrev] generated', done, 'preview(s)');
+  }
+};
 window.backfillPreviews = async function (limit) {
   if (!confirm('Backfill previews?\n\nThis loads each saved quote into the builder one at a time to capture its 3D views. Your current build will be replaced - save anything you want to keep first.')) return;
   var host = document.getElementById('bfNote') || document.getElementById('pmStatus') || document.getElementById('pmResults');
@@ -20502,13 +20541,14 @@ async function searchAllHistory() {
     try { var _ws=rows.filter(function(x){return x.snapshots;}).length;
       console.log('[Snap] rows:', rows.length, '| with snapshots:', _ws,
         _ws? ('| shape: '+(Array.isArray(rows.filter(function(x){return x.snapshots;})[0].snapshots)?'array':typeof rows.filter(function(x){return x.snapshots;})[0].snapshots)) : '| none stored'); } catch(e){}
+    try { setTimeout(function(){ autoGeneratePreviews(results); }, 400); } catch(e){}
     try {
       var _miss = rows.filter(function(x){ return x.config_encoded && !x.snapshots; }).length;
       var _row = document.getElementById('bfRow'), _note = document.getElementById('bfNote');
       var _isLain = ((window.currentUser||{}).username === 'lain.hinson');
       if (_row) {
         if (_miss > 0 && _isLain) {
-          _row.style.display = 'flex';
+          _row.style.display = 'none';
           if (_note) _note.textContent = _miss + ' quote' + (_miss===1?'':'s') + ' without a 3D preview';
         } else { _row.style.display = 'none'; }
       }
@@ -20571,66 +20611,88 @@ function filterLoadDesigns(q) {
   window._searchHistoryTimer = setTimeout(function() { searchAllHistory(); }, 500);
 }
 
-// ═══ QUOTE CARD PREVIEW — drawn live from the quote's specs ═══
-// Existing quotes have no stored 3D snapshot, so we draw a lightweight SVG
-// elevation from width/length/height/pitch/colors. Works on every quote,
-// old or new, with no backfill. A stored snapshot (newer quotes) wins.
+// ═══ QUOTE PREVIEW — drawn from the quote's own data, automatically ═══
+// Every saved quote carries dimensions, pitch, colors, openings and sheds, so the
+// preview is generated on the fly for ANY quote (recent or searched) with no
+// button and no stored capture required.
 function promoPreviewSVG(ff, ds, specs) {
-  function num(v) { var n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.]/g, '')); return isFinite(n) ? n : 0; }
-  var w = num(ff.width), l = num(ff.length), ht = num(ff.height), pitch = num(ff.pitch) || 4;
-  if ((!w || !l) && specs) { var p = String(specs).split(/[x\u00d7]/i); w = w || num(p[0]); l = l || num(p[1]); ht = ht || num(p[2]); }
-  if (!w) w = 30; if (!l) l = 40;   // always draw something rather than a blank card
-  if (!ht) ht = 12;
-  var COL = {
-    'matte black': '#1c1c1c', 'gloss black': '#141414', 'black': '#161616',
-    'pure white': '#f2f2f2', 'white': '#f0f0f0', 'county charcoal': '#3b3f45',
-    'charcoal': '#3b3f45', 'burnished slate': '#4a3b34', 'buckskin': '#a58a63',
-    'tan': '#c2ad8b', 'light stone': '#cfc6b4', 'ash gray': '#9aa0a3',
-    'gray': '#8d9296', 'brown': '#4e3c30', 'barn red': '#7b2d26', 'red': '#8c2f28',
-    'forest green': '#28402f', 'green': '#2f4a36', 'hawaiian blue': '#22506e',
-    'blue': '#2b5878', 'galvalume': '#b9bec4', 'rustic red': '#7a2f28'
-  };
-  function pc2(name, dflt) {
-    var k = String(name || '').toLowerCase().trim();
-    if (COL[k]) return COL[k];
-    for (var key in COL) { if (k && k.indexOf(key) > -1) return COL[key]; }
-    return dflt;
-  }
-  var wallC = pc2(ff.wallColor || ds.wallColor, '#8d9296');
-  var roofC = pc2(ff.roofColor || ds.roofColor, '#2a2a2a');
-  var trimC = pc2(ff.trimColor || ds.trimColor, '#1c1c1c');
+  function num(v){ var n=parseFloat(String(v==null?'':v).replace(/[^0-9.]/g,'')); return isFinite(n)?n:0; }
+  function arr(v){ return Array.isArray(v)?v:[]; }
+  var w=num(ff.width)||num(ds.width), l=num(ff.length)||num(ds.length), ht=num(ff.height)||num(ds.height);
+  var pitch=num(ff.pitch)||num(ds.pitch)||num(ds.roofPitch)||4;
+  if((!w||!l)&&specs){ var p=String(specs).split(/[x\u00d7]/i); w=w||num(p[0]); l=l||num(p[1]); ht=ht||num(p[2]); }
+  if(!w||!l) return '';
+  if(!ht) ht=12;
+  var COL={'matte black':'#1f1f1f','gloss black':'#171717','black':'#1a1a1a','pure white':'#f4f4f4',
+    'white':'#f1f1f1','county charcoal':'#40454b','charcoal':'#40454b','burnished slate':'#4d3e36',
+    'buckskin':'#a98d66','tan':'#c5b08e','light stone':'#d2c9b7','ash gray':'#9ea4a7','gray':'#909598',
+    'brown':'#523f33','barn red':'#7f2f28','red':'#8f312a','forest green':'#2a4431','green':'#324d39',
+    'hawaiian blue':'#245471','blue':'#2d5c7c','galvalume':'#bcc1c7','rustic red':'#7d312a','clay':'#b08968'};
+  function C(n,d){ var k=String(n||'').toLowerCase().trim(); if(COL[k])return COL[k];
+    for(var q in COL){ if(k&&k.indexOf(q)>-1) return COL[q]; } return d; }
+  var wallC=C(ff.wallColorName||ff.wallColor||ds.wallColorName||ds.wallColor,'#9098a0');
+  var roofC=C(ff.roofColorName||ff.roofColor||ds.roofColorName||ds.roofColor,'#242424');
+  var trimC=C(ff.trimColorName||ff.trimColor||ds.trimColorName||ds.trimColor,'#1b1b1b');
+  var wsOn=!!(ff.wainscot||ds.wainscot), wsC=C(ff.wainscotColor||ds.wainscotColor,trimC);
 
-  // Scale the building into a 300x150 box (gable end on the left, eave running right)
-  var VW = 300, VH = 150, pad = 14;
-  var rise = (w / 2) * (pitch / 12);
-  var totalH = ht + rise;
-  var depth = Math.min(l * 0.55, w * 1.9);            // foreshortened length
-  var unit = Math.min((VW - pad * 2) / (w + depth * 0.62), (VH - pad * 2) / (totalH + depth * 0.30));
-  var W = w * unit, H = ht * unit, R = rise * unit, D = depth * unit;
-  var dx = D * 0.62, dy = -D * 0.30;                   // isometric offset
-  var x0 = pad, y0 = VH - pad;                          // front-left ground corner
-  var fx = x0, fy = y0;
-  function pt(x, y) { return (x).toFixed(1) + ',' + (y).toFixed(1); }
-  var gA = pt(fx, fy), gB = pt(fx + W, fy), gC = pt(fx + W, fy - H), gD = pt(fx, fy - H);
-  var peakF = pt(fx + W / 2, fy - H - R);
-  var bA = pt(fx + dx, fy + dy), bB = pt(fx + W + dx, fy + dy);
-  var bC = pt(fx + W + dx, fy - H + dy), bD = pt(fx + dx, fy - H + dy);
-  var peakB = pt(fx + W / 2 + dx, fy - H - R + dy);
-  var s = '<svg viewBox="0 0 ' + VW + ' ' + VH + '" width="100%" style="display:block;background:#0b1020;">';
-  s += '<rect x="0" y="0" width="' + VW + '" height="' + VH + '" fill="#0b1020"/>';
-  // side wall (eave), slightly darker for depth
-  s += '<polygon points="' + gB + ' ' + bB + ' ' + bC + ' ' + gC + '" fill="' + wallC + '" opacity="0.72" stroke="' + trimC + '" stroke-width="1"/>';
-  // side roof plane
-  s += '<polygon points="' + gC + ' ' + peakF + ' ' + peakB + ' ' + bC + '" fill="' + roofC + '" opacity="0.85" stroke="' + trimC + '" stroke-width="1"/>';
-  // gable end wall + gable triangle
-  s += '<polygon points="' + gA + ' ' + gB + ' ' + gC + ' ' + gD + '" fill="' + wallC + '" stroke="' + trimC + '" stroke-width="1"/>';
-  s += '<polygon points="' + gD + ' ' + gC + ' ' + peakF + '" fill="' + wallC + '" stroke="' + trimC + '" stroke-width="1"/>';
-  // roof edge over the gable
-  s += '<polyline points="' + gD + ' ' + peakF + ' ' + gC + '" fill="none" stroke="' + roofC + '" stroke-width="3"/>';
-  // size caption
-  s += '<text x="' + (VW - 8) + '" y="' + (VH - 7) + '" text-anchor="end" font-family="Outfit,sans-serif" font-size="11" font-weight="800" fill="#FF8200">'
-     + (w || '?') + "'x" + (l || '?') + "'x" + (ht || '?') + "'</text>";
-  s += '</svg>';
+  var VW=340, VH=200, pad=16;
+  var rise=(w/2)*(pitch/12), totalH=ht+rise;
+  var dep=Math.min(l*0.5, w*2.0);
+  var unit=Math.min((VW-pad*2)/(w+dep*0.60),(VH-pad*2)/(totalH+dep*0.28));
+  var W=w*unit, H=ht*unit, R=rise*unit, D=dep*unit, dx=D*0.60, dy=-D*0.28;
+  var x0=pad+4, y0=VH-pad;
+  function P(x,y){ return x.toFixed(1)+','+y.toFixed(1); }
+  var A=P(x0,y0), B=P(x0+W,y0), Cc=P(x0+W,y0-H), Dd=P(x0,y0-H), PK=P(x0+W/2,y0-H-R);
+  var bB=P(x0+W+dx,y0+dy), bC=P(x0+W+dx,y0-H+dy), bPK=P(x0+W/2+dx,y0-H-R+dy);
+  var s='<svg viewBox="0 0 '+VW+' '+VH+'" width="100%" style="display:block;background:#0b1020;">';
+  s+='<rect width="'+VW+'" height="'+VH+'" fill="#0b1020"/>';
+
+  // lean-to / side shed on the eave side
+  var sheds=arr(ff.sheds||ds.sheds);
+  if(sheds.length){
+    var sd=num(sheds[0].w)||num(sheds[0].depth)||10;
+    var sw2=sd*unit, sy=y0-H*0.62;
+    s+='<polygon points="'+P(x0+W+dx,y0+dy)+' '+P(x0+W+dx+sw2*0.6,y0+dy-sw2*0.28)+' '
+      +P(x0+W+dx+sw2*0.6,sy-sw2*0.28)+' '+P(x0+W+dx,sy)+'" fill="'+wallC+'" opacity="0.5" stroke="'+trimC+'" stroke-width="1"/>';
+    s+='<polygon points="'+P(x0+W,y0-H)+' '+P(x0+W+dx,y0-H+dy)+' '+P(x0+W+dx+sw2*0.6,sy-sw2*0.28)+' '
+      +P(x0+W+sw2*0.6,sy-sw2*0.28-dy*0)+'" fill="'+roofC+'" opacity="0.75"/>';
+  }
+  // eave (side) wall + its roof plane
+  s+='<polygon points="'+B+' '+bB+' '+bC+' '+Cc+'" fill="'+wallC+'" opacity="0.74" stroke="'+trimC+'" stroke-width="1"/>';
+  s+='<polygon points="'+Cc+' '+PK+' '+bPK+' '+bC+'" fill="'+roofC+'" stroke="'+trimC+'" stroke-width="1"/>';
+  // gable end wall
+  s+='<polygon points="'+A+' '+B+' '+Cc+' '+Dd+'" fill="'+wallC+'" stroke="'+trimC+'" stroke-width="1"/>';
+  s+='<polygon points="'+Dd+' '+Cc+' '+PK+'" fill="'+wallC+'" stroke="'+trimC+'" stroke-width="1"/>';
+  if(wsOn) s+='<rect x="'+x0+'" y="'+(y0-H*0.28)+'" width="'+W+'" height="'+(H*0.28)+'" fill="'+wsC+'"/>';
+  s+='<polyline points="'+Dd+' '+PK+' '+Cc+'" fill="none" stroke="'+roofC+'" stroke-width="3"/>';
+
+  // garage doors across the gable end
+  var gds=arr(ff.garageDoors||ds.garageDoors);
+  var n=0; gds.forEach(function(g){ n+=(parseInt(g.qty)||1); });
+  if(n>0){
+    n=Math.min(n,4);
+    var gw=num(gds[0].w)||num(String(gds[0].size||'').split('x')[0])||10;
+    var gh=num(gds[0].h)||num(String(gds[0].size||'').split('x')[1])||10;
+    var dW=Math.min(gw*unit,(W/(n+0.6))), dH=Math.min(gh*unit,H*0.86);
+    var gap=(W-n*dW)/(n+1);
+    for(var i=0;i<n;i++){
+      var gx=x0+gap+i*(dW+gap);
+      s+='<rect x="'+gx+'" y="'+(y0-dH)+'" width="'+dW+'" height="'+dH+'" fill="'+trimC+'" stroke="#0006"/>';
+      for(var k=1;k<5;k++) s+='<line x1="'+gx+'" y1="'+(y0-dH+dH*k/5)+'" x2="'+(gx+dW)+'" y2="'+(y0-dH+dH*k/5)+'" stroke="#ffffff22"/>';
+    }
+  }
+  // walk door + windows on the eave side
+  if(arr(ff.walkDoors||ds.walkDoors).length){
+    var wx=x0+W+dx*0.30, wy=y0+dy*0.30;
+    s+='<rect x="'+wx+'" y="'+(wy-H*0.52)+'" width="'+(W*0.07)+'" height="'+(H*0.52)+'" fill="#f0f0f0" stroke="'+trimC+'"/>';
+  }
+  var wins=arr(ff.windows||ds.windows); var wn=0; wins.forEach(function(x){ wn+=(parseInt(x.qty)||1); });
+  for(var j=0;j<Math.min(wn,3);j++){
+    var ox2=x0+W+dx*(0.52+j*0.15), oy2=y0+dy*(0.52+j*0.15)-H*0.62;
+    s+='<rect x="'+ox2+'" y="'+oy2+'" width="'+(W*0.05)+'" height="'+(H*0.20)+'" fill="#9fd0e8" stroke="'+trimC+'"/>';
+  }
+  s+='<text x="'+(VW-8)+'" y="'+(VH-7)+'" text-anchor="end" font-family="Outfit,sans-serif" font-size="12" font-weight="800" fill="#FF8200">'
+    + w+"'x"+l+"'x"+ht+"'</text></svg>";
   return s;
 }
 
@@ -20950,12 +21012,9 @@ function _renderDesignList(quotes, list, append) {
         if (String(_img).indexOf('data:') !== 0) _img = 'data:image/jpeg;base64,' + _img;
         _pv = '<img src="' + _img + '" alt="building preview" loading="lazy" style="width:100%;display:block;">';
       } else {
-        // No stored capture yet - show a prompt instead of a fake silhouette so it's
-        // obvious the real render still needs generating.
-        _pv = '<div style="padding:14px;text-align:center;color:#7c8698;font-size:11px;font-weight:600;background:#0b1020;">'
-            + 'No preview yet &mdash; click <span style="color:#FF8200;">Generate Previews</span> above</div>';
+        _pv = promoPreviewSVG(ff || {}, ds || {}, d.specs || '');
       }
-      if (_pv) card += '<div style="margin-top:8px;border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,.10);">' + _pv + '</div>';
+      if (_pv) card += '<div data-prev-qid="' + esc(qid) + '" style="margin-top:8px;border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,.10);">' + _pv + '</div>';
     } catch(e) {}
     // Action buttons
     card += '<div style="display:flex;gap:6px;margin-top:9px;">';
