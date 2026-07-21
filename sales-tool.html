@@ -877,6 +877,7 @@ body.customer-mode #vpKitsBtn,
 body.customer-mode #vpImportBtn,
 body.customer-mode #vpActivityBtn { display: none !important; }
 body.customer-mode #vpHardRefreshBtn { display: none !important; }
+body.customer-mode #vpPromoBtn { display: none !important; }
 body.customer-mode #priceManagerBtn { display: none !important; }
 body.customer-mode #kitsBtn { display: none !important; }
 body.customer-mode #stripMftWrap { display: none !important; }
@@ -2336,6 +2337,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <button id="vpImportBtn"   onclick="document.getElementById('pdfImportInput').click()" style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Import Quote</button>
         <button id="vpActivityBtn" onclick="openActivityLog()"     style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Activity Log</button>
         <button id="vpHardRefreshBtn" onclick="hardRefreshApp()" title="Force-reload the newest build (bypasses cache, same as Ctrl+Shift+R)" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(96,165,250,.55);border-radius:8px;color:#93c5fd;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Hard Refresh</button>
+        <button id="vpPromoBtn" onclick="openPromoModal()" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Promos</button>
       </div>
       <div class="vp-btn-row" id="vpBtnRow" style="display:none;"></div>
     </div>
@@ -19903,6 +19905,139 @@ var _SB_KEY  = 'sb_publishable_JFnksTNbexbFQ0LZtC3Olg_Tf2baKx4';
 var _SB_ON   = true; // flip to false to disable Supabase entirely
 
 // Low-level Supabase REST helper
+// ═══ PROMO CAMPAIGN — find saved quotes matching promo criteria and email them ═══
+window._promoRows = [];
+function promoZipOf(r) {
+  var f = r.form_fields || {};
+  var hay = [r.city, f.zip, f.zipCode, f.address].filter(Boolean).join(' ');
+  var m = String(hay).match(/\b(\d{5})(?:-\d{4})?\b/);
+  return m ? m[1] : '';
+}
+function promoSqftOf(r) {
+  var f = r.form_fields || {};
+  var w = parseFloat(f.width), l = parseFloat(f.length);
+  if (!(w > 0 && l > 0) && r.specs) {
+    var p = String(r.specs).split('x'); w = parseFloat(p[0]); l = parseFloat(p[1]);
+  }
+  return (w > 0 && l > 0) ? Math.round(w * l) : 0;
+}
+function promoEnclosedOf(r) {
+  var f = r.form_fields || {};
+  if (f.openBuilding === true) return false;
+  var bt = String(f.buildingType || f.type || '').toLowerCase();
+  if (bt.indexOf('enclos') > -1) return true;
+  if (bt.indexOf('open') > -1 || bt.indexOf('roof') > -1 || bt.indexOf('carport') > -1) return false;
+  return (f.openBuilding === false) ? true : null;
+}
+window.openPromoModal = function() {
+  var old = document.getElementById('promoOverlay'); if (old) old.remove();
+  var ov = document.createElement('div');
+  ov.id = 'promoOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(10,12,22,.72);z-index:100000;display:flex;align-items:center;justify-content:center;padding:18px;';
+  var inp = 'padding:5px;border:1px solid #ccc;border-radius:6px;font-family:Outfit,sans-serif;';
+  var lbl = 'font-size:9px;color:#666;font-weight:700;';
+  ov.innerHTML =
+    '<div style="background:#fff;border-radius:14px;max-width:940px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;font-family:Outfit,sans-serif;">'
+    + '<div style="background:#0d1b3e;color:#FF8200;padding:12px 16px;font-weight:800;display:flex;justify-content:space-between;align-items:center;">'
+    + '<span>Promo Campaign</span>'
+    + '<button onclick="document.getElementById(\'promoOverlay\').remove()" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;line-height:1;">&times;</button></div>'
+    + '<div style="padding:12px 16px;border-bottom:1px solid #e5e7eb;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">'
+    + '<div><div style="' + lbl + '">ZIP PREFIX</div><input id="pmZipA" value="370" style="width:60px;' + inp + '"></div>'
+    + '<div><div style="' + lbl + '">TO</div><input id="pmZipB" value="385" style="width:60px;' + inp + '"></div>'
+    + '<div><div style="' + lbl + '">MIN SQ FT</div><input id="pmSqft" value="1200" style="width:78px;' + inp + '"></div>'
+    + '<label style="font-size:11px;font-weight:700;color:#334;display:flex;gap:5px;align-items:center;"><input type="checkbox" id="pmEncl" checked> Enclosed only</label>'
+    + '<label style="font-size:11px;font-weight:700;color:#334;display:flex;gap:5px;align-items:center;"><input type="checkbox" id="pmEmail" checked> Has email</label>'
+    + '<button onclick="runPromoSearch()" style="padding:7px 14px;background:#FF8200;color:#fff;border:none;border-radius:7px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Search</button>'
+    + '<span id="pmCount" style="font-size:11px;font-weight:800;color:#0d1b3e;"></span></div>'
+    + '<div id="pmResults" style="flex:1;overflow:auto;padding:8px 16px;min-height:130px;font-size:12px;"><div style="color:#888;padding:16px;">Set your criteria and hit Search.</div></div>'
+    + '<div style="padding:10px 16px;border-top:1px solid #e5e7eb;">'
+    + '<div style="' + lbl + 'margin-bottom:3px;">MESSAGE &mdash; merge fields: {name} {specs} {sqft}</div>'
+    + '<textarea id="pmMsg" rows="4" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #ccc;border-radius:7px;font-family:Outfit,sans-serif;font-size:12px;"></textarea>'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">'
+    + '<div id="pmStatus" style="font-size:11px;color:#666;font-weight:700;"></div>'
+    + '<button id="pmSendBtn" onclick="sendPromoEmails()" style="padding:8px 18px;background:#0d1b3e;color:#FF8200;border:none;border-radius:7px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Send to Selected</button>'
+    + '</div></div></div>';
+  document.body.appendChild(ov);
+  document.getElementById('pmMsg').value =
+    "Hi {name}, we're running a promotion this month on enclosed buildings over 1,200 sq ft in Tennessee - $1,000 off, good through the end of July. Your {specs} building qualifies. Reply or give us a call and we'll get it locked in.";
+};
+window.runPromoSearch = async function() {
+  var box = document.getElementById('pmResults');
+  box.innerHTML = '<div style="color:#888;padding:16px;">Searching...</div>';
+  var zA = parseInt((document.getElementById('pmZipA') || {}).value) || 0;
+  var zB = parseInt((document.getElementById('pmZipB') || {}).value) || 99999;
+  var minSq = parseFloat((document.getElementById('pmSqft') || {}).value) || 0;
+  var wantEncl = !!(document.getElementById('pmEncl') || {}).checked;
+  var needEmail = !!(document.getElementById('pmEmail') || {}).checked;
+  var rows;
+  try {
+    rows = await sbFetch('quotes?select=id,name,email,phone,city,specs,status,form_fields,updated_at&order=updated_at.desc&limit=1000', { method: 'GET' });
+  } catch (e) {
+    box.innerHTML = '<div style="color:#c00;padding:16px;">Could not load quotes: ' + (e && e.message) + '</div>'; return;
+  }
+  if (!Array.isArray(rows)) rows = [];
+  var out = [], unsure = 0;
+  rows.forEach(function (r) {
+    if (needEmail && !r.email) return;
+    var zip = promoZipOf(r); if (!zip) return;
+    var pre = parseInt(zip.substring(0, 3));
+    if (!(pre >= zA && pre <= zB)) return;
+    var sq = promoSqftOf(r); if (sq < minSq) return;
+    var enc = promoEnclosedOf(r);
+    if (wantEncl && enc === false) return;
+    if (wantEncl && enc === null) unsure++;
+    out.push({ r: r, zip: zip, sqft: sq, enc: enc });
+  });
+  window._promoRows = out;
+  document.getElementById('pmCount').textContent = out.length + ' match' + (out.length === 1 ? '' : 'es') + (unsure ? '  (' + unsure + ' unconfirmed enclosure)' : '');
+  if (!out.length) { box.innerHTML = '<div style="color:#888;padding:16px;">No quotes matched.</div>'; return; }
+  var html = '<table style="width:100%;border-collapse:collapse;"><tr style="font-size:9px;color:#666;font-weight:800;text-align:left;">'
+    + '<th style="padding:4px;"><input type="checkbox" id="pmAll" checked onclick="togglePromoAll(this)"></th>'
+    + '<th>NAME</th><th>ZIP</th><th>SIZE</th><th>SQ FT</th><th>ENCL</th><th>EMAIL</th></tr>';
+  out.forEach(function (o, i) {
+    var encTxt = o.enc === true ? 'yes' : (o.enc === null ? '<span style="color:#b45309;">?</span>' : 'no');
+    html += '<tr style="border-top:1px solid #eee;"><td style="padding:4px;"><input type="checkbox" class="pmChk" data-i="' + i + '" checked></td>'
+      + '<td>' + (o.r.name || '(no name)') + '</td><td>' + o.zip + '</td><td>' + (o.r.specs || '') + '</td>'
+      + '<td>' + o.sqft.toLocaleString() + '</td><td>' + encTxt + '</td>'
+      + '<td style="font-size:10px;color:#555;">' + (o.r.email || '') + '</td></tr>';
+  });
+  box.innerHTML = html + '</table>';
+};
+window.togglePromoAll = function (cb) {
+  Array.prototype.forEach.call(document.querySelectorAll('.pmChk'), function (c) { c.checked = cb.checked; });
+};
+window.sendPromoEmails = async function () {
+  var picks = Array.prototype.slice.call(document.querySelectorAll('.pmChk'))
+    .filter(function (c) { return c.checked; })
+    .map(function (c) { return window._promoRows[parseInt(c.getAttribute('data-i'))]; })
+    .filter(Boolean);
+  if (!picks.length) { alert('No customers selected.'); return; }
+  if (!confirm('Send the promo email to ' + picks.length + ' customer(s)?')) return;
+  var tmpl = (document.getElementById('pmMsg') || {}).value || '';
+  var btn = document.getElementById('pmSendBtn'), st = document.getElementById('pmStatus');
+  btn.disabled = true;
+  var ok = 0, fail = 0;
+  for (var i = 0; i < picks.length; i++) {
+    var o = picks[i];
+    st.textContent = 'Sending ' + (i + 1) + ' of ' + picks.length + '...';
+    var msg = tmpl.replace(/\{name\}/g, o.r.name || 'there')
+                  .replace(/\{specs\}/g, o.r.specs || '')
+                  .replace(/\{sqft\}/g, o.sqft.toLocaleString());
+    try {
+      var res = await fetch(API_URL, {
+        method: 'POST', headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ action: 'sendFollowUpEmail', quoteId: o.r.id, customMessage: msg,
+          username: (window.currentUser || {}).username || '', token: getToken() })
+      });
+      var j = await res.json();
+      if (j && j.success) ok++; else fail++;
+    } catch (e) { fail++; }
+    await new Promise(function (r) { setTimeout(r, 900); });
+  }
+  st.textContent = 'Done - ' + ok + ' sent' + (fail ? ', ' + fail + ' failed' : '');
+  btn.disabled = false;
+};
+
 async function sbFetch(path, opts) {
   if (!_SB_ON) return null;
   try {
@@ -20116,7 +20251,7 @@ async function searchAllHistory() {
   list.innerHTML = '<div style="color:#888888;font-size:13px;text-align:center;padding:20px;">' + (term ? 'Searching for <strong style="color:#f0f3f7;">' + term + '</strong>…' : 'Loading recent quotes…') + '</div>';
 
   try {
-    var selectCols = 'id,name,phone,email,city,specs,status,updated_at,config_encoded,form_fields,display_summary,pricing_results,salesman';
+    var selectCols = 'id,name,phone,email,city,specs,status,updated_at,config_encoded,form_fields,display_summary,pricing_results,salesman,snapshots';
     var qs;
     if (!term) {
       // No search — 50 most recent
@@ -20526,6 +20661,23 @@ function _renderDesignList(quotes, list, append) {
       card += '<div style="margin-top:4px;">'+breakdownLines+'</div>';
     }
 
+    // Building preview - first stored 3D snapshot (saved with every quote)
+    try {
+      var _sn = d.snapshots || (d.snapshot && d.snapshot.snapshots) || null;
+      var _img = '';
+      if (_sn) {
+        if (typeof _sn === 'string') _img = _sn;
+        else if (Array.isArray(_sn)) _img = _sn[0];
+        else _img = _sn.front || _sn.f || _sn.a || _sn[Object.keys(_sn)[0]];
+        if (_img && typeof _img === 'object') _img = _img.data || _img.img || _img.src || '';
+      }
+      if (_img) {
+        if (String(_img).indexOf('data:') !== 0) _img = 'data:image/jpeg;base64,' + _img;
+        card += '<div style="margin-top:8px;border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,.10);background:#0b1020;">'
+              + '<img src="' + _img + '" alt="building preview" loading="lazy" style="width:100%;display:block;">'
+              + '</div>';
+      }
+    } catch(e) {}
     // Action buttons
     card += '<div style="display:flex;gap:6px;margin-top:9px;">';
     card += '<button data-load-qid="'+esc(qid)+'" data-load-ridx="'+ridx+'" style="flex:1;padding:6px 0;background:linear-gradient(135deg,rgba(255,130,0,.18),rgba(255,130,0,.08));color:#FF8200;border:1px solid rgba(255,130,0,.3);border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">⬆ Load</button>';
@@ -20753,7 +20905,7 @@ async function loadSavedDesign(d){
     var _tBtn = document.getElementById('textQuoteBtn'); if(_tBtn) _tBtn.style.display = _isLainLoad ? '' : 'none';
     var _mbBtn = document.getElementById('matBuilderBtn'); if(_mbBtn) _mbBtn.style.display = ''; var _mbRow=document.getElementById('matBuilderBtnRow'); if(_mbRow) _mbRow.style.display = '';
     var _aBtn = document.getElementById('vpActivityBtn'); if (_aBtn) _aBtn.style.display = _isLainLoad ? '' : 'none';
-    var _rBtn = document.getElementById('vpHardRefreshBtn'); if (_rBtn) _rBtn.style.display = _isLainLoad ? '' : 'none';
+    var _rBtn = document.getElementById('vpHardRefreshBtn'); if (_rBtn) _rBtn.style.display = _isLainLoad ? '' : 'none'; var _pBtn = document.getElementById('vpPromoBtn'); if (_pBtn) _pBtn.style.display = _isLainLoad ? '' : 'none';
     var _bfBtn = document.getElementById('vpBackfillBtn'); if (_bfBtn) _bfBtn.style.display = _isLainLoad ? '' : 'none';
     var _fuBtn = document.getElementById('vpFollowUpsBtn'); if (_fuBtn) _fuBtn.style.display = '';
     var pdfBtn = document.getElementById('quotePdfBtn'); if (pdfBtn) pdfBtn.style.display = '';
@@ -21406,7 +21558,7 @@ async function saveSalesQuote(overwriteMode) {
     var _tBtn = document.getElementById('textQuoteBtn'); if(_tBtn) _tBtn.style.display = isLain ? '' : 'none';
     var _mbBtn2 = document.getElementById('matBuilderBtn'); if(_mbBtn2) _mbBtn2.style.display = ''; var _mbRow2=document.getElementById('matBuilderBtnRow'); if(_mbRow2) _mbRow2.style.display = '';
     var _aBtn = document.getElementById('vpActivityBtn'); if (_aBtn) _aBtn.style.display = isLain ? '' : 'none';
-    var _rBtn = document.getElementById('vpHardRefreshBtn'); if (_rBtn) _rBtn.style.display = isLain ? '' : 'none';
+    var _rBtn = document.getElementById('vpHardRefreshBtn'); if (_rBtn) _rBtn.style.display = isLain ? '' : 'none'; var _pBtn = document.getElementById('vpPromoBtn'); if (_pBtn) _pBtn.style.display = isLain ? '' : 'none';
     var _bfBtn = document.getElementById('vpBackfillBtn'); if (_bfBtn) _bfBtn.style.display = isLain ? '' : 'none';
     var _fuBtn = document.getElementById('vpFollowUpsBtn'); if (_fuBtn) _fuBtn.style.display = '';
     var pdfBtn = document.getElementById('quotePdfBtn'); if (pdfBtn) pdfBtn.style.display = '';
@@ -22496,10 +22648,10 @@ function initSalesAuth() {
         // Load follow-ups for this salesman
       // Show activity log button for lain.hinson on login
       var _ab2 = document.getElementById('vpActivityBtn');
-      if (_ab2) _ab2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none'; var _rb2 = document.getElementById('vpHardRefreshBtn'); if (_rb2) _rb2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none'; var _bfBtn2 = document.getElementById('vpBackfillBtn'); if (_bfBtn2) _bfBtn2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none'; var _fuBtn2 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn2) _fuBtn2.style.display = ''; var _mbBtnA = document.getElementById('matBuilderBtn'); if (_mbBtnA) _mbBtnA.style.display = ''; var _mbRowA=document.getElementById('matBuilderBtnRow'); if(_mbRowA) _mbRowA.style.display = '';
+      if (_ab2) _ab2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none'; var _rb2 = document.getElementById('vpHardRefreshBtn'); if (_rb2) _rb2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none'; var _pb2 = document.getElementById('vpPromoBtn'); if (_pb2) _pb2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none'; var _bfBtn2 = document.getElementById('vpBackfillBtn'); if (_bfBtn2) _bfBtn2.style.display = ((window.currentUser||{}).username === 'lain.hinson') ? '' : 'none'; var _fuBtn2 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn2) _fuBtn2.style.display = ''; var _mbBtnA = document.getElementById('matBuilderBtn'); if (_mbBtnA) _mbBtnA.style.display = ''; var _mbRowA=document.getElementById('matBuilderBtnRow'); if(_mbRowA) _mbRowA.style.display = '';
         // Show activity log button for lain.hinson on login
         var _ab = document.getElementById('vpActivityBtn');
-        if (_ab) _ab.style.display = (u.username === 'lain.hinson') ? '' : 'none'; var _rb3 = document.getElementById('vpHardRefreshBtn'); if (_rb3) _rb3.style.display = (u.username === 'lain.hinson') ? '' : 'none'; var _bfBtn3 = document.getElementById('vpBackfillBtn'); if (_bfBtn3) _bfBtn3.style.display = (u.username === 'lain.hinson') ? '' : 'none'; var _fuBtn3 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn3) _fuBtn3.style.display = ''; var _mbBtnB = document.getElementById('matBuilderBtn'); if (_mbBtnB) _mbBtnB.style.display = ''; var _mbRowB=document.getElementById('matBuilderBtnRow'); if(_mbRowB) _mbRowB.style.display = '';
+        if (_ab) _ab.style.display = (u.username === 'lain.hinson') ? '' : 'none'; var _rb3 = document.getElementById('vpHardRefreshBtn'); if (_rb3) _rb3.style.display = (u.username === 'lain.hinson') ? '' : 'none'; var _pb3 = document.getElementById('vpPromoBtn'); if (_pb3) _pb3.style.display = (u.username === 'lain.hinson') ? '' : 'none'; var _bfBtn3 = document.getElementById('vpBackfillBtn'); if (_bfBtn3) _bfBtn3.style.display = (u.username === 'lain.hinson') ? '' : 'none'; var _fuBtn3 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn3) _fuBtn3.style.display = ''; var _mbBtnB = document.getElementById('matBuilderBtn'); if (_mbBtnB) _mbBtnB.style.display = ''; var _mbRowB=document.getElementById('matBuilderBtnRow'); if(_mbRowB) _mbRowB.style.display = '';
         // Fire address lookup immediately so shipping/mileage is ready
         setTimeout(function() {
           var addr = (document.getElementById('st_address')||{}).value || '';
