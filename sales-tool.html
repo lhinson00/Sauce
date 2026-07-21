@@ -17993,10 +17993,6 @@ function applyVoiceQuote(parsed, overlay) {
       <input id="loadDesignSearch" type="text" placeholder="Search name, phone, city, quote ID..." oninput="filterLoadDesigns(this.value)" style="flex:1;box-sizing:border-box;padding:8px 12px;background:#2e2e2e;border:1px solid #5e5e5e;border-radius:8px;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;outline:none;">
       <button onclick="searchAllHistory()" style="padding:8px 14px;background:rgba(255,130,0,.15);color:#FF8200;border:1px solid rgba(255,130,0,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Search All History</button>
     </div>
-    <div id="bfRow" style="display:none;justify-content:space-between;align-items:center;margin-bottom:10px;padding:6px 8px;border:1px solid rgba(255,130,0,.25);border-radius:8px;background:rgba(255,130,0,.06);">
-      <div id="bfNote" style="font-size:11px;color:#cbd5e1;font-weight:600;"></div>
-      <button onclick="backfillPreviews()" style="padding:6px 12px;background:rgba(255,130,0,.18);color:#FF8200;border:1px solid rgba(255,130,0,.35);border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Generate Previews</button>
-    </div>
     <div id="savedDesignList" style="display:flex;flex-direction:column;gap:8px;">
       <div style="color:#888888;font-size:13px;text-align:center;padding:20px;">Loading...</div>
     </div>
@@ -20003,14 +19999,18 @@ function capturePostLayoutPNG(W, H) {
 window._autoPrevRunning = false;
 // A stored snapshot only counts if it's a real image. Early captures saved blank or
 // empty frames, which is why cards fell back to the drawing even though 'snapshots' existed.
+// Bump PREVIEW_VER whenever the capture framing/size changes - stored previews tagged
+// with an older version are re-captured automatically. Size checks could not tell an
+// old angle from a new one, which is why re-framing appeared to do nothing.
+window.PREVIEW_VER = 'pv5';
 window.usableSnap = function (sn) {
-  var list = !sn ? [] : (Array.isArray(sn) ? sn : (typeof sn === 'string' ? [sn] : Object.keys(sn).map(function(k){ return sn[k]; })));
-  for (var i = 0; i < list.length; i++) {
-    var v = list[i];
-    if (v && typeof v === 'object') v = v.data || v.img || v.src || '';
-    if (typeof v === 'string' && v.indexOf('data:image') === 0 && v.length > 3000) return v;
-  }
-  return '';
+  // STRICT: a preview is only reused when it is exactly [image, CURRENT_VERSION].
+  // Anything else - legacy 4-view grabs, 1-element front-only grabs, or an older
+  // version tag - is discarded so the card re-captures with the current framing.
+  if (!Array.isArray(sn) || sn.length !== 2) return '';
+  if (sn[1] !== window.PREVIEW_VER) return '';
+  var v = sn[0];
+  return (typeof v === 'string' && v.indexOf('data:image') === 0 && v.length > 20000) ? v : '';
 };
 window._snapCache = {};
 window._snapBusy = {};
@@ -20044,7 +20044,7 @@ window.addEventListener('message', function (e) {
     // persist so it only ever happens once per quote
     try {
       sbFetch('quotes?id=eq.' + encodeURIComponent(qid), {
-        method: 'PATCH', body: JSON.stringify({ snapshots: snaps }),
+        method: 'PATCH', body: JSON.stringify({ snapshots: [snaps[0], window.PREVIEW_VER] }),
         headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
                    'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
       });
@@ -20209,7 +20209,6 @@ window.openPromoModal = function() {
     + '<textarea id="pmMsg" rows="4" style="width:100%;box-sizing:border-box;padding:7px;border:1px solid #ccc;border-radius:7px;font-family:Outfit,sans-serif;font-size:12px;"></textarea>'
     + '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">'
     + '<div id="pmStatus" style="font-size:11px;color:#666;font-weight:700;"></div>'
-    + '<button onclick="backfillPreviews()" style="padding:8px 14px;background:#334;color:#cbd5e1;border:none;border-radius:7px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;margin-right:8px;">Backfill Previews</button>'
     + '<button id="pmSendBtn" onclick="sendPromoEmails()" style="padding:8px 18px;background:#0d1b3e;color:#FF8200;border:none;border-radius:7px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Send to Selected</button>'
     + '</div></div></div>';
   document.body.appendChild(ov);
@@ -20571,10 +20570,9 @@ async function searchAllHistory() {
       };
     });
     try { var _ws=rows.filter(function(x){return x.snapshots;}).length;
-      console.log('[Snap] rows:', rows.length, '| with snapshots:', _ws,
+      if(false) console.log('[Snap]',
         _ws? ('| shape: '+(Array.isArray(rows.filter(function(x){return x.snapshots;})[0].snapshots)?'array':typeof rows.filter(function(x){return x.snapshots;})[0].snapshots)) : '| none stored'); } catch(e){}
-    try { setTimeout(function(){ observeCardPreviews(); }, 200); } catch(e){}
-    try {
+        try {
       var _miss = rows.filter(function(x){ return x.config_encoded && !x.snapshots; }).length;
       var _row = document.getElementById('bfRow'), _note = document.getElementById('bfNote');
       var _isLain = ((window.currentUser||{}).username === 'lain.hinson');
@@ -21026,28 +21024,6 @@ function _renderDesignList(quotes, list, append) {
       card += '<div style="margin-top:4px;">'+breakdownLines+'</div>';
     }
 
-    // Building preview - stored 3D snapshot when one exists, otherwise draw it
-    // live from the quote's own specs so EVERY saved quote gets a preview.
-    try {
-      var _sn = d.snapshots || (d.snapshot && d.snapshot.snapshots) || null;
-      var _img = (typeof usableSnap === 'function') ? usableSnap(_sn) : '';
-      var _pv = '';
-      if (!window._pvLogged) { window._pvLogged = 1;
-        console.log('[Preview] snapshots?', !!_sn, '| specs:', d.specs, '| ff.width:', (ff||{}).width, '| ff.length:', (ff||{}).length); }
-      if (_img) {
-        if (String(_img).indexOf('data:') !== 0) _img = 'data:image/jpeg;base64,' + _img;
-        _pv = '<img src="' + _img + '" alt="building preview" loading="lazy" style="width:100%;display:block;">';
-      } else {
-        _pv = promoPreviewSVG(ff || {}, ds || {}, d.specs || '');
-      }
-      var _cached = (window._snapCache && window._snapCache[qid]) ? window._snapCache[qid][0] : '';
-      if (_cached) _img = _cached;
-      var _need = _img ? '' : ' data-needs-snap="1"';
-      var _inner = _img
-        ? '<img src="' + _img + '" style="width:100%;height:165px;object-fit:cover;object-position:center 55%;display:block;image-rendering:auto;">'
-        : '<div style="padding:22px;text-align:center;color:#5d6878;font-size:11px;font-weight:600;background:#0b1020;">Loading preview...</div>';
-      card += '<div data-prev-qid="' + esc(qid) + '"' + _need + ' style="margin-top:8px;border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,.10);min-height:60px;">' + _inner + '</div>';
-    } catch(e) {}
     // Action buttons
     card += '<div style="display:flex;gap:6px;margin-top:9px;">';
     card += '<button data-load-qid="'+esc(qid)+'" data-load-ridx="'+ridx+'" style="flex:1;padding:6px 0;background:linear-gradient(135deg,rgba(255,130,0,.18),rgba(255,130,0,.08));color:#FF8200;border:1px solid rgba(255,130,0,.3);border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">⬆ Load</button>';
@@ -44051,14 +44027,15 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
                   // Fixed di=13 framed small buildings tiny in a sea of grass. Scale the
                   // camera distance to the building so it fills the shot, and shoot a
                   // wider/shorter frame that matches the card.
-                  var _bmax = Math.max(parseFloat(Q.w)||30, parseFloat(Q.l)||40);
-                  // Pull back enough to show the whole building incl. sheds/overhang.
-                  var _di = Math.max(9, Math.min(20, _bmax * 0.26));
-                  _views = [{ th: Math.PI*0.22, ph: Math.PI*0.11, di: _di }];
+                  // Use the SAME framing as the Front Gable elevation in the post layout /
+                  // quote PDF, so the card preview matches what the customer sees there.
+                  _views = [{ th: 0, ph: Math.PI*0.08, di: 13 }];
                   // Oversample hard: the ground grid aliases badly, and downscaling a
                   // much larger frame is what removes the grain.
-                  _capW = 1200; _capH = 500;
-                  d3.rrx.setPixelRatio(2);
+                  // 2400x1000 was slow to render; 2100x870 is still well above the
+                  // 700px display size so it stays clean, and captures noticeably faster.
+                  _capW = 1400; _capH = 580;
+                  d3.rrx.setPixelRatio(1.5);
                   d3.rrx.setSize(_capW, _capH);
                 }
               } catch(e) {}
