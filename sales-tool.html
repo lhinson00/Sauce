@@ -1483,10 +1483,18 @@ body.customer-mode #stab_specs { display: block !important; }
           <div style="margin-bottom:8px;">
             <div style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Front Gable Spacing</div>
             <div class="chip-row" id="psFrontGableChips"></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+              <input id="psFrontGableCustom" type="text" placeholder="even spacing, e.g. 3 bays or 8'8&quot;" title="Type a bay COUNT (3) or a target spacing (8'8&quot;). The wall is divided into exactly equal bays." oninput="setGableCustomPS('front',this.value)" style="flex:1;min-width:0;font-size:11px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-family:Outfit,sans-serif;">
+              <span id="psFrontGableOut" style="font-size:10px;color:var(--muted);font-weight:700;white-space:nowrap;"></span>
+            </div>
           </div>
           <div>
             <div style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Back Gable Spacing</div>
             <div class="chip-row" id="psBackGableChips"></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+              <input id="psBackGableCustom" type="text" placeholder="even spacing, e.g. 3 bays or 8'8&quot;" title="Type a bay COUNT (3) or a target spacing (8'8&quot;). The wall is divided into exactly equal bays." oninput="setGableCustomPS('back',this.value)" style="flex:1;min-width:0;font-size:11px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-family:Outfit,sans-serif;">
+              <span id="psBackGableOut" style="font-size:10px;color:var(--muted);font-weight:700;white-space:nowrap;"></span>
+            </div>
           </div>
         </div>
       </div>
@@ -3612,6 +3620,35 @@ function _psOptsForWall(wallId) {
 }
 function _wallPS(id){var w=WALLS.find(function(x){return x.id===id;});return w?w.postSpacing:10;}
 function _setWallPS(id,v){var w=WALLS.find(function(x){return x.id===id;});if(w)w.postSpacing=v;}
+// Gable-end custom spacing. Accepts a BAY COUNT ("3") or a target spacing ("8'8\"", 8.667).
+// Either way the wall is divided into exactly N equal bays, so there is no rounding drift.
+// Stored as wall.bayCount, which getPostsForWall uses in place of postSpacing.
+function _ftIn(str){
+  var m=String(str).match(/^\s*([0-9]*\.?[0-9]+)\s*(?:'|\u2019|ft)?\s*(?:([0-9]*\.?[0-9]+)\s*(?:\"|\u201d|in)?)?\s*$/i);
+  if(!m) return NaN;
+  var a=parseFloat(m[1]); if(isNaN(a)) return NaN;
+  return a + (m[2]!==undefined ? parseFloat(m[2])/12 : 0);
+}
+function fmtFtIn(v){
+  var ft=Math.floor(v+1e-6), inch=Math.round((v-ft)*12);
+  if(inch===12){ft++;inch=0;}
+  return inch? (ft+"'-"+inch+'"') : (ft+"'");
+}
+function setGableCustomPS(wallId, raw){
+  var w=WALLS.find(function(x){return x.id===wallId;}); if(!w) return;
+  var out=document.getElementById(wallId==='front'?'psFrontGableOut':'psBackGableOut');
+  var len=Q.w;
+  if(!String(raw||'').trim()){ delete w.bayCount; if(out) out.textContent=''; scheduleBuild(); try{updateStripFromLocalCalc();}catch(e){} return; }
+  var v=_ftIn(raw);
+  if(isNaN(v)||v<=0){ if(out){out.textContent='?';out.style.color='#c00';} return; }
+  // A small bare integer (<= 12, no ' or \") is a BAY COUNT; anything else is a spacing.
+  var isCount = /^\s*[0-9]{1,2}\s*$/.test(String(raw)) && v<=12 && v<len/2;
+  var n = isCount ? Math.round(v) : Math.max(1, Math.round(len/v));
+  if(n<1) n=1;
+  w.bayCount=n;
+  if(out){ out.style.color='var(--muted)'; out.textContent=n+' bays @ '+fmtFtIn(len/n); }
+  scheduleBuild(); try{updateStripFromLocalCalc();}catch(e){}
+}
 function buildPSChips(){
   chips('psLeftEaveChips',  _psOptsForWall('left'),  function(){return _wallPS('left');},  function(v){_setWallPS('left',v);  Q.eavePS=v; Q.postSpacing=v; _setWallPS('right',v); buildPSChips();});
   chips('psRightEaveChips', _psOptsForWall('right'), function(){return _wallPS('right');}, function(v){_setWallPS('right',v);});
@@ -6396,7 +6433,7 @@ async function openActivityLog() {
 function serializeConfig() {
   return {
     Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,steelGableOH:Q.steelGableOH||false,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,truss:Q.truss,frameType:Q.frameType,roofStyle:Q.roofStyle||'gable'},
-    walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,partialH:w.partialH,openLenFt:w.openLenFt,openStartFt:w.openStartFt,openPS:w.openPS,wallColor:w.wallColor||null,wainscot:(w.wainscot!=null?!!w.wainscot:null),wainscotColor:w.wainscotColor||null};}),
+    walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,bayCount:w.bayCount,partialH:w.partialH,openLenFt:w.openLenFt,openStartFt:w.openStartFt,openPS:w.openPS,wallColor:w.wallColor||null,wainscot:(w.wainscot!=null?!!w.wainscot:null),wainscotColor:w.wainscotColor||null};}),
     doors: allDoors,
     stallPosts: window._stallPosts || [],
     walkDoors: window._walkDoors,
@@ -6552,6 +6589,13 @@ function restoreConfig(cfg) {
     (WALLS||[]).forEach(function(_w){ if(['left','right','front','back'].indexOf(_w.id)>=0){ _w.openLenFt=0; _w.openStartFt=0; _w.openPS=undefined; } });
     window._openWallActive=null;
     if(cfg.walls) cfg.walls.forEach(function(w){ var ww=WALLS.find(function(x){return x.id===w.id;}); if(ww) Object.assign(ww,w); });
+    try{ ['front','back'].forEach(function(gid){
+      var ww=WALLS.find(function(x){return x.id===gid;}); if(!ww) return;
+      var el=document.getElementById(gid==='front'?'psFrontGableCustom':'psBackGableCustom');
+      var out=document.getElementById(gid==='front'?'psFrontGableOut':'psBackGableOut');
+      if(ww.bayCount){ if(el) el.value=String(ww.bayCount); if(out) out.textContent=ww.bayCount+' bays @ '+fmtFtIn(Q.w/ww.bayCount); }
+      else { if(el) el.value=''; if(out) out.textContent=''; }
+    }); }catch(e){}
     // Re-sync wall lengths from Q in case walls weren't saved
     WALLS[0].len=WALLS[1].len=Q.w; WALLS[2].len=WALLS[3].len=Q.l;
     // Derive eavePS/gablePS from walls if not in saved Q
@@ -24879,9 +24923,13 @@ window.SauceMaterials.getPostsForWall = function(wallId, Q, WALLS, allDoors) {
   var ps = wCfg ? (wCfg.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
   var wd = (allDoors || []).filter(function(d) { return d.wall === wallId; });
 
-  var posts = [], nB = Math.floor(wLen / ps);
+  // Gable walls can carry an explicit bay COUNT (custom even spacing, e.g. 26' in 3 bays
+  // = 8'-8"). When set it wins over postSpacing and divides the wall into exact equal bays.
+  var _bc = (wCfg && wCfg.bayCount) ? Math.max(1, Math.round(wCfg.bayCount)) : 0;
+  var posts = [], nB = _bc ? _bc : Math.floor(wLen / ps);
+  var _step = _bc ? (wLen / _bc) : ps;
   for (var i = 0; i <= nB; i++) {
-    var p = i * ps, isCorner = (i === 0 || i === nB || Math.abs(p - wLen) < 0.01);
+    var p = i * _step, isCorner = (i === 0 || i === nB || Math.abs(p - wLen) < 0.01);
     if (p > wLen) p = wLen;
     var inside = false;
     wd.forEach(function(d) { var dL = d.offset||0; if (p > dL+0.25 && p < dL+d.w-0.25) inside = true; });
