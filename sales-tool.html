@@ -19969,28 +19969,37 @@ window.runPromoSearch = async function() {
   var minSq = parseFloat((document.getElementById('pmSqft') || {}).value) || 0;
   var wantEncl = !!(document.getElementById('pmEncl') || {}).checked;
   var needEmail = !!(document.getElementById('pmEmail') || {}).checked;
-  var rows;
-  try {
-    rows = await sbFetch('quotes?select=id,name,email,phone,city,specs,status,form_fields,updated_at&order=updated_at.desc&limit=1000', { method: 'GET' });
-  } catch (e) {
-    box.innerHTML = '<div style="color:#c00;padding:16px;">Could not load quotes: ' + (e && e.message) + '</div>'; return;
+  var rows = await sbFetch('quotes?select=id,name,email,phone,city,specs,status,form_fields,updated_at&order=updated_at.desc&limit=1000', { method: 'GET' });
+  // sbFetch returns null on failure (it does NOT throw) - treat that as an error, not "no matches".
+  if (rows === null) {
+    box.innerHTML = '<div style="color:#c00;padding:16px;font-weight:700;">Could not reach the quote database.<div style="font-weight:400;color:#666;margin-top:4px;">Check the console for an [SB] error.</div></div>';
+    document.getElementById('pmCount').textContent = ''; return;
   }
   if (!Array.isArray(rows)) rows = [];
+  // Track the funnel so it's clear WHY quotes were excluded.
+  var fn = { total: rows.length, noEmail: 0, noZip: 0, outZip: 0, small: 0, open: 0 };
   var out = [], unsure = 0;
   rows.forEach(function (r) {
-    if (needEmail && !r.email) return;
-    var zip = promoZipOf(r); if (!zip) return;
+    if (needEmail && !r.email) { fn.noEmail++; return; }
+    var zip = promoZipOf(r); if (!zip) { fn.noZip++; return; }
     var pre = parseInt(zip.substring(0, 3));
-    if (!(pre >= zA && pre <= zB)) return;
-    var sq = promoSqftOf(r); if (sq < minSq) return;
+    if (!(pre >= zA && pre <= zB)) { fn.outZip++; return; }
+    var sq = promoSqftOf(r); if (sq < minSq) { fn.small++; return; }
     var enc = promoEnclosedOf(r);
-    if (wantEncl && enc === false) return;
+    if (wantEncl && enc === false) { fn.open++; return; }
     if (wantEncl && enc === null) unsure++;
     out.push({ r: r, zip: zip, sqft: sq, enc: enc });
   });
+  window._promoFunnel = fn;
   window._promoRows = out;
   document.getElementById('pmCount').textContent = out.length + ' match' + (out.length === 1 ? '' : 'es') + (unsure ? '  (' + unsure + ' unconfirmed enclosure)' : '');
-  if (!out.length) { box.innerHTML = '<div style="color:#888;padding:16px;">No quotes matched.</div>'; return; }
+  var fnHtml = '<div style="font-size:10px;color:#777;padding:6px 4px 10px;line-height:1.7;">'
+    + '<b>Scanned ' + fn.total + ' saved quotes.</b> Excluded: '
+    + fn.noEmail + ' no email &middot; ' + fn.noZip + ' no ZIP found &middot; '
+    + fn.outZip + ' outside ZIP ' + zA + '-' + zB + ' &middot; '
+    + fn.small + ' under ' + minSq + ' sq ft &middot; ' + fn.open + ' not enclosed'
+    + '</div>';
+  if (!out.length) { box.innerHTML = fnHtml + '<div style="color:#888;padding:8px 4px;">No quotes matched these criteria.</div>'; return; }
   var html = '<table style="width:100%;border-collapse:collapse;"><tr style="font-size:9px;color:#666;font-weight:800;text-align:left;">'
     + '<th style="padding:4px;"><input type="checkbox" id="pmAll" checked onclick="togglePromoAll(this)"></th>'
     + '<th>NAME</th><th>ZIP</th><th>SIZE</th><th>SQ FT</th><th>ENCL</th><th>EMAIL</th></tr>';
@@ -20001,7 +20010,7 @@ window.runPromoSearch = async function() {
       + '<td>' + o.sqft.toLocaleString() + '</td><td>' + encTxt + '</td>'
       + '<td style="font-size:10px;color:#555;">' + (o.r.email || '') + '</td></tr>';
   });
-  box.innerHTML = html + '</table>';
+  box.innerHTML = fnHtml + html + '</table>';
 };
 window.togglePromoAll = function (cb) {
   Array.prototype.forEach.call(document.querySelectorAll('.pmChk'), function (c) { c.checked = cb.checked; });
@@ -20302,6 +20311,7 @@ async function searchAllHistory() {
         displaySummary: r.display_summary || {},
         pricingResults: r.pricing_results || {},
         configEncoded:  r.config_encoded  || '',
+        snapshots:      r.snapshots       || null,
         salesman:       r.salesman        || ''
       };
     });
