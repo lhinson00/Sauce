@@ -20019,10 +20019,12 @@ window.backfillPreviews = async function (limit) {
       if (!cfg) { fail++; continue; }
       restoreConfig(cfg);
       triggerBuild();
-      // let the 3D build settle before capturing
-      await new Promise(function (res) { setTimeout(res, 1100); });
-      var plan = capturePostLayoutPNG(420, 300);
-      var snaps = plan ? [plan] : captureBuildingViews();
+      // Wait for the 3D build to finish. triggerBuild() is debounced (~320ms) and the
+      // build itself is async, so a fixed sleep grabs an empty frame - that was the
+      // blank-building bug. Poll the scene until it actually has geometry.
+      var ready = await waitFor3DReady(9000);
+      if (!ready) { console.warn('[Backfill] 3D never became ready for', r.id); fail++; continue; }
+      var snaps = captureBuildingViews();
       if (!snaps || !snaps.length) { fail++; continue; }
       var res2 = await sbFetch('quotes?id=eq.' + encodeURIComponent(r.id), {
         method: 'PATCH',
@@ -20036,6 +20038,26 @@ window.backfillPreviews = async function (limit) {
   try { if (document.getElementById('savedDesignList') && typeof openLoadDesignModal==='function') openLoadDesignModal(); } catch(e){}
 };
 
+// Resolve once the 3D scene holds real geometry (or time out). Without this the
+// backfill captures a blank frame because the build is still running.
+function waitFor3DReady(maxMs) {
+  return new Promise(function (resolve) {
+    var t0 = Date.now(), stable = 0, last = -1;
+    (function poll() {
+      var d3 = window._3d;
+      var n = 0;
+      try {
+        if (d3 && d3.scene) d3.scene.traverse(function (o) { if (o.isMesh) n++; });
+      } catch (e) {}
+      if (n > 20 && n === last) { stable++; } else { stable = 0; }
+      last = n;
+      // geometry present and mesh count settled for 2 consecutive polls
+      if (n > 20 && stable >= 2) { setTimeout(function(){ resolve(true); }, 260); return; }
+      if (Date.now() - t0 > (maxMs || 9000)) { resolve(n > 20); return; }
+      setTimeout(poll, 220);
+    })();
+  });
+}
 // Capture the same 4 views the save path uses. Returns an array of JPEG data URLs.
 function captureBuildingViews() {
   try {
@@ -20928,7 +20950,10 @@ function _renderDesignList(quotes, list, append) {
         if (String(_img).indexOf('data:') !== 0) _img = 'data:image/jpeg;base64,' + _img;
         _pv = '<img src="' + _img + '" alt="building preview" loading="lazy" style="width:100%;display:block;">';
       } else {
-        _pv = promoPreviewSVG(ff || {}, ds || {}, d.specs || '');
+        // No stored capture yet - show a prompt instead of a fake silhouette so it's
+        // obvious the real render still needs generating.
+        _pv = '<div style="padding:14px;text-align:center;color:#7c8698;font-size:11px;font-weight:600;background:#0b1020;">'
+            + 'No preview yet &mdash; click <span style="color:#FF8200;">Generate Previews</span> above</div>';
       }
       if (_pv) card += '<div style="margin-top:8px;border-radius:7px;overflow:hidden;border:1px solid rgba(255,255,255,.10);">' + _pv + '</div>';
     } catch(e) {}
