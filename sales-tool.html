@@ -2334,6 +2334,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <button id="vpLoadBtn"     onclick="openLoadDesignModal()"                             style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Load Quote</button>
         <button id="vpLeadsBtn" onclick="openLeadsModal()" style="position:relative;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Leads<span id="vpLeadsBadge" style="display:none;position:absolute;top:-6px;right:-6px;min-width:16px;height:16px;padding:0 4px;background:#ef4444;color:#fff;font-size:9px;font-weight:800;border-radius:10px;line-height:16px;text-align:center;"></span></button>
         <button id="vpKitsBtn"     onclick="openKitsModal()"                                   style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Kits</button>
+        <button id="vpGalleryBtn"  onclick="openGalleryModal()"                                style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Gallery</button>
         <button id="vpImportBtn"   onclick="document.getElementById('pdfImportInput').click()" style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Import Quote</button>
         <button id="vpActivityBtn" onclick="openActivityLog()"     style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Activity Log</button>
         <button id="vpHardRefreshBtn" onclick="hardRefreshApp()" title="Force-reload the newest build (bypasses cache, same as Ctrl+Shift+R)" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(96,165,250,.55);border-radius:8px;color:#93c5fd;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Hard Refresh</button>
@@ -20379,6 +20380,72 @@ async function sbUpdateKit(kitId, name, description, configEncoded, packageUrl, 
 async function sbDeleteKit(kitId) {
   return await sbFetch('kits?id=eq.' + encodeURIComponent(kitId), { method: 'DELETE',
     headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=representation' } });
+}
+
+// Photo gallery — completed-build photos. Same shape as kits, but the preview comes
+// from an uploaded photo (build-photos bucket) instead of a scraped package page.
+async function sbGetGallery() {
+  var rows = await sbFetch('gallery?select=id,name,description,config_encoded,photo_url,created_at&order=created_at.desc', { method: 'GET' });
+  return (rows || []).map(function(r){
+    return { galId: r.id, name: r.name, description: r.description || '', date: (r.created_at||'').substring(0,10), configEncoded: r.config_encoded || '', photoUrl: r.photo_url || '' };
+  });
+}
+async function sbSaveGalleryItem(name, description, configEncoded, photoUrl) {
+  var id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('gal_' + Date.now() + '_' + Math.random().toString(36).slice(2,8));
+  var row = { id: id, name: name, description: description || '', config_encoded: configEncoded || '', photo_url: photoUrl || '', username: (window.currentUser||{}).username || 'lain.hinson', created_at: new Date().toISOString() };
+  var res = await sbFetch('gallery', { method: 'POST', body: JSON.stringify(row) });
+  return res === null ? null : ((res && res[0]) ? res[0] : row);
+}
+async function sbUpdateGalleryItem(galId, name, description, configEncoded, photoUrl) {
+  return await sbFetch('gallery?id=eq.' + encodeURIComponent(galId), { method: 'PATCH',
+    body: JSON.stringify({ name: name, description: description || '', config_encoded: configEncoded || '', photo_url: photoUrl || '' }) });
+}
+async function sbDeleteGalleryItem(galId) {
+  return await sbFetch('gallery?id=eq.' + encodeURIComponent(galId), { method: 'DELETE',
+    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=representation' } });
+}
+// Phone photos run 3-8MB; uploading them raw would make the gallery crawl. Cap the
+// longest edge and re-encode as JPEG before upload.
+function shrinkImageFile(file, maxEdge, quality) {
+  return new Promise(function(resolve, reject){
+    var fr = new FileReader();
+    fr.onerror = function(){ reject(new Error('Could not read that file.')); };
+    fr.onload = function(){
+      var img = new Image();
+      img.onerror = function(){ reject(new Error('That file is not a readable image.')); };
+      img.onload = function(){
+        var w = img.naturalWidth, h = img.naturalHeight;
+        var scale = Math.min(1, (maxEdge || 1600) / Math.max(w, h));
+        var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+        var cv = document.createElement('canvas');
+        cv.width = cw; cv.height = ch;
+        cv.getContext('2d').drawImage(img, 0, 0, cw, ch);
+        cv.toBlob(function(blob){
+          if (!blob) { reject(new Error('Image conversion failed.')); return; }
+          resolve(blob);
+        }, 'image/jpeg', quality || 0.82);
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+// Upload a build photo to the public build-photos bucket; returns its public URL.
+async function uploadGalleryPhoto(file) {
+  var blob = await shrinkImageFile(file, 1600, 0.82);
+  var safe = (file.name || 'photo').replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9]/g, '-').toLowerCase().slice(0, 40);
+  var filename = 'build-' + Date.now() + '-' + (safe || 'photo') + '.jpg';
+  var resp = await fetch(_SB_URL + '/storage/v1/object/build-photos/' + filename, {
+    method: 'POST',
+    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'image/jpeg', 'x-upsert': 'true' },
+    body: blob
+  });
+  if (!resp.ok) {
+    var t = ''; try { t = await resp.text(); } catch(e){}
+    console.error('[GALLERY] Upload failed:', resp.status, t);
+    throw new Error('Photo upload failed (' + resp.status + ') - check the build-photos bucket and its policy.');
+  }
+  return _SB_URL + '/storage/v1/object/public/build-photos/' + filename;
 }
 
 // Upsert a quote row to Supabase
@@ -38799,6 +38866,319 @@ window.openKitsModal = function() {
   closeBtn.style.cssText = 'padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
   closeBtn.onclick = window.closeKitsModal;
   panel.appendChild(closeBtn);
+
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+};
+
+// ====================================================================
+// PHOTO GALLERY - completed builds
+// ====================================================================
+
+window.closeGalleryModal = function() {
+  var el = document.getElementById('sauceGalleryModal');
+  if (el) el.remove();
+};
+
+window.openGalleryModal = function() {
+  window.closeGalleryModal();
+  var isLain = (window.currentUser||{}).username === 'lain.hinson';
+
+  var overlay = document.createElement('div');
+  overlay.id = 'sauceGalleryModal';
+  overlay.style.cssText = 'display:flex;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;align-items:center;justify-content:center;';
+  overlay.addEventListener('click', function(e){ if(e.target===overlay) overlay.remove(); });
+
+  var panel = document.createElement('div');
+  panel.style.cssText = 'background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:24px;width:94%;max-width:860px;max-height:88vh;display:flex;flex-direction:column;font-family:Outfit,sans-serif;gap:12px;';
+
+  // Header
+  var hdr = document.createElement('div');
+  hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
+  hdr.innerHTML = '<div style="font-size:15px;font-weight:800;color:#f0f3f7;">Photo Gallery <span style="font-size:10px;font-weight:700;color:#FF8200;letter-spacing:.5px;">&middot; COMPLETED BUILDS</span></div>';
+  var gxBtn = document.createElement('button');
+  gxBtn.textContent = '\u00d7'; gxBtn.style.cssText = 'background:none;border:none;color:#888;font-size:20px;cursor:pointer;';
+  gxBtn.onclick = window.closeGalleryModal;
+  hdr.appendChild(gxBtn);
+  panel.appendChild(hdr);
+
+  var listWrap = document.createElement('div');
+
+  // Save / update an entry - lain only
+  if (isLain) {
+    var _editing = window._galEditing || null;
+    var saveWrap = document.createElement('div');
+    saveWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;padding:12px;background:rgba(255,130,0,.06);border:1px solid rgba(255,130,0,.2);border-radius:10px;';
+    var _secTitle = _editing ? ('Update Build: ' + _editing.name) : 'Save Current Design + Photo';
+    saveWrap.innerHTML = '<div style="font-size:10px;font-weight:700;color:rgba(255,130,0,.8);text-transform:uppercase;letter-spacing:1px;">' + _secTitle + '</div>';
+
+    var nameInput = document.createElement('input');
+    nameInput.placeholder = 'Build name (e.g. "40x60 Charcoal w/ Porch - Lexington")';
+    nameInput.style.cssText = 'padding:7px 10px;border-radius:7px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;';
+    var descInput = document.createElement('input');
+    descInput.placeholder = 'Description (optional)';
+    descInput.style.cssText = nameInput.style.cssText;
+
+    // Photo picker
+    var photoRow = document.createElement('div');
+    photoRow.style.cssText = 'display:flex;align-items:center;gap:10px;';
+    var fileInput = document.createElement('input');
+    fileInput.type = 'file'; fileInput.accept = 'image/*'; fileInput.style.cssText = 'display:none;';
+    var pickBtn = document.createElement('button');
+    pickBtn.textContent = 'Choose Photo';
+    pickBtn.style.cssText = 'padding:7px 12px;border-radius:7px;border:1px solid rgba(96,165,250,.4);background:rgba(96,165,250,.12);color:#93c5fd;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;';
+    pickBtn.onclick = function(){ fileInput.click(); };
+    var thumbPrev = document.createElement('img');
+    thumbPrev.style.cssText = 'width:76px;height:56px;object-fit:cover;border-radius:6px;display:none;border:1px solid rgba(255,255,255,.1);';
+    var photoName = document.createElement('div');
+    photoName.style.cssText = 'font-size:10px;color:#888;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    photoName.textContent = 'No photo chosen';
+    var _pickedFile = null;
+    fileInput.onchange = function(){
+      _pickedFile = (fileInput.files && fileInput.files[0]) ? fileInput.files[0] : null;
+      if (!_pickedFile) { photoName.textContent = 'No photo chosen'; thumbPrev.style.display = 'none'; return; }
+      photoName.textContent = _pickedFile.name;
+      var rd = new FileReader();
+      rd.onload = function(){ thumbPrev.src = rd.result; thumbPrev.style.display = 'block'; };
+      rd.readAsDataURL(_pickedFile);
+    };
+    photoRow.appendChild(pickBtn); photoRow.appendChild(thumbPrev); photoRow.appendChild(photoName);
+
+    if (_editing) {
+      nameInput.value = _editing.name || '';
+      descInput.value = _editing.description || '';
+      if (_editing.photoUrl) {
+        thumbPrev.src = _editing.photoUrl; thumbPrev.style.display = 'block';
+        photoName.textContent = 'Current photo - choose a new one to replace it';
+      }
+    }
+
+    var saveBtn = document.createElement('button');
+    saveBtn.textContent = _editing ? 'Update Entry' : 'Save to Gallery';
+    saveBtn.style.cssText = 'padding:8px;border-radius:8px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.15);color:#FF8200;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+    var saveStatus = document.createElement('div');
+    saveStatus.style.cssText = 'font-size:10px;color:#888;min-height:14px;';
+    var cancelEdit = null;
+    if (_editing) {
+      cancelEdit = document.createElement('button');
+      cancelEdit.textContent = 'Cancel edit - save as a new entry instead';
+      cancelEdit.style.cssText = 'background:none;border:none;color:#888;font-size:10px;cursor:pointer;text-decoration:underline;align-self:flex-start;padding:0;font-family:Outfit,sans-serif;';
+      cancelEdit.onclick = function(){ window._galEditing = null; window.openGalleryModal(); };
+    }
+
+    saveBtn.onclick = function() {
+      var name = nameInput.value.trim();
+      if (!name) { saveStatus.textContent = 'Please enter a build name.'; saveStatus.style.color = '#ef4444'; return; }
+      if (!_pickedFile && !(_editing && _editing.photoUrl)) { saveStatus.textContent = 'Please choose a photo.'; saveStatus.style.color = '#ef4444'; return; }
+      saveBtn.disabled = true;
+      saveStatus.textContent = _editing ? 'Updating...' : 'Saving...'; saveStatus.style.color = '#888';
+      safeEncodeCompressed(window.serializeConfig ? serializeConfig() : {}).then(async function(encoded) {
+        try {
+          var _photo = (_editing && _editing.photoUrl) || '';
+          if (_pickedFile) { saveStatus.textContent = 'Uploading photo...'; _photo = await uploadGalleryPhoto(_pickedFile); }
+          var res = (_editing && _editing.galId)
+            ? await sbUpdateGalleryItem(_editing.galId, name, descInput.value.trim(), encoded, _photo)
+            : await sbSaveGalleryItem(name, descInput.value.trim(), encoded, _photo);
+          if (res !== null) {
+            if (_editing && _editing.galId) {
+              saveStatus.textContent = '\u2713 Updated "' + name + '"';
+              window._galEditing = null;
+            } else {
+              saveStatus.textContent = '\u2713 Saved "' + name + '"';
+              nameInput.value = ''; descInput.value = '';
+              _pickedFile = null; fileInput.value = '';
+              thumbPrev.style.display = 'none'; photoName.textContent = 'No photo chosen';
+            }
+            saveStatus.style.color = '#4ade80';
+            loadGalleryList(listWrap, isLain);
+          } else {
+            saveStatus.textContent = 'Save failed - check the Supabase gallery table / policy.';
+            saveStatus.style.color = '#ef4444';
+          }
+        } catch(err) {
+          saveStatus.textContent = err.message || 'Save failed';
+          saveStatus.style.color = '#ef4444';
+        }
+        saveBtn.disabled = false;
+      })
+      .catch(function(){ saveStatus.textContent = 'Could not read the current design.'; saveStatus.style.color = '#ef4444'; saveBtn.disabled = false; });
+    };
+
+    saveWrap.appendChild(nameInput); saveWrap.appendChild(descInput);
+    saveWrap.appendChild(photoRow); saveWrap.appendChild(fileInput);
+    saveWrap.appendChild(saveBtn); saveWrap.appendChild(saveStatus);
+    if (cancelEdit) saveWrap.appendChild(cancelEdit);
+    panel.appendChild(saveWrap);
+  }
+
+  var listLabel = document.createElement('div');
+  listLabel.style.cssText = 'font-size:10px;font-weight:700;color:rgba(255,130,0,.8);text-transform:uppercase;letter-spacing:1px;';
+  listLabel.textContent = 'Completed Builds';
+  panel.appendChild(listLabel);
+
+  listWrap.style.cssText = 'overflow-y:auto;flex:1;min-height:0;display:grid;grid-template-columns:repeat(auto-fill, minmax(210px, 1fr));grid-auto-rows:min-content;gap:12px;align-content:start;padding:2px;';
+
+  var galSearch = document.createElement('input');
+  galSearch.placeholder = 'Search builds by name or description...';
+  galSearch.style.cssText = 'padding:7px 10px;border-radius:7px;border:1px solid #444;background:#1e293b;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;margin-bottom:2px;';
+  galSearch.oninput = function() {
+    var term = galSearch.value.toLowerCase().trim();
+    var rows = listWrap.querySelectorAll('[data-search]');
+    var anyVisible = false;
+    rows.forEach(function(r){
+      var show = !term || r.getAttribute('data-search').indexOf(term) > -1;
+      r.style.display = show ? '' : 'none';
+      if (show) anyVisible = true;
+    });
+    var nm = listWrap.querySelector('.gal-nomatch');
+    if (!anyVisible && rows.length) {
+      if (!nm) { nm = document.createElement('div'); nm.className = 'gal-nomatch'; nm.style.cssText = 'font-size:11px;color:#888;padding:8px 0;grid-column:1/-1;'; nm.textContent = 'No builds match your search.'; listWrap.appendChild(nm); }
+    } else if (nm) { nm.remove(); }
+  };
+  panel.appendChild(galSearch);
+  panel.appendChild(listWrap);
+
+  function loadGalleryList(wrap, lain) {
+    wrap.innerHTML = '<div style="font-size:11px;color:#888;padding:8px 0;">Loading gallery...</div>';
+    sbGetGallery()
+    .then(function(items){
+      try { console.log('[GALLERY] card build \u2014 ' + ((items&&items.length)||0) + ' builds'); } catch(e){}
+      wrap.innerHTML = '';
+      if (!items || !items.length) {
+        wrap.innerHTML = '<div style="font-size:11px;color:#888;padding:8px 0;">No builds saved yet.</div>';
+        return;
+      }
+      items.forEach(function(item) {
+        var card = document.createElement('div');
+        card.style.cssText = 'display:block;background:#1e293b;border:1px solid rgba(255,255,255,.06);border-radius:10px;overflow:hidden;';
+        card.setAttribute('data-search', ((item.name||'') + ' ' + (item.description||'')).toLowerCase());
+
+        var imgWrap = document.createElement('div');
+        imgWrap.style.cssText = 'width:100%;height:140px;background:#0f172a;display:flex;align-items:center;justify-content:center;overflow:hidden;color:#475569;font-size:11px;font-weight:600;text-align:center;';
+        if (item.photoUrl) {
+          var thumb = document.createElement('img');
+          thumb.alt = ''; thumb.loading = 'lazy';
+          thumb.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in;';
+          thumb.onerror = function(){ imgWrap.innerHTML = ''; imgWrap.textContent = 'Photo unavailable'; };
+          thumb.onclick = function(){ window.open(item.photoUrl, '_blank', 'noopener'); };
+          thumb.src = item.photoUrl;
+          imgWrap.appendChild(thumb);
+        } else {
+          imgWrap.textContent = 'No photo';
+        }
+        card.appendChild(imgWrap);
+
+        var body = document.createElement('div');
+        body.style.cssText = 'padding:9px 10px;display:flex;flex-direction:column;gap:3px;';
+        var gName = document.createElement('div');
+        gName.style.cssText = 'font-size:12px;font-weight:700;color:#f0f3f7;line-height:1.2;';
+        gName.textContent = item.name;
+        var gDesc = document.createElement('div');
+        gDesc.style.cssText = 'font-size:10px;color:#888;';
+        gDesc.textContent = item.description || item.date || '';
+        body.appendChild(gName); body.appendChild(gDesc);
+        card.appendChild(body);
+
+        var acts = document.createElement('div');
+        acts.style.cssText = 'padding:0 10px 10px;display:flex;flex-wrap:wrap;gap:5px;align-items:center;';
+
+        if (item.configEncoded) {
+          var loadBtn = document.createElement('button');
+          loadBtn.textContent = 'Load';
+          loadBtn.title = 'Load this build into the configurator to quote it';
+          loadBtn.style.cssText = 'flex:1;min-width:56px;padding:6px 10px;border-radius:6px;border:1px solid rgba(255,130,0,.4);background:rgba(255,130,0,.15);color:#FF8200;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+          loadBtn.onclick = function() {
+            try {
+              var decodeP = safeDecodeAsync ? safeDecodeAsync(item.configEncoded).catch(function(){ return safeDecode(item.configEncoded); }) : Promise.resolve(safeDecode(item.configEncoded));
+              decodeP.then(function(cfg) {
+                if (cfg) {
+                  restoreConfig(cfg);
+                  window._savedQuoteId = null;
+                  var statusEl = document.getElementById('saveQuoteStatus');
+                  if (statusEl) { statusEl.textContent = 'Build loaded: ' + item.name; statusEl.style.display='block'; statusEl.style.color='#4ade80'; }
+                }
+                window.closeGalleryModal();
+              });
+            } catch(e) { alert('Could not load build: ' + e.message); }
+          };
+          acts.appendChild(loadBtn);
+        }
+
+        if (item.photoUrl) {
+          var viewBtn = document.createElement('button');
+          viewBtn.textContent = 'Photo';
+          viewBtn.title = 'Open the full-size photo';
+          viewBtn.style.cssText = 'padding:6px 9px;border-radius:6px;border:1px solid rgba(74,222,128,.4);background:rgba(74,222,128,.12);color:#4ade80;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+          viewBtn.onclick = function(){ window.open(item.photoUrl, '_blank', 'noopener'); };
+          acts.appendChild(viewBtn);
+        }
+
+        if (item.configEncoded) {
+          var linkBtn = document.createElement('button');
+          linkBtn.textContent = 'Link';
+          linkBtn.title = 'Copy an online preview link to this build';
+          linkBtn.style.cssText = 'padding:6px 9px;border-radius:6px;border:1px solid rgba(96,165,250,.4);background:rgba(96,165,250,.12);color:#93c5fd;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+          linkBtn.onclick = function() {
+            var url = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + (item.configEncoded || '');
+            var done = function(){ linkBtn.textContent = 'Copied!'; setTimeout(function(){ linkBtn.textContent = 'Link'; }, 1400); };
+            if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(url).then(done).catch(function(){ window.prompt('Copy this preview link:', url); }); }
+            else { window.prompt('Copy this preview link:', url); }
+          };
+          acts.appendChild(linkBtn);
+        }
+
+        if (lain) {
+          var editBtn = document.createElement('button');
+          editBtn.textContent = 'Edit';
+          editBtn.style.cssText = 'padding:6px 9px;border-radius:6px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.05);color:#cbd5e1;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+          editBtn.onclick = function() {
+            try {
+              window._galEditing = { galId: item.galId, name: item.name, description: item.description || '', photoUrl: item.photoUrl || '' };
+              if (item.configEncoded) {
+                var decodeP = safeDecodeAsync ? safeDecodeAsync(item.configEncoded).catch(function(){ return safeDecode(item.configEncoded); }) : Promise.resolve(safeDecode(item.configEncoded));
+                decodeP.then(function(cfg) {
+                  if (cfg) {
+                    restoreConfig(cfg);
+                    window._savedQuoteId = null;
+                    var statusEl = document.getElementById('saveQuoteStatus');
+                    if (statusEl) { statusEl.textContent = 'Editing build: ' + item.name + ' \u2014 make your changes, then reopen Gallery and press Update Entry.'; statusEl.style.display='block'; statusEl.style.color='#FF8200'; }
+                  }
+                  window.openGalleryModal();
+                });
+              } else {
+                window.openGalleryModal();
+              }
+            } catch(e) { alert('Could not load build for editing: ' + e.message); }
+          };
+          acts.appendChild(editBtn);
+
+          var delBtn = document.createElement('button');
+          delBtn.textContent = '\u00d7';
+          delBtn.title = 'Delete build';
+          delBtn.style.cssText = 'margin-left:auto;background:none;border:none;color:#555;font-size:16px;cursor:pointer;padding:0 4px;';
+          delBtn.onmouseover = function(){ delBtn.style.color='#ef4444'; };
+          delBtn.onmouseout  = function(){ delBtn.style.color='#555'; };
+          delBtn.onclick = function() {
+            if (!confirm('Delete build "' + item.name + '"?')) return;
+            sbDeleteGalleryItem(item.galId).then(function(){ loadGalleryList(wrap, lain); });
+          };
+          acts.appendChild(delBtn);
+        }
+
+        card.appendChild(acts);
+        wrap.appendChild(card);
+      });
+    })
+    .catch(function(){ wrap.innerHTML = '<div style="font-size:11px;color:#ef4444;padding:8px 0;">Failed to load gallery.</div>'; });
+  }
+
+  loadGalleryList(listWrap, isLain);
+
+  var gCloseBtn = document.createElement('button');
+  gCloseBtn.textContent = 'Close';
+  gCloseBtn.style.cssText = 'padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+  gCloseBtn.onclick = window.closeGalleryModal;
+  panel.appendChild(gCloseBtn);
 
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
