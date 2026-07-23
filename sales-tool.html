@@ -10081,6 +10081,17 @@ function applyVoiceQuote(parsed, overlay) {
         }
     }
     
+    // Take the warning overlay down. The render checks below are sampled snapshots and
+    // can produce a transient false negative; without this the overlay was permanent and
+    // covered a 3D view that was actually rendering fine.
+    function clear3DError() {
+        var container = document.getElementById('qgRV');
+        if (!container) return;
+        var e = container.querySelector('.threed-error');
+        if (e) { e.remove(); console.log('[3D] Cleared stale 3D warning - rendering verified'); }
+    }
+    window.clear3DError = clear3DError;
+
     function show3DError(message) {
         console.error('[3D] Error:', message);
         const container = document.getElementById('qgRV');
@@ -10162,6 +10173,14 @@ function applyVoiceQuote(parsed, overlay) {
         // ═══ COMPREHENSIVE 3D LOADING FIX ════════════════════════════════════════
         
         console.log('[3D] Starting build3DReplay...');
+
+        // Each build used to schedule its own 100ms + 3s verification timers and never
+        // cancel them, so timers from earlier builds fired against a canvas mid-rebuild
+        // and reported it empty. Clear anything still pending.
+        if (window._3dCheckTimers && window._3dCheckTimers.length) {
+            window._3dCheckTimers.forEach(function(t){ clearTimeout(t); });
+        }
+        window._3dCheckTimers = [];
         
         // 0. Mobile device compatibility check (re-enabled after layout fix)
         var userAgent = navigator.userAgent.toLowerCase();
@@ -10363,7 +10382,7 @@ function applyVoiceQuote(parsed, overlay) {
             } // end else (new renderer creation)
             
             // 12. Force immediate render test
-            setTimeout(function() {
+            window._3dCheckTimers.push(setTimeout(function() {
                 if (!rrx) return; // context was lost; its handler already reported it
                 try {
                     // Try to force a render to see if WebGL is actually working
@@ -10386,16 +10405,20 @@ function applyVoiceQuote(parsed, overlay) {
                     // If all pixels are 0,0,0,0 then nothing rendered
                     if (pixels[0] === 0 && pixels[1] === 0 && pixels[2] === 0 && pixels[3] === 0) {
                         console.warn('[3D] Render test shows black pixels - 3D may not be working');
+                    } else {
+                        // readPixels straight off the GL context is the trustworthy check.
+                        window._3dRenderedOK = true;
+                        clear3DError();
                     }
                     
                 } catch (renderError) {
                     console.error('[3D] Force render failed:', renderError);
                     show3DError('3D graphics rendering failed: ' + renderError.message + '. This device may not support hardware-accelerated graphics.');
                 }
-            }, 100);
+            }, 100));
             
             // 13. Fallback: Check for content after animation starts
-            setTimeout(function() {
+            window._3dCheckTimers.push(setTimeout(function() {
                 if (!rrx) return; // context was lost; its handler already reported it
                 try {
                     // Check if the canvas has any content rendered
@@ -10424,10 +10447,28 @@ function applyVoiceQuote(parsed, overlay) {
                         }
                         
                         if (!hasContent) {
-                            console.warn('[3D] Canvas appears empty after 3 seconds, showing fallback message');
-                            show3DError('3D model is not displaying on this device. This is common on mobile browsers due to graphics limitations. For best results, view on a desktop computer.');
+                            // One blank sample is not proof. Force a fresh frame and look again,
+                            // and never override a render that already verified good.
+                            var stillEmpty = true;
+                            try {
+                                rrx.render(scene, cam);
+                                testCtx.clearRect(0, 0, 100, 100);
+                                testCtx.drawImage(canvas, 0, 0, 100, 100);
+                                var d2 = testCtx.getImageData(0, 0, 100, 100).data;
+                                for (var j = 0; j < d2.length; j += 4) {
+                                    if (d2[j] > 10 || d2[j+1] > 10 || d2[j+2] > 10) { stillEmpty = false; break; }
+                                }
+                            } catch (e2) { /* keep stillEmpty as-is */ }
+                            if (!stillEmpty || window._3dRenderedOK) {
+                                console.log('[3D] Canvas re-check passed - ignoring transient empty sample');
+                                clear3DError();
+                            } else {
+                                console.warn('[3D] Canvas empty on both samples, showing fallback message');
+                                show3DError('3D model is not displaying on this device. This is common on mobile browsers due to graphics limitations. For best results, view on a desktop computer.');
+                            }
                         } else {
                             console.log('[3D] Canvas has content, 3D rendering working');
+                            clear3DError();
                         }
                     } catch (securityError) {
                         // Canvas security error - might indicate WebGL context issues
@@ -10438,7 +10479,7 @@ function applyVoiceQuote(parsed, overlay) {
                     console.warn('[3D] Fallback detection error:', fallbackError);
                     show3DError('3D graphics system error on this device. Please try viewing on a desktop computer for the best experience.');
                 }
-            }, 3000); // Wait 3 seconds for 3D to render
+            }, 3000)); // Wait 3 seconds for 3D to render
 
             scene.add(new THREE.AmbientLight(0xccddee, 0.55));
             const sun = new THREE.DirectionalLight(0xffeedd, 1.1); sun.position.set(10, 18, 8); sun.castShadow = true; scene.add(sun);
