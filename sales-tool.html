@@ -31633,13 +31633,22 @@ window.SauceMaterials.calcPC3Trim = function(Q, WALLS, shedCfgs) {
 };
 
 // ── TRIM: RESIDENTIAL EAVE TRIM ──────────────────────────────────────────────
-// All buildings/truss types.
-// Runs along enclosed eave walls + open lean-to skirt lines.
-// Non-dropped flush lean-to replaces main building eave on that side.
-// SKU: RET9PW10 (10' post spacing) or RET9PW12 (12' post spacing).
+// WOOD TRUSS — outside eaves only:
+//   no side shed          -> both main eave walls
+//   shed on an eave wall  -> that shed's outer eave REPLACES the main eave there
+//   shed on a gable wall  -> its outside eave edge gets trim
+//   gable extension       -> both outside edges of its sloped roof, any wall
+// STEEL TRUSS — additive:
+//   main building always keeps eave trim on enclosed eave walls, shed or not
+//   an eave-wall shed adds its own run ONLY if that shed has skirting
+// SKU: RET9PW10 / RET9PW12 / RET9PW16, chosen by post spacing.
 
 window.SauceMaterials.calcRETTrim = function(Q, WALLS, shedCfgs) {
-  var ohFt = (Q.truss === 'Wood' && Q.oh > 0) ? Q.oh / 12 : 0;
+  // Run length is the BARE eave length; the overhang is not added. A 40' eave is
+  // 4 sticks at 10', not 5. To restore the old behavior set this back to
+  //   (Q.truss === 'Wood' && Q.oh > 0) ? Q.oh / 12 : 0
+  var ohFt = 0;
+  var isSteel = (Q.truss === 'Steel');
 
   function wallPS(wallId) {
     var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
@@ -31651,9 +31660,18 @@ window.SauceMaterials.calcRETTrim = function(Q, WALLS, shedCfgs) {
     return w ? w.encl : 'enclosed';
   }
 
+  // Wood only: does an eave-attached lean-to take over this side's eave?
+  // Gable extensions do not displace the main eave.
+  function eaveShedOn(side) {
+    return (shedCfgs||[]).some(function(sc){
+      return sc.wall === side && sc.w && sc.l && sc.type !== 'gable';
+    });
+  }
+
   var groups = {};
   function addRun(runLen, ps) {
-    var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
+    if (!(runLen > 0)) return;
+    var boardLen = (ps === 16) ? 16 : ((ps === 12 || ps === 24) ? 12 : 10);
     var _retColor=getSkuColorCode('trim');
     var _retIsSteel=(Q.truss==='Steel');
     var _retLookup=_retIsSteel?('L'+_retColor):_retColor;
@@ -31663,11 +31681,13 @@ window.SauceMaterials.calcRETTrim = function(Q, WALLS, shedCfgs) {
     groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen);
   }
 
-  // Main building enclosed eave walls — a side shed does NOT remove the main
-  // eave trim on its side, so both eaves always count (skip open + vent gap only)
+  // Main building enclosed eave walls.
+  // Wood: skipped where a lean-to owns that eave (outside eaves only).
+  // Steel: always counted, shed or not.
   ['left','right'].forEach(function(side) {
     if (wallEncl(side) === 'open') return;
     if (Q.ventGap) return; // vent gap — no RET on eave walls
+    if (!isSteel && eaveShedOn(side)) return;
     addRun(Q.l + ohFt * 2, wallPS(side));
   });
 
@@ -31684,11 +31704,19 @@ window.SauceMaterials.calcRETTrim = function(Q, WALLS, shedCfgs) {
       return;
     }
 
-    if (!isEaveWall) return;
-
-    // Steel: always add shed eave run regardless of enclosure — that's it
-    if (Q.truss === 'Steel') {
+    // Steel: the shed adds its own eave run only when it has skirting. This is in
+    // ADDITION to the main building eave, which is counted above.
+    if (isSteel) {
+      if (!isEaveWall) return;
+      if (sc.noSkirt) return;
       addRun(sc.l, ps);
+      return;
+    }
+
+    // Wood, shed on a gable wall: its outside eave edge gets trim.
+    if (!isEaveWall) {
+      var gLen = (sc.encl === 'enclosed' && sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
+      addRun(gLen + ohFt * 2, ps);
       return;
     }
 
@@ -31733,7 +31761,7 @@ window.SauceMaterials.calcRETTrim = function(Q, WALLS, shedCfgs) {
       description: 'Residential Eave Trim',
       sku:         sku,
       quantity:    groups[sku] + 1,
-      detail:      'enclosed walls + open lean-to skirt lines'
+      detail:      isSteel ? 'main eave walls + skirted shed eaves' : 'outside eaves only'
     };
   });
 };
