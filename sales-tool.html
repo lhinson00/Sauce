@@ -2449,6 +2449,32 @@ var WALLS = [
   { id:'left',  label:'Left Eave',   len:60, encl:'enclosed', postSpacing:10 },
   { id:'right', label:'Right Eave',  len:60, encl:'enclosed', postSpacing:10 },
 ];
+
+// ── COMPETITOR IMPORT -> OUR WALL IDS ────────────────────────────────────────
+// Their drawings label the four elevations A/B/C/D:
+//   A = FRONT (gable)   B = LEFT EAVE   C = BACK GABLE   D = RIGHT EAVE
+// Our WALLS table above is gable-INVERTED: the id 'back' is LABELED "Front Gable"
+// and the id 'front' is LABELED "Back Gable". So their A -> 'back', their C ->
+// 'front'. Eave walls pass straight through.
+// Every import path (garage doors, walk doors, windows, sheds) must go through
+// this one map — the shed paths used to skip the inversion and landed sheds on
+// the opposite gable end.
+window._IMPORT_WALL_MAP = {
+  'a':'back',            'b':'left',        'c':'front',        'd':'right',
+  'front':'back',        'back':'front',    'left':'left',      'right':'right',
+  'front gable':'back',  'back gable':'front',
+  'front wall':'back',   'back wall':'front',
+  'rear':'front',        'rear gable':'front',
+  'left side':'left',    'right side':'right',
+  'left eave':'left',    'right eave':'right',
+  'side a':'back',       'side b':'left',   'side c':'front',   'side d':'right'
+};
+window._importWall = function(w, fallback) {
+  if (w == null || w === '') return fallback || null;
+  var k = String(w).trim().toLowerCase();
+  return window._IMPORT_WALL_MAP[k] || fallback || null;
+};
+
 var cfgTruss = 'Wood';
 var currentFrameType = 'post';
 var rrx = null;
@@ -5266,9 +5292,7 @@ async function importCompetitorPDF(input) {
           // Their A=our front (gable), B=our left (eave), C=our back (gable), D=our right (eave).
           // Garage doors CAN sit on a gable end, so map straight through instead of
           // forcing gable doors onto an eave wall (that put doors on the wrong side).
-          var wallMap = { 'front':'back', 'back':'front', 'left':'left', 'right':'right',
-                          'A':'back', 'B':'left', 'C':'front', 'D':'right' };
-          var gdWall = wallMap[gd.wall] || 'left';
+          var gdWall = window._importWall(gd.wall, 'left');
           var _isGableW = (gdWall === 'front' || gdWall === 'back');
           var wallObj = WALLS.find(function(wl){ return wl.id === gdWall; }) || {};
           // Gable walls run the building WIDTH; eave walls run the LENGTH.
@@ -5303,7 +5327,6 @@ async function importCompetitorPDF(input) {
         // Their A=our front, Their B=our left, Their C=our back, Their D=our right
         // Tool's WALLS table is gable-inverted: id 'back' is LABELED "Front Gable" and
         // id 'front' is labeled "Back Gable". PDF A(front gable)->'back', C(back gable)->'front'.
-        var wallMap = { 'front':'back', 'back':'front', 'left':'left', 'right':'right' };
         // Map competitor PLY SKUs to our door type strings
         var skuToType = {
           'PLY9930W': 'WHITE 3/0 PLYCO ALUMINUM FRAME',
@@ -5326,7 +5349,7 @@ async function importCompetitorPDF(input) {
         };
         parsed.walkDoors.forEach(function(wd) {
           var qty = parseInt(wd.qty) || 1;
-          var wall = wallMap[wd.wall] || 'back';
+          var wall = window._importWall(wd.wall, 'back');
           var sku = (wd.sku || '').toUpperCase().replace(/\s/g,'');
           var dtype = skuToType[sku] || WALK_DOOR_TYPES[0];
           // Also check color hint
@@ -5354,10 +5377,9 @@ async function importCompetitorPDF(input) {
         // Their A=our front, Their B=our left, Their C=our back, Their D=our right
         // Tool's WALLS table is gable-inverted: id 'back' is LABELED "Front Gable" and
         // id 'front' is labeled "Back Gable". PDF A(front gable)->'back', C(back gable)->'front'.
-        var wallMap = { 'front':'back', 'back':'front', 'left':'left', 'right':'right' };
         parsed.windows.forEach(function(win) {
           var qty = parseInt(win.qty) || 1;
-          var wall = wallMap[win.wall] || 'right';
+          var wall = window._importWall(win.wall, 'right');
           var winType = win.sku || win.type || 'VW33';
           if (!WINDOW_TYPES.includes(winType)) winType = 'VW33';
           var dims = winDims(winType);
@@ -5386,10 +5408,10 @@ async function importCompetitorPDF(input) {
         parsed.sheds.forEach(function(sh) {
           if (window._shedConfigs.length >= 4) return;
           var idx = window._shedConfigs.length;
-          // Their A=our front, Their B=our left, Their C=our back, Their D=our right
-          var _shedWallMap = { 'front':'front', 'back':'back', 'left':'left', 'right':'right' };
+          // Same inversion as doors/windows — this used to be an identity map, which
+          // put a shed on their A (front) end onto our 'front' id = "Back Gable".
           var _defaultWalls = ['left','right','back','front'];
-          var wall = _shedWallMap[sh.wall] || sh.wall || _defaultWalls[idx] || 'left';
+          var wall = window._importWall(sh.wall) || _defaultWalls[idx] || 'left';
           var isEave = (wall==='left'||wall==='right');
           var shedW = parseFloat(sh.w) || 12;
           var shedL = parseFloat(sh.l) || (isEave ? Q.l : Q.w);
@@ -9023,7 +9045,7 @@ function _applyFieldsInner(parsed, tryFill) {
   if (parsed.sheds && parsed.sheds.length) tryFill('Shed(s)', function(){
       parsed.sheds.forEach(function(sh){
       if(window._shedConfigs.length>=2) return;
-        var sidx=window._shedConfigs.length, swall=sh.wall||(sidx===0?'left':'right');
+        var sidx=window._shedConfigs.length, swall=window._importWall(sh.wall)||(sidx===0?'left':'right');
         var isEave=(swall==='left'||swall==='right');
         var sc={id:nextShedId++,idx:sidx,label:'Side Shed '+(sidx+1),wall:swall,type:'leanto',wrapDir:'cw',wrapLeg:0,w:parseFloat(sh.w)||12,l:parseFloat(sh.l)||(isEave?Q.l:Q.w),origL:parseFloat(sh.l)||(isEave?Q.l:Q.w),encl:sh.encl||'roofonly',enclWalls:['outer','gable1','gable2'],position:'center',offsetFt:0,gablePS:10,gablePitch:4,timberFrame:'metal',ltPitch:(sh.ltPitch!=null?parseFloat(sh.ltPitch):2),dropFt:parseFloat(sh.dropFt)||0,frameStyle:'metal',_open:true};
         window._shedConfigs.push(sc);
@@ -9648,14 +9670,15 @@ function showVoiceReviewCard(parsed, transcript, overlay) {
   // Sheds
   if (parsed.sheds && parsed.sheds.length) {
     var shedRows = [];
-    var shedWallLabels = {left:'Left Side',right:'Right Side',front:'Front',back:'Back'};
+    var shedWallLabels = {left:'Left Eave',right:'Right Eave',back:'Front Gable',front:'Back Gable'};
     var enclLabels2 = {enclosed:'Enclosed',open:'Open',roofonly:'Roof Only'};
     parsed.sheds.forEach(function(sh,i) {
       var sdesc = (sh.w||'?') + "' × " + (sh.l||'?') + "'";
       var encl = enclLabels2[sh.encl] || (sh.encl||'Roof Only');
       if (sh.dropFt) encl += ' — ' + sh.dropFt + "' drop";
       if (sh.concrete) encl += ' — Concrete';
-      shedRows.push([(shedWallLabels[sh.wall]||sh.wall||'Side') + ' Lean-to', sdesc + ' — ' + encl]);
+      var _swPrev = window._importWall(sh.wall) || sh.wall;
+      shedRows.push([(shedWallLabels[_swPrev]||_swPrev||'Side') + ' Lean-to', sdesc + ' — ' + encl]);
     });
     var shedSec = section('Side Structures', shedRows); if (shedSec) scroll.appendChild(shedSec);
   }
@@ -9943,7 +9966,7 @@ function applyVoiceQuote(parsed, overlay) {
         if (window._shedConfigs.length >= 4) return;
         var sidx = window._shedConfigs.length;
         var _defWalls = ['left','right','back','front'];
-        var swall = sh.wall || _defWalls[sidx] || 'left';
+        var swall = window._importWall(sh.wall) || _defWalls[sidx] || 'left';
         var isEave = (swall==='left'||swall==='right');
         var shedW = parseFloat(sh.w) || 12;
         var shedL = parseFloat(sh.l) || (isEave ? Q.l : Q.w);
