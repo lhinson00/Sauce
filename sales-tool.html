@@ -5054,20 +5054,87 @@ async function importCompetitorPDF(input) {
       await _page.render({ canvasContext: _cv.getContext('2d'), viewport: _vp2 }).promise;
       return _cv.toDataURL('image/jpeg', _big ? 0.92 : 0.8).split(',')[1] || '';
     }
+    // The sketches page is a 2x2 grid of PERSPECTIVE renders whose POSITION is what
+    // identifies the wall — top-left FRONT, top-right LEFT EAVE, bottom-left BACK
+    // GABLE, bottom-right RIGHT EAVE. Competitor PDFs don't print those names, and
+    // the parser is told not to infer walls from page position, so we burn the names
+    // straight onto the image before sending it. The render block is located by
+    // finding the bounding box of SATURATED pixels (the colour renders) — body text
+    // is greyscale, so it doesn't drag the box out.
+    async function _renderElevLabeled(_n) {
+      var _page = await pdf.getPage(_n);
+      var _vp = _page.getViewport({ scale: 1 });
+      var _scale = Math.min(2, 1500 / Math.max(_vp.width, _vp.height));
+      var _vp2 = _page.getViewport({ scale: _scale });
+      var _cv = document.createElement('canvas');
+      _cv.width = Math.round(_vp2.width); _cv.height = Math.round(_vp2.height);
+      var _cx = _cv.getContext('2d');
+      await _page.render({ canvasContext: _cx, viewport: _vp2 }).promise;
+      try {
+        var _d = _cx.getImageData(0, 0, _cv.width, _cv.height).data;
+        var _x0 = _cv.width, _y0 = _cv.height, _x1 = 0, _y1 = 0, _hit = false;
+        for (var _y = 0; _y < _cv.height; _y += 3) {
+          for (var _x = 0; _x < _cv.width; _x += 3) {
+            var _i = (_y * _cv.width + _x) * 4;
+            var _r = _d[_i], _g = _d[_i+1], _b = _d[_i+2];
+            var _mx = Math.max(_r,_g,_b), _mn = Math.min(_r,_g,_b);
+            if (_mx - _mn > 40 && _mx > 60) { // saturated = photo, not text
+              _hit = true;
+              if (_x < _x0) _x0 = _x; if (_x > _x1) _x1 = _x;
+              if (_y < _y0) _y0 = _y; if (_y > _y1) _y1 = _y;
+            }
+          }
+        }
+        if (_hit && (_x1 - _x0) > _cv.width * 0.30 && (_y1 - _y0) > _cv.height * 0.15) {
+          var _mX = (_x0 + _x1) / 2, _mY = (_y0 + _y1) / 2;
+          var _fs = Math.max(13, Math.round(_cv.width * 0.021));
+          _cx.font = 'bold ' + _fs + 'px sans-serif';
+          _cx.textAlign = 'center'; _cx.textBaseline = 'bottom';
+          [['FRONT GABLE  (A)', _x0, _mX, _mY],
+           ['LEFT EAVE  (B)',   _mX, _x1, _mY],
+           ['BACK GABLE  (C)',  _x0, _mX, _y1],
+           ['RIGHT EAVE  (D)',  _mX, _x1, _y1]].forEach(function(L) {
+            var _tx = (L[1] + L[2]) / 2, _ty = L[3] - Math.round(_fs * 0.4);
+            _cx.lineWidth = Math.max(3, _fs * 0.3); _cx.strokeStyle = '#ffffff';
+            _cx.strokeText(L[0], _tx, _ty);
+            _cx.fillStyle = '#cc0000';
+            _cx.fillText(L[0], _tx, _ty);
+          });
+          console.log('[Import] elevation quadrants labeled (render block ' +
+                      Math.round(_x1-_x0) + 'x' + Math.round(_y1-_y0) + ')');
+        } else {
+          console.warn('[Import] could not locate a 2x2 render block — sending elevation unlabeled');
+        }
+      } catch(e) { console.warn('[Import] quadrant labeling skipped:', e.message); }
+      return _cv.toDataURL('image/jpeg', 0.85).split(',')[1] || '';
+    }
+
     try {
       if (window.pdfjsLib && typeof pdf !== 'undefined' && pdf) {
-        var _elevPg = 0, _planPg = 0;
+        // Page detection, rewritten. The old rules misfired badly:
+        //   - the PLAN was matched on the word "Sketches", but that heading sits on the
+        //     ELEVATION page, so the perspective renders got sent as "the plan"
+        //   - the ELEVATION was matched on a footer disclaimer that appears on EVERY
+        //     page, so it grabbed page 1 (a text-only quote page)
+        // A real top-down plan is the only page carrying post tags (PostA03, PostB13...),
+        // which is exactly what the wall rule reads — so detect on that.
+        var _elevPg = 0, _planPg = 0, _lastImgPg = 0;
+        var _POST_TAG = /Post\s?[A-D]{1,2}\s?\d/i;
         for (var _p2 = 1; _p2 <= pdf.numPages; _p2++) {
           var _pg2 = await pdf.getPage(_p2);
           var _tc2 = await _pg2.getTextContent();
           var _t2 = _tc2.items.map(function(i){ return i.str; }).join(' ');
-          if (!_planPg && /Sketches/i.test(_t2)) _planPg = _p2;
-          else if (!_elevPg && /Price does not include tax or shipping|subject to change without notice/i.test(_t2)) _elevPg = _p2;
+          if (!_planPg && _POST_TAG.test(_t2)) _planPg = _p2;
+          if (!_elevPg && (/Sketches/i.test(_t2) || /\bFRONT\b[\s\S]{0,80}\bLEFT EAVE\b/i.test(_t2))) _elevPg = _p2;
+          try { if ((await _pg2.getOperatorList()).fnArray.length > 60) _lastImgPg = _p2; } catch(e) {}
         }
-        if (!_elevPg && pdf.numPages >= 4) _elevPg = 4;
-        if (_planPg) { planImg = await _renderPg(_planPg, true); console.log('[Import] PLAN page ' + _planPg + ' rendered, ' + Math.round(planImg.length/1024) + 'KB'); }
-        else console.warn('[Import] no plan/Sketches page found');
-        if (_elevPg) { elevImg = await _renderPg(_elevPg, false); console.log('[Import] elevation page ' + _elevPg + ' rendered, ' + Math.round(elevImg.length/1024) + 'KB'); }
+        // Renders usually land on the final page of these quotes.
+        if (!_elevPg) _elevPg = _lastImgPg || pdf.numPages;
+        // Never hand the same page over as both — a perspective page is not a plan.
+        if (_planPg && _planPg === _elevPg) _planPg = 0;
+        if (_planPg) { planImg = await _renderPg(_planPg, true); console.log('[Import] PLAN page ' + _planPg + ' (post tags found) rendered, ' + Math.round(planImg.length/1024) + 'KB'); }
+        else console.warn('[Import] NO top-down plan page in this PDF — wall placement will rely on the lettered elevations only.');
+        if (_elevPg) { elevImg = await _renderElevLabeled(_elevPg); console.log('[Import] ELEVATION page ' + _elevPg + ' rendered, ' + Math.round(elevImg.length/1024) + 'KB'); }
       }
     } catch(e) { console.warn('[Import] page render failed:', e.message); }
 
@@ -5085,7 +5152,7 @@ async function importCompetitorPDF(input) {
       var resp = await fetchWithTimeout(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ action: 'parsePdfText', token: getToken(), pdfText: pdfText.slice(0, 8000), planImage: planImg, elevationImage: elevImg, elevationLegend: 'A=front gable, B=left eave, C=back gable, D=right eave' })
+        body: JSON.stringify({ action: 'parsePdfText', token: getToken(), pdfText: pdfText.slice(0, 8000), planImage: planImg, elevationImage: elevImg, elevationLegend: 'A=front gable, B=left eave, C=back gable, D=right eave. The elevation image is a 2x2 grid of perspective renders and their POSITION identifies the wall — TOP-LEFT=A=front gable, TOP-RIGHT=B=left eave, BOTTOM-LEFT=C=back gable, BOTTOM-RIGHT=D=right eave. Each quadrant has been overlaid with its wall name in red; trust that overlay over any other cue' })
       }, 45000);
       data = await safeJson(resp);
       if (data.success) break;
@@ -5293,6 +5360,7 @@ async function importCompetitorPDF(input) {
           // Garage doors CAN sit on a gable end, so map straight through instead of
           // forcing gable doors onto an eave wall (that put doors on the wrong side).
           var gdWall = window._importWall(gd.wall, 'left');
+          try { console.log('[Import] garage door wall: raw=' + JSON.stringify(gd.wall) + ' -> ' + gdWall + ' (' + ((WALLS.find(function(x){return x.id===gdWall;})||{}).label||'?') + ')'); } catch(e){}
           var _isGableW = (gdWall === 'front' || gdWall === 'back');
           var wallObj = WALLS.find(function(wl){ return wl.id === gdWall; }) || {};
           // Gable walls run the building WIDTH; eave walls run the LENGTH.
@@ -5412,6 +5480,7 @@ async function importCompetitorPDF(input) {
           // put a shed on their A (front) end onto our 'front' id = "Back Gable".
           var _defaultWalls = ['left','right','back','front'];
           var wall = window._importWall(sh.wall) || _defaultWalls[idx] || 'left';
+          try { console.log('[Import] shed wall: raw=' + JSON.stringify(sh.wall) + ' -> ' + wall + ' (' + ((WALLS.find(function(x){return x.id===wall;})||{}).label||'?') + ')'); } catch(e){}
           var isEave = (wall==='left'||wall==='right');
           var shedW = parseFloat(sh.w) || 12;
           var shedL = parseFloat(sh.l) || (isEave ? Q.l : Q.w);
