@@ -1844,11 +1844,16 @@ body.customer-mode #stab_specs { display: block !important; }
         <div id="insulLocRow" style="margin-top:6px;">
           <div class="toggle-row">
             <div class="toggle-info"><div class="toggle-lbl">Insulate Roof</div></div>
-            <label class="tog"><input type="checkbox" id="st_insulRoof" onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+            <label class="tog"><input type="checkbox" id="st_insulRoof" onchange="try{syncInsulShedRoofRow();scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
           </div>
           <div class="toggle-row" id="rowInsulateWalls">
             <div class="toggle-info"><div class="toggle-lbl">Insulate Walls</div></div>
             <label class="tog"><input type="checkbox" id="st_insulWalls" onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+          </div>
+          <!-- Only meaningful when the roof is insulated AND a side shed exists. -->
+          <div class="toggle-row" id="rowInsulShedRoof" style="display:none;">
+            <div class="toggle-info"><div class="toggle-lbl">Include Side Shed Roofs</div><div class="toggle-sub">Roof insulation covers lean-to roofs too</div></div>
+            <label class="tog"><input type="checkbox" id="st_insulShedRoof" onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
           </div>
         </div>
       </div>
@@ -2817,6 +2822,8 @@ function _updateAtticLabel() {
 }
 function scheduleBuild() {
   clearTimeout(_buildTimer);
+  // Keep the "Include Side Shed Roofs" row in step with sheds being added/removed.
+  try { if (window.syncInsulShedRoofRow) window.syncInsulShedRoofRow(); } catch(e) {}
   _buildTimer = setTimeout(triggerBuild, 320);
 }
 // Resize the WebGL canvas to its container without rebuilding geometry (used when docking the material list).
@@ -6502,6 +6509,7 @@ function serializeConfig() {
       insulation:(document.getElementById('st_insulation')||{}).value||'None',
       insulRoof: !!(document.getElementById('st_insulRoof')||{}).checked,
       insulWalls:!!(document.getElementById('st_insulWalls')||{}).checked,
+      insulShedRoof:!!(document.getElementById('st_insulShedRoof')||{}).checked,
       finishedCeiling: false, // now per-shed via sc.finishedCeiling
       postWraps: !!(document.getElementById('st_postWraps')||{}).checked,
       lvlHeaders:!!(document.getElementById('st_lvlHeaders')||{}).checked,
@@ -6806,6 +6814,8 @@ function restoreConfig(cfg) {
       _sv('st_insulation',sf.insulation); onInsulationChange();
       _sv('st_insulRoof', sf.insulRoof);
       _sv('st_insulWalls',sf.insulWalls);
+      _sv('st_insulShedRoof', sf.insulShedRoof);
+      try { syncInsulShedRoofRow(); } catch(e){}
       // st_finishedCeiling moved to per-shed sc.finishedCeiling (saved in cfg.sheds)
       _sv('st_postWraps', sf.postWraps);
       _sv('st_lvlHeaders',sf.lvlHeaders);
@@ -23707,8 +23717,23 @@ function onInsulationChange() {
     if (roof)  roof.checked  = false;
     if (walls) walls.checked = false;
   }
+  syncInsulShedRoofRow();
   try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
 }
+
+// "Include Side Shed Roofs" only appears when roof insulation is on and at least
+// one lean-to / wrap side shed exists. Gable extensions share the main roof, so
+// they do not count as a separate shed roof here.
+function syncInsulShedRoofRow() {
+  var row = document.getElementById('rowInsulShedRoof');
+  if (!row) return;
+  var type    = (document.getElementById('st_insulation')||{}).value || 'None';
+  var roofOn  = !!(document.getElementById('st_insulRoof')||{}).checked;
+  var sheds   = window._shedConfigs || [];
+  var hasShed = sheds.some(function(sc){ return sc && sc.w && sc.l && sc.type !== 'gable'; });
+  row.style.display = (type !== 'None' && roofOn && hasShed) ? '' : 'none';
+}
+window.syncInsulShedRoofRow = syncInsulShedRoofRow;
 
 function toggleBarjoist(el) {
   var row = document.getElementById('st_barjoistRow');
@@ -33759,10 +33784,17 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
 
   var roofLinFt = 0, wallLinFt = 0;
 
+  var inclShedRoof = !!(document.getElementById('st_insulShedRoof')||{}).checked;
+  var shedRoofExcluded = false;
   if (insulRoof) {
     var roofItems = window.SauceMaterials.calcRoofMetal(Q, shedCfgs);
     if (window._shedOnlyMode) {
       roofItems = roofItems.filter(function(item){ return item.category === 'Side Shed Roof Metal'; });
+    } else if (!inclShedRoof) {
+      // "Roof only" means the MAIN roof. Lean-to roofs are opt-in.
+      var _before = roofItems.length;
+      roofItems = roofItems.filter(function(item){ return item.category !== 'Side Shed Roof Metal'; });
+      shedRoofExcluded = roofItems.length !== _before;
     }
     roofLinFt = linearFtFromItems(roofItems);
   }
@@ -33785,7 +33817,8 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
     var totalRolls = baseRolls + 1;
 
     var detailParts = [];
-    if (insulRoof)  detailParts.push('roof ' + Math.round(roofLinFt) + ' ln ft');
+    if (insulRoof)  detailParts.push((inclShedRoof ? 'roof + shed roofs ' : 'main roof ') + Math.round(roofLinFt) + ' ln ft'
+                                     + (shedRoofExcluded ? ' (shed roofs excluded)' : ''));
     if (insulWalls) detailParts.push('walls ' + Math.round(wallLinFt) + ' ln ft');
     var detail = insulType
       + '  |  ' + detailParts.join(' + ') + ' = ' + Math.round(totalLinFt) + ' ln ft'
