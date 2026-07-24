@@ -2469,6 +2469,48 @@ window._IMPORT_WALL_MAP = {
   'left eave':'left',    'right eave':'right',
   'side a':'back',       'side b':'left',   'side c':'front',   'side d':'right'
 };
+// Competitor quotes name the shed's wall IN THE TEXT: "Side Shed - SHED A".
+// That letter is the single most reliable signal in the whole document — no vision
+// needed — so parse it here and override whatever the model guessed. Each block runs
+// Width / Depth / Pitch / Drop / Concrete / Eave Spacing / Gable Spacing under the
+// heading; competitor "Width" is the run ALONG the wall (our l) and "Depth" is the
+// projection out from it (our w).
+window._parseShedsFromPdfText = function(txt) {
+  if (!txt) return null;
+  var out = [];
+  // Split on the heading rather than matching a bounded body — extracted text can be
+  // space-padded, which blew past any fixed character cap.
+  var parts = txt.split(/Side\s*Shed\s*[-\u2013\u2014]?\s*SHED\s*([A-D])\b/i);
+  if (parts.length < 3) return null;
+  for (var _pi = 1; _pi < parts.length; _pi += 2) {
+    var letter = String(parts[_pi] || '').toUpperCase();
+    var body = String(parts[_pi + 1] || '').slice(0, 900);
+    function _num(lbl) {
+      var mm = body.match(new RegExp(lbl + '\\s*:?\\s*([0-9]+(?:\\.[0-9]+)?)', 'i'));
+      return mm ? parseFloat(mm[1]) : null;
+    }
+    function _yn(lbl) {
+      var mm = body.match(new RegExp(lbl + '\\s*:?\\s*(YES|NO)', 'i'));
+      return mm ? /yes/i.test(mm[1]) : false;
+    }
+    var _pm = body.match(/Pitch\s*:?\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*12/i);
+    var _l = _num('Width'), _w = _num('Depth');
+    if (!_l && !_w) continue;            // not a real shed block
+    out.push({
+      wall:     letter,                  // A/B/C/D — _importWall() converts it
+      l:        _l,                      // run along the wall
+      w:        _w,                      // projection
+      ltPitch:  _pm ? parseFloat(_pm[1]) : null,
+      dropFt:   _num('Drop') || 0,
+      concrete: _yn('Concrete'),
+      eavePS:   _num('Eave Spacing'),
+      gablePS:  _num('Gable Spacing'),
+      _fromText: true
+    });
+  }
+  return out.length ? out : null;
+};
+
 window._importWall = function(w, fallback) {
   if (w == null || w === '') return fallback || null;
   var k = String(w).trim().toLowerCase();
@@ -5111,27 +5153,39 @@ async function importCompetitorPDF(input) {
 
     try {
       if (window.pdfjsLib && typeof pdf !== 'undefined' && pdf) {
-        // Page detection, rewritten. The old rules misfired badly:
-        //   - the PLAN was matched on the word "Sketches", but that heading sits on the
-        //     ELEVATION page, so the perspective renders got sent as "the plan"
-        //   - the ELEVATION was matched on a footer disclaimer that appears on EVERY
-        //     page, so it grabbed page 1 (a text-only quote page)
-        // A real top-down plan is the only page carrying post tags (PostA03, PostB13...),
-        // which is exactly what the wall rule reads — so detect on that.
-        var _elevPg = 0, _planPg = 0, _lastImgPg = 0;
-        var _POST_TAG = /Post\s?[A-D]{1,2}\s?\d/i;
+        // Page detection by IMAGE COUNT, which is the only reliable signal here.
+        // Why not text:
+        //   - the post tags (PostA13, PostB03...) that the wall rule depends on are
+        //     RASTERISED INTO the plan image, so no page ever exposes them as text
+        //   - "Sketches" is the heading of the PLAN section, not the renders, so using
+        //     it for the elevation page sends the plan and drops the renders entirely
+        //   - the footer disclaimers repeat on every page
+        // The elevation page is the one holding the 2x2 grid of photos, so count the
+        // image-paint ops: renders page has several, the plan has one, text pages none.
+        var _elevPg = 0, _planPg = 0, _sketchPg = 0, _bestImgs = 0;
+        var _OPS = (window.pdfjsLib && pdfjsLib.OPS) || {};
         for (var _p2 = 1; _p2 <= pdf.numPages; _p2++) {
           var _pg2 = await pdf.getPage(_p2);
           var _tc2 = await _pg2.getTextContent();
           var _t2 = _tc2.items.map(function(i){ return i.str; }).join(' ');
-          if (!_planPg && _POST_TAG.test(_t2)) _planPg = _p2;
-          if (!_elevPg && (/Sketches/i.test(_t2) || /\bFRONT\b[\s\S]{0,80}\bLEFT EAVE\b/i.test(_t2))) _elevPg = _p2;
-          try { if ((await _pg2.getOperatorList()).fnArray.length > 60) _lastImgPg = _p2; } catch(e) {}
+          if (!_sketchPg && /Sketches/i.test(_t2)) _sketchPg = _p2;
+          var _imgs = 0;
+          try {
+            var _ol = await _pg2.getOperatorList();
+            for (var _k = 0; _k < _ol.fnArray.length; _k++) {
+              var _fn = _ol.fnArray[_k];
+              if (_fn === _OPS.paintImageXObject || _fn === _OPS.paintJpegXObject ||
+                  _fn === _OPS.paintInlineImageXObject) _imgs++;
+            }
+          } catch(e) {}
+          if (_imgs >= 3 && _imgs > _bestImgs) { _bestImgs = _imgs; _elevPg = _p2; }
         }
-        // Renders usually land on the final page of these quotes.
-        if (!_elevPg) _elevPg = _lastImgPg || pdf.numPages;
-        // Never hand the same page over as both — a perspective page is not a plan.
-        if (_planPg && _planPg === _elevPg) _planPg = 0;
+        // The plan is the "Sketches" page — unless that IS the renders page, in which
+        // case this quote has no top-down plan at all.
+        _planPg = (_sketchPg && _sketchPg !== _elevPg) ? _sketchPg : 0;
+        if (!_elevPg && _sketchPg) _elevPg = _sketchPg;
+        console.log('[Import] page scan -> elevation=' + (_elevPg||'none') +
+                    ' (' + _bestImgs + ' images), plan=' + (_planPg||'none'));
         if (_planPg) { planImg = await _renderPg(_planPg, true); console.log('[Import] PLAN page ' + _planPg + ' (post tags found) rendered, ' + Math.round(planImg.length/1024) + 'KB'); }
         else console.warn('[Import] NO top-down plan page in this PDF — wall placement will rely on the lettered elevations only.');
         if (_elevPg) { elevImg = await _renderElevLabeled(_elevPg); console.log('[Import] ELEVATION page ' + _elevPg + ' rendered, ' + Math.round(elevImg.length/1024) + 'KB'); }
@@ -5174,6 +5228,20 @@ async function importCompetitorPDF(input) {
       if (_s === -1 || _e2 <= _s) throw new Error('No JSON found in parser reply');
       parsed = JSON.parse(raw.slice(_s, _e2 + 1));
     }
+
+    // Shed walls come from the PDF text, not the model. The letter is printed in the
+    // section heading, so this is exact — and shed placement has never been reliable
+    // when left to a reading of the perspective renders.
+    try {
+      var _txtSheds = window._parseShedsFromPdfText(pdfText);
+      if (_txtSheds && _txtSheds.length) {
+        console.log('[Import] sheds read from TEXT headings (overriding parser): ' +
+          _txtSheds.map(function(x){ return 'SHED ' + x.wall + ' ' + x.l + "'x" + x.w + "'"; }).join('  |  '));
+        parsed.sheds = _txtSheds;
+      } else if (parsed.sheds && parsed.sheds.length) {
+        console.log('[Import] no "SHED <letter>" headings found — falling back to the parser for shed walls');
+      }
+    } catch(e) { console.warn('[Import] text shed parse failed:', e.message); }
 
     // Apply to tool
     var filled = [];
@@ -5498,7 +5566,7 @@ async function importCompetitorPDF(input) {
             position: 'center', offsetFt: 0,
             gablePS: 10, gablePitch: 4,
             timberFrame: 'metal',
-            ltPitch: (sh.ltPitch != null ? parseFloat(sh.ltPitch) : 2), dropFt: 0,
+            ltPitch: (sh.ltPitch != null ? parseFloat(sh.ltPitch) : 2), dropFt: parseFloat(sh.dropFt) || 0,
             frameStyle: 'metal',
             noSkirt: sh.noSkirt === true,
             postsOnTop: sh.postsOnTop === true,
