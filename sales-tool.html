@@ -33789,19 +33789,55 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
 
   var roofLinFt = 0, wallLinFt = 0;
 
+  // A side shed that is NOT fully enclosed always gets Therma Guard on its ceiling,
+  // whatever the main building uses — vinyl-back and similar aren't suitable there.
+  // A fully enclosed shed is treated like the main building: its roof rides along at
+  // the selected type, and its walls already flow through calcSidewallMetal.
+  // "Partially enclosed" (enclFt shorter than the shed) counts as not fully enclosed,
+  // matching the test the Skirt Metal toggle uses.
+  function shedFullyEnclosed(sc) {
+    return !!sc && sc.encl === 'enclosed' &&
+           !(sc.enclFt != null && parseFloat(sc.enclFt) < sc.l);
+  }
+  function isShedRoof(item){ return item.category === 'Side Shed Roof Metal'; }
+
   var inclShedRoof = !!(document.getElementById('st_insulShedRoof')||{}).checked;
   var shedRoofExcluded = false;
+  var tgLinFt = 0; // not-fully-enclosed shed roofs — always Therma Guard
+
   if (insulRoof) {
-    var roofItems = window.SauceMaterials.calcRoofMetal(Q, shedCfgs);
-    if (window._shedOnlyMode) {
-      roofItems = roofItems.filter(function(item){ return item.category === 'Side Shed Roof Metal'; });
-    } else if (!inclShedRoof) {
-      // "Roof only" means the MAIN roof. Lean-to roofs are opt-in.
-      var _before = roofItems.length;
-      roofItems = roofItems.filter(function(item){ return item.category !== 'Side Shed Roof Metal'; });
-      shedRoofExcluded = roofItems.length !== _before;
+    var allSheds  = (shedCfgs || []).filter(function(sc){ return sc && sc.w && sc.l; });
+    var enclSheds = allSheds.filter(shedFullyEnclosed);
+    var openSheds = allSheds.filter(function(sc){ return !shedFullyEnclosed(sc); });
+
+    // The shed roof items are grouped by panel length across every shed, so they
+    // can't be split after the fact — re-run the roof calc per shed group instead.
+    function shedRoofLinFt(list) {
+      if (!list.length) return 0;
+      return linearFtFromItems(window.SauceMaterials.calcRoofMetal(Q, list).filter(isShedRoof));
     }
-    roofLinFt = linearFtFromItems(roofItems);
+
+    if (window._shedOnlyMode) {
+      roofLinFt = shedRoofLinFt(enclSheds);
+      tgLinFt   = shedRoofLinFt(openSheds);
+    } else {
+      // Main roof only — everything that isn't a shed roof.
+      roofLinFt = linearFtFromItems(
+        window.SauceMaterials.calcRoofMetal(Q, allSheds).filter(function(item){ return !isShedRoof(item); })
+      );
+      if (inclShedRoof) {
+        roofLinFt += shedRoofLinFt(enclSheds);
+        tgLinFt    = shedRoofLinFt(openSheds);
+      } else {
+        shedRoofExcluded = allSheds.length > 0;
+      }
+    }
+
+    // If the main selection IS Therma Guard there's no reason to split the line.
+    if (insulType === 'Therma Guard' && tgLinFt > 0) {
+      roofLinFt += tgLinFt;
+      tgLinFt = 0;
+    }
   }
 
   if (insulWalls) {
@@ -33841,6 +33877,26 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
       sku:         insulSku(),
       quantity:    totalRolls,
       detail:      detail
+    });
+  }
+
+  // Separate Therma Guard line for open / partially enclosed side shed ceilings.
+  // Outside the block above because it stands on its own even when nothing else
+  // is being insulated.
+  if (tgLinFt > 0) {
+    var tgSqFt  = tgLinFt * 3;
+    var tgRaw   = tgSqFt / 750;                 // Therma Guard is a 750 sqft roll
+    var tgRolls = Math.ceil(tgRaw * 1.1);
+    if (tgRolls < 1) tgRolls = 1;
+    results.push({
+      category:    'Hardware',
+      description: 'Insulation — Side Shed Ceiling',
+      sku:         'INAA6125',
+      quantity:    tgRolls,
+      detail:      'Therma Guard (not fully enclosed shed)  |  ' + Math.round(tgLinFt) + ' ln ft'
+                   + ' × 3 = ' + Math.round(tgSqFt) + ' sqft'
+                   + '  |  ÷ 750 = ' + tgRaw.toFixed(2)
+                   + ' × 1.1 = ' + (tgRaw * 1.1).toFixed(2) + ' → ' + tgRolls + ' rolls'
     });
   }
 
