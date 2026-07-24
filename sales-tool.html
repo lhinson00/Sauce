@@ -5059,6 +5059,7 @@ async function importCompetitorPDF(input) {
 
     // Extract text from PDF client-side using PDF.js — send text not base64
     // This avoids sending a huge binary payload to GAS/Claude
+    console.log('%c[Import] BUILD 2026-07-24-D  (elevation-primary, plan suppressed)','color:#FF8200;font-weight:700');
     btn.textContent = '⏳ Reading PDF...';
     var pdfText = '';
     if (window.pdfjsLib) {
@@ -5103,10 +5104,13 @@ async function importCompetitorPDF(input) {
     // straight onto the image before sending it. The render block is located by
     // finding the bounding box of SATURATED pixels (the colour renders) — body text
     // is greyscale, so it doesn't drag the box out.
+    window._elevLabeled = false;
     async function _renderElevLabeled(_n) {
       var _page = await pdf.getPage(_n);
       var _vp = _page.getViewport({ scale: 1 });
-      var _scale = Math.min(2, 1500 / Math.max(_vp.width, _vp.height));
+      // Render big: the four renders sit inside page margins, so a 1500px page render
+      // left each quadrant under 500px — too coarse to reliably spot an overhead door.
+      var _scale = Math.min(3.2, 2600 / Math.max(_vp.width, _vp.height));
       var _vp2 = _page.getViewport({ scale: _scale });
       var _cv = document.createElement('canvas');
       _cv.width = Math.round(_vp2.width); _cv.height = Math.round(_vp2.height);
@@ -5128,6 +5132,16 @@ async function importCompetitorPDF(input) {
           }
         }
         if (_hit && (_x1 - _x0) > _cv.width * 0.30 && (_y1 - _y0) > _cv.height * 0.15) {
+          // Crop away the page margins — send only the 2x2 grid.
+          var _pad = 6;
+          var _bw = Math.min(_cv.width  - Math.max(0,_x0-_pad), (_x1 - _x0) + _pad*2);
+          var _bh = Math.min(_cv.height - Math.max(0,_y0-_pad), (_y1 - _y0) + _pad*2);
+          var _cc = document.createElement('canvas');
+          _cc.width = Math.round(_bw); _cc.height = Math.round(_bh);
+          _cc.getContext('2d').drawImage(_cv, Math.max(0,_x0-_pad), Math.max(0,_y0-_pad),
+                                         _bw, _bh, 0, 0, _bw, _bh);
+          _cv = _cc; _cx = _cv.getContext('2d');
+          _x0 = 0; _y0 = 0; _x1 = _cv.width; _y1 = _cv.height;
           var _mX = (_x0 + _x1) / 2, _mY = (_y0 + _y1) / 2;
           var _fs = Math.max(13, Math.round(_cv.width * 0.021));
           _cx.font = 'bold ' + _fs + 'px sans-serif';
@@ -5142,9 +5156,11 @@ async function importCompetitorPDF(input) {
             _cx.fillStyle = '#cc0000';
             _cx.fillText(L[0], _tx, _ty);
           });
-          console.log('[Import] elevation quadrants labeled (render block ' +
-                      Math.round(_x1-_x0) + 'x' + Math.round(_y1-_y0) + ')');
+          window._elevLabeled = true;
+          console.log('[Import] elevation quadrants labeled — cropped image ' +
+                      _cv.width + 'x' + _cv.height);
         } else {
+          window._elevLabeled = false;
           console.warn('[Import] could not locate a 2x2 render block — sending elevation unlabeled');
         }
       } catch(e) { console.warn('[Import] quadrant labeling skipped:', e.message); }
@@ -5186,11 +5202,20 @@ async function importCompetitorPDF(input) {
         if (!_elevPg && _sketchPg) _elevPg = _sketchPg;
         console.log('[Import] page scan -> elevation=' + (_elevPg||'none') +
                     ' (' + _bestImgs + ' images), plan=' + (_planPg||'none'));
-        if (_planPg) { planImg = await _renderPg(_planPg, true); console.log('[Import] PLAN page ' + _planPg + ' (post tags found) rendered, ' + Math.round(planImg.length/1024) + 'KB'); }
+        if (_planPg) { planImg = await _renderPg(_planPg, true); console.log('[Import] PLAN page ' + _planPg + ' rendered, ' + Math.round(planImg.length/1024) + 'KB'); }
         else console.warn('[Import] NO top-down plan page in this PDF — wall placement will rely on the lettered elevations only.');
         if (_elevPg) { elevImg = await _renderElevLabeled(_elevPg); console.log('[Import] ELEVATION page ' + _elevPg + ' rendered, ' + Math.round(elevImg.length/1024) + 'KB'); }
       }
     } catch(e) { console.warn('[Import] page render failed:', e.message); }
+
+    // The plan page's post tags are rasterised, rotated and ~6px tall — effectively
+    // unreadable — yet the parser kept deferring to them and putting eave doors on
+    // gables. When our own labeled 2x2 grid is available it is strictly better
+    // evidence, so withhold the plan and let the renders decide.
+    if (window._elevLabeled && elevImg && planImg) {
+      console.log('[Import] plan image withheld — labeled elevation quadrants are the wall source');
+      planImg = '';
+    }
 
     btn.textContent = '\u23f3 Parsing...';
 
