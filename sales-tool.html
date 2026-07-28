@@ -1522,8 +1522,22 @@ body.customer-mode #stab_specs { display: block !important; }
       <div class="sec" id="secGarageDoors">
         <div class="sec-title"><span class="icon"></span>Garage Doors</div>
         <div id="garageDoorList"></div>
-        <button class="opening-add-btn" onclick="addGarageDoor()">+ Add Garage Door</button>
-        <button class="opening-add-btn" onclick="addBarnDoor()" style="margin-top:6px">+ Add Sliding Barn Door</button>
+        <div class="gd-add" style="display:flex;gap:6px;align-items:end;flex-wrap:wrap;padding:8px;border:1px dashed var(--border);border-radius:8px;margin-bottom:6px;">
+          <div style="display:flex;flex-direction:column;gap:2px;">
+            <label style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Wall</label>
+            <select id="gdAddWall" class="opening-sel" style="min-width:120px;"></select>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:2px;">
+            <label style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Size</label>
+            <select id="gdAddSize" class="opening-sel" style="min-width:82px;"></select>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:2px;">
+            <label style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">Qty</label>
+            <input id="gdAddQty" class="opening-sel" type="number" min="1" step="1" value="1" style="min-width:52px;width:56px;" />
+          </div>
+          <button class="opening-add-btn" style="flex:1;min-width:130px;" onclick="addGarageDoorFromPicker()">+ Add Garage Door(s)</button>
+        </div>
+        <button class="opening-add-btn" onclick="addBarnDoor()" style="margin-top:2px">+ Add Sliding Barn Door</button>
         <button class="opening-add-btn" onclick="addDutchDoor()" style="margin-top:6px">+ Add Dutch Door</button>
         <button class="opening-add-btn" onclick="addDrumDoor()" style="margin-top:6px">+ Add Drum Door</button>
         <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);">
@@ -4414,10 +4428,52 @@ function nextSafeDoorId() {
   return max + 1;
 }
 function addGarageDoor(){
-  var d={id:nextSafeDoorId(),sizeKey:'10x10',size:'10x10',wall:'back',w:10,h:10,offset:0,type:'garage',icon:'',insulated:false,fullView:false,framedOpening:false,highLift:false,vertTrack:false};
-  allDoors.push(d);
+  // Legacy single-add (kept for any other callers): defaults to back wall.
+  addGarageDoorBatch('10x10', 'back', 1);
+}
+// Populate the qty/size/wall picker; remembers the last wall you added to.
+function _fillGdPicker(){
+  var sizeSel = document.getElementById('gdAddSize');
+  var wallSel = document.getElementById('gdAddWall');
+  if (!sizeSel || !wallSel) return;
+  // WALL — always populate from the four wall ids (WALLS may not be ready; fall back to labels).
+  var cur = wallSel.value || window._lastGdWall || 'back';
+  wallSel.innerHTML = ['back','front','left','right'].map(function(wid){
+    var wl = (typeof WALLS !== 'undefined' && WALLS.find) ? WALLS.find(function(w){ return w.id===wid; }) : null;
+    var lbl = wl ? wl.label : ({back:'Front Gable',front:'Back Gable',left:'Left Eave',right:'Right Eave'}[wid]);
+    return '<option value="'+wid+'"'+(wid===cur?' selected':'')+'>'+lbl+'</option>';
+  }).join('');
+  // SIZE — full list, capped by max door height when the building is known.
+  var keep = sizeSel.value || '10x10';
+  var maxDoorH = Infinity;
+  try { if (typeof Q!=='undefined' && Q.truss) maxDoorH = (String(Q.truss).toLowerCase()==='wood') ? Q.h-2 : (String(Q.truss).toLowerCase()==='steel') ? Q.h-4 : Infinity; } catch(e){}
+  var opts = (typeof GARAGE_SIZES!=='undefined' ? GARAGE_SIZES : ['10x10']).filter(function(s){ return parseInt(s.split('x')[1]) <= maxDoorH; });
+  if (opts.indexOf(keep) === -1) keep = opts.indexOf('10x10') > -1 ? '10x10' : opts[0];
+  sizeSel.innerHTML = opts.map(function(s){ return '<option'+(s===keep?' selected':'')+'>'+s+'</option>'; }).join('');
+}
+// Fill the picker as soon as the DOM is ready, independent of the door list render.
+document.addEventListener('DOMContentLoaded', function(){ try{ _fillGdPicker(); }catch(e){} });
+function addGarageDoorFromPicker(){
+  var qty  = parseInt((document.getElementById('gdAddQty')||{}).value || '1', 10);
+  if (!qty || qty < 1) qty = 1;
+  if (qty > 50) qty = 50; // sanity cap
+  var size = (document.getElementById('gdAddSize')||{}).value || '10x10';
+  var wall = (document.getElementById('gdAddWall')||{}).value || 'back';
+  window._lastGdWall = wall; // remember for next add
+  addGarageDoorBatch(size, wall, qty);
+}
+// Add `qty` identical doors to `wall`, then arrange ONLY that wall — existing doors
+// on other walls are never touched.
+function addGarageDoorBatch(size, wall, qty){
+  var p = size.split('x');
+  var w = parseInt(p[0],10)||10, h = parseInt(p[1],10)||10;
+  for (var i=0;i<qty;i++){
+    allDoors.push({id:nextSafeDoorId(),sizeKey:size,size:size,wall:wall,w:w,h:h,offset:0,
+                   type:'garage',icon:'',insulated:false,fullView:false,framedOpening:false,
+                   highLift:false,vertTrack:false});
+  }
   renderGarageDoors();
-  autoArrangeGarageDoors('back');  // center if it's the only door, space evenly if 2+
+  autoArrangeGarageDoors(wall); // re-space only the wall we just added to
 }
 function removeGarageDoor(id){
   allDoors.splice(allDoors.findIndex(function(d){return d.id===id;}),1);
@@ -4482,6 +4538,7 @@ function setGarageProp(id,prop,val){
   renderGarageDoors(); scheduleBuild();
 }
 function renderGarageDoors(){
+  try { _fillGdPicker(); } catch(e){}
   // Wood truss: max garage door height = building height - 2ft
   var maxDoorH = (Q.truss === 'wood') ? Q.h - 2 : (Q.truss === 'steel') ? Q.h - 4 : Infinity;
 
