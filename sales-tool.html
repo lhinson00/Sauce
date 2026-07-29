@@ -5807,7 +5807,10 @@ function setShedProp(id,prop,val){
   }
   if(prop==='l'){ if(sc.enclFt==null||sc.enclFt>=sc.l) sc.enclFt=sc.l; }
   if(prop==='type'){
-    sc.encl='roofonly'; sc.enclWalls=['outer','gable1','gable2'];
+    // All sheds/extensions default to OPEN — roof only, no side walls. The user checks
+    // the walls they want. (Upper gable METAL is roof-line coverage handled separately in
+    // the roof calc and is unaffected by enclWalls.)
+    sc.encl='roofonly'; sc.enclWalls=[];
     sc._open = true; // keep card open when switching type so toggles are visible
     // wrap4: initialize post-spacing defaults if not set
     if(val==='wrap4'){
@@ -5815,7 +5818,11 @@ function setShedProp(id,prop,val){
       if(sc.w4PSshort==null) sc.w4PSshort = 10;
     }
   }
-  if(prop==='encl' && val==='enclosed'){ sc.enclWalls=['outer','gable1','gable2']; sc.enclFt=sc.l; sc.enclFrom='start'; }
+  if(prop==='encl' && val==='enclosed'){
+    // Turning the shed enclosed encloses the OUTER wall by default; gable ends stay
+    // unchecked until the user opts in, matching "open by default".
+    sc.enclWalls=['outer']; sc.enclFt=sc.l; sc.enclFrom='start';
+  }
   renderSheds(); scheduleBuild(); try{updateStripFromLocalCalc();}catch(e){} try{updateStripFromLocalCalc();}catch(e){}
 }
 // Cypress foundation warning
@@ -10898,6 +10905,27 @@ function applyVoiceQuote(parsed, overlay) {
         function mkL(pts, m) { return new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), m); }
 
         const grps = { slab: new THREE.Group(), posts: new THREE.Group(), mainPosts: new THREE.Group(), walls: new THREE.Group(), wallPanels: new THREE.Group(), roof: new THREE.Group(), doors: new THREE.Group(), dims: new THREE.Group(), shed: new THREE.Group(), loft: new THREE.Group(), trusses: new THREE.Group(), framing: new THREE.Group(), interior: new THREE.Group(), redIron: new THREE.Group() };
+        // TEMP DIAG — log the source line of EVERY wall/wallPanel add whenever any wrap3
+        // shed exists, so we can see exactly what draws the gable-end wall on the open arm.
+        (function(){
+          try {
+            if (!(window._shedConfigs||[]).some(function(s){ return s.type==='wrap3'; })) return;
+            window.__wpLog = {};
+            ['wallPanels','walls'].forEach(function(g){
+              var _orig = grps[g].add.bind(grps[g]);
+              grps[g].add = function(m){
+                try {
+                  var _st=(new Error()).stack.split('\n');
+                  var _line=((_st[2]||_st[1]||'').match(/:(\d+):\d+/)||[])[1];
+                  var _key=g+':'+_line;
+                  if(_line && !window.__wpLog[_key]){ window.__wpLog[_key]=1;
+                    console.log('%c[WP-DIAG] '+g+' add @ line '+_line, 'color:#e11;font-weight:700'); }
+                } catch(e){}
+                return _orig(m);
+              };
+            });
+          } catch(e){}
+        })();
         const dimLabels = [];
         Object.values(grps).forEach(g => { g.visible = false; scene.add(g); });
         // Roof renders on top of walls/truss so truss never shows through roof from above
@@ -15639,7 +15667,11 @@ function applyVoiceQuote(parsed, overlay) {
                             // Front secondary leg outer wall (at z1 - facing outward)
                             const _zFront = -sl/2 - ssw;
                             const _zBack  =  sl/2 + ssw;
-                            [[_zFront, -0.003], [_zBack, +0.003]].forEach(([_wZ, _ribOff]) => {
+                            // Only draw the gable ends that are actually enclosed. This block
+                            // used to draw both unconditionally, ignoring enclWalls, so a wrap
+                            // with its gable ends unchecked still rendered walled ends.
+                            [[_zFront, -0.003, 'gable1'], [_zBack, +0.003, 'gable2']].forEach(([_wZ, _ribOff, _gKey]) => {
+                                if (!hasWall(_gKey)) return;
                                 grps.wallPanels.add(mkQ([oX, 0, _wZ, oX, outerWH, _wZ, aX, innerTopH, _wZ, aX, 0, _wZ], mW));
                                 grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, _wZ), new THREE.Vector3(oX, outerWH, _wZ), new THREE.Vector3(aX, innerTopH, _wZ)], mTrimLine));
                                 for (let x = _w3xMin + sRibSp; x < _w3xMax; x += sRibSp) {
@@ -15909,7 +15941,9 @@ function applyVoiceQuote(parsed, overlay) {
                                 // Gable end walls at Z=-sl/2 and Z=sl/2 (same shape as lean-to gable ends)
                                 const _legW = Math.abs(leg.oX - leg.aX);
                                 const _xMin = Math.min(leg.oX, leg.aX), _xMax = Math.max(leg.oX, leg.aX);
-                                [[-sl/2 - 0.003, -0.003], [sl/2 + 0.003, 0.003]].forEach(function([_gz, _gzOff]) {
+                                // Only the enclosed gable ends — was drawing both unconditionally.
+                                [[-sl/2 - 0.003, -0.003, 'gable1'], [sl/2 + 0.003, 0.003, 'gable2']].forEach(function([_gz, _gzOff, _gKey]) {
+                                    if (!hasWall(_gKey)) return;
                                     grps.wallPanels.add(mkQ([leg.oX, 0, _gz, leg.oX, outerWH, _gz, leg.aX, innerTopH, _gz, leg.aX, 0, _gz], mW));
                                     for (let rx = _xMin + sRibSp; rx < _xMax; rx += sRibSp) {
                                         const frac = Math.abs(rx - leg.oX) / _legW;
