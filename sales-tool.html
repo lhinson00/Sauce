@@ -4101,7 +4101,7 @@ function buildInsetCard(){
     return '<div onclick="setInsetCorner(\''+id+'\')" style="flex:1 1 30%;min-width:88px;text-align:center;padding:7px 0;border-radius:7px;border:1.5px solid '+(on?'#FF8200':'var(--border)')+';background:'+(on?'rgba(255,130,0,.10)':'#f4f6f8')+';color:'+(on?'#c2410c':'var(--muted)')+';font-size:11px;font-weight:700;cursor:pointer;user-select:none;">'+label+'</div>';
   }
   var html='<div style="border:1px solid var(--border);border-radius:10px;padding:11px;background:#fbfcff;">'
-    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD C7]</span></div>'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD D2]</span></div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px;">'
     + chip('none','None') + chip('back-left','Front Gable / Left') + chip('back-right','Front Gable / Right')
     + chip('front-left','Back Gable / Left') + chip('front-right','Back Gable / Right') + '</div>';
@@ -6163,6 +6163,22 @@ function buildCypressToggles(sc) {
       + '</div>';
   }
 
+  // ── Wood Rafter Framing (steel-main override) ──────────────────────────────
+  // Frames this shed like a wood-truss main's shed. On a wood main it's redundant,
+  // so show it disabled/greyed with a note.
+  var _woodMain = !isSteel;
+  var _wfOn = (sc.woodFramed === true);
+  html += '<div class="toggle-row" style="margin-bottom:6px;padding:6px 0;border-top:1px solid rgba(0,0,0,.06);">'
+    + '<div class="toggle-info">'
+    + '<div class="toggle-lbl" style="color:' + (_woodMain ? 'var(--muted)' : '#c87a00') + ';">Wood Rafter Framing</div>'
+    + '<div class="toggle-sub">' + (_woodMain ? 'Already wood-framed (wood main)' : 'Frame this shed with wood rafters + purlins, like a wood-truss build') + '</div>'
+    + '</div>'
+    + '<label class="tog"><input type="checkbox" id="shedWoodFramed_' + id + '" '
+    + (_wfOn ? 'checked' : '') + (_woodMain ? ' disabled' : '')
+    + ' onchange="toggleWoodFramed(' + id + ', this.checked)">'
+    + '<span class="tog-track"></span></label>'
+    + '</div>';
+
   return html;
 }
 
@@ -6181,12 +6197,31 @@ function toggleCypressPosts(id, on) {
   scheduleBuild();
 }
 
+// True when a shed should be WOOD-framed: either the main is wood, or this shed has
+// the per-shed Wood Rafter Framing override (used on steel mains).
+window.SauceMaterials = window.SauceMaterials || {};
+window.SauceMaterials.shedIsWoodFramed = function(Q, sc) {
+  if (Q && Q.truss === 'Wood') return true;
+  return !!(sc && sc.woodFramed);
+};
+
 function toggleCypressRafters(id, on) {
   var sc = (window._shedConfigs||[]).find(function(s){ return s.id === id; });
   if (!sc) return;
   sc.cypressRafters = on;
   sc._open = true; // keep card open
   if (on) sc.tongueAndGroove = true; // auto-include T&G with cypress rafter frame
+  renderSheds();
+  scheduleBuild();
+}
+// Wood Rafter Framing override: on a STEEL-truss main, frame THIS shed like a wood-
+// truss main's shed (wood rafters + wood purlins) instead of steel trusses/purlins.
+// No effect on a wood main (already wood-framed).
+function toggleWoodFramed(id, on) {
+  var sc = (window._shedConfigs||[]).find(function(s){ return s.id === id; });
+  if (!sc) return;
+  sc.woodFramed = on;
+  sc._open = true;
   renderSheds();
   scheduleBuild();
 }
@@ -27016,7 +27051,12 @@ window.SauceMaterials.calcPostBrackets = function(Q, WALLS, allDoors, shedCfgs, 
 // Fill wall length with longest standard lumber first (greedy)
 
 window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
-  if (Q.truss === 'Steel') return [];
+  // Wood-framed sheds need wood shed headers. On a steel main, run only for those
+  // sheds (main building headers are skipped below). On a wood main, run normally.
+  var _steelMain = (Q.truss === 'Steel');
+  var _woodShedsH = (shedCfgs || []).filter(function(sc){ return sc.woodFramed === true && sc.w && sc.l; });
+  if (_steelMain && _woodShedsH.length === 0) return [];
+  var _shedHeadersOnly = _steelMain; // steel main: shed headers only, no main-building headers
 
   var SM = window.SauceMaterials;
   var STANDARD_LENGTHS = [20, 16, 12, 10]; // for shed fill — no 8' stock (same as main building)
@@ -27100,6 +27140,7 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
   var shedPS = Q.gablePS || Q.postSpacing || 10; // gable end post spacing governs shed headers
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
+    if (_shedHeadersOnly && sc.woodFramed !== true) return; // steel main: only override sheds
     if (sc.cypressRafters) return; // headers become RCC88xx, calculated separately
 
     var _attWall = (WALLS||[]).find(function(w){return w.id===sc.wall;}) || {};
@@ -27210,10 +27251,12 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
   });
 
   var results = [];
-  Object.keys(mbGroups).sort().forEach(function(key) {
-    var g = mbGroups[key];
-    results.push(makeItem('Main Building Headers', 'SYP212' + g.len, g.qty, g.len, g.isLVL));
-  });
+  if (!_shedHeadersOnly) {
+    Object.keys(mbGroups).sort().forEach(function(key) {
+      var g = mbGroups[key];
+      results.push(makeItem('Main Building Headers', 'SYP212' + g.len, g.qty, g.len, g.isLVL));
+    });
+  }
   Object.keys(shedGroups).sort().forEach(function(key) {
     var g = shedGroups[key];
     results.push(makeItem('Side Shed Headers', 'SYP212' + g.len, g.qty, g.len, g.isLVL));
@@ -27570,12 +27613,16 @@ window.SauceMaterials.calcSteelTrusses = function(Q) {
 // SKU determined by shed width.
 
 window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
-  // Wood truss builds: fire normally for all shed types.
-  // Steel truss builds: only fire for wrap4 (for the 4 hip-corner rafters).
+  // Wood-framed sheds get rafters here: all sheds on a wood main, plus any shed with
+  // the per-shed Wood Rafter Framing override on a steel main. On a steel main with no
+  // wood-framed sheds, only wrap4 hip corners need their 4 rafters.
+  var _SM = window.SauceMaterials;
+  var _woodF = function(sc){ return (Q.truss === 'Wood') || !!(sc && sc.woodFramed); };
   var _isSteel = Q.truss !== 'Wood';
   if (_isSteel) {
+    var _anyWood = (shedCfgs || []).some(function(sc){ return sc.w && sc.l && _woodF(sc); });
     var _hasWrap4 = (shedCfgs || []).some(function(sc){ return sc.type === 'wrap4' && sc.w && sc.l; });
-    if (!_hasWrap4) return [];
+    if (!_anyWood && !_hasWrap4) return [];
   }
 
   var rafterMap = {
@@ -27622,9 +27669,9 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
     if (!sc.wall || !sc.w || !sc.l) return;
     if (sc.type === 'gable') return; // gable uses wood trusses for clear span
 
-    // Steel-truss builds: only process wrap4 (for hip rafters); other shed types
-    // have their straight rafters handled by steel trusses elsewhere.
-    if (_isSteel && sc.type !== 'wrap4') return;
+    // Steel-truss builds: process wrap4 (for hip rafters) and any shed with the Wood
+    // Rafter Framing override; other steel-framed sheds get rafters from steel trusses.
+    if (_isSteel && sc.type !== 'wrap4' && !_woodF(sc)) return;
 
     var isEave = (sc.wall === 'left' || sc.wall === 'right');
 
@@ -28046,7 +28093,13 @@ window.SauceMaterials.calcGableExtRoofFraming = function(Q, shedCfgs) {
 // Uses same greedy board algorithm as headers (10', 12', 20').
 
 window.SauceMaterials.calcShedLedgers = function(Q, WALLS, shedCfgs) {
-  if (Q.truss !== 'Wood') return [];
+  // Wood-framed sheds need ledgers, headers, and ledger nailers. Fires for all sheds
+  // on a wood main; on a steel main, only for sheds with the Wood Rafter Framing
+  // override (those are figured exactly like a wood build).
+  var _woodMain = (Q.truss === 'Wood');
+  var _overrideSheds = (shedCfgs || []).filter(function(sc){ return sc.woodFramed === true && sc.w && sc.l; });
+  if (!_woodMain && _overrideSheds.length === 0) return [];
+  var _onlyOverride = !_woodMain; // steel main: process only the override sheds
 
   // Rafter depth by shed width (from rafter SKU table)
   var rafterDepth = {
@@ -28149,6 +28202,7 @@ window.SauceMaterials.calcShedLedgers = function(Q, WALLS, shedCfgs) {
 
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
+    if (_onlyOverride && sc.woodFramed !== true) return; // steel main: only override sheds
     if (sc.type === 'gable') return;
 
     var walls = attachedWallsFor(sc);
@@ -28258,6 +28312,8 @@ window.SauceMaterials.calcSteelShedTrusses = function(Q, WALLS, shedCfgs) {
 
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
+    // Wood Rafter Framing override: this shed is framed as wood — skip steel trusses.
+    if (sc.woodFramed === true) return;
 
     // ── Gable extension special-case ─────────────────────────────────────────
     // A gable extension continues the main building's roof/ridge. Its trusses
@@ -28552,6 +28608,8 @@ window.SauceMaterials.calcSteelShedPurlins = function(Q, shedCfgs) {
 
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
+    // Wood Rafter Framing override: this shed uses wood purlins — skip steel purlins.
+    if (sc.woodFramed === true) return;
 
     // ── Gable extension: purlins extend the main building's roof purlins ────
     // Gable-attached: cup count based on main building width (Q.w), length = sc.w
@@ -28802,8 +28860,13 @@ window.SauceMaterials.calcWoodPurlins = function(Q) {
 // Run length: truss-spacing-driven fill (same as main building).
 
 window.SauceMaterials.calcWoodShedPurlins = function(Q, shedCfgs) {
-  if (Q.truss !== 'Wood') return [];
-  if (Q.oh !== 0) return []; // only for no overhang buildings
+  // Normally: wood main, no-overhang only. ALSO handle any shed with the Wood Rafter
+  // Framing override (steel main) — those sheds are figured exactly like a wood build.
+  var _overrideSheds = (shedCfgs || []).filter(function(sc){ return sc.woodFramed === true && sc.w && sc.l; });
+  var _woodMainNoOH = (Q.truss === 'Wood' && Q.oh === 0);
+  if (!_woodMainNoOH && _overrideSheds.length === 0) return [];
+  // When the main isn't a wood no-OH build, process ONLY the override sheds.
+  var _onlyOverride = !_woodMainNoOH;
 
   // Single slope roof — divide purlin count by 2 (no +2)
   var ssPurlinsPerRun = {
@@ -28840,6 +28903,7 @@ window.SauceMaterials.calcWoodShedPurlins = function(Q, shedCfgs) {
 
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
+    if (_onlyOverride && sc.woodFramed !== true) return; // steel main: only override sheds
     if (isGableGableAttached(sc)) {
       // Gable-attached: sc.w = depth — purlins fill sc.w, same count as main building
       var mainCountG = ssPurlinsPerRun[Q.w];
@@ -31627,7 +31691,10 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
   var skuPrefix = getColoredSkuPrefix(metalType, 'wall');
   var displayType = metalType === 'Galvalume' ? 'Painted' : metalType;
 
-  var woodWithOH = Q.truss === 'Wood' && Q.oh > 0;
+  // Skirt length: 9" only on a true WOOD MAIN building with overhang. A wood-rafter-
+  // framed shed on a STEEL main is figured like a No-O/H side shed, so its skirt is 2'
+  // (the override changes framing, not the main building's overhang treatment).
+  var woodWithOH = (Q.truss === 'Wood') && Q.oh > 0;
   var skirtLen   = woodWithOH ? '9"' : "2'";
   var skirtFt    = woodWithOH ? 0.75 : 2;
 
