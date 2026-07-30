@@ -4101,7 +4101,7 @@ function buildInsetCard(){
     return '<div onclick="setInsetCorner(\''+id+'\')" style="flex:1 1 30%;min-width:88px;text-align:center;padding:7px 0;border-radius:7px;border:1.5px solid '+(on?'#FF8200':'var(--border)')+';background:'+(on?'rgba(255,130,0,.10)':'#f4f6f8')+';color:'+(on?'#c2410c':'var(--muted)')+';font-size:11px;font-weight:700;cursor:pointer;user-select:none;">'+label+'</div>';
   }
   var html='<div style="border:1px solid var(--border);border-radius:10px;padding:11px;background:#fbfcff;">'
-    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD D2]</span></div>'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD D4]</span></div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px;">'
     + chip('none','None') + chip('back-left','Front Gable / Left') + chip('back-right','Front Gable / Right')
     + chip('front-left','Back Gable / Left') + chip('front-right','Back Gable / Right') + '</div>';
@@ -27647,21 +27647,27 @@ window.SauceMaterials.calcShedFraming = function(Q, shedCfgs) {
     20: 'SYP2624'
   };
 
+  // Rafter depth (inches) by shed width — drives the joist-hanger SKU (JH2 + depth).
+  var _rafterDepthIn = { 6:6, 8:6, 10:6, 12:8, 14:10, 16:10, 18:12, 20:12 };
+
   var rafterGroups      = {};
   var joistGroups       = {};
   var joistHangerGroups = {};
 
   function addFraming(width, length, finCeil) {
     if (!width || width <= 0 || !length || length <= 0) return;
-    var qty     = Math.floor(length / 2) + 2;
+    var qty     = Math.floor(length / 2) + 2;   // rafter count
     var rSku    = rafterMap[width];
     var jSku    = joistMap[width];
     if (rSku) rafterGroups[rSku] = (rafterGroups[rSku] || 0) + qty;
+    // Joist hangers: ALWAYS on a wood-framed shed — one per rafter, SKU sized to the
+    // rafter depth (JH206/JH208/JH210/JH212). Independent of finished ceiling.
+    var _depth = _rafterDepthIn[width] || 10;
+    var jhSku  = 'JH2' + (_depth < 10 ? ('0' + _depth) : _depth); // JH206, JH208, JH210, JH212
+    joistHangerGroups[jhSku] = (joistHangerGroups[jhSku] || 0) + qty;
+    // Ceiling joists themselves only when a finished ceiling is specified.
     if (jSku && finCeil) {
       joistGroups[jSku] = (joistGroups[jSku] || 0) + qty;
-      // 2 joist hangers per joist
-      var jhSku = 'JH2' + width; // e.g. JH212, JH214, JH216
-      joistHangerGroups[jhSku] = (joistHangerGroups[jhSku] || 0) + (qty * 2);
     }
   }
 
@@ -34281,16 +34287,22 @@ window.SauceMaterials.calcJoistHangers = function(Q, shedCfgs) {
 // Each eave side shed: 1 per rafter (floor(sc.l / 2) + 2).
 
 window.SauceMaterials.calcHurricaneBrackets = function(Q, shedCfgs) {
-  if (Q.truss !== 'Wood') return [];
+  // Hurricane brackets (HB2S) are for wood-framed rafters. On a wood main: main trusses
+  // + all sheds. On a steel main: ONLY sheds with the Wood Rafter Framing override
+  // (steel main trusses don't take these), so skip the main-building bracket count.
+  var _steelMain = (Q.truss === 'Steel');
+  var _woodShedsHB = (shedCfgs || []).filter(function(sc){ return sc.woodFramed === true && sc.w && sc.l; });
+  if (_steelMain && _woodShedsHB.length === 0) return [];
 
   var spacing      = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
-  var totalTrusses = window._shedOnlyMode ? 0 : (Math.floor(Q.l / spacing) + 1);
+  var totalTrusses = (_steelMain || window._shedOnlyMode) ? 0 : (Math.floor(Q.l / spacing) + 1);
   var qty          = totalTrusses * 2;
 
   function raftersForSide(len) { return Math.floor(len / 2) + 2; }
 
   (shedCfgs||[]).forEach(function(sc) {
     if (!sc.w || !sc.l) return;
+    if (_steelMain && sc.woodFramed !== true) return; // steel main: only override sheds
 
     if (sc.type === 'gable') {
       if (isGableEaveAttached(sc)) {
@@ -34333,7 +34345,7 @@ window.SauceMaterials.calcHurricaneBrackets = function(Q, shedCfgs) {
     description: 'Hurricane Brackets',
     sku:         'HB2S',
     quantity:    qty,
-    detail:      (window._shedOnlyMode ? 'shed rafters only' : totalTrusses + ' trusses × 2  +  shed rafters')
+    detail:      (_steelMain ? 'wood-framed shed rafters' : (window._shedOnlyMode ? 'shed rafters only' : totalTrusses + ' trusses × 2  +  shed rafters'))
   }];
 };
 
