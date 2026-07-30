@@ -1506,6 +1506,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="wall-grid" id="wallGrid"></div>
         <div style="font-size:9px;color:var(--muted);margin-top:6px;text-align:center;">Tap a wall to toggle Enclosed ↔ Open</div>
         <div id="openWallCard" style="margin-top:8px;"></div>
+        <div id="insetCard" style="margin-top:8px;"></div>
         <div id="ventGapRow" style="display:none;margin-top:8px;">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
             <span style="font-size:11px;font-weight:700;color:var(--navy);">Vent Gap</span>
@@ -3327,6 +3328,20 @@ function triggerBuild() {
   // Don't dispose renderer here — build3DReplay reuses it across builds
   window._Q = Q;
   window._WALLS = WALLS;
+  // Apply the inset as open-wall spans on THIS build's WALLS array (must run here —
+  // the array is rebuilt every build, so setting it only on click gets overwritten).
+  try {
+    if (typeof window._insetActive === 'function' && window._insetActive()) {
+      var _im = window._insetCornerMeta[window._inset.corner];
+      if (_im) {
+        var _wF = parseFloat(window._inset.wFt)||0, _dF = parseFloat(window._inset.dFt)||0;
+        WALLS.forEach(function(w){
+          if (w.id === _im.eave){ w.openLenFt = _dF; w.openStartFt = (_im.gable==='back') ? Math.max(0,(Q.l||30)-_dF) : 0; w._insetOpen = true; }
+          if (w.id === _im.gable){ w.openLenFt = _wF; w.openStartFt = (_im.eave==='left') ? 0 : Math.max(0,(Q.w||30)-_wF); w._insetOpen = true; }
+        });
+      }
+    }
+  } catch(e){}
   window._allDoors = allDoors;
   window.peakH = (Q.roofStyle === 'single') ? Q.h : Q.h + (Q.w/2)*(Q.pitch/12);
   var placed = allDoors.filter(function(d){return d.wall;});
@@ -4005,6 +4020,105 @@ function buildWallGrid(){
   }
   syncOpeningVisibility();
   buildOpenWallCard();
+  buildInsetCard();
+}
+
+// ── INSET CORNER (recessed corner porch/room) ───────────────────────────────
+// A rect notch cut into ONE corner of the footprint. The ROOF and SLAB stay full
+// size; only wall cladding, framing, corner trim and posts change.
+// window._inset = { corner, wFt, dFt }; corner one of:
+//   'back-left'  Front Gable(back) + Left Eave(left)
+//   'back-right' Front Gable(back) + Right Eave(right)
+//   'front-left' Back Gable(front) + Left Eave(left)
+//   'front-right'Back Gable(front) + Right Eave(right)
+// wFt = length off the GABLE wall; dFt = length off the EAVE wall. Enclosed returns.
+window._inset = null;
+window._insetCornerMeta = {
+  'back-left':  { gable:'back',  eave:'left'  },
+  'back-right': { gable:'back',  eave:'right' },
+  'front-left': { gable:'front', eave:'left'  },
+  'front-right':{ gable:'front', eave:'right' },
+};
+window._insetShorten = function(wallId){
+  var ins = window._inset;
+  if (!ins || !ins.wFt || !ins.dFt) return 0;
+  var meta = window._insetCornerMeta[ins.corner]; if (!meta) return 0;
+  if (wallId === meta.gable) return parseFloat(ins.wFt) || 0;
+  if (wallId === meta.eave)  return parseFloat(ins.dFt) || 0;
+  return 0;
+};
+window._insetActive = function(){
+  var ins = window._inset;
+  return !!(ins && ins.corner && ins.wFt > 0 && ins.dFt > 0 && window._insetCornerMeta[ins.corner]);
+};
+// Apply the active inset to the WALLS as open-wall spans, so the proven open-wall
+// render + takeoff handle the notch with no custom geometry. Clears when inactive.
+function applyInsetAsOpenWall(){
+  var WALLS = window._WALLS || [];
+  function W(id){ return WALLS.find(function(w){return w.id===id;}); }
+  // Clear any inset-applied spans first (marked with _insetOpen)
+  WALLS.forEach(function(w){
+    if (w._insetOpen){ w.openLenFt = 0; w.openStartFt = 0; delete w._insetOpen; }
+  });
+  if (!(typeof window._insetActive==='function' && window._insetActive())) return;
+  var im = window._insetCornerMeta[window._inset.corner]; if(!im) return;
+  var wF = parseFloat(window._inset.wFt)||0, dF = parseFloat(window._inset.dFt)||0;
+  var eaveW = W(im.eave), gableW = W(im.gable);
+  if (eaveW){ // eave loses dFt at the gable end
+    eaveW.openLenFt = dF;
+    eaveW.openStartFt = (im.gable === 'back') ? Math.max(0,(Q.l||30) - dF) : 0;
+    eaveW._insetOpen = true;
+  }
+  if (gableW){ // gable loses wFt at the eave end
+    gableW.openLenFt = wF;
+    gableW.openStartFt = (im.eave === 'left') ? 0 : Math.max(0,(Q.w||30) - wF);
+    gableW._insetOpen = true;
+  }
+}
+function setInsetCorner(corner){
+  if (corner === 'none') { window._inset = null; }
+  else if (!window._inset) window._inset = { corner: corner, wFt: 6, dFt: 6 };
+  else window._inset.corner = corner;
+  applyInsetAsOpenWall();
+  buildInsetCard(); scheduleBuild();
+}
+function setInsetProp(prop, val){
+  if (!window._inset) window._inset = { corner:'back-left', wFt:6, dFt:6 };
+  var n = parseFloat(val); if (isNaN(n)) n = 0;
+  var maxW = Math.max(0, (Q.w||30) - 3), maxD = Math.max(0, (Q.l||40) - 3);
+  if (prop === 'wFt') n = Math.max(0, Math.min(n, maxW));
+  if (prop === 'dFt') n = Math.max(0, Math.min(n, maxD));
+  window._inset[prop] = n;
+  applyInsetAsOpenWall();
+  buildInsetCard(); scheduleBuild();
+}
+function buildInsetCard(){
+  var el = document.getElementById('insetCard'); if(!el) return;
+  var ins = window._inset;
+  var active = ins ? ins.corner : null;
+  function chip(id,label){
+    var on=(active===id)||(id==='none'&&!active);
+    return '<div onclick="setInsetCorner(\''+id+'\')" style="flex:1 1 30%;min-width:88px;text-align:center;padding:7px 0;border-radius:7px;border:1.5px solid '+(on?'#FF8200':'var(--border)')+';background:'+(on?'rgba(255,130,0,.10)':'#f4f6f8')+';color:'+(on?'#c2410c':'var(--muted)')+';font-size:11px;font-weight:700;cursor:pointer;user-select:none;">'+label+'</div>';
+  }
+  var html='<div style="border:1px solid var(--border);border-radius:10px;padding:11px;background:#fbfcff;">'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD C7]</span></div>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:6px;">'
+    + chip('none','None') + chip('back-left','Front Gable / Left') + chip('back-right','Front Gable / Right')
+    + chip('front-left','Back Gable / Left') + chip('front-right','Back Gable / Right') + '</div>';
+  if(active){
+    function fld(lbl,val,prop){
+      return '<div style="flex:1;"><div style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:3px;">'+lbl+'</div>'
+        +'<div style="display:flex;align-items:center;gap:4px;"><input type="number" value="'+val+'" min="0" onclick="event.stopPropagation();" onchange="setInsetProp(\''+prop+'\',this.value)" style="width:100%;padding:6px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;background:#fff;color:var(--text);box-sizing:border-box;">'
+        +'<span style="font-size:10px;color:var(--muted);">ft</span></div></div>';
+    }
+    html+='<div style="display:flex;gap:8px;margin-top:10px;">'
+      + fld('Width (along gable)', ins.wFt, 'wFt')
+      + fld('Depth (along eave)',  ins.dFt, 'dFt')
+      + '</div>'
+      +'<div style="font-size:9px;color:var(--muted);margin-top:7px;line-height:1.4;">Recessed corner. Roof and slab stay full size; the two return walls are enclosed with metal, and posts are added at the inside corner and both outer junctions.</div>';
+  }
+  html+='</div>';
+  el.innerHTML=html;
 }
 
 // ── OPEN WALL SECTION (partial-length open wall, eave or gable) ──────────────
@@ -5845,7 +5959,7 @@ function toggleShedOpen(id){
 
 function toggleShedWall(id, wallKey) {
   var sc = window._shedConfigs.find(function(s){return s.id===id;}); if(!sc) return;
-  if(!sc.enclWalls) sc.enclWalls = ['outer','gable1','gable2'];
+  if(!sc.enclWalls) sc.enclWalls = [];  // start from open; user's click adds the wall
   var idx = sc.enclWalls.indexOf(wallKey);
   if(idx > -1) sc.enclWalls.splice(idx, 1);
   else sc.enclWalls.push(wallKey);
@@ -6113,6 +6227,23 @@ function toggleCypressTG(id, on) {
 }
 
 function renderSheds(){
+  // One-time migration for wraps saved BEFORE gable ends defaulted to open. Only touches
+  // a wrap whose enclWalls is EXACTLY the old universal default AND is still roofonly/open
+  // (never intentionally enclosed) — resets it to open so stale gable-end walls stop being
+  // drawn and billed. A wrap the user deliberately enclosed won't match this fingerprint.
+  (window._shedConfigs||[]).forEach(function(sc){
+    if (sc._wrapEnclMigrated) return;
+    var isWrapType = (sc.type==='wrap'||sc.type==='wrap3'||sc.type==='wrap4');
+    if (isWrapType && Array.isArray(sc.enclWalls)
+        && sc.enclWalls.length===3 && sc.enclWalls.indexOf('outer')>-1
+        && sc.enclWalls.indexOf('gable1')>-1 && sc.enclWalls.indexOf('gable2')>-1) {
+      // Old universal default (outer+both gables). Reduce to the new default: open when
+      // roof-only, outer-only when enclosed. Gable ends become opt-in either way — this is
+      // the "both legs render enclosed" bug on eave-attached wraps.
+      sc.enclWalls = (sc.encl==='enclosed') ? ['outer'] : [];
+    }
+    sc._wrapEnclMigrated = true;
+  });
   var list=document.getElementById('shedList'); list.innerHTML='';
   var addBtn=document.getElementById('addShedBtn');
   if(addBtn) addBtn.style.display = window._shedConfigs.length >= 4 ? 'none' : '';
@@ -6703,6 +6834,7 @@ function serializeConfig() {
     windows: window._windows,
     awnings: window._awnings,
     sheds: window._shedConfigs||[],
+    inset: window._inset || null,
     lofts: window._loftConfigs||[],
     interiorWalls: window._interiorWalls||[],
     levelConfigs:  window._levelConfigs||[],
@@ -6902,6 +7034,9 @@ function restoreConfig(cfg) {
     nextWDId   = (window._walkDoors).reduce(function(mx,d){ return Math.max(mx, (d.id||0)+1); }, 1);
     nextWinId  = (window._windows).reduce(function(mx,d){ return Math.max(mx, (d.id||0)+1); }, 1);
     nextShedId = (window._shedConfigs).reduce(function(mx,s){ return Math.max(mx, (s.id||0)+1); }, 1);
+    window._inset = (cfg.inset && cfg.inset.corner) ? cfg.inset : null;
+    try { applyInsetAsOpenWall(); } catch(e) {}
+    try { buildInsetCard(); } catch(e) {}
     window._loftConfigs = [];
     if (cfg.lofts) cfg.lofts.forEach(function(l) { window._loftConfigs.push(l); });
     _nextLoftId = (window._loftConfigs).reduce(function(mx,l){ return Math.max(mx, (l.id||0)+1); }, 1);
@@ -10905,27 +11040,6 @@ function applyVoiceQuote(parsed, overlay) {
         function mkL(pts, m) { return new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), m); }
 
         const grps = { slab: new THREE.Group(), posts: new THREE.Group(), mainPosts: new THREE.Group(), walls: new THREE.Group(), wallPanels: new THREE.Group(), roof: new THREE.Group(), doors: new THREE.Group(), dims: new THREE.Group(), shed: new THREE.Group(), loft: new THREE.Group(), trusses: new THREE.Group(), framing: new THREE.Group(), interior: new THREE.Group(), redIron: new THREE.Group() };
-        // TEMP DIAG — log the source line of EVERY wall/wallPanel add whenever any wrap3
-        // shed exists, so we can see exactly what draws the gable-end wall on the open arm.
-        (function(){
-          try {
-            if (!(window._shedConfigs||[]).some(function(s){ return s.type==='wrap3'; })) return;
-            window.__wpLog = {};
-            ['wallPanels','walls'].forEach(function(g){
-              var _orig = grps[g].add.bind(grps[g]);
-              grps[g].add = function(m){
-                try {
-                  var _st=(new Error()).stack.split('\n');
-                  var _line=((_st[2]||_st[1]||'').match(/:(\d+):\d+/)||[])[1];
-                  var _key=g+':'+_line;
-                  if(_line && !window.__wpLog[_key]){ window.__wpLog[_key]=1;
-                    console.log('%c[WP-DIAG] '+g+' add @ line '+_line, 'color:#e11;font-weight:700'); }
-                } catch(e){}
-                return _orig(m);
-              };
-            });
-          } catch(e){}
-        })();
         const dimLabels = [];
         Object.values(grps).forEach(g => { g.visible = false; scene.add(g); });
         // Roof renders on top of walls/truss so truss never shows through roof from above
@@ -11397,7 +11511,7 @@ function applyVoiceQuote(parsed, overlay) {
                         const mPeave = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
                         var _inOpenRun = false;
                         if (wCfg && (parseFloat(wCfg.openLenFt)||0) > 0) { var _oRS = parseFloat(wCfg.openStartFt)||0, _oRE = _oRS + (parseFloat(wCfg.openLenFt)||0); _inOpenRun = (post.ft >= _oRS - 0.01 && post.ft <= _oRE + 0.01); }
-                        addMainPost(xSide, z, _hsPostH(z), _inOpenRun ? mPopen : mPeave, (wCfg && wCfg.encl === 'enclosed') && !_inOpenRun);
+                        addMainPost(xSide, z, _hsPostH(z), _inOpenRun ? mPopen : mPeave, ((wCfg && wCfg.encl === 'enclosed') && !_inOpenRun) || (_inOpenRun && wCfg && wCfg._insetOpen));
                     }
                 });
             });
@@ -11430,7 +11544,7 @@ function applyVoiceQuote(parsed, overlay) {
                     const pH = (((_hsOn ? (wallId==='front'?_hsSecs[0].h:_hsSecs[_hsSecs.length-1].h) : Q.h) + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc) - postBase;
                     var _gInOpen = (_goLen > 0 && post.ft >= _goS - 1e-6 && post.ft <= _goE + 1e-6);
                     const mPgable = (_gInOpen || (wCfg && wCfg.encl === 'open')) ? mPopen : mPencl;
-                    addMainPost(xPos, zPos, pH, mPgable, (!_gInOpen && wCfg && wCfg.encl === 'enclosed'));
+                    addMainPost(xPos, zPos, pH, mPgable, ((!_gInOpen && wCfg && wCfg.encl === 'enclosed')) || (_gInOpen && wCfg && wCfg._insetOpen));
                 });
             });
         }
@@ -11923,7 +12037,7 @@ function applyVoiceQuote(parsed, overlay) {
 
         // Walls with door cutouts
         function buildWS(wallId) {
-            const wCfg = wallCfgs.find(w => w.id === wallId);
+            var wCfg = wallCfgs.find(w => w.id === wallId);
             if (!wCfg) return;
             // Per-wall color / wainscot (blank = inherit building)
             var _wColName = wCfg.wallColor || wallColorName;
@@ -12026,7 +12140,22 @@ function applyVoiceQuote(parsed, overlay) {
                         return { xMin, xMax, hMax };
                     }).filter(Boolean);
                     for (let gx = -sw/2; gx < sw/2; gx += gPanelW) {
-                        if (_gabOpen > 0) { const _gcx = gx + gPanelW/2; if (_gcx > _gabOpenXlo && _gcx < _gabOpenXhi) continue; }
+                        // INSET: detect a notch strip first so the full-height open-wall
+                        // skip below yields to the inset logic (which keeps the triangle).
+                        var _inGableNotch = false;
+                        if (typeof window._insetActive === 'function' && window._insetActive()) {
+                            var _igm = window._insetCornerMeta[window._inset.corner];
+                            if (_igm && _igm.gable === wallId) {
+                                var _igw = (parseFloat(window._inset.wFt)||0) * Sc;
+                                var _igLeft = (_igm.eave === 'left');
+                                var _gL = gx, _gR = gx + gPanelW;
+                                var _inXn = _igLeft ? (_gL < (-sw/2 + _igw) - 1e-6) : (_gR > (sw/2 - _igw) + 1e-6);
+                                if (_inXn) _inGableNotch = true;
+                            }
+                        }
+                        // Full-height open-wall skip (normal open walls) — but NOT for an inset
+                        // notch strip, which keeps its triangle above eave.
+                        if (_gabOpen > 0 && !_inGableNotch) { const _gcx = gx + gPanelW/2; if (_gcx > _gabOpenXlo && _gcx < _gabOpenXhi) continue; }
                         const gxR = Math.min(gx + gPanelW, sw/2);
                         // Height at each vertical strip edge — standard gable formula
                         const topL = Math.min(_gSh + (Q.w/2 - Math.abs(gx/Sc))  * (Q.pitch/12) * Sc, _gSr);
@@ -12034,10 +12163,21 @@ function applyVoiceQuote(parsed, overlay) {
                         if (topL <= gTriBot && topR <= gTriBot) continue;
                         // Clamp bottom up to opening height if this strip falls inside a framed opening
                         const foZone = gableFOZones.find(fz => gx >= fz.xMin - gPanelW && gx < fz.xMax);
-                        const effectiveBot = (foZone && !isNaN(foZone.hMax)) ? Math.max(gTriBot, foZone.hMax) : gTriBot;
+                        const effectiveBot = _inGableNotch
+                            ? _gSh
+                            : ((foZone && !isNaN(foZone.hMax)) ? Math.max(gTriBot, foZone.hMax) : gTriBot);
                         if (isNaN(effectiveBot)) continue;
+                        if (_inGableNotch && topL <= _gSh + 1e-6 && topR <= _gSh + 1e-6) continue; // nothing above eave here
                         const botL = Math.min(effectiveBot, topL);
                         const botR = Math.min(effectiveBot, topR);
+                        // In the notch, force the bottom to eave height so no lower wall draws,
+                        // even through the wainscot branch.
+                        if (_inGableNotch) {
+                            if (topL > _gSh || topR > _gSh) {
+                                grps.walls.add(mkQ([gx, _gSh, z, gxR, _gSh, z, gxR, topR, z, gx, topL, z], _mW));
+                            }
+                            continue;
+                        }
                         // Wainscot split on enclosed gable — draw wainscot strip up to wsH, then wall above
                         if (_hasWains && wsH > botL && wCfg.encl !== 'open') {
                             const wsHL = Math.min(wsH, topL);
@@ -12087,6 +12227,25 @@ function applyVoiceQuote(parsed, overlay) {
             // Helper to add a wall segment with optional wainscot split
             function addWallSeg(x1, x2, y0, y1, mat, isGable, zOverride) {
                 if (y1 <= y0) return;
+                // INSET: clip the gable lower wall over the notch width at the corner end,
+                // so the recess reads open (panels AND ribs). back gable notches at the
+                // eave-side X end; left eave => -X end, right eave => +X end.
+                if (isGable && typeof window._insetActive === 'function' && window._insetActive()) {
+                    var _im = window._insetCornerMeta[window._inset.corner];
+                    if (_im && _im.gable === wallId) {
+                        var _iwSc = (parseFloat(window._inset.wFt)||0) * Sc;
+                        var _leftEave = (_im.eave === 'left');
+                        var _nLo = _leftEave ? (-wLen/2*Sc) : (wLen/2*Sc - _iwSc);
+                        var _nHi = _leftEave ? (-wLen/2*Sc + _iwSc) : (wLen/2*Sc);
+                        // Remove any part of [x1,x2] inside [_nLo,_nHi]
+                        if (x1 >= _nLo - 1e-6 && x2 <= _nHi + 1e-6) return; // fully inside notch
+                        if (x2 > _nLo + 1e-6 && x1 < _nHi - 1e-6) {
+                            if (x1 < _nLo) addWallSeg(x1, _nLo, y0, y1, mat, isGable, zOverride);
+                            if (x2 > _nHi) addWallSeg(_nHi, x2, y0, y1, mat, isGable, zOverride);
+                            return;
+                        }
+                    }
+                }
                 if (isGable && _gabOpen > 0) {
                     if (x1 >= _gabOpenXlo - 1e-6 && x2 <= _gabOpenXhi + 1e-6) return;
                     if (x2 > _gabOpenXlo + 1e-6 && x1 < _gabOpenXhi - 1e-6) {
@@ -12224,6 +12383,7 @@ function applyVoiceQuote(parsed, overlay) {
                     const zFtCenterFromMid = zFtCenter - totalEaveFt / 2;
                     const effectiveYTop = wallYTop(zFtCenterFromMid);
                     if (_openLenFt > 0 && zFtCenter >= _openStartFt - 0.01 && zFtCenter <= _openStartFt + _openLenFt + 0.01) { zFt = zFtEnd; continue; }
+
                     const z1sc = (-wLen / 2 + zFt)    * Sc;
                     const z2sc = (-wLen / 2 + zFtEnd)  * Sc;
 
@@ -12280,6 +12440,54 @@ function applyVoiceQuote(parsed, overlay) {
         }
         wallCfgs.forEach(w => { if (!isSingleSlope) buildWS(w.id); });
 
+        // ── INSET CORNER: return walls + 3 posts ────────────────────────────────
+        if (typeof window._insetActive === 'function' && window._insetActive() && !isSingleSlope) {
+            var _iMeta = window._insetCornerMeta[window._inset.corner];
+            var _iW = (parseFloat(window._inset.wFt)||0) * Sc; // along gable (X)
+            var _iD = (parseFloat(window._inset.dFt)||0) * Sc; // along eave (Z)
+            // Corner sign: eave left => -X side, right => +X side; gable front => -Z, back => +Z
+            var _sX = (_iMeta.eave === 'left') ? -1 : 1;
+            var _sZ = (_iMeta.gable === 'front') ? -1 : 1;
+            // Outer corner of the notch (the building corner that gets recessed)
+            var _cX = _sX * sw/2, _cZ = _sZ * sl/2;
+            // Inside corner (pulled in by iW along X toward center, iD along Z toward center)
+            var _inX = _cX - _sX * _iW;
+            var _inZ = _cZ - _sZ * _iD;
+            var _iMat = new THREE.MeshBasicMaterial({ color: pc(wallColorName), side: THREE.DoubleSide });
+            var _rTrimMat=new THREE.MeshBasicMaterial({color:pc(trimColorName),side:THREE.DoubleSide});
+            // Rib highlight/shadow pair, exactly like the main eave walls (addEaveRibQuad).
+            var _rHx=pc(wallColorName); var _rR=(_rHx>>16)&255,_rG=(_rHx>>8)&255,_rB=_rHx&255;
+            var _rHi=new THREE.MeshBasicMaterial({color:((Math.min(255,_rR+55)<<16)|(Math.min(255,_rG+55)<<8)|Math.min(255,_rB+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
+            var _rSh=new THREE.MeshBasicMaterial({color:((Math.max(0,_rR-40)<<16)|(Math.max(0,_rG-40)<<8)|Math.max(0,_rB-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
+            var _rTrimH=0.05, _rSp=0.075, _rW=0.006;
+            // Return A (gable-parallel) at Z=_inZ: flat panel + rib pairs along X
+            var _aLo=Math.min(_inX,_cX), _aHi=Math.max(_inX,_cX);
+            var _raPanel=mkQ([_aLo, _rTrimH, _inZ, _aHi, _rTrimH, _inZ, _aHi, sh, _inZ, _aLo, sh, _inZ], _iMat); _raPanel.__isReturn=true; grps.walls.add(_raPanel);
+            for (var _rx=_aLo; _rx<_aHi-1e-6; _rx+=_rSp){
+                var _zf=_inZ + _sZ*0.003;
+                var _q1=mkQ([_rx, _rTrimH, _zf, _rx+_rW, _rTrimH, _zf, _rx+_rW, sh, _zf, _rx, sh, _zf], _rHi); _q1.__isReturn=true; grps.wallPanels.add(_q1);
+                var _q2=mkQ([_rx+_rW, _rTrimH, _zf, _rx+_rW*2, _rTrimH, _zf, _rx+_rW*2, sh, _zf, _rx+_rW, sh, _zf], _rSh); _q2.__isReturn=true; grps.wallPanels.add(_q2);
+            }
+            var _retAt=mkQ([_aLo, 0, _inZ, _aHi, 0, _inZ, _aHi, _rTrimH, _inZ, _aLo, _rTrimH, _inZ], _rTrimMat); _retAt.__isReturn=true; grps.wallPanels.add(_retAt);
+            // Return B (eave-parallel) at X=_inX: flat panel + rib pairs along Z
+            var _bLo=Math.min(_inZ,_cZ), _bHi=Math.max(_inZ,_cZ);
+            var _rbPanel=mkQ([_inX, _rTrimH, _bLo, _inX, _rTrimH, _bHi, _inX, sh, _bHi, _inX, sh, _bLo], _iMat); _rbPanel.__isReturn=true; grps.walls.add(_rbPanel);
+            for (var _rz=_bLo; _rz<_bHi-1e-6; _rz+=_rSp){
+                var _xf=_inX + _sX*0.003;
+                var _p1=mkQ([_xf, _rTrimH, _rz, _xf, _rTrimH, _rz+_rW, _xf, sh, _rz+_rW, _xf, sh, _rz], _rHi); _p1.__isReturn=true; grps.wallPanels.add(_p1);
+                var _p2=mkQ([_xf, _rTrimH, _rz+_rW, _xf, _rTrimH, _rz+_rW*2, _xf, sh, _rz+_rW*2, _xf, sh, _rz+_rW], _rSh); _p2.__isReturn=true; grps.wallPanels.add(_p2);
+            }
+            var _retBt=mkQ([_inX, 0, _bLo, _inX, 0, _bHi, _inX, _rTrimH, _bHi, _inX, _rTrimH, _bLo], _rTrimMat); _retBt.__isReturn=true; grps.wallPanels.add(_retBt);
+            // Posts: use the SAME materials as the rest of the building — mPopen (amber,
+            // solid) for the exposed building-corner post at the open notch, mPencl
+            // (translucent) for the hidden inside-corner and return-junction posts.
+            // Both honor Post Wraps automatically (mPopen/mPencl become wrap metal).
+            addMainPost(_cX,  _cZ,  sh, mPopen, false); // outside building corner — exposed, show
+            addMainPost(_inX, _inZ, sh, mPencl, true);  // inside corner — hidden
+            addMainPost(_cX,  _inZ, sh, mPencl, true);  // return A ∩ eave junction — hidden
+            addMainPost(_inX, _cZ,  sh, mPencl, true);  // return B ∩ gable junction — hidden
+        }
+
         // Corner trim PANELS (visible trim strips at all 4 corners, like real J-channel)
         const co = 0.01;
         const trimW = 0.06;
@@ -12291,6 +12499,12 @@ function applyVoiceQuote(parsed, overlay) {
             var _cSh = _hsOn ? ((sz===-1 ? _hsSecs[0].h : _hsSecs[_hsSecs.length-1].h)*Sc) : sh;
             const gableId = sz === -1 ? 'front' : 'back';
             const eaveId = sx === -1 ? 'left' : 'right';
+            // Inset corner: this building corner is recessed — its outer corner trim is
+            // removed (replaced by the return-junction corners). Skip it here.
+            if (typeof window._insetActive === 'function' && window._insetActive()) {
+                var _icm = window._insetCornerMeta[window._inset.corner];
+                if (_icm && _icm.gable === gableId && _icm.eave === eaveId) return;
+            }
             const cornerKey = Math.round(cx*1000) + ',' + Math.round(cz*1000);
             const shedCovers = _shedCoveredCorners.has(cornerKey);
             if (!_wOpen(gableId) && !shedCovers) {
@@ -14906,30 +15120,15 @@ function applyVoiceQuote(parsed, overlay) {
                         if (sc.type === 'wrap3') {
                             _addGableHeader('front');
                             _addGableHeader('back');
-                            // Far-end triangular caps at x=±sw/2 (the ends of the secondary legs
-                            // where they terminate at the opposite eave wall face).
-                            // These are trapezoidal panels matching the lean-to end cap shape.
+                            // Leg-end upper gable metal — use the SAME proven end-cap logic the
+                            // rest of the code uses (_drawEndCapX): top follows the roof slope,
+                            // bottom is the 2' eave band, capped at attachH. Draw it for each
+                            // leg end regardless of enclosure (it's roof-line metal, not a wall).
                             const _farX = sc.wall === 'left' ? sw/2 : -sw/2;
-                            const _farXOff = sc.wall === 'left' ? 0.003 : -0.003;
-                            const _capDepth = ssw; // secondary leg depth = shed width
-                            // Front secondary leg far-end cap: z from -sl/2-ssw to -sl/2
-                            const _fCapZ1 = -sl/2 - ssw, _fCapZ2 = -sl/2;
-                            grps.wallPanels.add(mkQ([_farX, 0, _fCapZ1, _farX, outerH, _fCapZ1, _farX, attachH, _fCapZ2, _farX, 0, _fCapZ2], _hMW));
-                            for (let rz = _fCapZ1; rz < _fCapZ2; rz += _hRSp) {
-                                const frac = (rz - _fCapZ1) / (_fCapZ2 - _fCapZ1);
-                                const rTop = outerH + frac * (attachH - outerH);
-                                grps.wallPanels.add(mkQ([_farX+_farXOff, 0, rz, _farX+_farXOff, 0, rz+_hRW, _farX+_farXOff, rTop, rz+_hRW, _farX+_farXOff, rTop, rz], _hRHi));
-                                grps.wallPanels.add(mkQ([_farX+_farXOff, 0, rz+_hRW, _farX+_farXOff, 0, rz+_hRW*2, _farX+_farXOff, rTop, rz+_hRW*2, _farX+_farXOff, rTop, rz+_hRW], _hRSh));
-                            }
-                            // Back secondary leg far-end cap: z from sl/2 to sl/2+ssw
-                            const _bCapZ1 = sl/2, _bCapZ2 = sl/2 + ssw;
-                            grps.wallPanels.add(mkQ([_farX, 0, _bCapZ1, _farX, attachH, _bCapZ1, _farX, outerH, _bCapZ2, _farX, 0, _bCapZ2], _hMW));
-                            for (let rz = _bCapZ1; rz < _bCapZ2; rz += _hRSp) {
-                                const frac = (rz - _bCapZ1) / (_bCapZ2 - _bCapZ1);
-                                const rTop = attachH + frac * (outerH - attachH);
-                                grps.wallPanels.add(mkQ([_farX+_farXOff, 0, rz, _farX+_farXOff, 0, rz+_hRW, _farX+_farXOff, rTop, rz+_hRW, _farX+_farXOff, rTop, rz], _hRHi));
-                                grps.wallPanels.add(mkQ([_farX+_farXOff, 0, rz+_hRW, _farX+_farXOff, 0, rz+_hRW*2, _farX+_farXOff, rTop, rz+_hRW*2, _farX+_farXOff, rTop, rz+_hRW], _hRSh));
-                            }
+                            // Front leg end: z-span outer(-sl/2-ssw) -> building(-sl/2)
+                            _drawEndCapX(-sl/2 - ssw, -sl/2, _farX, (sc.wall==='left'? 0.003 : -0.003));
+                            // Back leg end: z-span building(sl/2) -> outer(sl/2+ssw)
+                            _drawEndCapX(sl/2 + ssw, sl/2, _farX, (sc.wall==='left'? 0.003 : -0.003));
                         } else if (wrapLegLen > 0) {
                             _addGableHeader(wrapWall);
                         }
@@ -15932,11 +16131,13 @@ function applyVoiceQuote(parsed, overlay) {
                             ].forEach(function(leg) {
                                 const _secZ1 = -sl/2, _secZ2 = sl/2;
                                 const _secD  = sl;
-                                // Outer wall of this secondary leg (full building length)
+                                // Outer wall of this secondary leg — only when 'outer' is enclosed.
+                                if (hasWall('outer')) {
                                 grps.wallPanels.add(mkQ([leg.oX, 0, _secZ1, leg.oX, outerWH, _secZ1, leg.oX, outerWH, _secZ2, leg.oX, 0, _secZ2], mW));
                                 for (let z = _secZ1; z <= _secZ2; z += sRibSp) {
                                     grps.wallPanels.add(mkQ([leg.oX+leg.s*0.003, 0, z, leg.oX+leg.s*0.003, 0, z+sRibW, leg.oX+leg.s*0.003, outerWH, z+sRibW, leg.oX+leg.s*0.003, outerWH, z], sRibHi));
                                     grps.wallPanels.add(mkQ([leg.oX+leg.s*0.003, 0, z+sRibW, leg.oX+leg.s*0.003, 0, z+sRibW*2, leg.oX+leg.s*0.003, outerWH, z+sRibW*2, leg.oX+leg.s*0.003, outerWH, z+sRibW], sRibSh));
+                                }
                                 }
                                 // Gable end walls at Z=-sl/2 and Z=sl/2 (same shape as lean-to gable ends)
                                 const _legW = Math.abs(leg.oX - leg.aX);
@@ -25933,6 +26134,13 @@ window.SauceMaterials.getPostsForWall = function(wallId, Q, WALLS, allDoors) {
   });
   posts.sort(function(a, b) { return a.ft - b.ft; });
 
+  // Inset notch: drop posts that fall inside the inset-opened span on this wall (the
+  // recess has its own dedicated posts). Only applies to walls flagged by the inset.
+  if (wCfg && wCfg._insetOpen && wCfg.openLenFt > 0) {
+    var _oS = parseFloat(wCfg.openStartFt) || 0, _oL = parseFloat(wCfg.openLenFt) || 0;
+    posts = posts.filter(function(p) { return !(p.ft > _oS + 0.01 && p.ft < _oS + _oL - 0.01); });
+  }
+
   // Eliminate redundant intermediate posts when:
   // - Wood truss (any wall): structural posts, gap must stay within spacing
   // - Steel truss gable end (front/back): posts are non-structural girt/panel attachment points —
@@ -26091,6 +26299,16 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
     var rightReduction = Math.max(0, bjReduction - leftReduction);
     results.push(makeItem('Left Eave',  left,  leftSize,  leftReduction));
     results.push(makeItem('Right Eave', right, rightSize, rightReduction));
+  }
+
+  // ── INSET CORNER posts: inside corner + 2 outer junctions (3 total) ──────────
+  if (typeof window._insetActive === 'function' && window._insetActive()) {
+    var _ipSize = leftSize;
+    var _ipLen  = SM.enforceMinPostLen(_ipSize, len);
+    var _ipSku  = (map[_ipSize] || 'PT66') + _ipLen;
+    var _ipSuf  = onTop ? ' (posts on top)' : ' (in-ground)';
+    results.push({ category:'Yard', description:'Inset Corner Posts', sku:_ipSku, quantity:3,
+      detail: '3 posts (inside corner + 2 return junctions)  |  ' + _ipSize + ' × ' + _ipLen + 'ft' + _ipSuf });
   }
 
   return results;
@@ -30708,6 +30926,8 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
 
     if (wallHeight <= 0) return;
     var _openLen = parseFloat(wallCfg && wallCfg.openLenFt) || 0;
+    // Inset sets openLenFt on the affected walls (via applyInsetAsOpenWall), so the
+    // shortening is already handled by _openLen — no separate inset subtraction here.
     var _runLen = Math.max(0, Q.l - _openLen);
     if (_runLen <= 0) return;
     if (_hsOnSW && _openLen <= 0 && !(wallCfg && wallCfg.encl === 'partial')) {
@@ -30731,6 +30951,16 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
     var wallLen = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
     add(shedH, Math.ceil(wallLen / 3));
   });
+
+  // ── INSET CORNER return walls ──────────────────────────────────────────────
+  // Two enclosed returns forming the inside of the notch — eave-height wall metal.
+  // Added via add() so they group with the eave panels at the correct wall height/SKU.
+  if (typeof window._insetActive === 'function' && window._insetActive() && !window._shedOnlyMode) {
+    var _insM = window._inset;
+    [ parseFloat(_insM.wFt) || 0, parseFloat(_insM.dFt) || 0 ].forEach(function(len){
+      if (len > 0) add(mbBaseHeight, Math.ceil(len / 3));
+    });
+  }
 
   var _swRows = Object.keys(groups).sort().map(function(key) {
     var g = groups[key];
@@ -32435,14 +32665,25 @@ window.SauceMaterials.calcInsideCornerTrim = function(Q, shedCfgs) {
            sc.w && sc.l;
   }).length;
 
+  // Inset corner: the notch's inside corner (where the two returns meet) is one
+  // inside-corner trim run at building height.
+  if (typeof window._insetActive === 'function' && window._insetActive()) qty += 1;
+
   if (!qty) return [];
+
+  // Length sized to the wall height it runs (building height + 2), rounded up to a
+  // stocked trim length. resolveTrimSku picks ISC9 (29ga) / ISC6 (26ga) + color code.
+  var _ISC_LEN = [10, 12, 14, 16, 18, 20];
+  var _need = (Q.h || 10) + 2;
+  var _icLen = _ISC_LEN.find(function(l){ return l >= _need; }) || _ISC_LEN[_ISC_LEN.length - 1];
 
   return [{
     category:    'Trim',
     description: 'Inside Corner Trim',
-    sku: (function(){var mt=(document.getElementById('st_roofMetal')||{}).value||'Painted';var r=resolveTrimSku('insideCorner',12,mt); return r||'ISC9'+getSkuColorCode('trim')+'12';})() ,
+    sku: (function(){var mt=(document.getElementById('st_roofMetal')||{}).value||'Painted';var r=resolveTrimSku('insideCorner',_icLen,mt); return r||'ISC9'+getSkuColorCode('trim')+_icLen;})() ,
     quantity:    qty,
-    detail:      qty + ' partial enclosed shed(s)'
+    metalLength: _icLen + "'",
+    detail:      qty + ' inside corner(s)  |  ' + _icLen + "' each"
   }];
 };
 
@@ -32509,12 +32750,24 @@ window.SauceMaterials.calcOutsideCornerTrim = function(Q, WALLS, shedCfgs) {
   ];
 
   if (!window._shedOnlyMode) {
-    corners.forEach(function(c) {
+    // Inset removes the outer building corner at the notch and replaces it with the
+    // two return-to-outer junctions (net +1 outside corner). Suppress the original
+    // corner here; the two junctions are added below.
+    var _insMeta = (typeof window._insetActive==='function' && window._insetActive()) ? window._insetCornerMeta[window._inset.corner] : null;
+    var _insCornerKey = _insMeta ? (_insMeta.gable + '-' + _insMeta.eave) : null;
+    corners.forEach(function(c, _ci) {
+      // Determine this corner's gable/eave ids to compare with the inset corner.
+      var _eaveId = (_ci===0||_ci===2) ? 'left' : 'right';
+      var _gableId= (_ci<2) ? 'front' : 'back';
+      var _thisKey = _gableId + '-' + _eaveId;
+      if (_insCornerKey && _thisKey === _insCornerKey) return; // notch removes this corner
       if (c.eave || c.gable) {
         addOC(c.h, 1);
-        if (c.eave !== c.gable) addFur(c.h, 1); // one enclosed, one open → furring
+        if (c.eave !== c.gable) addFur(c.h, 1);
       }
     });
+    // Inset return junctions: 2 outside corners at building height.
+    if (_insMeta) addOC(Q.h + 2, 2);
   }
 
   // Enclosed side shed outer corners: 2 per shed (front + back of outer wall)
