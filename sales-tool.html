@@ -2706,10 +2706,12 @@ var selRoof='Gloss Black', selWall='County Charcoal', selTrim='Gloss Black', sel
 
 // Walk door types
 var WALK_DOOR_TYPES = ['WHITE 3/0 PLYCO ALUMINUM FRAME','BLACK 3/0 PLYCO ALUMINUM FRAME','WHITE PLYCO 99 4/0 ALUM FRAME','WHITE 6/0 FRENCH ALUM FRAME','3/0 PLYCO 1/2 GLASS L.H.','BLACK 3/0 -1/2 GLASS PLYCO LH','3/0 9-LITE PLYCO RH','BLACK 3/0 9-LITE PLYCO LH','3/0 6 PANEL LH SMOOTH FIBERGLASS','3/0 1/2 GLASS LH SMOOTH FIBERGLASS','3/0 9 LITE LH SMOOTH FIBERGLASS','6/0 1/2 GLASS NO GRIDS LH','6/0 FULL VIEW NO GRIDS LH','6/0 FRENCH FULL BLINDS RH','CENTRAL WOODWORKS 3/0 MAHOGANY 3/4 GLASS 4-LITE LH','TEXTURED FIBERGLASS 4-LITE SDL RH BRONZE'];
-var WINDOW_TYPES = ['VW23','VW33','VW34','VW35','VW36','VWC33','VWC34','VWC35','4x2','VWBL33','VWBL34','VWBL35','VWBL36','VWT34','VWT35','VWBLT35','VW34 - Double Hung','VW35 - Double Hung','3056.0','3056 TWIN','3030 TEMPERED','3060 DH BL','3056 DH BL','3036 DH BL','2850 DH BL','6036 Slider','3036 Fixed Trapezoid','2/8 x 6/10 Fixed Trapezoid','5x5 Picture','5x5 slider','4x2 Picture BL'];
+var WINDOW_TYPES = ['VW23','VW33','VW34','VW35','VW36','VWC33','VWC34','VWC35','4x2','VWBL33','VWBL34','VWBL35','VWBL36','VWT34','VWT35','VWBLT35','VW34 - Double Hung','VW35 - Double Hung','3056.0','3056 TWIN','3030 TEMPERED','3060 DH BL','3056 DH BL','3036 DH BL','2850 DH BL','6036 Slider','3036 Fixed Trapezoid','2/8 x 6/10 Fixed Trapezoid','5x5 Picture','5x5 slider','4x2 Picture BL','3x4 Casement White','3x4 Casement Black'];
 
 // Infer frame color from window type when not explicitly set
 function _winFrameColor(type, explicit) {
+  if (type && /3x4 Casement Black/i.test(type)) return 'Black';
+  if (type && /3x4 Casement White/i.test(type)) return 'White';
   if (type && ('' + type).indexOf('VWC') === 0) return 'Clay'; // Clay vinyl windows
   if (explicit && explicit !== 'White') return explicit; // trust explicit non-white
   if (type && (type.startsWith('VWBL') || type.startsWith('VWBLT') || 
@@ -4101,7 +4103,7 @@ function buildInsetCard(){
     return '<div onclick="setInsetCorner(\''+id+'\')" style="flex:1 1 30%;min-width:88px;text-align:center;padding:7px 0;border-radius:7px;border:1.5px solid '+(on?'#FF8200':'var(--border)')+';background:'+(on?'rgba(255,130,0,.10)':'#f4f6f8')+';color:'+(on?'#c2410c':'var(--muted)')+';font-size:11px;font-weight:700;cursor:pointer;user-select:none;">'+label+'</div>';
   }
   var html='<div style="border:1px solid var(--border);border-radius:10px;padding:11px;background:#fbfcff;">'
-    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD D4]</span></div>'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD D5]</span></div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px;">'
     + chip('none','None') + chip('back-left','Front Gable / Left') + chip('back-right','Front Gable / Right')
     + chip('front-left','Back Gable / Left') + chip('front-right','Back Gable / Right') + '</div>';
@@ -33936,10 +33938,21 @@ window.SauceMaterials.calcWindows = function() {
   var actualWins = 0;
   var windowSkuMap = {
     '4x2': 'VW42',
-    'VWC35': 'VWC'   // 3x5 clay shows as VWC35, exports as custom SKU VWC
+    'VWC35': 'VWC',              // 3x5 clay shows as VWC35, exports as custom SKU VWC
+    '3x4 Casement White': 'VWC', // 3x4 casement — exports as VWC, priced by color below
+    '3x4 Casement Black': 'VWC'
   };
+  // 3x4 casement price is set by color selection (not SKU): white $535, black $720.
+  // Keep the two colors as separate priced groups even though both export SKU VWC.
+  var _CASEMENT_PRICE = { '3x4 Casement White': 535, '3x4 Casement Black': 720 };
+  var _casementGroups = {}; // keyed by type so colors don't merge
   windows.forEach(function(w) {
     if (w.framedOpening) return; // framed opening — no window SKU or tape
+    if (_CASEMENT_PRICE[w.type] != null) {
+      _casementGroups[w.type] = (_casementGroups[w.type] || 0) + 1;
+      actualWins++;
+      return;
+    }
     var sku = windowSkuMap[w.type] || w.type || w.size || 'WINDOW';
     groups[sku] = (groups[sku] || 0) + 1;
     actualWins++;
@@ -33961,6 +33974,19 @@ window.SauceMaterials.calcWindows = function() {
     };
     if (_CLAY_WIN_PRICE[sku] != null) _it._ovUnit = _CLAY_WIN_PRICE[sku];
     return _it;
+  });
+
+  // 3x4 casement windows — export SKU VWC, unit price by color (white 535 / black 720).
+  Object.keys(_casementGroups).sort().forEach(function(type) {
+    var _isBlack = /Black/i.test(type);
+    results.push({
+      category:    'Windows',
+      description: '3x4 Casement Window',
+      sku:         'VWC',
+      quantity:    _casementGroups[type],
+      detail:      'casement  |  3\' x 4\'  |  ' + (_isBlack ? 'black' : 'white') + ' frame',
+      _ovUnit:     _CASEMENT_PRICE[type]
+    });
   });
 
   results.push({
@@ -34092,8 +34118,22 @@ window.SauceMaterials.calcShedOpenings = function() {
 
     // ── Windows — type IS the SKU, same as main calcWindows ──
     var _CLAY_WIN_PRICE_S = { 'VWC': 460, 'VWC33': 176.65, 'VWC34': 204.78 };
+    var _CASEMENT_PRICE_S = { '3x4 Casement White': 535, '3x4 Casement Black': 720 };
     (sc.windows||[]).forEach(function(win) {
       if (win.framedOpening) return;
+      // 3x4 casement — exports as SKU VWC, priced by color.
+      if (_CASEMENT_PRICE_S[win.type] != null) {
+        results.push({
+          category:    'Windows',
+          description: 'Shed 3x4 Casement Window',
+          sku:         'VWC',
+          quantity:    1,
+          detail:      'casement  |  3\' x 4\'  |  ' + (/Black/i.test(win.type) ? 'black' : 'white') + ' frame  |  shed',
+          _ovUnit:     _CASEMENT_PRICE_S[win.type]
+        });
+        totalWindows++;
+        return;
+      }
       var sku = win.type || 'VW33';
       if (sku === 'VWC35') sku = 'VWC'; // 3x5 clay exports as custom SKU VWC
       var _wIt = {
