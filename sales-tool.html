@@ -1476,10 +1476,18 @@ body.customer-mode #stab_specs { display: block !important; }
           <div style="margin-bottom:8px;">
             <div style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Left Eave Spacing</div>
             <div class="chip-row" id="psLeftEaveChips"></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+              <input id="psLeftEaveCustom" type="text" placeholder="custom: 4 bays or 11'" title="Type a bay COUNT (4) or a target spacing (11'). The eave is divided into equal bays; lumber lengths are figured from the result. Applies to both eaves." oninput="setEaveCustomPS('left',this.value)" style="flex:1;min-width:0;font-size:11px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-family:Outfit,sans-serif;">
+              <span id="psLeftEaveOut" style="font-size:10px;color:var(--muted);font-weight:700;white-space:nowrap;"></span>
+            </div>
           </div>
           <div style="margin-bottom:8px;">
             <div style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Right Eave Spacing</div>
             <div class="chip-row" id="psRightEaveChips"></div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+              <input id="psRightEaveCustom" type="text" placeholder="custom: 4 bays or 11'" title="Type a bay COUNT (4) or a target spacing (11'). The eave is divided into equal bays; lumber lengths are figured from the result. Applies to both eaves." oninput="setEaveCustomPS('right',this.value)" style="flex:1;min-width:0;font-size:11px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-family:Outfit,sans-serif;">
+              <span id="psRightEaveOut" style="font-size:10px;color:var(--muted);font-weight:700;white-space:nowrap;"></span>
+            </div>
           </div>
           <div style="margin-bottom:8px;">
             <div style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Front Gable Spacing</div>
@@ -3399,7 +3407,7 @@ function updateSpecs() {
 // Valid stepped values for width/length
 var DIM_STEPS = {
   w: [10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,48,50,56,60,70,72,75,80,84,90,96,100],
-  l: (function(){ var a=[]; for(var i=20;i<=200;i+=2) if(i%8===0||i%10===0||i%12===0) a.push(i); for(var j=205;j<=300;j+=5) a.push(j); return [...new Set(a)].sort(function(a,b){return a-b;}); })()
+  l: (function(){ var a=[]; for(var i=20;i<=200;i+=2) a.push(i); for(var j=205;j<=300;j+=5) a.push(j); return [...new Set(a)].sort(function(a,b){return a-b;}); })()
 };
 function snapToStep(k, val) {
   if (k === 'h') {
@@ -3435,6 +3443,7 @@ function stepDim(k, dir) {
   }
   document.getElementById('in'+k.toUpperCase()).value = Q[k];
   if(k==='w'||k==='l'){WALLS[0].len=WALLS[1].len=Q.w;WALLS[2].len=WALLS[3].len=Q.l;}
+  if(k==='l') applySuggestedSpacingIfNeeded();
   scheduleBuild();
   if(k==='l' && typeof hsOnLengthChange==='function') hsOnLengthChange();
   if(window._customerMode && (k==='w'||k==='l')) buildPSChips();
@@ -3470,6 +3479,7 @@ function setDim(k,v){
     }
   }
   updateStepLabel();
+  if(k==='l') applySuggestedSpacingIfNeeded();
   scheduleBuild();
   if(k==='l' && typeof hsOnLengthChange==='function') hsOnLengthChange();
   if(window._customerMode && (k==='w'||k==='l')) buildPSChips();
@@ -3747,6 +3757,85 @@ function fmtFtIn(v){
   var ft=Math.floor(v+1e-6), inch=Math.round((v-ft)*12);
   if(inch===12){ft++;inch=0;}
   return inch? (ft+"'-"+inch+'"') : (ft+"'");
+}
+// Eave custom spacing. Same input rules as the gable custom entry: a bay COUNT ("4")
+// or a target spacing ("11'"). The eave wall (length Q.l) is divided into equal bays,
+// so any building length can be figured — the lumber logic derives required board
+// lengths from the resulting bay spacing. Applies to BOTH eaves (they share spacing).
+// Suggested eave bay spacing for a given building length. Rule (confirmed with Lain):
+//   1. Any EVEN (whole-foot) spacing in [8,12] beats any fractional — even if it means
+//      more posts. Among evens, pick the WIDEST (closest to 12', fewest posts).
+//   2. If no even spacing in [8,12] exists, use the WIDEST fractional in [8,12].
+// Natural max spacing is 12' (longest single-bay board), so nothing over 12' is ever
+// suggested. Returns { bays, spacing } or null if no valid layout in-band.
+// When the length changes, keep the current eave spacing if it still divides the new
+// length into a clean bay ≤ 12'. Otherwise apply the suggested spacing so the salesman
+// never lands on an invalid/awkward layout. The custom-spacing box still lets them
+// override afterward for a specific customer request.
+function applySuggestedSpacingIfNeeded(){
+  try {
+    var len = Q.l;
+    var cur = (WALLS.find(function(w){return w.id==='left';})||{}).postSpacing || Q.postSpacing || 10;
+    // Does current spacing still yield a whole number of bays at a sane width (≤12')?
+    var bays = len / cur;
+    var cleanBays = Math.abs(bays - Math.round(bays)) < 1e-6 && cur <= 12 + 1e-9 && cur >= 8 - 1e-9;
+    if (cleanBays) return; // salesman's spacing still works — leave it
+    var sug = suggestBaySpacing(len);
+    if (!sug) return;
+    ['left','right'].forEach(function(id){ var w=WALLS.find(function(x){return x.id===id;}); if(w) w.postSpacing=sug.spacing; });
+    Q.eavePS = sug.spacing; Q.postSpacing = sug.spacing;
+    // Reflect in the custom-spacing feedback so the salesman sees the layout.
+    ['left','right'].forEach(function(side){
+      var out=document.getElementById(side==='left'?'psLeftEaveOut':'psRightEaveOut');
+      if(out){ out.style.color='var(--muted)'; out.textContent=sug.bays+' bays @ '+fmtFtIn(sug.spacing); }
+    });
+    try{ buildPSChips(); }catch(e){}
+  } catch(e){}
+}
+
+function suggestBaySpacing(len) {
+  len = parseFloat(len) || 0;
+  if (len <= 0) return null;
+  var cands = [];
+  for (var n = 1; n <= 40; n++) {
+    var sp = len / n;
+    if (sp >= 8 - 1e-9 && sp <= 12 + 1e-9) cands.push({ bays: n, spacing: sp });
+  }
+  if (!cands.length) {
+    // Length doesn't fit an 8–12' bay at any whole bay count (very short); fall back to
+    // the closest single reasonable layout: fewest bays keeping spacing ≤ 12.
+    var nb = Math.max(1, Math.ceil(len / 12));
+    return { bays: nb, spacing: len / nb };
+  }
+  var evens = cands.filter(function(c){ return Math.abs(c.spacing - Math.round(c.spacing)) < 1e-9; });
+  if (evens.length) {
+    evens.sort(function(a,b){ return b.spacing - a.spacing; }); // widest even first
+    return evens[0];
+  }
+  cands.sort(function(a,b){ return b.spacing - a.spacing; }); // widest fractional first
+  return cands[0];
+}
+
+function setEaveCustomPS(side, raw){
+  var out=document.getElementById(side==='left'?'psLeftEaveOut':'psRightEaveOut');
+  var len=Q.l;
+  function apply(v){ ['left','right'].forEach(function(id){ var w=WALLS.find(function(x){return x.id===id;}); if(w) w.postSpacing=v; }); Q.eavePS=v; Q.postSpacing=v; }
+  if(!String(raw||'').trim()){
+    // cleared — fall back to nearest chip value already selected
+    if(out) out.textContent='';
+    scheduleBuild(); try{updateStripFromLocalCalc();}catch(e){} return;
+  }
+  var v=_ftIn(raw);
+  if(isNaN(v)||v<=0){ if(out){out.textContent='?';out.style.color='#c00';} return; }
+  // Small bare integer (<=12, no ' or ") = BAY COUNT; otherwise a target spacing.
+  var isCount = /^\s*[0-9]{1,2}\s*$/.test(String(raw)) && v<=12 && v<len/2;
+  var n = isCount ? Math.round(v) : Math.max(1, Math.round(len/v));
+  if(n<1) n=1;
+  var spacing = len/n;
+  apply(spacing);
+  if(out){ out.style.color='var(--muted)'; out.textContent=n+' bays @ '+fmtFtIn(spacing); }
+  try{ buildPSChips(); }catch(e){}
+  scheduleBuild(); try{updateStripFromLocalCalc();}catch(e){}
 }
 function setGableCustomPS(wallId, raw){
   var w=WALLS.find(function(x){return x.id===wallId;}); if(!w) return;
@@ -4103,7 +4192,7 @@ function buildInsetCard(){
     return '<div onclick="setInsetCorner(\''+id+'\')" style="flex:1 1 30%;min-width:88px;text-align:center;padding:7px 0;border-radius:7px;border:1.5px solid '+(on?'#FF8200':'var(--border)')+';background:'+(on?'rgba(255,130,0,.10)':'#f4f6f8')+';color:'+(on?'#c2410c':'var(--muted)')+';font-size:11px;font-weight:700;cursor:pointer;user-select:none;">'+label+'</div>';
   }
   var html='<div style="border:1px solid var(--border);border-radius:10px;padding:11px;background:#fbfcff;">'
-    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD D5]</span></div>'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD F1]</span></div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px;">'
     + chip('none','None') + chip('back-left','Front Gable / Left') + chip('back-right','Front Gable / Right')
     + chip('front-left','Back Gable / Left') + chip('front-right','Back Gable / Right') + '</div>';
@@ -27072,30 +27161,31 @@ window.SauceMaterials.calcHeaders = function(Q, WALLS, allDoors, shedCfgs) {
   var userChecked = !!(lvlEl && lvlEl.checked && !lvlEl._autoChecked);
   var useLVL = (Q.w || 0) > 40 || userChecked;
 
-  // Fill a shed wall with header boards driven entirely by post spacing (bay-by-bay).
-  // Board length equals post spacing (or the nearest stocked length above it).
-  //   12' spacing → 12' boards, 1 per bay
-  //   10' spacing → 20' boards (spans 2 bays), 10' for a leftover single bay
-  //    8' spacing → 16' boards (spans 2 bays, no 8' stock), 10' for a leftover single bay
-  // wallLen is the shed run length; ps is the gable post spacing (Q.postSpacing || Q.gablePS || 10).
+  // Fill a wall with header boards, post-spacing driven (bay-by-bay). A board may span
+  // two bays ONLY if the pair fits a stocked length; otherwise one board per bay, sized
+  // up to the nearest stock. This prevents e.g. 11' bays being filled with 20' boards
+  // (two 11' bays = 22' > 20', so an 11' bay must take its own 12' board).
+  //   12'+ spacing → 12' per bay        (single bay only — a pair won't fit 20')
+  //   11'  spacing → 12' per bay        (pair = 22' > 20', so no spanning)
+  //   10'  spacing → 20' spans 2 bays   (pair = 20'), leftover bay → 10'
+  //    8'  spacing → 16' spans 2 bays   (pair = 16'), leftover bay → 10'
   function fillWall(wallLen, ps) {
     var pieces = {};
     var numBays = Math.round(wallLen / ps);
-    if (ps >= 12) {
-      // One 12' board per bay
-      pieces[12] = numBays;
-    } else if (ps >= 10) {
-      // 20' covers 2 bays; leftover single bay gets a 10'
+    // Board length that covers a single bay (nearest stock >= ps).
+    var singleLen = HEADER_LENGTHS.slice().sort(function(a,b){return a-b;}).find(function(l){ return l >= ps - 0.01; }) || 20;
+    // Longest stock board that can span exactly two bays (2*ps), if any.
+    var pairLen = HEADER_LENGTHS.slice().sort(function(a,b){return a-b;}).find(function(l){ return l >= (2*ps) - 0.01; });
+    var canPair = (pairLen != null) && (2 * ps <= 20 + 0.01);
+    if (canPair && ps < 12) {
+      // Span two bays per board where it fits (10' and 8' spacing).
       var pairsOf2 = Math.floor(numBays / 2);
-      var leftover  = numBays % 2;
-      if (pairsOf2 > 0) pieces[20] = pairsOf2;
-      if (leftover  > 0) pieces[10] = (pieces[10] || 0) + 1;
+      var leftover = numBays % 2;
+      if (pairsOf2 > 0) pieces[pairLen] = pairsOf2;
+      if (leftover  > 0) pieces[singleLen] = (pieces[singleLen] || 0) + 1;
     } else {
-      // 8' spacing — use 16' (spans 2 bays); leftover single bay gets a 10'
-      var pairsOf2 = Math.floor(numBays / 2);
-      var leftover  = numBays % 2;
-      if (pairsOf2 > 0) pieces[16] = pairsOf2;
-      if (leftover  > 0) pieces[10] = (pieces[10] || 0) + 1;
+      // One board per bay, sized up to stock (covers 11', 12'+, and any non-pairable ps).
+      pieces[singleLen] = numBays;
     }
     return pieces;
   }
@@ -27824,7 +27914,7 @@ window.SauceMaterials.calcCypressGableExtension = function(Q, WALLS, shedCfgs) {
 
   var trimColor = getSkuColorCode('trim');
   var metalType = normalizeMetalType((document.getElementById('st_roofMetal')||{}).value||'Tuff-Rib 29ga');
-  var rcBoardLen = (Q.postSpacing === 12 || Q.postSpacing === 24) ? 12 : 10;
+  var rcBoardLen = eaveTrimBoardLen(Q.postSpacing);
 
   (shedCfgs || []).forEach(function(sc, idx) {
     if (sc.type !== 'gable') return;
@@ -28725,12 +28815,19 @@ window.SauceMaterials.calcSteelShedPurlins = function(Q, shedCfgs) {
 // Run length: divisible by 12 → 12' boards, otherwise 20' first then 10' fill
 // Total = runs × purlins per run. Add 10%.
 
-// Helper: no SYP2410 SKU exists — use SYP2420 and halve the quantity (ceil)
+// Helper: build a valid SYP24 purlin SKU. Stock lengths are 12, 16, 20 (there is no
+// SYP2410 — a 10' run uses a 20' board split, halving the qty). Any requested length is
+// rounded UP to the nearest stocked length so non-standard bay spacings (e.g. an 11'
+// bay → 12' purlin) never produce a SKU that doesn't exist.
 window.SauceMaterials.syp24 = function(len, qty) {
-  if (parseInt(len) === 10) {
+  var L = parseFloat(len) || 0;
+  if (L <= 10.01) {
+    // No SYP2410 — use a 20' board and halve the quantity.
     return { sku: 'SYP2420', quantity: Math.ceil(qty / 2) };
   }
-  return { sku: 'SYP24' + len, quantity: qty };
+  var STOCK = [12, 16, 20];
+  var use = STOCK.find(function(s){ return s >= L - 0.01; }) || 20;
+  return { sku: 'SYP24' + use, quantity: qty };
 };
 
 window.SauceMaterials.calcWoodPurlins = function(Q) {
@@ -29513,7 +29610,7 @@ window.SauceMaterials.calcEaveFascia = function(Q, WALLS, shedCfgs) {
 
   // Fill fascia: 24' spacing → 12' boards, all others → 10' boards. +1 extra for safety.
   function fillFascia(runLen, ps) {
-    var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
+    var boardLen = eaveTrimBoardLen(ps);
     var count    = Math.ceil(runLen / boardLen) + 1;
     return { [boardLen]: count };
   }
@@ -29609,30 +29706,16 @@ window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
   }
 
   function fillRuns(wallLen, ps) {
-    // Returns map of boardLen → runCount
-    if (ps === 12 || ps === 24) {
-      if (wallLen % 12 === 0) return { 12: wallLen/12 };
-    }
-    // 8' spacing — 16' boards (2 bays each), final odd bay gets 10'
-    if (ps === 8) {
-      var bays8 = wallLen / 8;
-      var boards16 = Math.floor(bays8 / 2);
-      var rem8 = bays8 % 2; // 1 if odd bay remains, 0 if even
-      var result8 = {};
-      if (boards16 > 0) result8[16] = boards16;
-      if (rem8 > 0) result8[10] = (result8[10]||0) + 1;
-      return result8;
-    }
-    // 14' spacing — use 16' boards (one per bay, 2' waste accepted)
-    if (ps === 14) {
-      return { 16: Math.ceil(wallLen / 14) };
-    }
-    // Default: 20' first then 10'
-    var boards = {}, remaining = wallLen;
-    if (remaining % 20 === 0) { boards[20] = remaining/20; return boards; }
-    if (remaining >= 20) { boards[20] = Math.floor(remaining/20); remaining = remaining%20; }
-    if (remaining > 0.01) { boards[10] = (boards[10]||0) + Math.ceil(remaining/10); }
-    return boards;
+    // Returns map of boardLen → count. Rule: each board must be LONGER than the bay
+    // (post spacing) but the SHORTEST stocked length that covers it — no spanning bays,
+    // no waste. 11' bay → 12' board, 10' → 10', 14' → 14', etc. This matches how eave
+    // lumber and trim are actually pulled: one piece per bay, sized up to stock.
+    var STOCK = [10, 12, 14, 16, 18, 20];
+    var numBays = Math.max(1, Math.round(wallLen / ps));
+    var perBay = STOCK.find(function(l){ return l >= ps - 0.01; }) || 20;
+    var out = {};
+    out[perBay] = numBays;
+    return out;
   }
 
   var groups = {};
@@ -29734,6 +29817,13 @@ window.SauceMaterials.calcGableGirts = function(Q, WALLS, shedCfgs) {
       if (fullBays12 > 0) result12[12] = fullBays12;
       if (rem12 > 0.01)   result12[10] = (result12[10]||0) + 1;
       return result12;
+    }
+    // 11' (or any non-standard) — one board per bay, shortest stock that covers the bay.
+    if (ps !== 10) {
+      var STOCKg = [10, 12, 14, 16, 18, 20];
+      var nB = Math.max(1, Math.round(wallLen / ps));
+      var pB = STOCKg.find(function(l){ return l >= ps - 0.01; }) || 20;
+      var og = {}; og[pB] = nB; return og;
     }
     // 10' spacing (default) — full bays get 10' boards, remainder gets 10'
     var fullBays10 = Math.floor(wallLen / 10);
@@ -31800,7 +31890,7 @@ window.SauceMaterials.calcTransitionFlashing = function(Q, WALLS, shedCfgs) {
     if (sc.type === 'gable') return;
     if (parseFloat(sc.dropFt||0) !== 0) return; // dropped — skip
     var ps      = wallPS(sc.wall);
-    var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
+    var boardLen = eaveTrimBoardLen(ps);
     var metalType=(document.getElementById('st_roofMetal')||{}).value||'Painted';
     var _resolvedTrim=resolveTrimSku('transition',boardLen,metalType);var sku=_resolvedTrim||'TF9'+getSkuColorCode('trim')+boardLen;
     groups[sku] = (groups[sku]||0) + Math.ceil(sc.l / boardLen) + 1;
@@ -31921,7 +32011,7 @@ window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, wind
   }
 
   function add(ps, qty) {
-    var len = (ps === 12 || ps === 24) ? 12 : 10;
+    var len = eaveTrimBoardLen(ps);
     groups[len] = (groups[len] || 0) + qty;
   }
 
@@ -31946,7 +32036,7 @@ window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, wind
     if (sc.type === 'gable') {
       // Gable extension: J-channel under the bottom edge of the upper gable metal
       var _gePS = wallPS(sc.wall);
-      var _geBL = (_gePS === 12 || _gePS === 24) ? 12 : 10;
+      var _geBL = eaveTrimBoardLen(_gePS);
       var _isEaveGE = (sc.wall === 'left' || sc.wall === 'right');
       var _geWidth = _isEaveGE ? sc.w : (Q.w || 0);
       add(_gePS, Math.ceil(_geWidth / _geBL) + 1);
@@ -31954,7 +32044,7 @@ window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, wind
     }
     var isEave = (sc.wall === 'left' || sc.wall === 'right');
     var ps = wallPS(sc.wall);
-    var jcBoardLen = (ps === 12 || ps === 24) ? 12 : 10;
+    var jcBoardLen = eaveTrimBoardLen(ps);
 
     if (!isEave) {
       // Gable-end shed: J-Channel on width (along gable face) + length (along eave run)
@@ -31998,7 +32088,7 @@ window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, wind
   (WALLS||[]).forEach(function(w) {
     if ((w.id === 'front' || w.id === 'back') && w.encl === 'open') {
       var ps = wallPS(w.id);
-      var jcBL = (ps === 12 || ps === 24) ? 12 : 10;
+      var jcBL = eaveTrimBoardLen(ps);
       add(ps, Math.ceil(Q.w / jcBL) + 1);
     }
   });
@@ -32007,7 +32097,7 @@ window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, wind
   // Each run: ceil(runLength / boardLen) + 1 sticks
   if (Q.roofStyle === 'single') {
     var _ssPS = Q.postSpacing || 10;
-    var _ssBL = (_ssPS === 12 || _ssPS === 24) ? 12 : 10;
+    var _ssBL = eaveTrimBoardLen(_ssPS);
     // Right eave wall (enclosed): run = building length
     add(_ssPS, Math.ceil(Q.l / _ssBL) + 1);
     // Front gable (enclosed): run = building width
@@ -32219,7 +32309,7 @@ window.SauceMaterials.calcPC3Trim = function(Q, WALLS, shedCfgs) {
 
   var groups = {}; // sku → qty
   function addRun(runLen, ps) {
-    var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
+    var boardLen = eaveTrimBoardLen(ps);
     var skuLen   = (ps === 12 || ps === 24) ? '12' : '10';
     var _pc3c=getSkuColorCode('trim');
     var sku      = (is26g ? ('PC36'+_pc3c) : ('PC39'+_pc3c)) + skuLen;
@@ -32323,7 +32413,7 @@ window.SauceMaterials.calcRETTrim = function(Q, WALLS, shedCfgs) {
   var groups = {};
   function addRun(runLen, ps) {
     if (!(runLen > 0)) return;
-    var boardLen = (ps === 16) ? 16 : ((ps === 12 || ps === 24) ? 12 : 10);
+    var boardLen = eaveTrimBoardLen(ps);
     var _retColor=getSkuColorCode('trim');
     var _retIsSteel=(Q.truss==='Steel');
     var _retLookup=_retIsSteel?('L'+_retColor):_retColor;
@@ -32438,7 +32528,7 @@ window.SauceMaterials.calcSteelEavePC2 = function(Q, WALLS, shedCfgs) {
   var groups = {};
   var _sp2WallMetal = normalizeMetalType((document.getElementById('st_wallMetal')||{}).value || 'Tuff-Rib 29ga');
   function addRun(runLen, ps) {
-    var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
+    var boardLen = eaveTrimBoardLen(ps);
     var _sp2Code=getSkuColorCode('trim');var _sp2is26=(_sp2WallMetal==='26-Gauge');var sku=(_sp2is26?'PC26':'PC29')+_sp2Code+boardLen;
     groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen) + 1;
   }
@@ -32496,7 +32586,7 @@ window.SauceMaterials.calcTransitionFlashing = function(Q, WALLS, shedCfgs) {
 
   var groups = {};
   function addRun(runLen, ps) {
-    var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
+    var boardLen = eaveTrimBoardLen(ps);
     var _tfc=getSkuColorCode('trim');var _tft=window._SKU_MAP&&window._SKU_MAP.trim['TF9'];var sku=(_tft&&(_tft[_tfc]||{})[boardLen])||('TF9'+_tfc+boardLen);
     groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen) + 1;
   }
@@ -32532,7 +32622,7 @@ window.SauceMaterials.calcEndWallFlashing = function(Q, WALLS, shedCfgs) {
 
   var groups = {};
   function addRun(runLen, ps) {
-    var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
+    var boardLen = eaveTrimBoardLen(ps);
     var metalType=(document.getElementById('st_roofMetal')||{}).value||'Painted';
     var _resolvedTrim=resolveTrimSku('endWallFlash',boardLen,metalType);var sku=_resolvedTrim||'EWF9'+getSkuColorCode('trim')+boardLen;
     groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen) + 1;
@@ -32627,7 +32717,7 @@ window.SauceMaterials.calcRatGuard = function(Q, WALLS, shedCfgs) {
 
   var groups = {};
   function addRun(runLen, ps) {
-    var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
+    var boardLen = eaveTrimBoardLen(ps);
     var metalType=(document.getElementById('st_roofMetal')||{}).value||'Painted';
     var _resolvedTrim=resolveTrimSku('ratGuard',boardLen,metalType);var sku=_resolvedTrim||'RG9'+getSkuColorCode('trim')+boardLen;
     groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen);
@@ -32691,7 +32781,7 @@ window.SauceMaterials.calcDoubleAngle = function(Q, WALLS, shedCfgs) {
 
   var groups = {};
   function addRun(runLen, ps) {
-    var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
+    var boardLen = eaveTrimBoardLen(ps);
     var metalType=(document.getElementById('st_roofMetal')||{}).value||'Painted';
     var _resolvedTrim=resolveTrimSku('doubleAngle',boardLen,metalType);var sku=_resolvedTrim||'DA9'+getSkuColorCode('trim')+boardLen;
     groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen);
@@ -33622,7 +33712,7 @@ window.SauceMaterials.calcCypress = function(Q, WALLS, shedCfgs, allDoors) {
   var daTotal  = daPerEnd * 2;
   // Use same board spacing as post spacing for length
   var ps = Q.postSpacing || 10;
-  var daLen = (ps === 12 || ps === 24) ? 12 : 10;
+  var daLen = eaveTrimBoardLen(ps);
   var _daC2=getSkuColorCode('trim');
   var _daT2=window._SKU_MAP&&window._SKU_MAP.trim['DA9'];
   var daSKU=(_daT2&&(_daT2[_daC2]||{})[daLen])||('DA9'+_daC2+daLen);
@@ -33723,7 +33813,7 @@ window.SauceLabor.calcCypressAdder = function(Q, shedCfgs) {
 
 window.SauceMaterials.calcRidgeCap = function(Q, shedCfgs) {
   var ps      = Q.postSpacing || 10;
-  var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
+  var boardLen = eaveTrimBoardLen(ps);
   var _rdMt=normalizeMetalType((document.getElementById('st_roofMetal')||{}).value||'Tuff-Rib 29ga');var _rdResolved=resolveRidgeCapSku(boardLen,_rdMt);var _rdPfx=(_rdMt==='26-Gauge')?'RC6':'RC9';var _rdC=getSkuColorCode('trim');var sku=_rdResolved||(_rdPfx+_rdC+boardLen);
 
   // Single slope: RC trim used as HIGH EAVE CAP FLASHING (not a ridge)
@@ -34847,7 +34937,7 @@ window.SauceMaterials.calcStandingSeam = function(Q, shedCfgs) {
   // -- TRIM --
   // Residential Eave Trim
   var ps = Q.postSpacing || 10;
-  function trimLen(spacing) { return (spacing === 12 || spacing === 24) ? 12 : 10; }
+  function trimLen(spacing) { return eaveTrimBoardLen(spacing); }
   var tLen = trimLen(ps);
 
   var eaveLF = Q.l * 2; // both eave runs
@@ -34868,7 +34958,7 @@ window.SauceMaterials.calcStandingSeam = function(Q, shedCfgs) {
   items.push({ category:'Trim', description:'SS Gable Rake', sku:(function(){var _c=getSkuColorCode('trim');var _t=window._SKU_MAP&&window._SKU_MAP.trim['SSGR6'];return(_t&&(_t[_c]||{})[rakeRounded])||('SSGR6'+_c+rakeRounded);})(), quantity:rakeQty, detail:'4 runs  |  ' + rakeRounded + "' each" });
 
   // Ridge Cap
-  var rcLen = (ps === 12 || ps === 24) ? 12 : 10;
+  var rcLen = eaveTrimBoardLen(ps);
   var rcQty = Math.ceil(Q.l / rcLen) + 1;
   items.push({ category:'Trim', description:'SS Ridge Cap', sku:(function(){var _c=getSkuColorCode('trim');var _t=window._SKU_MAP&&window._SKU_MAP.trim['SSRC6'];return(_t&&(_t[_c]||{})[rcLen])||('SSRC6'+_c+rcLen);})(), quantity:rcQty, detail: Q.l + "' ridge  |  " + rcLen + "' pieces" });
 
@@ -35086,7 +35176,7 @@ window.SauceMaterials.calcRockWainscot = function(Q, WALLS, shedCfgs) {
   function addWall(len, ps, label) {
     totalSqft += len * 4;
     selectedWalls.push(label);
-    var boardLen = (ps === 12 || ps === 24) ? 12 : 10;
+    var boardLen = eaveTrimBoardLen(ps);
     var _rtc=getSkuColorCode('rockWainscot');var _rt=window._SKU_MAP&&window._SKU_MAP.trim['RT9'];var sku=(_rt&&(_rt[_rtc]||{})[10])||('RT9'+_rtc+'10');
     rtGroups[sku] = (rtGroups[sku] || 0) + Math.ceil(len / boardLen) + 1;
   }
@@ -35470,7 +35560,7 @@ window.SauceMaterials.calcMetalBB = function(Q, WALLS, shedCfgs, allDoors) {
 
   // Trim length based on post spacing
   function trimLen(ps) {
-    return (ps === 12 || ps === 24) ? 12 : 10;
+    return eaveTrimBoardLen(ps);
   }
   function trimQty(runFt, ps) {
     var len = trimLen(ps);
@@ -42732,6 +42822,16 @@ window._selectedColors = {roofCode:'CC',wallCode:'CC',soffitCode:'PW',trimCode:'
 
 // Returns a gauge-correct SKU prefix with the selected color code substituted in
 // base = 'T9' | 'T6' | 'P6'   role = 'roof' | 'wall' | 'soffit' | 'trim' | 'wainscot'
+// Shortest stocked trim/lumber length that is LONGER than one bay (post spacing).
+// Eave lumber and trim (girts, RET, rat guard, J-channel, etc.) break at the bay and
+// use the shortest stock that covers it — 11' bay → 12', 10' → 10', 14' → 14'. This is
+// the single source of truth so every eave item obeys the same rule.
+function eaveTrimBoardLen(ps) {
+  var STOCK = [10, 12, 14, 16, 18, 20];
+  ps = parseFloat(ps) || 10;
+  for (var i = 0; i < STOCK.length; i++) { if (STOCK[i] >= ps - 0.01) return STOCK[i]; }
+  return 20;
+}
 function getSkuColorCode(role) {
   var sc = window._selectedColors || {};
   if (role === 'roof')     return sc.roofCode     || 'CC';
