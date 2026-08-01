@@ -2365,6 +2365,7 @@ body.customer-mode #stab_specs { display: block !important; }
       <div id="vpUtilityCol" style="position:absolute;top:10px;right:14px;z-index:20;display:flex;flex-direction:column;gap:6px;align-items:stretch;width:110px;">
         <button id="vpDimToggle"   onclick="vpToggleDims()"                                    style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Hide Dims</button>
         <button id="vpLoadBtn"     onclick="openLoadDesignModal()"                             style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Load Quote</button>
+        <button id="vpNewQuoteBtn" onclick="newQuoteSameCustomer()" title="Start a fresh building for the same customer — keeps their contact info, resets everything else. Your saved quote is not changed." style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">New Quote</button>
         <button id="vpLeadsBtn" onclick="openLeadsModal()" style="position:relative;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Leads<span id="vpLeadsBadge" style="display:none;position:absolute;top:-6px;right:-6px;min-width:16px;height:16px;padding:0 4px;background:#ef4444;color:#fff;font-size:9px;font-weight:800;border-radius:10px;line-height:16px;text-align:center;"></span></button>
         <button id="vpKitsBtn"     onclick="openKitsModal()"                                   style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Kits</button>
         <button id="vpGalleryBtn"  onclick="openGalleryModal()"                                style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Gallery</button>
@@ -4192,7 +4193,7 @@ function buildInsetCard(){
     return '<div onclick="setInsetCorner(\''+id+'\')" style="flex:1 1 30%;min-width:88px;text-align:center;padding:7px 0;border-radius:7px;border:1.5px solid '+(on?'#FF8200':'var(--border)')+';background:'+(on?'rgba(255,130,0,.10)':'#f4f6f8')+';color:'+(on?'#c2410c':'var(--muted)')+';font-size:11px;font-weight:700;cursor:pointer;user-select:none;">'+label+'</div>';
   }
   var html='<div style="border:1px solid var(--border);border-radius:10px;padding:11px;background:#fbfcff;">'
-    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD F2]</span></div>'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD F4]</span></div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px;">'
     + chip('none','None') + chip('back-left','Front Gable / Left') + chip('back-right','Front Gable / Right')
     + chip('front-left','Back Gable / Left') + chip('front-right','Back Gable / Right') + '</div>';
@@ -6950,6 +6951,57 @@ async function openActivityLog() {
 // QUOTE
 // ═══════════════════════════════════════════════════════
 // ── CONFIG SERIALIZATION ─────────────────────────────────────────
+// New Quote, Same Customer: preserve the customer's contact info but start a completely
+// fresh building. Stashes contact fields, then reloads the app to a clean default state
+// (a reload guarantees every building setting resets — safer than clearing dozens of
+// globals by hand). The saved quote is untouched; this begins a brand-new one.
+// New Quote from a SAVED customer: pull just the contact info off an existing saved
+// quote (does not open or modify it), then start a fresh blank building for them. Uses
+// the same stash-and-reload path as newQuoteSameCustomer so the reset is clean.
+function newQuoteFromSavedCustomer(qid, rowIndex){
+  try {
+    var d = (window._savedDesigns || []).find(function(x){
+      return (x.quoteId||x.designId) === qid && (rowIndex ? x.rowIndex === rowIndex : true);
+    }) || (window._savedDesigns || []).find(function(x){ return (x.quoteId||x.designId) === qid; });
+    if (!d) { alert('Could not find that customer record.'); return; }
+    var ff = d.formFields || d.form_fields || {};
+    var contact = {
+      name:  d.name || d.customerName || ff.customerName || ff.name || '',
+      phone: d.phone || ff.customerPhone || ff.phone || '',
+      email: d.email || ff.customerEmail || ff.email || '',
+      city:  d.city  || ff.customerCity  || ff.city  || ff.address || '',
+      notes: ''
+    };
+    if (!contact.name && !contact.phone && !contact.email) { alert('That record has no customer contact info to carry over.'); return; }
+    if (!confirm('Start a NEW blank quote for '+(contact.name||'this customer')+'?\n\nTheir contact info carries over. The building starts fresh. The saved quote is not opened or changed.')) return;
+    sessionStorage.setItem('_pbqKeepCustomer', JSON.stringify(contact));
+    var base = location.origin + location.pathname;
+    location.href = base;
+  } catch(e){ alert('Could not start a new quote: '+e.message); }
+}
+
+function newQuoteSameCustomer(){
+  try {
+    var g=function(id){ var e=document.getElementById(id); return e? (e.value||'') : ''; };
+    var contact={
+      name:  g('cust_name')||g('qfName')||g('st_name'),
+      phone: g('cust_phone')||g('qfPhone')||g('st_phone'),
+      email: g('cust_email')||g('qfEmail')||g('st_email'),
+      city:  g('cust_city')||g('qfCity')||g('st_address'),
+      notes: g('cust_notes')
+    };
+    if(!contact.name && !contact.phone && !contact.email){
+      alert('No customer info to carry over — enter the customer first.');
+      return;
+    }
+    if(!confirm('Start a NEW blank quote for '+(contact.name||'this customer')+'?\n\nTheir contact info carries over. The building resets to defaults. Your saved quote is not changed.')) return;
+    sessionStorage.setItem('_pbqKeepCustomer', JSON.stringify(contact));
+    // Reload to a clean state (strip any ?quote=/?config= params so it opens blank).
+    var base = location.origin + location.pathname;
+    location.href = base;
+  } catch(e){ alert('Could not start a new quote: '+e.message); }
+}
+
 function serializeConfig() {
   return {
     Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,steelGableOH:Q.steelGableOH||false,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,truss:Q.truss,frameType:Q.frameType,roofStyle:Q.roofStyle||'gable'},
@@ -8552,6 +8604,21 @@ function renderInteriorWalls() {
 // INIT
 // ═══════════════════════════════════════════════════════
 (function init(){
+  // New Quote (Same Customer): if a customer stash exists from a "new quote" action,
+  // re-fill the contact fields after the fresh reload, then clear the stash.
+  try {
+    var _stash = sessionStorage.getItem('_pbqKeepCustomer');
+    if (_stash) {
+      sessionStorage.removeItem('_pbqKeepCustomer');
+      var _c = JSON.parse(_stash);
+      setTimeout(function(){
+        [['cust_name','name'],['cust_phone','phone'],['cust_email','email'],['cust_city','city'],['cust_notes','notes'],
+         ['st_name','name'],['st_phone','phone'],['st_email','email'],['st_address','city']].forEach(function(pair){
+          var el=document.getElementById(pair[0]); if(el && _c[pair[1]]!=null && _c[pair[1]]!=='') el.value=_c[pair[1]];
+        });
+      }, 300);
+    }
+  } catch(e){}
   try { buildRoofStyleChips(); } catch(e) { console.error('buildRoofStyleChips',e); }
   try { buildTrussChips(); } catch(e) { console.error('buildTrussChips',e); }
   try { buildPitchChips(); } catch(e) { console.error('buildPitchChips',e); }
@@ -21800,6 +21867,7 @@ function _renderDesignList(quotes, list, append) {
     // Action buttons
     card += '<div style="display:flex;gap:6px;margin-top:9px;">';
     card += '<button data-load-qid="'+esc(qid)+'" data-load-ridx="'+ridx+'" style="flex:1;padding:6px 0;background:linear-gradient(135deg,rgba(255,130,0,.18),rgba(255,130,0,.08));color:#FF8200;border:1px solid rgba(255,130,0,.3);border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">⬆ Load</button>';
+    card += '<button data-newcust-qid="'+esc(qid)+'" data-newcust-ridx="'+ridx+'" title="Start a brand-new blank quote using this customer\'s info — does not open or change the saved quote." style="flex:1;padding:6px 0;background:rgba(96,165,250,.10);color:#93c5fd;border:1px solid rgba(96,165,250,.3);border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">＋ New Quote</button>';
     card += '<button data-del-qid="'+esc(qid)+'" style="padding:6px 12px;background:rgba(239,68,68,.08);color:#ef4444;border:1px solid rgba(239,68,68,.2);border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Del</button>';
     card += '</div>';
     card += '</div>';
@@ -21841,6 +21909,8 @@ function _renderDesignList(quotes, list, append) {
   list.onclick = function(e) {
     var delBtn = e.target.closest('[data-del-qid]');
     if (delBtn) { deleteQuote(delBtn.getAttribute('data-del-qid')); return; }
+    var newCustBtn = e.target.closest('[data-newcust-qid]');
+    if (newCustBtn) { newQuoteFromSavedCustomer(newCustBtn.getAttribute('data-newcust-qid'), parseInt(newCustBtn.getAttribute('data-newcust-ridx')||'0')); return; }
     var loadBtn = e.target.closest('[data-load-qid]');
     if (loadBtn) { loadSavedDesignByRef(loadBtn.getAttribute('data-load-qid'), parseInt(loadBtn.getAttribute('data-load-ridx')||'0')); return; }
   };
