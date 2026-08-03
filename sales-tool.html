@@ -4198,7 +4198,7 @@ function buildInsetCard(){
     return '<div onclick="setInsetCorner(\''+id+'\')" style="flex:1 1 30%;min-width:88px;text-align:center;padding:7px 0;border-radius:7px;border:1.5px solid '+(on?'#FF8200':'var(--border)')+';background:'+(on?'rgba(255,130,0,.10)':'#f4f6f8')+';color:'+(on?'#c2410c':'var(--muted)')+';font-size:11px;font-weight:700;cursor:pointer;user-select:none;">'+label+'</div>';
   }
   var html='<div style="border:1px solid var(--border);border-radius:10px;padding:11px;background:#fbfcff;">'
-    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD G3]</span></div>'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD G5]</span></div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px;">'
     + chip('none','None') + chip('back-left','Front Gable / Left') + chip('back-right','Front Gable / Right')
     + chip('front-left','Back Gable / Left') + chip('front-right','Back Gable / Right') + '</div>';
@@ -26967,6 +26967,9 @@ window.SauceMaterials.calcSackcrete = function(Q, WALLS, allDoors, shedCfgs, sf)
       count += Math.max(0, (Math.max(1, Math.floor(Q.w / w4S)) + 1) - 2) * 2;  // F + B interior posts
     }
     totalBags += count * bagsForSize(ssSize);
+    // Garage/drum doors on this shed add 2 jamb posts each (6x6, same bags/post).
+    var _shedDoorPosts = (sc.doors || []).filter(function(gd){ return !gd.framedOpening; }).length * 2;
+    if (_shedDoorPosts) totalBags += _shedDoorPosts * bagsForSize('6x6');
   });
 
   if (totalBags === 0) return null;
@@ -27085,6 +27088,9 @@ window.SauceMaterials.calcFootingPads = function(Q, WALLS, allDoors, shedCfgs, s
       count += Math.max(0, (Math.max(1, Math.floor(Q.w / w4S)) + 1) - 2) * 2;
     }
     add(ssSku, count);
+    // Garage/drum doors on this shed add 2 jamb posts each — always PBFP16 (6x6).
+    var _shedDoorPads = (sc.doors || []).filter(function(gd){ return !gd.framedOpening; }).length * 2;
+    if (_shedDoorPads) add('PBFP16', _shedDoorPads);
   });
 
   return Object.keys(groups).sort().map(function(sku) {
@@ -29835,6 +29841,8 @@ window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
     });
   }
 
+  // In shed-only mode the main building isn't built — only the shed girts below apply.
+  if (!window._shedOnlyMode)
   ['left','right'].forEach(function(wallId) {
     var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
     if (!wCfg) return;
@@ -29973,7 +29981,8 @@ window.SauceMaterials.calcGableGirts = function(Q, WALLS, shedCfgs) {
     }
   }
 
-  // Main building gable walls (front + back)
+  // Main building gable walls (front + back) — skipped in shed-only mode.
+  if (!window._shedOnlyMode)
   ['front','back'].forEach(function(wallId) {
     var wCfg = (WALLS||[]).find(function(w){return w.id===wallId;});
     if (!wCfg) return;
@@ -32530,6 +32539,8 @@ window.SauceMaterials.calcRETTrim = function(Q, WALLS, shedCfgs) {
   // Main building enclosed eave walls.
   // Wood: skipped where a lean-to owns that eave (outside eaves only).
   // Steel: always counted, shed or not.
+  // Shed-only mode: main building isn't built — skip its eave RET entirely.
+  if (!window._shedOnlyMode)
   ['left','right'].forEach(function(side) {
     if (wallEncl(side) === 'open') return;
     if (Q.ventGap) return; // vent gap — no RET on eave walls
@@ -32843,14 +32854,21 @@ window.SauceMaterials.calcRatGuard = function(Q, WALLS, shedCfgs) {
     });
   }
 
-  // Enclosed side shed outer walls
+  // Enclosed side shed walls — count every enclosed side, not just the outer eave.
+  // A shed enclosed on 3 sides gets rat guard on the outer wall (length sc.l) plus each
+  // enclosed gable end (length sc.w).
   (shedCfgs||[]).forEach(function(sc) {
     if (!sc.w || !sc.l) return;
     if (sc.type === 'gable') return;
     if (sc.encl !== 'enclosed') return;
-    if (!(sc.enclWalls||[]).includes('outer')) return;
-    var wallLen = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
-    addRun(wallLen, wallPS(sc.wall));
+    var _ew = sc.enclWalls || [];
+    var _ps = wallPS(sc.wall);
+    if (_ew.includes('outer')) {
+      var wallLen = (sc.enclFt != null && sc.enclFt < sc.l) ? sc.enclFt : sc.l;
+      addRun(wallLen, _ps);
+    }
+    if (_ew.includes('front')) addRun(sc.w, _ps); // gable end
+    if (_ew.includes('back'))  addRun(sc.w, _ps); // gable end
   });
 
   return Object.keys(groups).sort().map(function(sku) {
@@ -34381,8 +34399,9 @@ window.SauceMaterials.calcLagBolts = function(Q, WALLS, shedCfgs, allDoors, sf) 
 
   var total = 0;
 
-  // Eave + gable posts — skip entirely when posts on top
-  if (!onTop) {
+  // Eave + gable posts — skip entirely when posts on top, or in shed-only mode
+  // (main building isn't built, so its posts don't get lag bolts).
+  if (!onTop && !window._shedOnlyMode) {
     window.SauceMaterials.calcEavePosts(Q, WALLS, allDoors, sf).forEach(function(item) {
       total += item.quantity || 0;
     });
@@ -34421,6 +34440,8 @@ window.SauceMaterials.calcLagBolts = function(Q, WALLS, shedCfgs, allDoors, sf) 
       }
     }
     else count = Math.max(1, Math.floor(sc.l / ps)) + 1;
+    // Garage/drum doors on this shed add 2 jamb posts each (each gets 2 lag bolts).
+    count += (sc.doors || []).filter(function(gd){ return !gd.framedOpening; }).length * 2;
     total += count;
   });
 
@@ -36251,6 +36272,10 @@ window.SauceMaterials.calculate = function(forcedType) {
       SM.calcSidewallMetal(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
       SM.calcRatGuard(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
     }
+    // Wall girts — were missing from shed-only mode. calcSidewallGirts/calcGableGirts
+    // both process the shed configs, so an enclosed shed gets its wall girts here.
+    pushBuffered(SM.calcSidewallGirts(Q, WALLS, shedCfgs));
+    pushBuffered(SM.calcGableGirts(Q, WALLS, shedCfgs));
     SM.calcLeantoUpperGable(Q, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcWainscotMetal(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcSkirtMetal(Q, shedCfgs).forEach(function(item) { items.push(item); });
@@ -36269,6 +36294,13 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcWindows().forEach(function(item) { items.push(item); });
     SM.calcBarnDoors().forEach(function(item) { items.push(item); });
     SM.calcShedOpenings().forEach(function(item) { items.push(item); });
+    // Garage / drum doors placed on the shed — were missing from shed-only mode.
+    SM.calcGarageDoors(allDoors).forEach(function(item) { items.push(item); });
+    SM.calcGarageDoorInstall(allDoors).forEach(function(item) { items.push(item); });
+    SM.calcGarageDoorWindows(allDoors).forEach(function(item) { items.push(item); });
+    SM.calcGarageDoorOpeners(allDoors).forEach(function(item) { items.push(item); });
+    SM.calcDrumDoors(allDoors).forEach(function(item) { items.push(item); });
+    SM.calcDrumDoorInstall(allDoors).forEach(function(item) { items.push(item); });
     // Hardware — minimal set
     SM.calcOutsideSolidClosure(Q, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcInsulation(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
