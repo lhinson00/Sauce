@@ -1314,7 +1314,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:#FF8200;font-weight:800;letter-spacing:.5px;">· BUILD J5</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:#FF8200;font-weight:800;letter-spacing:.5px;">· BUILD J7</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -1368,12 +1368,20 @@ body.customer-mode #stab_specs { display: block !important; }
         <div style="display:flex;gap:8px;margin-top:8px;">
           <div class="toggle-row" style="flex:1;margin:0;">
             <div class="toggle-info"><div class="toggle-lbl">Material Only</div></div>
-            <label class="tog"><input type="checkbox" id="st_materialKit" onchange="try{updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+            <label class="tog"><input type="checkbox" id="st_materialKit" onchange="try{updateStripFromLocalCalc();}catch(e){}try{window._syncMatPackVisibility();}catch(e){}"><span class="tog-track"></span></label>
           </div>
           <div class="toggle-row" style="flex:1;margin:0;">
             <div class="toggle-info"><div class="toggle-lbl">Farm Tax Exempt</div></div>
             <label class="tog"><input type="checkbox" id="st_farmTax" onchange="try{updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
           </div>
+        </div>
+        <div id="matPackRow" style="margin-top:8px;display:none;align-items:center;gap:8px;">
+          <div style="font-size:11px;font-weight:700;color:var(--navy);white-space:nowrap;">Material Pack</div>
+          <select id="st_matPack" onchange="window._setMatPack(this.value)" style="flex:1;padding:7px 9px;border:1.5px solid var(--border);border-radius:8px;font-size:12px;font-weight:600;color:var(--navy);background:#f4f6f8;font-family:'Outfit',sans-serif;cursor:pointer;">
+            <option value="all" selected>All Materials</option>
+            <option value="metal">Metal Pack Only</option>
+            <option value="lumber">Lumber &amp; Hardware Only (no metal)</option>
+          </select>
         </div>
       </div>
 
@@ -3024,7 +3032,14 @@ function updateStripFromLocalCalc() {
     try {
       var res = window.SauceMaterials.calculate(forcedType);
       if (res && res.items) {
+        var _pack = window._matPackFilter || 'all';
         res.items.forEach(function(item) {
+          // Honor the Material Pack selection so the strip price matches the filtered quote.
+          if (_pack !== 'all' && window._isMetalPackItem) {
+            var isMetal = window._isMetalPackItem(item);
+            if (_pack === 'metal' && !isMetal) return;
+            if (_pack === 'lumber' && isMetal) return;
+          }
           if (item.fixedCost != null) { total += item.fixedCost; return; }
           var _pt = window.SauceMaterials._priceTable || {};
           var _skuKey = (item.sku||'').toUpperCase();
@@ -7206,6 +7221,7 @@ function serializeConfig() {
       manualNotes:(document.getElementById('st_manualNotes')||{}).value||'',
       materialKit:!!(document.getElementById('st_materialKit')||{}).checked,
       farmTax:   !!(document.getElementById('st_farmTax')||{}).checked,
+      matPack:   window._matPackFilter || 'all',
       mftRate:   (parseFloat((document.getElementById('st_mftRate')||{}).value) || 8).toString(),
       // Spec panel sf_ fields
       gdOpener:      (document.getElementById('sf_gdOpener')||{}).value||'None',
@@ -7524,6 +7540,10 @@ function restoreConfig(cfg) {
       _sv('st_materialKit',sf.materialKit);
       _sv('st_farmTax',   sf.farmTax);
       _sv('st_mftRate',   sf.mftRate || '8');
+      // Restore Material Pack selection (all / metal / lumber)
+      window._matPackFilter = sf.matPack || 'all';
+      _sv('st_matPack', window._matPackFilter);
+      try { window._syncMatPackVisibility(); } catch(e){}
       // Spec panel sf_ fields
       _sv('sf_gdOpener',       sf.gdOpener);
       _sv('sf_gdOpenerQty',    sf.gdOpenerQty);
@@ -39512,9 +39532,47 @@ window._checklistRank = function(item){
 window._MAT_CATEGORY_ORDER = ['Cypress Gable Extension','Interior Loft','Interior Walls','Yard','Roof Metal','Side Shed Roof Metal','Sidewall Metal','Gable Metal','Side Shed Gable Metal','Wainscot Metal','Soffit Metal','Skirt Metal','Metal','Trim','Garage Doors','Doors','Barn Doors','Walk Doors','Windows','Extras','Insulation','Hardware'];
 // Final material list for a build type: merged main+step, with the salesman's deletes/edits/added
 // lines applied AND the saved ordering (section order + within-section order). Used by exports.
+window._MAT_METAL_CATEGORIES = ['Roof Metal','Side Shed Roof Metal','Sidewall Metal','Gable Metal','Side Shed Gable Metal','Wainscot Metal','Soffit Metal','Skirt Metal','Metal','Trim'];
+// An item belongs in the METAL pack if it's a metal category OR it's a screw/fastener line
+// (screws live in the Hardware category but fasten the metal, so they ship with the metal pack).
+window._isMetalPackItem = function(it){
+  if (!it) return false;
+  if (window._MAT_METAL_CATEGORIES.indexOf(it.category) !== -1) return true;
+  var d = String(it.description || '').toLowerCase();
+  if (/screw/.test(d)) return true;
+  return false;
+};
+window._matPackFilter = 'all';
+window._setMatPack = function(v){
+  window._matPackFilter = v || 'all';
+  try { updateStripFromLocalCalc(); } catch(e){}
+  try { scheduleBuild(); } catch(e){}
+};
+// The Material Pack selector only makes sense for a material-only quote — show it only when
+// the Material Only toggle is on. When Material Only is switched off, hide it and reset to
+// All so a hidden filter never silently applies to a full (labor-included) quote.
+window._syncMatPackVisibility = function(){
+  var on = !!(document.getElementById('st_materialKit')||{}).checked;
+  var row = document.getElementById('matPackRow');
+  if (row) row.style.display = on ? 'flex' : 'none';
+  if (!on && window._matPackFilter !== 'all') {
+    window._matPackFilter = 'all';
+    var sel = document.getElementById('st_matPack'); if (sel) sel.value = 'all';
+    try { updateStripFromLocalCalc(); } catch(e){}
+  }
+};
 window._finalMaterialItems = function(bt) {
   var merged = (window._mergedMaterialItems(bt)||{}).items || [];
   var items = window._applyMatOverrides(merged, bt);
+  // Material pack filter: 'metal' keeps only the metal-pack categories, 'lumber' keeps
+  // everything else (lumber, hardware, doors, concrete, yard, etc.). Lets a salesman quote
+  // just the metal pack (or everything but) without manually deleting rows.
+  var _pack = window._matPackFilter || 'all';
+  if (_pack === 'metal') {
+    items = items.filter(function(it){ return window._isMetalPackItem(it); });
+  } else if (_pack === 'lumber') {
+    items = items.filter(function(it){ return !window._isMetalPackItem(it); });
+  }
   var ov = window._matOvFor(bt); var CO = window._MAT_CATEGORY_ORDER;
   function catIdx(c){ if(ov.catOrder){ var k=ov.catOrder.indexOf(c); if(k>=0) return k; } var i=CO.indexOf(c); return i===-1?999:i; }
   items.forEach(function(it,i){ it._origIdx=i; });
@@ -42380,6 +42438,15 @@ window.openMaterialsModal = function(initialTab) {
     try {
       var res1 = window._mergedMaterialItems(t.key);
       if (res1 && res1.items) res1.items = window._applyMatOverrides(res1.items, t.key);
+      // Honor the Material Pack selection (metal-only / lumber-only) so the quoted TOTAL
+      // reflects just that pack — same filter the exports use in _finalMaterialItems.
+      var _pack = window._matPackFilter || 'all';
+      if (res1 && res1.items && _pack !== 'all' && window._isMetalPackItem) {
+        res1.items = res1.items.filter(function(it){
+          var isMetal = window._isMetalPackItem(it);
+          return _pack === 'metal' ? isMetal : !isMetal;
+        });
+      }
       results[t.key] = res1;
     }
     catch(e) { results[t.key] = { error: e.message }; console.error('[Materials]', t.key, e); }
