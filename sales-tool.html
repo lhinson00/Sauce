@@ -1061,9 +1061,11 @@ body.customer-mode #secConcrete { display: none !important; }
 body.customer-mode #custSpecsBlock { display: block; }
 
 /* Show color chart link in customer mode only */
-body.customer-mode #custColorChartLink { display: block !important; }
+body.customer-mode #custColorChartLink,
+body.view-mode #custColorChartLink { display: block !important; }
 #custColorsSec { display: none; }
-body.customer-mode #custColorsSec { display: block !important; }
+body.customer-mode #custColorsSec,
+body.view-mode #custColorsSec { display: block !important; }
 body.customer-mode #stab_specs { display: block !important; }
 .cust-sw { display:flex; flex-wrap:wrap; gap:5px; margin:5px 0 2px; }
 .cust-swatch { width:26px; height:26px; border-radius:6px; border:2px solid rgba(0,0,0,.18); cursor:pointer; padding:0; transition:transform .1s, box-shadow .1s, border-color .1s; }
@@ -1285,6 +1287,10 @@ body.customer-mode #stab_specs { display: block !important; }
         <span style="font-size:9px;color:rgba(255,255,255,.45);white-space:nowrap;">Trim</span>
         <select id="vcTrimSel" onchange="vcSetColor('trim',this.value)" style="font-size:10px;font-family:'Outfit',sans-serif;background:#3a3a3a;color:#f0f3f7;border:1px solid rgba(255,130,0,.3);border-radius:5px;padding:3px 6px;cursor:pointer;"></select>
       </div>
+      <div id="vcWainscotGroup" style="display:none;align-items:center;gap:5px;">
+        <span style="font-size:9px;color:rgba(255,255,255,.45);white-space:nowrap;">Wainscot</span>
+        <select id="vcWainscotSel" onchange="vcSetColor('wainscot',this.value)" style="font-size:10px;font-family:'Outfit',sans-serif;background:#3a3a3a;color:#f0f3f7;border:1px solid rgba(255,130,0,.3);border-radius:5px;padding:3px 6px;cursor:pointer;"></select>
+      </div>
     </div>
     <div class="vc-divider vc-divider-desktop"></div>
     <div class="vc-salesman vc-desktop-only" id="vcSalesmanDesktop"></div>
@@ -1308,7 +1314,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:#FF8200;font-weight:800;letter-spacing:.5px;">· BUILD I9</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:#FF8200;font-weight:800;letter-spacing:.5px;">· BUILD J1</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -22413,7 +22419,17 @@ async function saveSalesQuote(overwriteMode) {
       salesmanEmail:   cu.email       || '',
       salesmanCompany: cu.company     || ''
     };
-    var shareLink = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + await safeEncodeCompressed(_cfg);
+    // Prefer the short loadQuote link for saved quotes — the full config blob can be
+    // thousands of chars, which email safe-link scanners (Safe Links, Proofpoint, etc.)
+    // and some clients choke on, leaving the customer stuck on a "verifying link" spinner.
+    // The loadQuote loader pulls the same config from the server. Fall back to the
+    // self-contained config blob only when there's no saved quote ID.
+    var shareLink;
+    if (window._savedQuoteId) {
+      shareLink = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&loadQuote=' + encodeURIComponent(window._savedQuoteId);
+    } else {
+      shareLink = 'https://lhinson00.github.io/Sauce/sales-tool.html?view=1&config=' + await safeEncodeCompressed(_cfg);
+    }
 
     // 2. Build formFields — everything the email builder needs
     var Q = window._Q || {};
@@ -23886,7 +23902,7 @@ function vcInitColorPickers() {
     .filter(function(n,i,a){ return a.indexOf(n) === i; }) // dedupe
     .sort();
 
-  ['vcRoofSel','vcWallSel','vcTrimSel'].forEach(function(id) {
+  ['vcRoofSel','vcWallSel','vcTrimSel','vcWainscotSel'].forEach(function(id) {
     var sel = document.getElementById(id);
     if (!sel) return;
     // Clear and repopulate
@@ -23900,6 +23916,18 @@ function vcInitColorPickers() {
   var rs = document.getElementById('vcRoofSel'); if(rs) rs.value = window.selRoof || colorNames[0] || '';
   var ws = document.getElementById('vcWallSel'); if(ws) ws.value = window.selWall || colorNames[0] || '';
   var ts = document.getElementById('vcTrimSel'); if(ts) ts.value = window.selTrim || colorNames[0] || '';
+  // Wainscot — only offered when the building actually has wainscot.
+  var wsGroup = document.getElementById('vcWainscotGroup');
+  var hasWains = ((document.getElementById('st_wainscot')||{}).value === 'Yes');
+  if (wsGroup) wsGroup.style.display = hasWains ? 'flex' : 'none';
+  if (hasWains) {
+    var wsc = document.getElementById('vcWainscotSel');
+    if (wsc) {
+      var _cm = (window._SKU_MAP && window._SKU_MAP.colors) || {};
+      var _wsCode = (document.getElementById('st_wainscotColorCode')||{}).value || '';
+      wsc.value = window.selWainscot || _cm[_wsCode] || colorNames[0] || '';
+    }
+  }
 }
 
 function vcSetColor(part, val) {
@@ -23911,6 +23939,12 @@ function vcSetColor(part, val) {
   if (part === 'roof')  { window.selRoof = val; sc.roofCode = code; }
   if (part === 'wall')  { window.selWall = val; sc.wallCode = code; }
   if (part === 'trim')  { window.selTrim = val; sc.trimCode = code; }
+  if (part === 'wainscot') {
+    window.selWainscot = val; sc.wainscotCode = code;
+    // Drive the real wainscot color control so the renderer + any downstream logic pick it up.
+    var wsSel = document.getElementById('st_wainscotColorCode');
+    if (wsSel) { wsSel.value = code; try { if (typeof onColorCodeChange==='function') onColorCodeChange(); } catch(e){} }
+  }
   syncRendererColors();
   triggerBuild();
 }
@@ -45930,7 +45964,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
   }
   var SELSTY = "width:100%;font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);box-sizing:border-box;";
   window.custBuildColorSwatches = function(){
-    if (!window._customerMode) return;
+    if (!window._customerMode && !window._viewModeActive) return;
     MAP.forEach(function(m){
       var sel = document.getElementById(m[0]); var box = document.getElementById(m[1]);
       if (!sel || !box) return;
@@ -45971,7 +46005,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       return r;
     };
   }
-  function init(){ if (window._customerMode){ try { window.custBuildColorSwatches(); } catch(e){} } }
+  function init(){ if (window._customerMode || window._viewModeActive){ try { window.custBuildColorSwatches(); } catch(e){} } }
   if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
 </script>
