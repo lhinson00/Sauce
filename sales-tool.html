@@ -4198,7 +4198,7 @@ function buildInsetCard(){
     return '<div onclick="setInsetCorner(\''+id+'\')" style="flex:1 1 30%;min-width:88px;text-align:center;padding:7px 0;border-radius:7px;border:1.5px solid '+(on?'#FF8200':'var(--border)')+';background:'+(on?'rgba(255,130,0,.10)':'#f4f6f8')+';color:'+(on?'#c2410c':'var(--muted)')+';font-size:11px;font-weight:700;cursor:pointer;user-select:none;">'+label+'</div>';
   }
   var html='<div style="border:1px solid var(--border);border-radius:10px;padding:11px;background:#fbfcff;">'
-    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD H3]</span></div>'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD H6]</span></div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px;">'
     + chip('none','None') + chip('back-left','Front Gable / Left') + chip('back-right','Front Gable / Right')
     + chip('front-left','Back Gable / Left') + chip('front-right','Back Gable / Right') + '</div>';
@@ -31089,6 +31089,27 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
   var skuPrefix = getColoredSkuPrefix(metalType, 'wall');
   var displayType = metalType === 'Galvalume' ? 'Painted' : metalType;
   var wainscot  = (document.getElementById('st_wainscot')||{}).value === 'Yes';
+  // Per-wall wainscot: a wall shortens 4' if its own flag is set, or (unset) the global is on.
+  function wainFt(w){ return ((w && w.wainscot != null) ? !!w.wainscot : wainscot) ? 4 : 0; }
+  // Per-wall color: a wall can override the building color (w.wallColor holds a color NAME).
+  // Resolve that name to a SKU prefix so the metal line carries the right color code and
+  // splits out as its own line item. Falls back to the building's global wall SKU.
+  var _nameToCode = (function(){
+    var cm = (window._SKU_MAP && window._SKU_MAP.colors) || {};
+    var rev = {}; Object.keys(cm).forEach(function(code){ rev[cm[code]] = code; });
+    return rev;
+  })();
+  var _base = metalType==='26-Gauge' ? 'T6' : metalType==='PBR' ? 'P6' : 'T9';
+  function wallSku(w){
+    if (metalType==='Galvalume') return _base+'GA';
+    var nm = w && w.wallColor;
+    if (!nm) return skuPrefix;                 // inherit building color
+    var code = _nameToCode[nm];
+    if (!code) return skuPrefix;               // unknown name → building color
+    if (code === 'FAB') code = 'FBZ';          // Frost Bronze panels use FBZ
+    else if (code === 'CFAB') code = 'CFBZ';
+    return _base + code;
+  }
 
   function fmtFtIn2(ft) {
     var totalIn = Math.ceil(ft * 12);
@@ -31098,9 +31119,10 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
   }
 
   var groups = {};
-  function add(lenFt, qty) {
-    var key = lenFt.toFixed(4);
-    if (!groups[key]) groups[key] = { lenFt: lenFt, qty: 0 };
+  function add(lenFt, qty, sku) {
+    sku = sku || skuPrefix;
+    var key = sku + '|' + lenFt.toFixed(4);
+    if (!groups[key]) groups[key] = { lenFt: lenFt, qty: 0, sku: sku };
     groups[key].qty += qty;
   }
 
@@ -31129,18 +31151,18 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
     // Partial wall: metal drops from eave down by partialH only — order exact partial height
     if (wallCfg && wallCfg.encl === 'partial') {
       var partialH = wallCfg.partialH || Math.min(4, Q.h);
-      wallHeight = Math.max(0, partialH - (wainscot ? 4 : 0));
+      wallHeight = Math.max(0, partialH - wainFt(wallCfg));
     } else if (Q.roofStyle === 'single' && Q.truss === 'Steel') {
       // Single slope steel: left=high eave (Q.h+1), right=low eave (loH+1)
       var _loH = Math.max(8, Math.ceil((Q.h||14) - (Q.w||24)/12));
       var _eaveH = (side === 'right') ? _loH : Q.h;
-      wallHeight = _eaveH + 1 - (wainscot ? 4 : 0);
+      wallHeight = _eaveH + 1 - wainFt(wallCfg);
     } else if (Q.truss === 'Steel') {
       // Steel: always Q.h + 1 regardless of overhangs or side sheds
-      wallHeight = Q.h + 1 - (wainscot ? 4 : 0);
+      wallHeight = Q.h + 1 - wainFt(wallCfg);
     } else if (Q.ventGap) {
       // Wood vent gap: exact Q.h — no +1 adder, no lean-to adjustment
-      wallHeight = Q.h - (wainscot ? 4 : 0);
+      wallHeight = Q.h - wainFt(wallCfg);
     } else {
       // Wood normal: apply flush lean-to adjustment if present
       var flushShed = (shedCfgs||[]).find(function(sc) {
@@ -31148,11 +31170,12 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
                sc.type !== 'gable' &&
                parseFloat(sc.dropFt||0) === 0;
       });
+      var _mbH = (hasOH ? Q.h : Q.h + 1) - wainFt(wallCfg);
       if (flushShed) {
         var ldIn = ledgerDepthIn(flushShed.w);
-        wallHeight = mbBaseHeight + 1 - (ldIn / 12);
+        wallHeight = _mbH + 1 - (ldIn / 12);
       } else {
-        wallHeight = mbBaseHeight;
+        wallHeight = _mbH;
       }
     }
 
@@ -31162,15 +31185,16 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
     // shortening is already handled by _openLen — no separate inset subtraction here.
     var _runLen = Math.max(0, Q.l - _openLen);
     if (_runLen <= 0) return;
+    var _wallSku = wallSku(wallCfg);
     if (_hsOnSW && _openLen <= 0 && !(wallCfg && wallCfg.encl === 'partial')) {
       // Stepped: split eave-wall metal by section. Every non-partial height branch is
       // (Q.h + const - wainscotAdj), so per-section height = wallHeight + (sec.h - Q.h). Exact.
       _hsSecsSW.forEach(function(_sec){
         var _secH = wallHeight + (_sec.h - Q.h);
-        if (_secH > 0 && _sec.len > 0) add(_secH, Math.ceil(_sec.len / 3));
+        if (_secH > 0 && _sec.len > 0) add(_secH, Math.ceil(_sec.len / 3), _wallSku);
       });
     } else {
-      add(wallHeight, Math.ceil(_runLen / 3));
+      add(wallHeight, Math.ceil(_runLen / 3), _wallSku);
     }
   }); // end if (!shedOnlyMode) forEach
 
@@ -31199,7 +31223,7 @@ window.SauceMaterials.calcSidewallMetal = function(Q, WALLS, shedCfgs) {
     return {
       category:    'Sidewall Metal',
       description: 'Sidewall Metal',
-      sku:         skuPrefix,
+      sku:         g.sku || skuPrefix,
       quantity:    g.qty,
       metalLength: fmtFtIn2(g.lenFt),
       detail:      displayType + "  |  3' wide panels"
@@ -31227,8 +31251,16 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
   var skuPrefix = getColoredSkuPrefix(metalType, 'wall');
   var displayType = metalType === 'Galvalume' ? 'Painted' : metalType;
   var wainscot  = (document.getElementById('st_wainscot')||{}).value === 'Yes';
-
-  // ── SINGLE SLOPE: trapezoidal gable ends ───────────────────────────────────
+  // Per-wall color: a gable end can override the building color (w.wallColor = a NAME).
+  var _base = metalType==='26-Gauge' ? 'T6' : metalType==='PBR' ? 'P6' : 'T9';
+  var _n2c = (function(){ var cm=(window._SKU_MAP&&window._SKU_MAP.colors)||{}; var r={}; Object.keys(cm).forEach(function(c){r[cm[c]]=c;}); return r; })();
+  function endSku(cfg){
+    if (metalType==='Galvalume') return _base+'GA';
+    var nm = cfg && cfg.wallColor; if (!nm) return skuPrefix;
+    var code = _n2c[nm]; if (!code) return skuPrefix;
+    if (code==='FAB') code='FBZ'; else if (code==='CFAB') code='CFBZ';
+    return _base + code;
+  }
   // PDF-verified formula for 24'W, loH=12, hiH=14, 1/12 pitch:
   //   8 main panels: 13'3", 13'6", 13'9", 14', 14'3", 14'6", 14'9", 15'
   //   2 snoot-face panels: 2@4', 2@2'6" (close the snoot OH on each gable end)
@@ -31398,17 +31430,34 @@ window.SauceMaterials.calcGableMetal = function(Q, WALLS) {
     return results;
   }
 
-  for (var i = 0; i < pieces; i++) {
-    var lenFt = base + i * increment;
+  // Standard gable ends — build each enclosed end with its OWN wainscot and color so a
+  // single wainscoted or recolored gable end reflects independently. Equal (height+sku)
+  // group together.
+  function _endWainFt(cfg){ return ((cfg && cfg.wainscot != null) ? !!cfg.wainscot : wainscot) ? 4 : 0; }
+  var _gGroups = {};
+  [['front', frontCfg, frontEncl], ['back', backCfg, backEncl]].forEach(function(e){
+    if (!e[2]) return;                        // end not enclosed → no gable metal
+    if (e[1] && e[1].encl === 'partial') return; // partial ends handled above
+    var _endBase = (Q.h + baseAdder) - _endWainFt(e[1]);
+    var _eSku = endSku(e[1]);
+    for (var _i = 0; _i < pieces; _i++) {
+      var _L = (_endBase + _i * increment).toFixed(4);
+      var _k = _eSku + '|' + _L;
+      if (!_gGroups[_k]) _gGroups[_k] = { len: parseFloat(_L), sku: _eSku, qty: 0 };
+      _gGroups[_k].qty += 2;                   // 2 panels per end
+    }
+  });
+  Object.keys(_gGroups).sort(function(a,b){return _gGroups[a].len-_gGroups[b].len;}).forEach(function(_k){
+    var _g = _gGroups[_k];
     results.push({
       category:    'Gable Metal',
       description: 'Gable Metal',
-      sku:         skuPrefix,
-      quantity:    qtyPerPiece,
-      metalLength: fmtFtInExact(lenFt),
+      sku:         _g.sku,
+      quantity:    _g.qty,
+      metalLength: fmtFtInExact(_g.len),
       detail:      displayType + "  |  3' wide panels  |  enclosed gable"
     });
-  }
+  });
 
   return results;
 };
@@ -32851,16 +32900,21 @@ window.SauceMaterials.calcRatGuard = function(Q, WALLS, shedCfgs) {
 //   main building enclosed eave + gable walls, enclosed side shed outer walls.
 
 window.SauceMaterials.calcDoubleAngle = function(Q, WALLS, shedCfgs) {
-  var wainscot = (document.getElementById('st_wainscot')||{}).value === 'Yes';
-  if (!wainscot) return [];
+  // Double angle is the transition trim between wainscot and the wall metal above it, so it
+  // follows wainscot per-wall: a wall gets it if its own wainscot flag is set, or (unset)
+  // the global toggle is on.
+  var globalWains = (document.getElementById('st_wainscot')||{}).value === 'Yes';
+  function wallHasWains(w){ return (w && w.wainscot != null) ? !!w.wainscot : globalWains; }
+  var anyWains = globalWains || (WALLS||[]).some(function(w){ return w.wainscot === true; });
+  if (!anyWains) return [];
 
+  function wallObj(wallId){ return (WALLS||[]).find(function(w){ return w.id === wallId; }); }
   function wallPS(wallId) {
-    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    var w = wallObj(wallId);
     return w ? (w.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
   }
-
   function wallEncl(wallId) {
-    var w = (WALLS||[]).find(function(w){ return w.id === wallId; });
+    var w = wallObj(wallId);
     return w ? w.encl : 'enclosed';
   }
 
@@ -32872,17 +32926,22 @@ window.SauceMaterials.calcDoubleAngle = function(Q, WALLS, shedCfgs) {
     groups[sku]  = (groups[sku] || 0) + Math.ceil(runLen / boardLen);
   }
 
-  // Main building enclosed eave walls
+  // Main building enclosed eave walls — only those with wainscot
   ['left','right'].forEach(function(side) {
-    if (wallEncl(side) !== 'open') addRun(Q.l, wallPS(side));
+    if (wallEncl(side) === 'open') return;
+    if (!wallHasWains(wallObj(side))) return;
+    addRun(Q.l, wallPS(side));
   });
 
-  // Main building enclosed gable walls
+  // Main building enclosed gable walls — only those with wainscot
   ['front','back'].forEach(function(side) {
-    if (wallEncl(side) !== 'open') addRun(Q.w, wallPS(side));
+    if (wallEncl(side) === 'open') return;
+    if (!wallHasWains(wallObj(side))) return;
+    addRun(Q.w, wallPS(side));
   });
 
-  // Enclosed side shed outer walls
+  // Enclosed side shed outer walls (shed follows the global toggle)
+  if (globalWains)
   (shedCfgs||[]).forEach(function(sc) {
     if (!sc.w || !sc.l) return;
     if (sc.type === 'gable') return;
