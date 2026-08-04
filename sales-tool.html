@@ -4198,7 +4198,7 @@ function buildInsetCard(){
     return '<div onclick="setInsetCorner(\''+id+'\')" style="flex:1 1 30%;min-width:88px;text-align:center;padding:7px 0;border-radius:7px;border:1.5px solid '+(on?'#FF8200':'var(--border)')+';background:'+(on?'rgba(255,130,0,.10)':'#f4f6f8')+';color:'+(on?'#c2410c':'var(--muted)')+';font-size:11px;font-weight:700;cursor:pointer;user-select:none;">'+label+'</div>';
   }
   var html='<div style="border:1px solid var(--border);border-radius:10px;padding:11px;background:#fbfcff;">'
-    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD H2]</span></div>'
+    +'<div style="font-size:10px;font-weight:800;letter-spacing:.5px;color:var(--navy);margin-bottom:8px;">INSET CORNER <span style="color:#FF8200;font-weight:900;">[BUILD H3]</span></div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px;">'
     + chip('none','None') + chip('back-left','Front Gable / Left') + chip('back-right','Front Gable / Right')
     + chip('front-left','Back Gable / Left') + chip('front-right','Back Gable / Right') + '</div>';
@@ -31796,8 +31796,16 @@ window.SauceMaterials.calcSoffitMetal = function(Q, shedCfgs) {
 
 window.SauceMaterials.calcWainscotMetal = function(Q, WALLS, shedCfgs) {
 
-  var wainscot = (document.getElementById('st_wainscot')||{}).value === 'Yes';
-  if (!wainscot) return [];
+  // Global wainscot toggle is the default; individual walls can override it (w.wainscot).
+  // A wall gets wainscot if its own flag is set, or (when unset) the global toggle is on.
+  // This mirrors the 3D render, which reads wCfg.wainscot with a global fallback — so
+  // wainscot on a single gable end now flows to materials.
+  var globalWains = (document.getElementById('st_wainscot')||{}).value === 'Yes';
+  function wallHasWains(w){ return (w && w.wainscot != null) ? !!w.wainscot : globalWains; }
+
+  // If neither the global toggle nor any per-wall flag is on, nothing to do.
+  var anyWains = globalWains || (WALLS||[]).some(function(w){ return w.wainscot === true; });
+  if (!anyWains) return [];
 
   var metalType = normalizeMetalType((document.getElementById('st_wainscotMetal')||{}).value || (document.getElementById('st_wallMetal')||{}).value || 'Tuff-Rib 29ga');
   var skuPrefix = getColoredSkuPrefix(metalType, 'wainscot');
@@ -31805,21 +31813,16 @@ window.SauceMaterials.calcWainscotMetal = function(Q, WALLS, shedCfgs) {
 
   var perimeterFt = 0;
 
-  // Main building: enclosed eave walls only
+  // Main building enclosed walls — only those with wainscot enabled (per-wall or global).
   (WALLS||[]).forEach(function(w) {
-    if ((w.id === 'left' || w.id === 'right') && w.encl !== 'open') {
-      perimeterFt += Q.l;
-    }
+    if (w.encl === 'open') return;
+    if (!wallHasWains(w)) return;
+    if (w.id === 'left' || w.id === 'right') perimeterFt += Q.l;
+    else if (w.id === 'front' || w.id === 'back') perimeterFt += Q.w;
   });
 
-  // Main building: enclosed gable walls
-  (WALLS||[]).forEach(function(w) {
-    if ((w.id === 'front' || w.id === 'back') && w.encl !== 'open') {
-      perimeterFt += Q.w;
-    }
-  });
-
-  // Enclosed side shed: outer wall + gable ends
+  // Enclosed side shed: outer wall + gable ends (shed follows the global toggle)
+  if (globalWains)
   (shedCfgs||[]).forEach(function(sc) {
     if (!sc.w || !sc.l) return;
     if (sc.encl !== 'enclosed') return;
@@ -31834,6 +31837,7 @@ window.SauceMaterials.calcWainscotMetal = function(Q, WALLS, shedCfgs) {
     if (ew.includes('gable2')) perimeterFt += sc.w;
   });
 
+  if (perimeterFt <= 0) return [];
   var qty = Math.ceil(perimeterFt / 3);
 
   return [{
@@ -37256,11 +37260,15 @@ window.SauceLabor.calcSoffit = function(truss, oh, frameType, shedCfgs) {
 // ── WAINSCOT ADDER ───────────────────────────────────────────────────────────
 // $2.50/LF — full perimeter of enclosed walls
 window.SauceLabor.calcWainscot = function(Q, WALLS, shedCfgs) {
-  var wainscot = (document.getElementById('st_wainscot')||{}).value === 'Yes';
-  if (!wainscot) return null;
+  var globalWains = (document.getElementById('st_wainscot')||{}).value === 'Yes';
+  function wallHasWains(w){ return (w && w.wainscot != null) ? !!w.wainscot : globalWains; }
+  var anyWains = globalWains || (WALLS||[]).some(function(w){ return w.wainscot === true; });
+  if (!anyWains) return null;
   var lf = 0;
   (WALLS||[]).forEach(function(w) {
-    if (w.encl === 'enclosed' || w.encl === 'partial') lf += w.len || 0;
+    if (w.encl !== 'enclosed' && w.encl !== 'partial') return;
+    if (!wallHasWains(w)) return;
+    lf += w.len || 0;
   });
   if (!lf) return null;
   return { label: 'Wainscot  |  ' + lf + ' LF @ $2.50', amount: lf * 2.50 };
