@@ -1314,7 +1314,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:#FF8200;font-weight:800;letter-spacing:.5px;">· BUILD M10</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:#FF8200;font-weight:800;letter-spacing:.5px;">· BUILD M13</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -31937,11 +31937,16 @@ window.SauceMaterials.calcLeantoUpperGable = function(Q, shedCfgs) {
 
     if (openGableCount > 0) {
       var base2 = 2.5;
+      // Gable-end 45-degree corners ("Y's"): the first and last piece of each end
+      // pick up an extra 3'6" of length. Applies to every framing path -- wood no
+      // O/H, steel, and wood w/ O/H all figure the same here.
+      var yAddG = (sc.chamfer && (sc.encl === 'roofonly' || sc.encl === 'open')) ? 3.5 : 0;
       for (var j = 0; j < pieces; j++) {
-        var lenFt2 = base2 + j * step;
+        var isYPiece = yAddG > 0 && (j === 0 || j === pieces - 1);
+        var lenFt2 = base2 + j * step + (isYPiece ? yAddG : 0);
         var lenStr2 = fmtFtInExact(lenFt2);
-        var key2 = 'open|' + skuPrefix + '|' + lenStr2;
-        if (!gablePieces[key2]) gablePieces[key2] = { qty: 0, description: 'Lean-To Upper Gable Metal', metalLength: lenStr2 };
+        var key2 = (isYPiece ? 'openY|' : 'open|') + skuPrefix + '|' + lenStr2;
+        if (!gablePieces[key2]) gablePieces[key2] = { qty: 0, description: isYPiece ? 'Lean-To Upper Gable Metal \u2014 45\u00B0 Corner' : 'Lean-To Upper Gable Metal', metalLength: lenStr2 };
         gablePieces[key2].qty += openGableCount;
       }
     }
@@ -32285,6 +32290,31 @@ window.SauceMaterials.calcWainscotMetal = function(Q, WALLS, shedCfgs) {
 // Quantity = ceil(openLength / 3).
 // Length: 9" if wood truss with overhang; 2' otherwise.
 
+// Post count for a shed's 45-degree bay corners ("Y's"). Single source of truth for
+// skirt metal, J-channel, and labor -- and deliberately mirrors the 3D chamfer bay
+// math so the material list and the render can never disagree on how many Y's exist.
+window.SauceMaterials.chamferPostCount = function(Q, sc) {
+  if (!sc || !sc.l) return 0;
+  var ps = (sc.eavePS != null && sc.eavePS !== '') ? parseFloat(sc.eavePS) : ((Q||{}).postSpacing || 10);
+  if (!ps || ps <= 0) ps = 10;
+  return Math.max(1, Math.floor(sc.l / ps)) + 1;
+};
+
+// Garage doors with the 45-degree corner ("Y") option switched on. Includes framed
+// openings -- the opening still gets the angled corners whether or not a door hangs
+// in it. Per-door toggle, independent of any shed's bay-corner setting.
+window.SauceMaterials.chamferGarageDoors = function(allDoors) {
+  return (allDoors || window._allDoors || []).filter(function(d) {
+    return d && d.type === 'garage' && d.chamfer;
+  });
+};
+
+// Does this shed get Y's at all? Eave-attached, open or roof-only, toggle on.
+window.SauceMaterials.hasChamfer = function(sc) {
+  return !!(sc && sc.chamfer && (sc.wall === 'left' || sc.wall === 'right') &&
+            (sc.encl === 'roofonly' || sc.encl === 'open'));
+};
+
 window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
 
   var metalType = normalizeMetalType((document.getElementById('st_roofMetal')||{}).value || 'Tuff-Rib 29ga');
@@ -32299,6 +32329,7 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
   var skirtFt    = woodWithOH ? 0.75 : 2;
 
   var totalQty = 0;
+  var yQty     = 0;   // 45-degree bay corner ("Y") sheets, cut at 3'6"
 
   (shedCfgs||[]).forEach(function(sc) {
     if (!sc.w || !sc.l) return;
@@ -32356,20 +32387,45 @@ window.SauceMaterials.calcSkirtMetal = function(Q, shedCfgs) {
       totalQty += Math.ceil((sc.l      + sc.w + ohAddSk) / 3);
       totalQty += Math.ceil((sc.wrapLeg + sc.w + ohAddSk) / 3);
     } else {
-      totalQty += Math.ceil(openLen / 3);
+      var skPanels = Math.ceil(openLen / 3);
+      // 45-degree bay corners ("Y's"): 2 sheets per post, each cut at 3'6". These
+      // CONSUME panels out of the normal run rather than adding to it -- e.g. a 12x60
+      // shed at 10' O/C is 20 panels total: 7 posts x 2 = 14 Y's at 3'6", leaving
+      // 6 at the normal skirt length.
+      if (window.SauceMaterials.hasChamfer(sc)) {
+        var yPieces = window.SauceMaterials.chamferPostCount(Q, sc) * 2;
+        yQty     += yPieces;
+        totalQty += Math.max(0, skPanels - yPieces);
+      } else {
+        totalQty += skPanels;
+      }
     }
   });
 
-  if (totalQty === 0) return [];
+  if (totalQty === 0 && yQty === 0) return [];
 
-  return [{
-    category:    'Skirt Metal',
-    description: 'Skirt Metal',
-    sku:         skuPrefix,
-    quantity:    totalQty,
-    metalLength: skirtLen,
-    detail:      displayType + "  |  3' wide panels  |  open lean-to header"
-  }];
+  var out = [];
+  if (totalQty > 0) {
+    out.push({
+      category:    'Skirt Metal',
+      description: 'Skirt Metal',
+      sku:         skuPrefix,
+      quantity:    totalQty,
+      metalLength: skirtLen,
+      detail:      displayType + "  |  3' wide panels  |  open lean-to header"
+    });
+  }
+  if (yQty > 0) {
+    out.push({
+      category:    'Skirt Metal',
+      description: 'Skirt Metal \u2014 45\u00B0 Bay Corners',
+      sku:         skuPrefix,
+      quantity:    yQty,
+      metalLength: "3'6\"",
+      detail:      displayType + "  |  3' wide panels  |  2 per post at open bay corners"
+    });
+  }
+  return out;
 };
 
 // ── TRIM: TRANSITION FLASHING ─────────────────────────────────────────────────
@@ -32559,6 +32615,12 @@ window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, wind
     // Under skirt + ledger: shed length ÷ boardLen × 2 runs, +1 per run safety
     add(ps, (Math.ceil(sc.l / jcBoardLen) + 1) * 2);
 
+    // 45-degree bay corners ("Y's"): one extra J-channel per post plus one per
+    // gable end -- e.g. a 12x60 at 10' O/C is 7 posts + 2 ends = 9 extra pieces.
+    if (window.SauceMaterials.hasChamfer(sc)) {
+      add(ps, window.SauceMaterials.chamferPostCount(Q, sc) + 2);
+    }
+
     // Wrap shed: secondary leg + hip run also need skirt J-channel (2 runs each)
     if (sc.type === 'wrap3' && (sc.encl === 'roofonly' || sc.encl === 'open')) {
       var _isEave3JC = (sc.wall === 'left' || sc.wall === 'right');
@@ -32585,6 +32647,11 @@ window.SauceMaterials.calcJChannel = function(Q, WALLS, shedCfgs, allDoors, wind
       add(ps, Math.ceil(sc.w / jcBoardLen) + 1);
     }
   });
+
+  // 45-degree corners ("Y's") on garage door openings: one extra J-channel each.
+  // Figured on 10' sticks like the other opening trim (walk doors, windows).
+  var yGDs = window.SauceMaterials.chamferGarageDoors(allDoors);
+  if (yGDs.length) add(10, yGDs.length);
 
   // Open main gable ends: width ÷ boardLen + 1 per open end
   (WALLS||[]).forEach(function(w) {
@@ -37777,6 +37844,17 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
     lines.push({ label: 'Garage Door Framed Opening ' + d.w + 'x' + d.h + ' @ $125', amount: 125 });
   });
 
+  // 45-degree corner ("Y") bracing on garage door openings: $20 each. Add-on trim
+  // labor on top of the door's own install rate, same as the side shed Y bracing.
+  var yGDoors = (window.SauceMaterials && window.SauceMaterials.chamferGarageDoors)
+              ? window.SauceMaterials.chamferGarageDoors(allDoors) : [];
+  if (yGDoors.length) {
+    lines.push({
+      label:  '45\u00B0 Corner Bracing \u2014 Garage Doors  |  ' + yGDoors.length + ' door(s) @ $20.00',
+      amount: yGDoors.length * 20
+    });
+  }
+
   // Drum doors — same rate as garage doors: $125 each, $200 if over 144 sqft
   var drumDoors = allDoors.filter(function(d){ return d.type === 'drum'; });
   drumDoors.forEach(function(d) {
@@ -38113,6 +38191,20 @@ window.SauceLabor.calcSideSheds = function(shedCfgs) {
     } else {
       shedLaborEntry(sc, idx, sc.l, '');
     }
+  });
+
+  // 45-degree bay corner ("Y") bracing: $20 per post and per gable end. This is
+  // add-on trim labor, not part of the $1.85/sqft build rate, so it is intentionally
+  // kept out of _shedBuildSum and therefore out of the $1,200 build-labor minimum.
+  (shedCfgs||[]).forEach(function(sc, idx) {
+    if (!sc.w || !sc.l) return;
+    if (!window.SauceMaterials || !window.SauceMaterials.hasChamfer(sc)) return;
+    var yPosts = window.SauceMaterials.chamferPostCount(_SL_Q, sc);
+    var yUnits = yPosts + 2; // posts + both gable ends
+    lines.push({
+      label:  'Side Shed ' + (idx + 1) + ' \u2014 45\u00B0 bay corner bracing  |  ' + yPosts + ' posts + 2 gable ends @ $20.00',
+      amount: yUnits * 20
+    });
   });
 
   // Minimum side-shed/extension BUILD labor: $1,200 total across ALL sheds and
