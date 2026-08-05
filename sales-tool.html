@@ -1314,7 +1314,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:#FF8200;font-weight:800;letter-spacing:.5px;">· BUILD M17</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:#FF8200;font-weight:800;letter-spacing:.5px;">· BUILD M19</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -5622,6 +5622,19 @@ async function importCompetitorPDF(input) {
       }, 45000);
       data = await safeJson(resp);
       if (data.success) break;
+      // Session rejections go through the SAME guard as every other GAS call. This path
+      // used to throw the raw error straight to the banner, which is why an import was
+      // the one action that could tell a salesman to log in again mid-quote while his
+      // client-side session was still perfectly valid.
+      if (data && (data.sessionExpired || /session/i.test(data.error || ''))) {
+        if (!checkTokenResponse(data)) {
+          // Client login still good -> server-side token blip, not a real expiry.
+          lastErr = 'Server session hiccup while parsing. Retrying...';
+          continue;
+        }
+        lastErr = 'Session expired \u2014 please log in again.';
+        break;
+      }
       lastErr = data.error || 'Parse failed';
       if (lastErr.toLowerCase().indexOf('overload') === -1 &&
           lastErr.toLowerCase().indexOf('529') === -1) break;
@@ -24338,6 +24351,7 @@ function initSalesAuth() {
         window.currentUser = u;
         window.dispatchEvent(new Event('crm:authready'));
         setTimeout(warmPing, 500);
+      try { window._startSessionKeepAlive(); } catch(e) {}
         loadInventoryPricing();
         console.log('[Sales] Auto-logged in as:', u.username);
         try { logToolEvent('page_load', { referrer: document.referrer || 'direct' }); } catch(e) {}
@@ -24454,26 +24468,42 @@ async function doSalesLogin() {
       try { logToolEvent('page_load', { referrer: document.referrer || 'direct' }); } catch(e) {}      window.currentUser.token = data.token || '';
       // Expire at next 1:00 AM Central (UTC-6 standard / UTC-5 daylight)
       // Calculate ms until next 1am Central from now
+      // Expire at the next 1:00 AM Central.
+      //
+      // The old version shifted a Date by a hand-rolled Central offset and then called
+      // getHours()/setHours() on it -- but those read the BROWSER's timezone, not
+      // Central, so the offset got applied twice. Net effect: expiry landed at 6:00 AM
+      // instead of 1:00 AM, and a login between 5:00 and 5:59 AM Central expired at
+      // 6:00 AM the SAME morning -- as little as fifteen minutes of session.
+      //
+      // Read the Central wall clock directly instead. Handles DST for free.
       window.currentUser.loginExpiry = (function() {
         var now = new Date();
-        // Central offset: -6 hours standard, -5 daylight — use JS to get local date in Central
-        // Work in UTC, offset by -6 (CST) / -5 (CDT)
-        var centralOffsetMs = 6 * 60 * 60 * 1000; // approximate as CST -6 (conservative)
-        // Check rough DST: CDT is March 2nd Sunday to Nov 1st Sunday
-        var m = now.getUTCMonth() + 1; // 1-12
-        if (m >= 3 && m <= 11) centralOffsetMs = 5 * 60 * 60 * 1000; // CDT
-        var centralNow = new Date(now.getTime() - centralOffsetMs);
-        // Build next 1am Central
-        var next1am = new Date(centralNow);
-        next1am.setHours(1, 0, 0, 0);
-        if (centralNow.getHours() >= 1) next1am.setDate(next1am.getDate() + 1); // past 1am, use tomorrow
-        // Convert back to UTC ms
-        return next1am.getTime() + centralOffsetMs;
+        // GAS is the authority on when the session dies -- it owns the Sessions sheet.
+        // When it sends its expiry back, use that verbatim so the browser and the server
+        // can't disagree. The local calculation below is only a fallback for older
+        // deployments that don't return tokenExpires yet.
+        if (data.tokenExpires && data.tokenExpires > now.getTime()) return data.tokenExpires;
+        try {
+          var parts = {};
+          new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/Chicago', hour12: false, hour: '2-digit', minute: '2-digit'
+          }).formatToParts(now).forEach(function(pt){ parts[pt.type] = pt.value; });
+          var cHour = parseInt(parts.hour, 10) % 24;
+          var cMin  = parseInt(parts.minute, 10);
+          var cNow  = cHour + cMin / 60;                       // Central time, decimal hours
+          var until = (cNow >= 1) ? (25 - cNow) : (1 - cNow);  // hours to the next 1 AM Central
+          return now.getTime() + Math.round(until * 3600000);
+        } catch(e) {
+          // Intl unavailable (very old browser): flat 20 hours, never a short session.
+          return now.getTime() + 20 * 3600000;
+        }
       })();
       sessionStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       hideSalesLoginModal();
       setTimeout(warmPing, 500);
+      try { window._startSessionKeepAlive(); } catch(e) {}
       loadInventoryPricing();
       initLainFeatures(); // unlock save/email/pdf for this user
       // Demo badge
@@ -25071,15 +25101,32 @@ function safeJson(r) {
 }
 
 function warmPing() {
-  // Fire a cheap request to wake up Apps Script before salesman touches anything
+  // Fire a cheap request to wake up Apps Script before salesman touches anything.
+  // Carries the token so that if the GAS session store uses a sliding expiry, this
+  // also keeps the session alive rather than only warming the container.
   try {
     fetch(API_URL, {
       method: 'POST',
       headers: {'Content-Type':'text/plain'},
-      body: JSON.stringify({calcType:'WoodOH', warmPing:true, w:40, l:60, h:14})
+      body: JSON.stringify({calcType:'WoodOH', warmPing:true, token: getToken(), w:40, l:60, h:14})
     }).catch(function(){});
   } catch(e) {}
 }
+
+// Repeat the warm ping through the work day. Stops on its own once the client-side
+// login has actually expired, so it never hammers GAS for a logged-out tab.
+window._startSessionKeepAlive = function() {
+  if (window._keepAliveTimer) return;
+  window._keepAliveTimer = setInterval(function() {
+    var cu = window.currentUser || {};
+    if (!cu.token || !cu.loginExpiry || Date.now() >= cu.loginExpiry) {
+      clearInterval(window._keepAliveTimer);
+      window._keepAliveTimer = null;
+      return;
+    }
+    warmPing();
+  }, 15 * 60 * 1000); // every 15 minutes
+};
 
 
 function setCalcBadge(state, text) {
