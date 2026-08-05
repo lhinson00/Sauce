@@ -1314,7 +1314,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:#FF8200;font-weight:800;letter-spacing:.5px;">· BUILD M20</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:#FF8200;font-weight:800;letter-spacing:.5px;">· BUILD M21</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -19725,6 +19725,13 @@ async function generateQuotePDF() {
   // Per-account: some salesmen present a single Total Investment with no cost
   // breakout. Flag comes from column L of the Users sheet via the login response.
   var _singleTotalPdf = !!((window.currentUser || {}).singleTotalPdf);
+  // Per-account deposit rule from column M of the Users sheet. When set, the deposit is
+  // that percent of the FULL TOTAL; when 0/blank the house rule applies (35% of
+  // materials + tax + delivery). Clamped so a bad cell can't produce a silly figure.
+  var _depPctOfTotal = (function(){
+    var v = parseFloat((window.currentUser || {}).depositPctOfTotal);
+    return (v > 0 && v <= 100) ? v : 0;
+  })();
 
   function priceBlockHeight(entry) {
     var r = entry.r || {};
@@ -19773,13 +19780,14 @@ async function generateQuotePDF() {
     doc.setFontSize(16); setTxt(col.gold);
     doc.text(totStr, MG+bodyW-8, yPos+16, {align:'right'});
     yPos += 24;
-    // Deposit row — 35% of materials + tax + shipping (amount only, no breakout shown)
+    // Deposit row — amount only, no breakout shown. House rule is 35% of materials +
+    // tax + delivery; an account with column M set uses that percent of the full total.
     var matNum  = parseFloat(String(r.materialOnly||0).replace(/[^0-9.]/g,'')) || 0;
     var taxNum  = parseFloat(String(r.tax||0).replace(/[^0-9.]/g,'')) || 0;
     var shipNum = parseFloat(String(r.shipping||0).replace(/[^0-9.]/g,'')) || 0;
-    var depBase = matNum + taxNum + shipNum;
+    var depBase = _depPctOfTotal > 0 ? totNum : (matNum + taxNum + shipNum);
     if (depBase > 0) {
-      var dep = Math.round(depBase * 0.35);
+      var dep = Math.round(_depPctOfTotal > 0 ? (totNum * _depPctOfTotal / 100) : (depBase * 0.35));
       var depStr = '$' + dep.toLocaleString('en-US');
       setFill('#5e5e5e'); doc.rect(MG, yPos, bodyW, 20, 'F');
       doc.setFont('helvetica','normal'); doc.setFontSize(9);
@@ -24467,7 +24475,8 @@ async function doSalesLogin() {
         sendEmail:    data.sendEmail   || false,
         materialList: data.materialList|| false,
         isDemo:       data.isDemo      || false,
-        singleTotalPdf: data.singleTotalPdf || false
+        singleTotalPdf: data.singleTotalPdf || false,
+        depositPctOfTotal: data.depositPctOfTotal || 0
       };
 
       try { logToolEvent('page_load', { referrer: document.referrer || 'direct' }); } catch(e) {}      window.currentUser.token = data.token || '';
