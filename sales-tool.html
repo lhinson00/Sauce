@@ -1314,7 +1314,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:#FF8200;font-weight:800;letter-spacing:.5px;">· BUILD M8</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:#FF8200;font-weight:800;letter-spacing:.5px;">· BUILD M9</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -3112,7 +3112,8 @@ function updateStripFromLocalCalc() {
     return stepTotal;
   }
 
-  // Concrete total — $3,500 minimum applied to combined total, not per section
+  // Concrete total — minimum applied to combined total, not per section
+  // ($3,500 slab / $5,500 monolithic — see SauceConcrete.getMinimum)
   var concreteAmt = 0;
   try {
     if (window._lastConcreteOpts && window.SauceConcrete) {
@@ -3131,7 +3132,7 @@ function updateStripFromLocalCalc() {
         if (sc && sc.w && sc.l) { concreteAmt += shedConcreteLineAmt(county, sc, sOpts, Q); concreteIncluded = true; }
       });
       (co.aprons||[co.apron]).filter(Boolean).forEach(function(a){ if(a&&a.included&&a.sqft){ concreteAmt += window.SauceConcrete.calculate(county, a.sqft, a).finalCost; concreteIncluded = true; } });
-      if (concreteIncluded && concreteAmt > 0) concreteAmt = Math.max(concreteAmt, 3500);
+      if (concreteIncluded && concreteAmt > 0) concreteAmt = Math.max(concreteAmt, window.SauceConcrete.getMinimum(co));
     }
   } catch(e) { console.warn('[Strip] concrete calc error:', e); }
 
@@ -3277,7 +3278,7 @@ function updateStripFromLocalCalc() {
         (window._lastConcreteOpts.aprons || [window._lastConcreteOpts.apron]).filter(Boolean).forEach(function(a) {
           if (a && a.included && a.sqft) _studConc += window.SauceConcrete.calculate(county, a.sqft, a).finalCost;
         });
-        conc = Math.max(_studConc, 3500);
+        conc = Math.max(_studConc, window.SauceConcrete.getMinimum(window._lastConcreteOpts, true));
       } catch(e) {}
     }
     var gcFeeOn = !!(document.getElementById('st_gcFee')||{}).checked;
@@ -37560,6 +37561,27 @@ window.SauceConcrete.RATES = {
   3: { slab4: 5.25, slab6: 6.50, footer4: 8.00, footer6: 8.75, label: 'East TN' }
 };
 
+// Concrete minimums. A monolithic pour (w/ footers) carries a higher floor than a
+// flat slab. Applied to the COMBINED concrete total, not per section.
+window.SauceConcrete.MIN_SLAB = 3500;
+window.SauceConcrete.MIN_MONO = 5500;
+
+// Resolve which minimum applies for a whole quote. If ANY included pour is
+// monolithic, the mono minimum governs the combined total.
+// forceMono covers the stud / metal B&B variants, which price w/ footers
+// regardless of what the concrete modal has selected.
+window.SauceConcrete.getMinimum = function(co, forceMono) {
+  if (forceMono) return window.SauceConcrete.MIN_MONO;
+  co = co || (typeof window !== 'undefined' ? window._lastConcreteOpts : null);
+  if (!co) return window.SauceConcrete.MIN_SLAB;
+  var mono = false;
+  var chk = function(o) { if (o && o.included && o.type !== 'piers' && o.footers) mono = true; };
+  chk(co.main);
+  (co.sheds || []).forEach(chk);
+  (co.aprons || [co.apron]).filter(Boolean).forEach(chk);
+  return mono ? window.SauceConcrete.MIN_MONO : window.SauceConcrete.MIN_SLAB;
+};
+
 window.SauceConcrete.calculate = function(county, sqft, opts) {
   opts = opts || {};
   var zone    = window.SauceConcrete.getZone(county);
@@ -37608,7 +37630,7 @@ window.SauceConcrete.calculate = function(county, sqft, opts) {
   return {
     lines:      lines,
     subtotal:   subtotal,
-    minimum:    3500,
+    minimum:    footers ? window.SauceConcrete.MIN_MONO : window.SauceConcrete.MIN_SLAB,
     minApplied: false,
     finalCost:  subtotal,  // minimum applied at combined total level, not per section
     zone:       zone,
@@ -42573,10 +42595,12 @@ window.openConcreteModal = function(forcedType) {
     try { updateStripFromLocalCalc(); } catch(e) {}
 
     var grandTotal = 0;
+    var anyMono = false;  // any monolithic (w/ footers) pour raises the combined minimum
     resultsDiv.innerHTML = '';
 
     function addSection(label, sqft, opts) {
       if (!opts || !sqft) return;
+      if (opts.included && opts.type !== 'piers' && opts.footers) anyMono = true;
       var result = SC.calculate(county, sqft, opts);
       var secHdr = document.createElement('div');
       secHdr.style.cssText = 'font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:rgba(255,130,0,.7);margin:6px 0 3px;';
@@ -42650,7 +42674,7 @@ window.openConcreteModal = function(forcedType) {
     apronsArr.forEach(function(a, i) { if (a && a.sqft > 0) addSection('Apron ' + (apronsArr.length > 1 ? (i+1) : ''), a.sqft, a); });
 
     if (grandTotal > 0) {
-      var CONCRETE_MIN = 3500;
+      var CONCRETE_MIN = anyMono ? window.SauceConcrete.MIN_MONO : window.SauceConcrete.MIN_SLAB;
       var minApplied = grandTotal < CONCRETE_MIN;
       var displayTotal = Math.max(grandTotal, CONCRETE_MIN);
       var totalRow = document.createElement('div');
@@ -43957,7 +43981,7 @@ window.exportMaterialCSV = function(buildType, labelStr) {
         });
         (co.aprons||[co.apron]).filter(Boolean).forEach(function(a){ if(a&&a.included&&a.sqft){ concTotal += SC.calculate(county, a.sqft, a).finalCost; } });
         if (concTotal > 0) {
-          var concFinal = Math.max(concTotal, 3500);
+          var concFinal = Math.max(concTotal, SC.getMinimum(co));
           exportItems.push({
             category: 'Concrete',
             description: 'Concrete - $' + concFinal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}),
