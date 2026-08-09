@@ -3237,7 +3237,7 @@ function updateStripFromLocalCalc() {
     var mat = matForVariant(v.forcedType) + stepMatForVariant(v.forcedType) + (window._overrideDelta ? window._overrideDelta(v.forcedType) : 0);
     var mft    = mat * (mftVal / 100);
     var matWithMft = mat + mft + matAdderAmt;  // Match materials modal: mat + MFT + custom adders
-    var tax    = farmTax ? 0 : mat * 0.0975;
+    var tax    = farmTax ? 0 : mat * (window.SauceRates ? window.SauceRates.v('labor.taxRate') : 0);
     var baseLabor = materialKit ? 0 : (v.labor ? v.labor.finalLabor : 0);
     var isWoodTruss = v.forcedType !== 'steel';
     // All labor adders are zeroed when materialKit (material-only) is toggled
@@ -38196,13 +38196,22 @@ window.SauceRates = (function() {
   /* @SAUCE-RATE-DEFAULTS-START */
   var RATE_DEFAULTS = {
     concrete: {
+      // 'flat'  — one set of rates for every job, wherever it is
+      // 'zones' — rates vary by county, using zoneMap below
+      mode: 'flat',
       zones: {
-        z1: { label: 'West TN',   slab4: 5.25, slab6: 6.50, footer4: 7.50, footer6: 8.75 },
-        z2: { label: 'Middle TN', slab4: 4.95, slab6: 6.25, footer4: 7.50, footer6: 8.25 },
-        z3: { label: 'East TN',   slab4: 5.25, slab6: 6.50, footer4: 8.00, footer6: 8.75 }
+        z1: { label: 'Zone 1', slab4: 5.25, slab6: 6.50, footer4: 7.50, footer6: 8.75 },
+        z2: { label: 'Zone 2', slab4: 4.95, slab6: 6.25, footer4: 7.50, footer6: 8.25 },
+        z3: { label: 'Zone 3', slab4: 5.25, slab6: 6.50, footer4: 8.00, footer6: 8.75 }
       },
       minSlab: 3500,
       minMono: 5500,
+      // Which pricing zone a county falls in. Empty by default — a company that
+      // prices the same everywhere just leaves it empty and every job uses
+      // defaultZone. Edited in the Rates screen, not here.
+      zoneMap: {},
+      // Used for any county not listed above, and when no county is known.
+      defaultZone: 1,
       psi5000: 0.75,
       metalLedge: 0.25,
       wireMesh: 0.85,
@@ -38232,7 +38241,11 @@ window.SauceRates = (function() {
                     up8x8: 15, up10x10: 25, up12x12: 50 },
       awning:     { upTo8: 150, over8: 250 },
       taxRate:    0.0975,
-      shippingPerMile: 6
+      shippingPerMile: 6,
+      // Engineered Stamped Drawings. Which counties require them is a local
+      // matter, so the list is empty here and edited in Rates → Regional.
+      esd:        { perSqft: 0.45, flat: 750 },
+      esdCounties: []
     }
   };
   /* @SAUCE-RATE-DEFAULTS-END */
@@ -38488,11 +38501,37 @@ window.SauceRates = (function() {
       + '</div>';
   }
 
+  // Free-text setting (currently just the zone names) — same shape as fieldRow
+  // but stored as a string rather than a number.
+  function textRow(path, label, val) {
+    var id = 'rate_' + path.replace(/\./g, '__');
+    return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0;">'
+      + '<label for="' + id + '" style="flex:1;font-size:11px;color:#c8c8c8;font-family:Outfit,sans-serif;">' + label + '</label>'
+      + '<input id="' + id + '" data-rate-text="' + path + '" type="text" value="' + String(val || '').replace(/"/g, '&quot;') + '" '
+      + 'style="width:120px;padding:5px 7px;border-radius:6px;border:1px solid #5e5e5e;background:#2b2b2b;color:#ffffff;font-size:12px;font-weight:700;font-family:Outfit,sans-serif;text-align:right;">'
+      + '</div>';
+  }
+
   function renderGroup(obj, path, depth) {
     var html = '';
     Object.keys(obj).forEach(function(k) {
       var val = obj[k], childPath = path ? (path + '.' + k) : k;
-      if (k === 'label') return;
+      // These two are lists, not single figures — they get their own editor.
+      if (k === 'zoneMap' || k === 'esdCounties') return;
+      // Concrete has a structure (flat vs zones) that a flat list of numbers
+      // can't express, so it gets a screen of its own.
+      if (depth === 0 && k === 'concrete') {
+        html += '<div style="margin:18px 0 4px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:#FF8200;">Concrete</div>'
+          + '<div style="display:flex;align-items:center;gap:10px;padding:8px 11px;background:rgba(255,255,255,.03);border:1px solid #5e5e5e;border-radius:8px;">'
+          +   '<div style="flex:1;font-size:11px;color:#c8c8c8;font-family:Outfit,sans-serif;">'
+          +     'Currently pricing <b style="color:#FF8200;">' + (window.SauceConcrete.mode() === 'zones'
+                  ? 'by zone (' + Object.keys((val || {}).zoneMap || {}).length + ' counties mapped)'
+                  : 'at one flat rate') + '</b>'
+          +   '</div>'
+          +   '<button onclick="openConcreteModal()" style="padding:7px 12px;background:#FF8200;color:#fff;border:none;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Edit Concrete Pricing</button>'
+          + '</div>';
+        return;
+      }
       if (val && typeof val === 'object') {
         var heading = pretty(k);
         if (val.label) heading += ' — ' + val.label;
@@ -38502,6 +38541,8 @@ window.SauceRates = (function() {
         html += renderGroup(val, childPath, depth + 1);
       } else if (typeof val === 'number') {
         html += fieldRow(childPath, k, val);
+      } else if (k === 'label' && typeof val === 'string') {
+        html += textRow(childPath, 'Zone name', val);
       }
     });
     return html;
@@ -38583,8 +38624,66 @@ window.SauceRates = (function() {
       var n = parseFloat(inputs[i].value);
       node[parts[parts.length - 1]] = isNaN(n) ? 0 : n;
     }
+    var texts = document.querySelectorAll('#ratesBody [data-rate-text]');
+    for (var t = 0; t < texts.length; t++) {
+      var tp = texts[t].getAttribute('data-rate-text').split('.');
+      var tn = obj;
+      for (var q = 0; q < tp.length - 1; q++) {
+        if (!tn[tp[q]] || typeof tn[tp[q]] !== 'object') tn[tp[q]] = {};
+        tn = tn[tp[q]];
+      }
+      tn[tp[tp.length - 1]] = texts[t].value;
+    }
+    return applyRegionalInputs(obj);
+  }
+
+  // ── REGIONAL EDITOR ──────────────────────────────────────────────────────
+  // Two things that are neither a single rate nor a SKU: which pricing zone a
+  // county falls in, and which counties require stamped drawings.
+  function regionalHtml() {
+    var R = window.SauceRates.all();
+    var esd = (R.labor || {}).esdCounties || [];
+    return '<div style="margin:18px 0 4px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:#FF8200;">Regional</div>'
+      + '<div style="font-size:10px;color:#8f8f8f;margin:0 0 6px;line-height:1.45;font-family:Outfit,sans-serif;">'
+      +   'Counties requiring engineered stamped drawings — comma separated. Empty means the ESD fee only applies when a salesman toggles it on manually.'
+      + '</div>'
+      + '<textarea id="esdCountiesText" spellcheck="false" placeholder="MAURY, WILLIAMSON, DAVIDSON" '
+      +   'style="width:100%;box-sizing:border-box;height:52px;padding:7px 9px;border-radius:7px;border:1px solid #5e5e5e;background:#2b2b2b;color:#ffffff;font-size:11px;font-family:monospace;">'
+      +   esd.join(', ').replace(/</g, '&lt;') + '</textarea>';
+  }
+
+  // Fold the ESD list back into the rate object.
+  function applyRegionalInputs(obj) {
+    var et = document.getElementById('esdCountiesText');
+    if (et) {
+      obj.labor = obj.labor || {};
+      obj.labor.esdCounties = et.value.split(',').map(function(c) {
+        return c.toUpperCase().trim().replace(/\s+COUNTY$/, '').trim();
+      }).filter(Boolean);
+    }
     return obj;
   }
+
+  window.importZoneCsv = function(file) {
+    var fr = new FileReader();
+    fr.onload = function() {
+      var lines = String(fr.result).split(/\r?\n/).filter(Boolean);
+      if (lines.length && /county/i.test(lines[0].split(',')[0])) lines.shift();
+      var out = [];
+      lines.forEach(function(l) {
+        var parts = l.split(',');
+        if (parts.length < 2) return;
+        var county = parts[0].toUpperCase().trim().replace(/^"|"$/g, '').replace(/\s+COUNTY$/, '').trim();
+        var zone = parseInt(parts[1], 10);
+        if (county && zone >= 1 && zone <= 3) out.push(county + ' = ' + zone);
+      });
+      if (!out.length) { setStatus('No County,Zone rows found in that file.', '#ef4444'); return; }
+      var ta = document.getElementById('zoneMapText');
+      if (ta) ta.value = out.sort().join('\n');
+      setStatus(out.length + ' counties loaded — press Save to keep them.', '#86efac');
+    };
+    fr.readAsText(file);
+  };
 
   window.saveRatesToProfile = async function(mode) {
     var R = window.SauceRates, rates = ratesFromInputs();
@@ -38619,6 +38718,271 @@ window.SauceRates = (function() {
     setStatus(j3 && j3.success ? 'Saved to "' + act.name + '".' : ('Could not save: ' + ((j3&&j3.error)||'unknown')), (j3 && j3.success) ? '#86efac' : '#ef4444');
   };
 
+  // ── CONCRETE PRICING ─────────────────────────────────────────────────────
+  // A company either charges one rate everywhere, or varies it by county. Both
+  // shapes live in the same rate profile; this screen is where they're set.
+
+  function _cRate(path) { return window.SauceRates.v('concrete.' + path); }
+
+  function cNum(path, label, val, width) {
+    var id = 'cc_' + path.replace(/\./g, '__');
+    return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0;">'
+      + '<label for="' + id + '" style="flex:1;font-size:11px;color:#c8c8c8;font-family:Outfit,sans-serif;">' + label + '</label>'
+      + '<input id="' + id + '" data-cc-path="' + path + '" type="number" step="any" value="' + (val === 0 ? '0' : val) + '" '
+      + 'style="width:' + (width || 92) + 'px;padding:5px 7px;border-radius:6px;border:1px solid #5e5e5e;background:#2b2b2b;color:#ffffff;font-size:12px;font-weight:700;font-family:Outfit,sans-serif;text-align:right;">'
+      + '</div>';
+  }
+
+  function cText(path, label, val) {
+    var id = 'cc_' + path.replace(/\./g, '__');
+    return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0;">'
+      + '<label for="' + id + '" style="flex:1;font-size:11px;color:#c8c8c8;font-family:Outfit,sans-serif;">' + label + '</label>'
+      + '<input id="' + id + '" data-cc-text="' + path + '" type="text" value="' + String(val || '').replace(/"/g, '&quot;') + '" '
+      + 'style="width:130px;padding:5px 7px;border-radius:6px;border:1px solid #5e5e5e;background:#2b2b2b;color:#ffffff;font-size:12px;font-weight:700;font-family:Outfit,sans-serif;text-align:right;">'
+      + '</div>';
+  }
+
+  function zoneBlock(z, heading) {
+    return '<div style="margin:12px 0 2px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;">' + heading + '</div>'
+      + cText('zones.' + z + '.label', 'Name', window.SauceRates.text('concrete.zones.' + z + '.label', ''))
+      + cNum('zones.' + z + '.slab4',   '4" slab ($/sqft)',        _cRate('zones.' + z + '.slab4'))
+      + cNum('zones.' + z + '.slab6',   '6" slab ($/sqft)',        _cRate('zones.' + z + '.slab6'))
+      + cNum('zones.' + z + '.footer4', '4" w/ footers ($/sqft)',  _cRate('zones.' + z + '.footer4'))
+      + cNum('zones.' + z + '.footer6', '6" w/ footers ($/sqft)',  _cRate('zones.' + z + '.footer6'));
+  }
+
+  function concreteBodyHtml() {
+    var mode = window.SauceConcrete.mode();
+    var zm = (window.SauceRates.all().concrete || {}).zoneMap || {};
+    var zmText = Object.keys(zm).sort().map(function(k) { return k + ' = ' + zm[k]; }).join('\n');
+    var isZones = mode === 'zones';
+
+    var h = '';
+    // Mode switch
+    h += '<div style="display:flex;gap:8px;margin:4px 0 14px;">'
+      +   '<button onclick="setConcreteMode(\'flat\')" style="flex:1;padding:10px;border-radius:8px;cursor:pointer;font-family:Outfit,sans-serif;font-size:12px;font-weight:800;'
+      +     (isZones ? 'background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;' : 'background:#FF8200;color:#fff;border:1px solid #FF8200;') + '">'
+      +     'One flat rate'
+      +   '</button>'
+      +   '<button onclick="setConcreteMode(\'zones\')" style="flex:1;padding:10px;border-radius:8px;cursor:pointer;font-family:Outfit,sans-serif;font-size:12px;font-weight:800;'
+      +     (isZones ? 'background:#FF8200;color:#fff;border:1px solid #FF8200;' : 'background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;') + '">'
+      +     'Varies by county'
+      +   '</button>'
+      + '</div>'
+      + '<div style="font-size:10px;color:#8f8f8f;margin-bottom:10px;line-height:1.45;font-family:Outfit,sans-serif;">'
+      +   (isZones
+            ? 'Each county is assigned a zone, and each zone has its own rates. Counties you don\'t list fall to the default zone.'
+            : 'Every job uses the same rates, wherever it is. Switch to county pricing only if your concrete cost actually moves with distance or market.')
+      + '</div>';
+
+    // Rates
+    if (isZones) {
+      h += zoneBlock('z1', 'Zone 1') + zoneBlock('z2', 'Zone 2') + zoneBlock('z3', 'Zone 3');
+      h += '<div style="margin:14px 0 2px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;">County assignment</div>'
+        +  '<div style="font-size:10px;color:#8f8f8f;margin-bottom:6px;line-height:1.45;font-family:Outfit,sans-serif;">One per line — <b>COUNTY = 1, 2 or 3</b>.</div>'
+        +  '<textarea id="ccZoneMap" spellcheck="false" placeholder="MAURY = 2&#10;SHELBY = 1&#10;KNOX = 3" '
+        +    'style="width:100%;box-sizing:border-box;height:120px;padding:7px 9px;border-radius:7px;border:1px solid #5e5e5e;background:#2b2b2b;color:#ffffff;font-size:11px;font-family:monospace;">'
+        +    zmText.replace(/</g, '&lt;') + '</textarea>'
+        +  '<div style="display:flex;gap:8px;margin:6px 0 2px;align-items:center;flex-wrap:wrap;">'
+        +    '<button onclick="document.getElementById(\'ccZoneCsv\').click()" style="padding:6px 10px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:7px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Import CSV</button>'
+        +    '<span style="font-size:10px;color:#8f8f8f;font-family:Outfit,sans-serif;">County,Zone</span>'
+        +    '<input id="ccZoneCsv" type="file" accept=".csv,text/csv" style="display:none;">'
+        +  '</div>'
+        +  cNum('defaultZone', 'Default zone for unlisted counties', _cRate('defaultZone'));
+    } else {
+      h += zoneBlock('z1', 'Rates');
+    }
+
+    // Shared everywhere
+    h += '<div style="margin:16px 0 2px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;">Minimums</div>'
+      +  cNum('minSlab', 'Flat slab minimum', _cRate('minSlab'))
+      +  cNum('minMono', 'Monolithic (w/ footers) minimum', _cRate('minMono'))
+      +  '<div style="margin:16px 0 2px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;">Add-ons ($/sqft)</div>'
+      +  cNum('psi5000',    '5,000 PSI upgrade', _cRate('psi5000'))
+      +  cNum('metalLedge', 'Metal ledge',       _cRate('metalLedge'))
+      +  cNum('wireMesh',   'Wire mesh',         _cRate('wireMesh'))
+      +  cNum('rebar',      'Rebar',             _cRate('rebar'))
+      +  cNum('stamped',    'Stamped',           _cRate('stamped'));
+
+    return h;
+  }
+
+  // Reads what's on screen so the preview reflects unsaved edits.
+  function concreteFromInputs(obj) {
+    obj = obj || window.SauceRates.all();
+    obj.concrete = obj.concrete || {};
+    var nums = document.querySelectorAll('#concreteBody [data-cc-path]');
+    for (var i = 0; i < nums.length; i++) {
+      var parts = nums[i].getAttribute('data-cc-path').split('.');
+      var node = obj.concrete;
+      for (var j = 0; j < parts.length - 1; j++) {
+        if (!node[parts[j]] || typeof node[parts[j]] !== 'object') node[parts[j]] = {};
+        node = node[parts[j]];
+      }
+      var n = parseFloat(nums[i].value);
+      node[parts[parts.length - 1]] = isNaN(n) ? 0 : n;
+    }
+    var txt = document.querySelectorAll('#concreteBody [data-cc-text]');
+    for (var t = 0; t < txt.length; t++) {
+      var tp = txt[t].getAttribute('data-cc-text').split('.');
+      var tn = obj.concrete;
+      for (var q = 0; q < tp.length - 1; q++) {
+        if (!tn[tp[q]] || typeof tn[tp[q]] !== 'object') tn[tp[q]] = {};
+        tn = tn[tp[q]];
+      }
+      tn[tp[tp.length - 1]] = txt[t].value;
+    }
+    var zt = document.getElementById('ccZoneMap');
+    if (zt) {
+      var map = {};
+      zt.value.split('\n').forEach(function(line) {
+        var m = line.split(/[=,\t]/);
+        if (m.length < 2) return;
+        var county = m[0].toUpperCase().trim().replace(/\s+COUNTY$/, '').trim();
+        var zone = parseInt(m[1], 10);
+        if (county && zone >= 1 && zone <= 3) map[county] = zone;
+      });
+      obj.concrete.zoneMap = map;
+    }
+    return obj;
+  }
+
+  // Live check: price a slab at the numbers currently on screen.
+  window.previewConcrete = function() {
+    var el = document.getElementById('ccPreview');
+    if (!el) return;
+    var sqft   = parseFloat((document.getElementById('ccPreviewSqft') || {}).value) || 0;
+    var county = ((document.getElementById('ccPreviewCounty') || {}).value || '').trim();
+    if (!sqft) { el.textContent = 'Enter a square footage to preview.'; el.style.color = '#8f8f8f'; return; }
+
+    var backup = window.SauceRates.all();
+    var edited = concreteFromInputs(JSON.parse(JSON.stringify(backup)));
+    window.SauceRates.save(edited);            // apply, price, then put it back
+    try {
+      var r4 = window.SauceConcrete.calculate(county, sqft, { thickness: '4', footers: false });
+      var r6 = window.SauceConcrete.calculate(county, sqft, { thickness: '6', footers: true });
+      var zn = window.SauceRates.text('concrete.zones.z' + (r4.zone || 1) + '.label', 'Zone ' + (r4.zone || 1));
+      // The minimum is applied to the combined concrete total, not per section,
+      // so show what each pour lands at once its floor is taken into account.
+      function withMin(r) {
+        var floor = r.minimum || 0;
+        var hit = r.subtotal < floor;
+        return '<b>$' + Math.round(hit ? floor : r.subtotal).toLocaleString('en-US') + '</b>'
+          + (hit ? ' <span style="color:#fbbf24;">(minimum, from $' + Math.round(r.subtotal).toLocaleString('en-US') + ')</span>' : '');
+      }
+      el.innerHTML = sqft.toLocaleString('en-US') + ' sqft'
+        + (county ? ' in ' + county.toUpperCase() : '')
+        + ' &rarr; <b style="color:#FF8200;">' + zn + '</b>'
+        + (window.SauceConcrete.mode() === 'zones' ? '' : ' <span style="color:#8f8f8f;">(flat rate)</span>') + '<br>'
+        + '4" slab: ' + withMin(r4)
+        + ' &nbsp;·&nbsp; 6" w/ footers: ' + withMin(r6);
+      el.style.color = '#c8c8c8';
+    } catch(e) {
+      el.textContent = 'Could not price that: ' + e.message;
+      el.style.color = '#ef4444';
+    } finally {
+      window.SauceRates.save(backup);
+    }
+  };
+
+  window.setConcreteMode = function(mode) {
+    var obj = concreteFromInputs();
+    obj.concrete.mode = (mode === 'zones') ? 'zones' : 'flat';
+    window.SauceRates.save(obj);
+    openConcreteModal();
+  };
+
+  window.importConcreteZoneCsv = function(file) {
+    var fr = new FileReader();
+    fr.onload = function() {
+      var lines = String(fr.result).split(/\r?\n/).filter(Boolean);
+      if (lines.length && /county/i.test(lines[0].split(',')[0])) lines.shift();
+      var out = [];
+      lines.forEach(function(l) {
+        var parts = l.split(',');
+        if (parts.length < 2) return;
+        var county = parts[0].toUpperCase().trim().replace(/^"|"$/g, '').replace(/\s+COUNTY$/, '').trim();
+        var zone = parseInt(parts[1], 10);
+        if (county && zone >= 1 && zone <= 3) out.push(county + ' = ' + zone);
+      });
+      var st = document.getElementById('ccStatus');
+      if (!out.length) { if (st) { st.textContent = 'No County,Zone rows in that file.'; st.style.color = '#ef4444'; } return; }
+      var ta = document.getElementById('ccZoneMap');
+      if (ta) ta.value = out.sort().join('\n');
+      if (st) { st.textContent = out.length + ' counties loaded — press Save to keep them.'; st.style.color = '#86efac'; }
+    };
+    fr.readAsText(file);
+  };
+
+  window.saveConcretePricing = async function(target) {
+    var obj = concreteFromInputs();
+    window.SauceRates.save(obj);
+    var st = document.getElementById('ccStatus');
+    function say(msg, color) { if (st) { st.textContent = msg; st.style.color = color || '#8f8f8f'; } }
+
+    var R = window.SauceRates, act = R.active(), me = ((window.currentUser||{}).username || '');
+    if (target === 'user') {
+      say('Saving as your personal rates...', '#FF8200');
+      var j1 = await R.saveProfile({ scope: 'user', owner: me, name: me + ' rates', rates: obj });
+      say(j1 && j1.success ? 'Saved to your personal rates.' : ('Could not save: ' + ((j1&&j1.error)||'unknown')), (j1&&j1.success) ? '#86efac' : '#ef4444');
+      return;
+    }
+    if (!act) { say('Applied here. No profile is loaded — open Rates and use Save as New Profile to keep it.', '#fbbf24'); return; }
+    if (!act.canEdit) { say('Applied here only — those are company rates you cannot change. Use Save as My Rates.', '#fbbf24'); return; }
+    say('Saving to "' + act.name + '"...', '#FF8200');
+    var j = await R.saveProfile({ id: act.id, scope: act.scope, owner: act.owner, name: act.name, rates: obj });
+    say(j && j.success ? 'Saved to "' + act.name + '".' : ('Could not save: ' + ((j&&j.error)||'unknown')), (j&&j.success) ? '#86efac' : '#ef4444');
+  };
+
+  window.openConcreteModal = function() {
+    var old = document.getElementById('concreteModal');
+    if (old) old.remove();
+
+    var wrap = document.createElement('div');
+    wrap.id = 'concreteModal';
+    wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:100010;display:flex;align-items:center;justify-content:center;padding:20px;';
+    wrap.onclick = function(e) { if (e.target === wrap) wrap.remove(); };
+
+    var act = window.SauceRates.active();
+    wrap.innerHTML =
+      '<div style="background:#3a3a3a;border:1px solid #5e5e5e;border-radius:14px;width:100%;max-width:520px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6);">'
+      + '<div style="padding:16px 20px 12px;border-bottom:1px solid #5e5e5e;display:flex;align-items:center;gap:10px;">'
+      +   '<div style="flex:1;">'
+      +     '<div style="font-size:15px;font-weight:800;color:#ffffff;font-family:Outfit,sans-serif;">Concrete Pricing</div>'
+      +     '<div style="font-size:11px;color:#8f8f8f;margin-top:2px;font-family:Outfit,sans-serif;">'
+      +       (((window.currentUser||{}).companyName) ? (window.currentUser.companyName + ' &middot; ') : '')
+      +       (act ? act.name : 'built-in rates') + '</div>'
+      +   '</div>'
+      +   '<button onclick="document.getElementById(\'concreteModal\').remove()" style="background:none;border:none;color:#8f8f8f;font-size:22px;cursor:pointer;line-height:1;">&times;</button>'
+      + '</div>'
+      + '<div id="concreteBody" style="flex:1;overflow-y:auto;padding:8px 20px 16px;">' + concreteBodyHtml() + '</div>'
+      + '<div style="padding:10px 20px 16px;border-top:1px solid #5e5e5e;">'
+      +   '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">'
+      +     '<span style="font-size:10px;color:#8f8f8f;font-family:Outfit,sans-serif;">Check:</span>'
+      +     '<input id="ccPreviewSqft" type="number" value="1200" style="width:78px;padding:5px 7px;border-radius:6px;border:1px solid #5e5e5e;background:#2b2b2b;color:#fff;font-size:11px;text-align:right;font-family:Outfit,sans-serif;">'
+      +     '<span style="font-size:10px;color:#8f8f8f;font-family:Outfit,sans-serif;">sqft in</span>'
+      +     '<input id="ccPreviewCounty" type="text" placeholder="county (optional)" style="flex:1;min-width:110px;padding:5px 7px;border-radius:6px;border:1px solid #5e5e5e;background:#2b2b2b;color:#fff;font-size:11px;font-family:Outfit,sans-serif;">'
+      +     '<button onclick="previewConcrete()" style="padding:5px 10px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Price it</button>'
+      +   '</div>'
+      +   '<div id="ccPreview" style="font-size:11px;color:#8f8f8f;line-height:1.5;min-height:30px;font-family:Outfit,sans-serif;"></div>'
+      +   '<div id="ccStatus" style="font-size:11px;color:#8f8f8f;min-height:15px;margin:6px 0 8px;font-family:Outfit,sans-serif;"></div>'
+      +   '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+      +     '<button onclick="saveConcretePricing(\'current\')" style="flex:1;min-width:110px;padding:9px 14px;background:#FF8200;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Save</button>'
+      +     '<button onclick="saveConcretePricing(\'user\')" style="padding:9px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Save as My Rates</button>'
+      +   '</div>'
+      + '</div>'
+      + '</div>';
+
+    document.body.appendChild(wrap);
+    var zc = document.getElementById('ccZoneCsv');
+    if (zc) zc.onchange = function(e) {
+      var f = e.target.files && e.target.files[0];
+      if (f) importConcreteZoneCsv(f);
+      e.target.value = '';
+    };
+    previewConcrete();
+  };
+
   window.openRatesModal = function() {
     var old = document.getElementById('ratesModal');
     if (old) old.remove();
@@ -38643,7 +39007,7 @@ window.SauceRates = (function() {
       + '</div>'
       + profileBarHtml()
       + (cleared ? '<div style="margin:12px 20px 0;padding:9px 12px;background:rgba(251,191,36,.10);border:1px solid rgba(251,191,36,.35);border-radius:8px;font-size:11px;color:#fbbf24;font-family:Outfit,sans-serif;">All rates are currently 0 — concrete and labor will price at $0 until rates are entered.</div>' : '')
-      + '<div id="ratesBody" style="flex:1;overflow-y:auto;padding:4px 20px 16px;">' + renderGroup(window.SauceRates.all(), '', 0) + '</div>'
+      + '<div id="ratesBody" style="flex:1;overflow-y:auto;padding:4px 20px 16px;">' + renderGroup(window.SauceRates.all(), '', 0) + regionalHtml() + '</div>'
       + '<div style="padding:12px 20px 16px;border-top:1px solid #5e5e5e;">'
       +   '<div id="ratesStatus" style="font-size:11px;color:#8f8f8f;min-height:15px;margin-bottom:8px;font-family:Outfit,sans-serif;"></div>'
       +   '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
@@ -38676,6 +39040,13 @@ window.SauceRates = (function() {
       + '</div>';
 
     document.body.appendChild(wrap);
+
+    var zcsv = document.getElementById('zoneCsvInput');
+    if (zcsv) zcsv.onchange = function(e) {
+      var f = e.target.files && e.target.files[0];
+      if (f) importZoneCsv(f);
+      e.target.value = '';
+    };
 
     var sku = document.getElementById('skuCsvInput');
     if (sku) sku.onchange = function(e) {
@@ -38841,49 +39212,39 @@ window.SauceRates = (function() {
 window.SauceConcrete = window.SauceConcrete || {};
 
 // Tennessee county → concrete pricing zone (1=West, 2=Middle, 3=East)
-window.SauceConcrete.COUNTY_ZONES = {
-  // WEST TENNESSEE — Zone 1
-  // West of the Hardin/Decatur/Benton/Houston/Montgomery line
-  'SHELBY':1,'FAYETTE':1,'HARDEMAN':1,'MCNAIRY':1,
-  'TIPTON':1,'HAYWOOD':1,'MADISON':1,'CHESTER':1,'HENDERSON':1,
-  'HENRY':1,'WEAKLEY':1,'OBION':1,
-  'LAKE':1,'DYER':1,'GIBSON':1,'CARROLL':1,'CROCKETT':1,
-  'LAUDERDALE':1,
+// County → concrete pricing zone. This is company data, not program logic: a
+// company in another state has different counties and may not price by region at
+// all. It lives in the rate profile now (Rates → Concrete zone map) and this file
+// ships with none, so nothing inherits another market's map.
+Object.defineProperty(window.SauceConcrete, 'COUNTY_ZONES', {
+  configurable: true,
+  get: function() {
+    var m = (window.SauceRates && window.SauceRates.all().concrete || {}).zoneMap || {};
+    var out = {};
+    Object.keys(m).forEach(function(k) { out[String(k).toUpperCase().trim()] = parseInt(m[k], 10) || 0; });
+    return out;
+  }
+});
 
-  // MIDDLE TENNESSEE — Zone 2
-  // Western boundary counties: Hardin, Decatur, Benton, Houston, Montgomery (all Zone 2)
-  // Eastern boundary counties: Fentress, Cumberland, Bledsoe, Hamilton (all Zone 2)
-  'HARDIN':2,'DECATUR':2,'BENTON':2,'HOUSTON':2,'MONTGOMERY':2,
-  'WAYNE':2,'PERRY':2,'HUMPHREYS':2,'STEWART':2,
-  'DICKSON':2,'CHEATHAM':2,'DAVIDSON':2,'ROBERTSON':2,'SUMNER':2,
-  'WILLIAMSON':2,'MAURY':2,'MARSHALL':2,'BEDFORD':2,'COFFEE':2,
-  'MOORE':2,'LINCOLN':2,'GILES':2,'LAWRENCE':2,
-  'LEWIS':2,'HICKMAN':2,'WILLIAMSON':2,
-  'TROUSDALE':2,'MACON':2,'CLAY':2,'PICKETT':2,
-  'OVERTON':2,'JACKSON':2,'PUTNAM':2,'DEKALB':2,
-  'CANNON':2,'RUTHERFORD':2,'WILSON':2,'SMITH':2,
-  'WHITE':2,'WARREN':2,'VAN BUREN':2,'GRUNDY':2,'MARION':2,
-  'SEQUATCHIE':2,'FRANKLIN':2,
-  // Eastern boundary (Zone 2)
-  'FENTRESS':2,'CUMBERLAND':2,'BLEDSOE':2,'HAMILTON':2,
+window.SauceConcrete.mode = function() {
+  var m = window.SauceRates ? window.SauceRates.text('concrete.mode', 'flat') : 'flat';
+  return (String(m).toLowerCase() === 'zones') ? 'zones' : 'flat';
+};
 
-  // EAST TENNESSEE — Zone 3
-  // Everything east of Fentress/Cumberland/Bledsoe/Hamilton
-  'SCOTT':3,'CAMPBELL':3,'CLAIBORNE':3,'HANCOCK':3,'HAWKINS':3,
-  'SULLIVAN':3,'WASHINGTON':3,'CARTER':3,'UNICOI':3,'JOHNSON':3,
-  'UNION':3,'GRAINGER':3,'HAMBLEN':3,'GREENE':3,'COCKE':3,
-  'SEVIER':3,'BLOUNT':3,'LOUDON':3,'MONROE':3,'MCMINN':3,
-  'POLK':3,'BRADLEY':3,'ANDERSON':3,'KNOX':3,'JEFFERSON':3,
-  'MORGAN':3,'ROANE':3,'RHEA':3,'MEIGS':3
+window.SauceConcrete.defaultZone = function() {
+  var z = parseInt((window.SauceRates && window.SauceRates.v('concrete.defaultZone')) || 0, 10);
+  return (z >= 1 && z <= 3) ? z : 1;
 };
 
 window.SauceConcrete.getZone = function(county) {
-  if (!county) return null;
+  // Flat pricing ignores geography entirely — every job uses the one rate set.
+  if (window.SauceConcrete.mode() !== 'zones') return 1;
+  var dz = window.SauceConcrete.defaultZone();
+  if (!county) return dz;
   var key = county.toUpperCase().trim().replace(/\s+COUNTY$/i,'').trim();
   var zone = window.SauceConcrete.COUNTY_ZONES[key];
-  // Out-of-state or unrecognized → default to Middle TN (Zone 2) pricing
-  if (!zone) return 2;
-  return zone;
+  // A county the company hasn't mapped uses its default zone.
+  return zone || dz;
 };
 
 // Base rates per zone — all live in SauceRates now, read fresh on every access
@@ -38932,7 +39293,7 @@ window.SauceConcrete.getMinimum = function(co, forceMono) {
 window.SauceConcrete.calculate = function(county, sqft, opts) {
   opts = opts || {};
   var zone    = window.SauceConcrete.getZone(county);
-  var rates   = zone ? window.SauceConcrete.RATES[zone] : window.SauceConcrete.RATES[2]; // default Middle TN
+  var rates   = window.SauceConcrete.RATES[zone] || window.SauceConcrete.RATES[window.SauceConcrete.defaultZone()];
   var lines   = [];
 
   // Base rate
@@ -39535,7 +39896,7 @@ window.SauceLabor.calcSideSheds = function(shedCfgs) {
 };
 
 // ── TAX ──────────────────────────────────────────────────────────────────────
-// Universal flat rate: 9.75%
+// Rate comes from the company's rate profile
 window.SauceLabor.calcTax = function(materialTotal) {
   var rate = window.SauceRates.v('labor.taxRate');
   var amount = materialTotal * rate;
@@ -39748,11 +40109,16 @@ window.SauceLabor.calculateAll = function() {
 
 // ====================================================================
 // SAUCE ESD — Engineered Stamped Drawings
-// County-based fee: (total footprint sqft × 0.45) + $750
-// Only applies in specific counties
+// County-based fee: (total footprint sqft × rate) + flat
+// Only applies in the counties the company lists in its rate profile
 // ====================================================================
 window.SauceESD = {
-  COUNTIES: ['MAURY','WILLIAMSON','DAVIDSON','MADISON','SHELBY','DESOTO','RUTHERFORD','SEVIER','KNOX'],
+  // Counties that require stamped drawings — company data, kept in the rate
+  // profile so one company's jurisdiction never bills another's job.
+  get COUNTIES() {
+    var list = (window.SauceRates && window.SauceRates.all().labor || {}).esdCounties || [];
+    return list.map(function(c) { return String(c).toUpperCase().trim(); });
+  },
   calculate: function(county, mainSqft, shedCfgs, forceApply) {
     // forceApply=true when manual toggle is on — skip county check
     if (!forceApply) {
@@ -39763,22 +40129,27 @@ window.SauceESD = {
     }
     var shedSqft = (shedCfgs||[]).reduce(function(s, sc){ return s + shedConcreteSqft(sc, Q); }, 0);
     var totalSqft = mainSqft + shedSqft;
-    var amount = (totalSqft * 0.45) + 750;
+    var perSqft = window.SauceRates ? window.SauceRates.v('labor.esd.perSqft') : 0;
+    var flat    = window.SauceRates ? window.SauceRates.v('labor.esd.flat') : 0;
+    var amount = (totalSqft * perSqft) + flat;
     return {
       amount: amount,
       applies: true,
-      label: 'ESD  |  ' + totalSqft + ' sqft × $0.45 + $750' + (county ? '  |  ' + county : '')
+      label: 'ESD  |  ' + totalSqft + ' sqft × $' + perSqft.toFixed(2) + ' + $' + flat.toLocaleString('en-US') + (county ? '  |  ' + county : '')
     };
   }
 };
 // ====================================================================
 window.SauceTax = {
-  RATE: 0.0975,
+  // Rate comes from the company's profile, same as SauceLabor.calcTax.
+  get RATE() { return window.SauceRates ? window.SauceRates.v('labor.taxRate') : 0; },
   calculate: function(materialsSubtotal) {
-    var amount = materialsSubtotal * 0.0975;
+    var rate = window.SauceTax.RATE;
+    var amount = materialsSubtotal * rate;
+    var pct = (rate * 100).toFixed(2).replace(/\.?0+$/, '') + '%';
     return {
       amount: amount,
-      label:  'Sales Tax (9.75%)  |  materials subtotal $' + materialsSubtotal.toFixed(2) + ' × 9.75%'
+      label:  'Sales Tax (' + pct + ')  |  materials subtotal $' + materialsSubtotal.toFixed(2) + ' × ' + pct
     };
   }
 };
@@ -46729,7 +47100,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
   var _shipping    = 0;
   var _shipIncluded = true;
   var _taxIncluded  = true;
-  var TAX_RATE      = 0.0975; // 9.75%
+  var TAX_RATE      = (window.SauceRates ? window.SauceRates.v('labor.taxRate') : 0);
 
   function newRow(sku, desc, unitPrice) {
     return { id: _nextId++, sku: sku||'', desc: desc||'', qty: 1, ft: 0, inch: 0, unitPrice: unitPrice||0 };
@@ -46802,7 +47173,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     + '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:12px;color:#aab2be;">'
     +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">'
     +     '<input type="checkbox" id="mb-tax-chk"' + (_taxIncluded ? ' checked' : '') + ' onchange="window._MatBuilder._toggleTax(this.checked)" style="accent-color:#FF8200;">'
-    +     'Tax <span style="color:#666;font-size:10px;">(9.75%)</span></label>'
+    +     'Tax <span style="color:#666;font-size:10px;">(' + ((TAX_RATE * 100).toFixed(2).replace(/\.?0+$/, '')) + '%)</span></label>'
     +   '<span>' + fmt$(tax) + '</span>'
     + '</div>'
     + '<div style="display:flex;justify-content:space-between;padding:8px 0 0;font-size:14px;font-weight:800;color:#FF8200;border-top:1px solid rgba(255,130,0,.2);margin-top:4px;"><span>Total</span><span>' + fmt$(gt) + '</span></div>';
@@ -47022,7 +47393,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     }
     // Tax row
     if (_taxIncluded && taxAmt() > 0) {
-      rows.push(['TAX', csvEscape('Tax (9.75%)'), 0, 0, 1, ''].join(',') + ',,' + taxAmt().toFixed(2));
+      rows.push(['TAX', csvEscape('Tax (' + ((TAX_RATE * 100).toFixed(2).replace(/\.?0+$/, '')) + '%)'), 0, 0, 1, ''].join(',') + ',,' + taxAmt().toFixed(2));
     }
     var name = (document.getElementById('mb-cust-name')||{}).value || 'Material-Order';
     var today = new Date();
