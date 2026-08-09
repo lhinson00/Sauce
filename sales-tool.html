@@ -7930,6 +7930,22 @@ function fallbackCopy(text,cb){
 window.CUSTOMER_BUILD = false; // BUILD FLAG - build-design.js flips this to true for design.html
 window._customerMode = false;
 
+// ── WHO IS SIGNED IN ─────────────────────────────────────────────────────────
+// The tool ships with no privileged username in it. Rights come from the login
+// response: Role on the Users sheet decides who administers a company, and the
+// SUPER_ADMIN script property decides who administers all of them.
+window.isSuperUser = function(u) {
+  u = u || window.currentUser || {};
+  return !!(u.isSuperAdmin || u.role === 'super');
+};
+window.isCompanyAdminUser = function(u) {
+  u = u || window.currentUser || {};
+  return !!(u.isCompanyAdmin || u.role === 'admin' || u.role === 'super' || u.isSuperAdmin);
+};
+window.currentCompanyName = function() {
+  return ((window.currentUser || {}).companyName) || '';
+};
+
 function initCustomerMode() {
   var params = new URLSearchParams(window.location.search);
   if (params.get('mode') !== 'customer' && !window.CUSTOMER_BUILD) return;
@@ -7956,22 +7972,6 @@ function initCustomerMode() {
   window._skipPriceCalc = true;
 
   // Remove the login gate — fire init directly
-// ── WHO IS SIGNED IN ─────────────────────────────────────────────────────────
-// The tool ships with no privileged username in it. Rights come from the login
-// response: Role on the Users sheet decides who administers a company, and the
-// SUPER_ADMIN script property decides who administers all of them.
-window.isSuperUser = function(u) {
-  u = u || window.currentUser || {};
-  return !!(u.isSuperAdmin || u.role === 'super');
-};
-window.isCompanyAdminUser = function(u) {
-  u = u || window.currentUser || {};
-  return !!(u.isCompanyAdmin || u.role === 'admin' || u.role === 'super' || u.isSuperAdmin);
-};
-window.currentCompanyName = function() {
-  return ((window.currentUser || {}).companyName) || '';
-};
-
   window.currentUser = { username: 'customer', isDemo: false, token: '' };
 }
 
@@ -8367,9 +8367,13 @@ function initMobileViewport() {
   if (!btnRow || !wall) return;
   if (window.innerWidth <= 700) {
     btnRow.style.display = 'flex';
+    // The utility column is display:none on mobile, so anything that lives there
+    // has to be moved into this row or it simply cannot be reached on a phone.
+    // Rates starts hidden and is revealed at login for whoever may open it.
     [wall, post, dim,
      document.getElementById('vpLoadBtn'),
-     document.getElementById('vpKitsBtn')
+     document.getElementById('vpKitsBtn'),
+     document.getElementById('vpRatesBtn')
     ].forEach(function(b) {
       if (!b) return;
       b.style.position = 'static';
@@ -8385,6 +8389,35 @@ function initMobileViewport() {
   }
 }
 document.addEventListener('DOMContentLoaded', initMobileViewport);
+
+// One place that decides which of the account-gated buttons are visible, so a
+// new login route can't quietly leave one of them hidden. Runs on authready,
+// whichever path got the user signed in.
+window.refreshAccountButtons = function() {
+  var admin = (typeof isCompanyAdminUser === 'function') ? isCompanyAdminUser() : false;
+  [['vpActivityBtn', admin], ['vpHardRefreshBtn', admin], ['vpPromoBtn', admin],
+   ['vpRatesBtn', true]                       // everyone may see their own rates
+  ].forEach(function(pair) {
+    var el = document.getElementById(pair[0]);
+    if (!el) return;
+    el.style.display = pair[1] ? '' : 'none';
+    // On a phone the button has to live in the row, not the hidden column.
+    if (pair[1] && window.innerWidth <= 700) {
+      var row = document.getElementById('vpBtnRow');
+      if (row && el.parentNode !== row) {
+        el.style.position = 'static';
+        el.style.top = el.style.right = el.style.bottom = el.style.left = '';
+        el.style.fontSize = '9px';
+        el.style.padding = '5px 0';
+        el.style.flex = '1';
+        el.style.textAlign = 'center';
+        row.appendChild(el);
+        row.style.display = 'flex';
+      }
+    }
+  });
+};
+window.addEventListener('crm:authready', function() { try { refreshAccountButtons(); } catch(e) {} });
 
 function initMobileQuote() {
   if (window.innerWidth > 700) return;
@@ -24721,11 +24754,9 @@ function initSalesAuth() {
         try { logToolEvent('page_load', { referrer: document.referrer || 'direct' }); } catch(e) {}
         // Load follow-ups for this salesman
       // Show the activity log button for admins on login
-      var _ab2 = document.getElementById('vpActivityBtn');
-      if (_ab2) _ab2.style.display = isCompanyAdminUser() ? '' : 'none'; var _rb2 = document.getElementById('vpHardRefreshBtn'); if (_rb2) _rb2.style.display = isCompanyAdminUser() ? '' : 'none'; var _pb2 = document.getElementById('vpPromoBtn'); if (_pb2) _pb2.style.display = isCompanyAdminUser() ? '' : 'none'; var _rt2 = document.getElementById('vpRatesBtn'); if (_rt2) _rt2.style.display = ''; if (window.SauceRates) { try { window.SauceRates.syncFromServer(true); } catch(e) {} } if (typeof loadCompanySettings === 'function') { try { loadCompanySettings(); } catch(e) {} } var _bfBtn2 = document.getElementById('vpBackfillBtn'); if (_bfBtn2) _bfBtn2.style.display = isCompanyAdminUser() ? '' : 'none'; var _fuBtn2 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn2) _fuBtn2.style.display = ''; var _mbBtnA = document.getElementById('matBuilderBtn'); if (_mbBtnA) _mbBtnA.style.display = ''; var _mbRowA=document.getElementById('matBuilderBtnRow'); if(_mbRowA) _mbRowA.style.display = '';
+      refreshAccountButtons(); if (window.SauceRates) { try { window.SauceRates.syncFromServer(true); } catch(e) {} } if (typeof loadCompanySettings === 'function') { try { loadCompanySettings(); } catch(e) {} } var _bfBtn2 = document.getElementById('vpBackfillBtn'); if (_bfBtn2) _bfBtn2.style.display = isCompanyAdminUser() ? '' : 'none'; var _fuBtn2 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn2) _fuBtn2.style.display = ''; var _mbBtnA = document.getElementById('matBuilderBtn'); if (_mbBtnA) _mbBtnA.style.display = ''; var _mbRowA=document.getElementById('matBuilderBtnRow'); if(_mbRowA) _mbRowA.style.display = '';
         // Show the activity log button for admins on login
-        var _ab = document.getElementById('vpActivityBtn');
-        if (_ab) _ab.style.display = isCompanyAdminUser(u) ? '' : 'none'; var _rb3 = document.getElementById('vpHardRefreshBtn'); if (_rb3) _rb3.style.display = isCompanyAdminUser(u) ? '' : 'none'; var _pb3 = document.getElementById('vpPromoBtn'); if (_pb3) _pb3.style.display = isCompanyAdminUser(u) ? '' : 'none'; var _rt3 = document.getElementById('vpRatesBtn'); if (_rt3) _rt3.style.display = ''; if (window.SauceRates) { try { window.SauceRates.syncFromServer(true); } catch(e) {} } if (typeof loadCompanySettings === 'function') { try { loadCompanySettings(); } catch(e) {} } var _bfBtn3 = document.getElementById('vpBackfillBtn'); if (_bfBtn3) _bfBtn3.style.display = isCompanyAdminUser(u) ? '' : 'none'; var _fuBtn3 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn3) _fuBtn3.style.display = ''; var _mbBtnB = document.getElementById('matBuilderBtn'); if (_mbBtnB) _mbBtnB.style.display = ''; var _mbRowB=document.getElementById('matBuilderBtnRow'); if(_mbRowB) _mbRowB.style.display = '';
+        refreshAccountButtons(); if (window.SauceRates) { try { window.SauceRates.syncFromServer(true); } catch(e) {} } if (typeof loadCompanySettings === 'function') { try { loadCompanySettings(); } catch(e) {} } var _bfBtn3 = document.getElementById('vpBackfillBtn'); if (_bfBtn3) _bfBtn3.style.display = isCompanyAdminUser(u) ? '' : 'none'; var _fuBtn3 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn3) _fuBtn3.style.display = ''; var _mbBtnB = document.getElementById('matBuilderBtn'); if (_mbBtnB) _mbBtnB.style.display = ''; var _mbRowB=document.getElementById('matBuilderBtnRow'); if(_mbRowB) _mbRowB.style.display = '';
         // Fire address lookup immediately so shipping/mileage is ready
         setTimeout(function() {
           var addr = (document.getElementById('st_address')||{}).value || '';
