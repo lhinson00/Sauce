@@ -2421,6 +2421,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <button id="vpImportBtn"   onclick="document.getElementById('pdfImportInput').click()" style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Import Quote</button>
         <button id="vpActivityBtn" onclick="openActivityLog()"     style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Activity Log</button>
         <button id="vpHardRefreshBtn" onclick="hardRefreshApp()" title="Force-reload the newest build (bypasses cache, same as Ctrl+Shift+R)" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(96,165,250,.55);border-radius:8px;color:#93c5fd;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Hard Refresh</button>
+        <button id="vpUsersBtn" onclick="openAdminModal()" title="Users, roles and company setup" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Users</button>
         <button id="vpRatesBtn" onclick="openRatesModal()" title="Concrete and labor rates — your own or the company's" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Rates</button>
         <button id="vpPromoBtn" onclick="openPromoModal()" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Promos</button>
       </div>
@@ -8373,7 +8374,8 @@ function initMobileViewport() {
     [wall, post, dim,
      document.getElementById('vpLoadBtn'),
      document.getElementById('vpKitsBtn'),
-     document.getElementById('vpRatesBtn')
+     document.getElementById('vpRatesBtn'),
+     document.getElementById('vpUsersBtn')
     ].forEach(function(b) {
       if (!b) return;
       b.style.position = 'static';
@@ -8395,7 +8397,7 @@ document.addEventListener('DOMContentLoaded', initMobileViewport);
 // whichever path got the user signed in.
 window.refreshAccountButtons = function() {
   var admin = (typeof isCompanyAdminUser === 'function') ? isCompanyAdminUser() : false;
-  [['vpActivityBtn', admin], ['vpHardRefreshBtn', admin], ['vpPromoBtn', admin],
+  [['vpActivityBtn', admin], ['vpHardRefreshBtn', admin], ['vpPromoBtn', admin], ['vpUsersBtn', admin],
    ['vpRatesBtn', true]                       // everyone may see their own rates
   ].forEach(function(pair) {
     var el = document.getElementById(pair[0]);
@@ -21178,6 +21180,9 @@ async function confirmSaveDesign(){
   }
 }
 
+window.SAUCE_BUILD = '2026-08-10 13:59 UTC';
+console.log('%c[Sauce] build 2026-08-10 13:59 UTC', 'color:#FF8200;font-weight:bold');
+
 /* @SAUCE-ENDPOINTS-START */
 // ── WHERE THIS COPY TALKS TO ────────────────────────────────────────────────
 // The three addresses that decide whose backend this tool runs against. A
@@ -21648,6 +21653,74 @@ async function sbFetch(path, opts) {
     if (!r.ok) { console.warn('[SB]', path, r.status, await r.text()); return null; }
     return r.status === 204 ? null : await r.json();
   } catch(e) { console.warn('[SB] fetch error:', e.message); return null; }
+}
+
+// ── SKU PRICING ─────────────────────────────────────────────────────────────
+// Lives in Supabase, keyed by company. Apps Script is the login system and
+// nothing more — it never sees a price list.
+//
+// Table:  inventory(company_id text, sku text, description text, price numeric)
+// A company's list is every row carrying its company_id; replacing a list means
+// deleting that company's rows and inserting the new ones.
+
+function _companyKey() {
+  return ((window.currentUser || {}).companyId || 'default').toLowerCase().trim();
+}
+
+// Pull this company's price list. Paged, because a full catalogue runs to
+// thousands of rows and PostgREST caps a single response.
+async function sbLoadInventory(companyId) {
+  var co = companyId || _companyKey();
+  var prices = {}, descs = {}, from = 0, page = 1000, total = 0;
+  while (true) {
+    var rows = await sbFetch('inventory?select=sku,description,price&company_id=eq.' +
+      encodeURIComponent(co) + '&order=sku.asc&offset=' + from + '&limit=' + page, { method: 'GET' });
+    if (rows === null) return null;                 // couldn't reach the table
+    rows.forEach(function(r) {
+      var sku = String(r.sku || '').trim().toUpperCase();
+      if (!sku) return;
+      var pr = parseFloat(r.price);
+      if (!isNaN(pr)) { prices[sku] = pr; total++; }
+      if (r.description) descs[sku] = r.description;
+    });
+    if (rows.length < page) break;
+    from += page;
+    if (from > 60000) break;                        // sanity stop
+  }
+  return { prices: prices, descriptions: descs, count: total, companyId: co };
+}
+
+// Replace this company's list wholesale. Deletes first so removed SKUs actually
+// disappear rather than lingering from the previous upload.
+async function sbReplaceInventory(rows, companyId, onProgress) {
+  var co = companyId || _companyKey();
+  var del = await sbFetch('inventory?company_id=eq.' + encodeURIComponent(co), {
+    method: 'DELETE',
+    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+               'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+  });
+  var sent = 0, chunk = 500;
+  for (var i = 0; i < rows.length; i += chunk) {
+    var batch = rows.slice(i, i + chunk).map(function(r) {
+      var price = parseFloat(String(r[2] == null ? '' : r[2]).replace(/[^0-9.\-]/g, ''));
+      return {
+        company_id:  co,
+        sku:         String(r[0] || '').trim().toUpperCase(),
+        description: String(r[1] || '').trim(),
+        price:       isNaN(price) ? null : price
+      };
+    }).filter(function(o) { return o.sku; });
+    if (!batch.length) continue;
+    var res = await sbFetch('inventory', {
+      method: 'POST',
+      body: JSON.stringify(batch),
+      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+                 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+    });
+    sent += batch.length;
+    if (onProgress) onProgress(sent, rows.length);
+  }
+  return sent;
 }
 
 // Building kits — stored in Supabase (kits table), never GAS
@@ -24780,9 +24853,9 @@ function initSalesAuth() {
         try { logToolEvent('page_load', { referrer: document.referrer || 'direct' }); } catch(e) {}
         // Load follow-ups for this salesman
       // Show the activity log button for admins on login
-      refreshAccountButtons(); if (window.SauceRates) { try { window.SauceRates.syncFromServer(true); } catch(e) {} } if (typeof loadCompanySettings === 'function') { try { loadCompanySettings(); } catch(e) {} } var _bfBtn2 = document.getElementById('vpBackfillBtn'); if (_bfBtn2) _bfBtn2.style.display = isCompanyAdminUser() ? '' : 'none'; var _fuBtn2 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn2) _fuBtn2.style.display = ''; var _mbBtnA = document.getElementById('matBuilderBtn'); if (_mbBtnA) _mbBtnA.style.display = ''; var _mbRowA=document.getElementById('matBuilderBtnRow'); if(_mbRowA) _mbRowA.style.display = '';
+      refreshAccountButtons(); window._ratesSyncRetried = false; if (window.SauceRates) { try { window.SauceRates.syncFromServer(true); } catch(e) {} } if (typeof loadCompanySettings === 'function') { try { loadCompanySettings(); } catch(e) {} } var _bfBtn2 = document.getElementById('vpBackfillBtn'); if (_bfBtn2) _bfBtn2.style.display = isCompanyAdminUser() ? '' : 'none'; var _fuBtn2 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn2) _fuBtn2.style.display = ''; var _mbBtnA = document.getElementById('matBuilderBtn'); if (_mbBtnA) _mbBtnA.style.display = ''; var _mbRowA=document.getElementById('matBuilderBtnRow'); if(_mbRowA) _mbRowA.style.display = '';
         // Show the activity log button for admins on login
-        refreshAccountButtons(); if (window.SauceRates) { try { window.SauceRates.syncFromServer(true); } catch(e) {} } if (typeof loadCompanySettings === 'function') { try { loadCompanySettings(); } catch(e) {} } var _bfBtn3 = document.getElementById('vpBackfillBtn'); if (_bfBtn3) _bfBtn3.style.display = isCompanyAdminUser(u) ? '' : 'none'; var _fuBtn3 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn3) _fuBtn3.style.display = ''; var _mbBtnB = document.getElementById('matBuilderBtn'); if (_mbBtnB) _mbBtnB.style.display = ''; var _mbRowB=document.getElementById('matBuilderBtnRow'); if(_mbRowB) _mbRowB.style.display = '';
+        refreshAccountButtons(); window._ratesSyncRetried = false; if (window.SauceRates) { try { window.SauceRates.syncFromServer(true); } catch(e) {} } if (typeof loadCompanySettings === 'function') { try { loadCompanySettings(); } catch(e) {} } var _bfBtn3 = document.getElementById('vpBackfillBtn'); if (_bfBtn3) _bfBtn3.style.display = isCompanyAdminUser(u) ? '' : 'none'; var _fuBtn3 = document.getElementById('vpFollowUpsBtn'); if (_fuBtn3) _fuBtn3.style.display = ''; var _mbBtnB = document.getElementById('matBuilderBtn'); if (_mbBtnB) _mbBtnB.style.display = ''; var _mbRowB=document.getElementById('matBuilderBtnRow'); if(_mbRowB) _mbRowB.style.display = '';
         // Fire address lookup immediately so shipping/mileage is ready
         setTimeout(function() {
           var addr = (document.getElementById('st_address')||{}).value || '';
@@ -37858,68 +37931,65 @@ window.SauceMaterials.calculate = function(forcedType) {
 
 
 // Load inventory pricing from the sheet — called on login
-function loadInventoryPricing() {
-  var _attempt = 0;
-  function _doFetch() {
-    _attempt++;
-    var token = getToken();
-    if (!token) {
-      if (_attempt < 5) { setTimeout(_doFetch, 1000); }
+async function loadInventoryPricing() {
+  // Waits for a session only so we know which company to load — the price list
+  // itself comes from Supabase, not from Apps Script.
+  for (var attempt = 0; attempt < 5 && !getToken(); attempt++) {
+    await new Promise(function(r) { setTimeout(r, 1000); });
+  }
+  var co = _companyKey();
+  try {
+    var d = await sbLoadInventory(co);
+    if (!d) {
+      console.warn('[Inventory] could not reach the price list for', co);
+      window._priceListInfo = { count: 0, source: 'unreachable', companyId: co };
       return;
     }
-    fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({ action: 'getInventoryPricing', token: token, username: (window.currentUser||{}).username||'' })
-    })
-    .then(function(r){ return r.json(); })
-    .then(function(d){
-      if (d.success && d.prices && Object.keys(d.prices).length > 0) {
-        var _normalized = {};
-        Object.keys(d.prices).forEach(function(k){ _normalized[k.trim().toUpperCase()] = d.prices[k]; });
-        window.SauceMaterials._priceTable = _normalized;
-        var _wdef = (window.SaucePriceDefaults || {}).window || {};
-        Object.keys(_wdef).forEach(function(k) { if (!(_normalized[k] > 0) && _wdef[k] > 0) _normalized[k] = _wdef[k]; });
-        if (d.descriptions) {
-          window.SauceMaterials._descTable = d.descriptions;
-        }
-        // Try to cache but don't depend on it — Safari may reject large payloads
-        try { localStorage.setItem(_priceCacheKey(), JSON.stringify(_normalized)); } catch(e) {}
-        try { if (d.descriptions) localStorage.setItem('sauceDescTable::' + (((window.currentUser||{}).companyId) || ''), JSON.stringify(d.descriptions)); } catch(e) {}
-        window._priceListInfo = { count: Object.keys(_normalized).length, source: d.source || '', companyId: d.companyId || '' };
-        console.log('[Inventory]', window._priceListInfo.count, 'SKUs from', window._priceListInfo.source);
-        setTimeout(function(){ try{ updateStripFromLocalCalc(); }catch(e){} }, 100);
-      } else if (_attempt < 3) {
-        setTimeout(_doFetch, 2000);
-      } else {
-      }
-    })
-    .catch(function(e){
-      if (_attempt < 3) { setTimeout(_doFetch, 2000); }
-    });
+    var _normalized = {};
+    Object.keys(d.prices).forEach(function(k) { _normalized[k.trim().toUpperCase()] = d.prices[k]; });
+    // Fill only what the list is silent on, never override it
+    var _wdef = (window.SaucePriceDefaults || {}).window || {};
+    Object.keys(_wdef).forEach(function(k) { if (!(_normalized[k] > 0) && _wdef[k] > 0) _normalized[k] = _wdef[k]; });
+
+    window.SauceMaterials._priceTable = _normalized;
+    if (d.descriptions) window.SauceMaterials._descTable = d.descriptions;
+    try { localStorage.setItem(_priceCacheKey(), JSON.stringify(_normalized)); } catch(e) {}
+    try { localStorage.setItem('sauceDescTable::' + co, JSON.stringify(d.descriptions || {})); } catch(e) {}
+
+    window._priceListInfo = { count: d.count, source: d.count ? ('Supabase · ' + co) : 'empty', companyId: co };
+    console.log('[Inventory]', d.count, 'SKUs for', co, d.count ? '' : '— no price list loaded for this company');
+    setTimeout(function() { try { updateStripFromLocalCalc(); } catch(e) {} }, 100);
+  } catch(e) {
+    console.warn('[Inventory] load failed:', e);
   }
-  setTimeout(_doFetch, 500);
 }
 
 // Save inventory pricing to the sheet — company admins only
-function saveInventoryPricingToSheet() {
-  if (!isCompanyAdminUser()) return;
-  fetch(API_URL, {
+// A single price edited in the UI is written straight to the company's rows in
+// Supabase. Apps Script is the login system and never handles pricing.
+async function saveSkuPrice(sku, price, description) {
+  if (!isCompanyAdminUser()) return false;
+  var co  = _companyKey();
+  var key = String(sku || '').trim().toUpperCase();
+  if (!key) return false;
+  var body = { company_id: co, sku: key, price: (price === '' || price == null) ? null : parseFloat(price) };
+  if (description != null) body.description = String(description);
+  // Upsert on (company_id, sku)
+  var res = await sbFetch('inventory?on_conflict=company_id,sku', {
     method: 'POST',
-    headers: { 'Content-Type': 'text/plain' }, // avoid preflight CORS
-    body: JSON.stringify({
-      action: 'saveInventoryPricing',
-      token: getToken(),
-      username: ((window.currentUser||{}).username || ''),
-      prices: window.SauceMaterials._priceTable
-    })
-  })
-  .then(function(r){ return r.json(); })
-  .then(function(d){ console.log('[Prices] Sheet save:', d.success ? 'ok (' + d.count + ' SKUs)' : d.error); })
-  .catch(function(e){ console.log('[Prices] Sheet save error:', e); });
+    body: JSON.stringify([body]),
+    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+               'Content-Type': 'application/json',
+               'Prefer': 'resolution=merge-duplicates,return=minimal' }
+  });
+  console.log('[Prices]', key, '=', body.price, res === null ? '(write may have failed)' : 'saved');
+  return true;
 }
 
-// Load price table from localStorage cache (GAS overwrites after login)
+// Kept for the callers that just changed the in-memory table.
+function saveInventoryPricingToSheet() { /* pricing no longer lives in the sheet */ }
+
+// Load price table from the localStorage cache (Supabase overwrites it at login)
 // The cached copy is keyed by company. Signing in somewhere else can never leave
 // the previous company's prices sitting in the table.
 function _priceCacheKey() {
@@ -38104,6 +38174,7 @@ window.SauceRates = (function() {
   var _profiles = [];      // everything the signed-in user is allowed to see
   var _activeId = '';      // profile currently driving prices
   var _isAdmin  = false;
+  var _isSuperUser = false;
   var _synced   = false;
 
   function _clone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -38203,6 +38274,7 @@ window.SauceRates = (function() {
     profiles:  function() { return _profiles.slice(); },
     activeId:  function() { return _activeId; },
     isAdmin:   function() { return _isAdmin; },
+    isSuper:   function() { return _isSuperUser; },
     synced:    function() { return _synced; },
     active:    function() {
       for (var i = 0; i < _profiles.length; i++) if (_profiles[i].id === _activeId) return _profiles[i];
@@ -38229,6 +38301,7 @@ window.SauceRates = (function() {
         if (!j || !j.success) return _profiles;
         _profiles = j.profiles || [];
         _isAdmin  = !!j.isAdmin;
+        _isSuperUser = !!j.isSuper;
         _synced   = true;
         var pick = null;
         for (var i = 0; i < _profiles.length; i++) if (_profiles[i].id === j.activeId) pick = _profiles[i];
@@ -38565,6 +38638,217 @@ window.SauceRates = (function() {
     setStatus(j3 && j3.success ? 'Saved to "' + act.name + '".' : ('Could not save: ' + ((j3&&j3.error)||'unknown')), (j3 && j3.success) ? '#86efac' : '#ef4444');
   };
 
+  // ── ADMIN CONSOLE ────────────────────────────────────────────────────────
+  // One screen for the whole job of standing a user up: who they are, which
+  // company they belong to, what they're allowed to do — and from there, the
+  // pricing that company runs on.
+
+  var _adminUsers = [], _adminCompanies = [], _adminEditing = null;
+
+  async function _gas(action, extra) {
+    var body = Object.assign({ action: action, token: getToken(),
+                               username: (window.currentUser||{}).username || '' }, extra || {});
+    return await fetchWithTimeout(API_URL, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(body)
+    }, 30000);
+  }
+
+  function _aStatus(msg, color) {
+    var el = document.getElementById('adminStatus');
+    if (el) { el.textContent = msg || ''; el.style.color = color || '#8f8f8f'; }
+  }
+
+  function _esc(v) { return String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+  function _roleBadge(role) {
+    var map = { super: ['#FF8200','owner'], admin: ['#93c5fd','company admin'], user: ['#8f8f8f','salesman'] };
+    var m = map[role] || map.user;
+    return '<span style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:' + m[0] + ';">' + m[1] + '</span>';
+  }
+
+  function _userRowHtml(u) {
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid #4a4a4a;border-radius:8px;margin-bottom:6px;background:' + (u.active ? 'rgba(255,255,255,.03)' : 'rgba(239,68,68,.05)') + ';">'
+      + '<div style="flex:1;min-width:0;">'
+      +   '<div style="font-size:12px;font-weight:800;color:#ffffff;font-family:Outfit,sans-serif;">' + _esc(u.fullName || u.username)
+      +     (u.active ? '' : ' <span style="color:#ef4444;font-size:10px;font-weight:700;">· disabled</span>') + '</div>'
+      +   '<div style="font-size:10px;color:#8f8f8f;font-family:Outfit,sans-serif;">' + _esc(u.username) + ' · ' + _esc(u.companyId) + ' · ' + _roleBadge(u.role) + '</div>'
+      + '</div>'
+      + '<button onclick="adminEditUser(\'' + _esc(u.username) + '\')" style="padding:5px 10px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Edit</button>'
+      + '</div>';
+  }
+
+  function _field(id, label, value, type, ph) {
+    return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0;">'
+      + '<label for="' + id + '" style="flex:1;font-size:11px;color:#c8c8c8;font-family:Outfit,sans-serif;">' + label + '</label>'
+      + '<input id="' + id + '" type="' + (type || 'text') + '" value="' + _esc(value) + '" placeholder="' + _esc(ph || '') + '" '
+      + 'style="width:190px;padding:5px 7px;border-radius:6px;border:1px solid #5e5e5e;background:#2b2b2b;color:#fff;font-size:12px;font-family:Outfit,sans-serif;">'
+      + '</div>';
+  }
+
+  function _check(id, label, on) {
+    return '<label style="display:flex;align-items:center;gap:7px;padding:3px 0;font-size:11px;color:#c8c8c8;cursor:pointer;font-family:Outfit,sans-serif;">'
+      + '<input id="' + id + '" type="checkbox"' + (on ? ' checked' : '') + ' style="width:14px;height:14px;accent-color:#FF8200;"> ' + label + '</label>';
+  }
+
+  function _editorHtml(u) {
+    var isNew = !u.username;
+    var canSuper = window.SauceRates.isSuper && window.SauceRates.isSuper();
+    var coOpts = _adminCompanies.map(function(c) {
+      return '<option value="' + _esc(c.companyId) + '"' + (c.companyId === u.companyId ? ' selected' : '') + '>' + _esc(c.companyId) + (c.companyName ? ' — ' + _esc(c.companyName) : '') + '</option>';
+    }).join('');
+
+    return '<div style="border:1px solid #FF8200;border-radius:10px;padding:12px;background:rgba(255,130,0,.04);">'
+      + '<div style="font-size:12px;font-weight:800;color:#FF8200;margin-bottom:8px;font-family:Outfit,sans-serif;">' + (isNew ? 'New user' : 'Editing ' + _esc(u.username)) + '</div>'
+      + _field('au_username', 'Username', u.username, 'text', 'j.doe')
+      + _field('au_password', isNew ? 'Password' : 'New password', '', 'text', isNew ? 'required' : 'leave blank to keep')
+      + _field('au_fullName', 'Full name', u.fullName)
+      + _field('au_email',    'Email',     u.email)
+      + _field('au_phone',    'Phone',     u.phone)
+      + '<div style="margin:10px 0 2px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;">Company</div>'
+      + _field('au_companyName', 'Company name', u.companyName)
+      + '<div style="display:flex;align-items:center;gap:8px;padding:3px 0;">'
+      +   '<label style="flex:1;font-size:11px;color:#c8c8c8;font-family:Outfit,sans-serif;">Company ID</label>'
+      +   '<input id="au_companyId" list="au_coList" value="' + _esc(u.companyId) + '" placeholder="acme" style="width:190px;padding:5px 7px;border-radius:6px;border:1px solid #5e5e5e;background:#2b2b2b;color:#fff;font-size:12px;font-family:Outfit,sans-serif;">'
+      +   '<datalist id="au_coList">' + coOpts + '</datalist>'
+      + '</div>'
+      + '<div style="font-size:10px;color:#8f8f8f;margin:2px 0 8px;font-family:Outfit,sans-serif;">Everyone sharing a Company ID shares one SKU price list and one set of rates.</div>'
+      + '<div style="margin:10px 0 2px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;">Role &amp; access</div>'
+      + '<div style="display:flex;align-items:center;gap:8px;padding:3px 0;">'
+      +   '<label style="flex:1;font-size:11px;color:#c8c8c8;font-family:Outfit,sans-serif;">Role</label>'
+      +   '<select id="au_role" style="width:190px;padding:5px 7px;border-radius:6px;border:1px solid #5e5e5e;background:#2b2b2b;color:#fff;font-size:12px;font-family:Outfit,sans-serif;">'
+      +     '<option value="user"' + (u.role === 'user' ? ' selected' : '') + '>Salesman — quotes only</option>'
+      +     '<option value="admin"' + (u.role === 'admin' ? ' selected' : '') + '>Company admin — sets their company\'s pricing</option>'
+      +     (canSuper ? '<option value="super"' + (u.role === 'super' ? ' selected' : '') + '>Owner — every company</option>' : '')
+      +   '</select>'
+      + '</div>'
+      + _check('au_active',        'Active — can sign in', u.active !== false)
+      + _check('au_savedQuote',    'Can save quotes', u.savedQuote)
+      + _check('au_sendEmail',     'Can email quotes', u.sendEmail)
+      + _check('au_materialList',  'Can see the material list', u.materialList)
+      + _check('au_singleTotalPdf','Customer PDF shows one total, no breakout', u.singleTotalPdf)
+      + _check('au_isDemo',        'Demo account (skewed pricing)', u.isDemo)
+      + _field('au_depositPct', 'Deposit % of total', u.depositPct || '', 'number', 'blank = house rule')
+      + '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">'
+      +   '<button onclick="adminSaveUser()" style="flex:1;min-width:100px;padding:9px 14px;background:#FF8200;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Save User</button>'
+      +   '<button onclick="adminCancelEdit()" style="padding:9px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Cancel</button>'
+      +   (isNew ? '' : '<button onclick="adminDeleteUser()" style="padding:9px 12px;background:rgba(239,68,68,.10);color:#ef4444;border:1px solid rgba(239,68,68,.35);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Delete</button>')
+      + '</div>'
+      + '</div>';
+  }
+
+  window.adminEditUser = function(username) {
+    var u = _adminUsers.filter(function(x) { return x.username === username; })[0];
+    _adminEditing = u || null;
+    _renderAdmin();
+  };
+  window.adminNewUser = function() {
+    _adminEditing = { username:'', role:'user', active:true, savedQuote:true, sendEmail:true,
+                      materialList:true, companyId:'', companyName:'' };
+    _renderAdmin();
+  };
+  window.adminCancelEdit = function() { _adminEditing = null; _renderAdmin(); };
+
+  window.adminSaveUser = async function() {
+    function val(id) { var e = document.getElementById(id); return e ? e.value.trim() : ''; }
+    function chk(id) { var e = document.getElementById(id); return !!(e && e.checked); }
+    var u = {
+      username: val('au_username'), password: val('au_password'),
+      fullName: val('au_fullName'), email: val('au_email'), phone: val('au_phone'),
+      companyName: val('au_companyName'), companyId: val('au_companyId'),
+      role: val('au_role'),
+      active: chk('au_active'), savedQuote: chk('au_savedQuote'), sendEmail: chk('au_sendEmail'),
+      materialList: chk('au_materialList'), singleTotalPdf: chk('au_singleTotalPdf'), isDemo: chk('au_isDemo'),
+      depositPct: val('au_depositPct')
+    };
+    if (!u.username) { _aStatus('A username is required.', '#ef4444'); return; }
+    _aStatus('Saving ' + u.username + '...', '#FF8200');
+    var j = await _gas('saveUser', { user: u });
+    if (j && j.success) {
+      _aStatus((j.created ? 'Created ' : 'Saved ') + j.username + ' in ' + j.companyId + '.', '#86efac');
+      _adminEditing = null;
+      await _loadAdmin();
+    } else {
+      _aStatus('Could not save: ' + ((j && j.error) || 'unknown error'), '#ef4444');
+    }
+  };
+
+  window.adminDeleteUser = async function() {
+    if (!_adminEditing || !_adminEditing.username) return;
+    if (!confirm('Delete the login for ' + _adminEditing.username + '?\n\nTheir saved quotes are not touched.')) return;
+    var j = await _gas('deleteUser', { username_target: _adminEditing.username });
+    if (j && j.success) { _aStatus('Deleted.', '#86efac'); _adminEditing = null; await _loadAdmin(); }
+    else _aStatus('Could not delete: ' + ((j && j.error) || 'unknown'), '#ef4444');
+  };
+
+  // Jump straight from a company to the two things that make it quote correctly.
+  window.adminOpenPricing = function(companyId, which) {
+    document.getElementById('adminModal') && document.getElementById('adminModal').remove();
+    if (which === 'concrete') openConcreteModal(); else openRatesModal();
+  };
+
+  function _renderAdmin() {
+    var body = document.getElementById('adminBody');
+    if (!body) return;
+    if (_adminEditing) { body.innerHTML = _editorHtml(_adminEditing); return; }
+
+    var byCo = {};
+    _adminUsers.forEach(function(u) { (byCo[u.companyId] = byCo[u.companyId] || []).push(u); });
+    var cos = Object.keys(byCo).sort();
+
+    var html = '';
+    if (!cos.length) html += '<div style="font-size:11px;color:#8f8f8f;padding:10px 0;font-family:Outfit,sans-serif;">No users yet.</div>';
+    cos.forEach(function(co) {
+      var name = (byCo[co][0] || {}).companyName || '';
+      html += '<div style="margin:14px 0 6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+        + '<div style="flex:1;min-width:140px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;color:#FF8200;">'
+        +   _esc(co) + (name ? ' <span style="color:#8f8f8f;font-weight:600;text-transform:none;letter-spacing:0;">' + _esc(name) + '</span>' : '')
+        +   ' <span style="color:#8f8f8f;font-weight:600;">· ' + byCo[co].length + '</span>'
+        + '</div>'
+        + '<button onclick="adminOpenPricing(\'' + _esc(co) + '\',\'rates\')" style="padding:4px 9px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Rates &amp; SKUs</button>'
+        + '<button onclick="adminOpenPricing(\'' + _esc(co) + '\',\'concrete\')" style="padding:4px 9px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Concrete</button>'
+        + '</div>';
+      byCo[co].forEach(function(u) { html += _userRowHtml(u); });
+    });
+    body.innerHTML = html;
+  }
+
+  async function _loadAdmin() {
+    _aStatus('Loading users...', '#FF8200');
+    var j = await _gas('listUsers');
+    if (!j || !j.success) { _aStatus('Could not load users: ' + ((j && j.error) || 'no answer from the login system'), '#ef4444'); return; }
+    _adminUsers = j.users || [];
+    var c = await _gas('listCompanies');
+    _adminCompanies = (c && c.success) ? (c.companies || []) : [];
+    _aStatus(_adminUsers.length + ' user' + (_adminUsers.length === 1 ? '' : 's') + ' across ' + _adminCompanies.length + ' compan' + (_adminCompanies.length === 1 ? 'y' : 'ies') + '.');
+    _renderAdmin();
+  }
+
+  window.openAdminModal = function() {
+    var old = document.getElementById('adminModal');
+    if (old) old.remove();
+    var wrap = document.createElement('div');
+    wrap.id = 'adminModal';
+    wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:100005;display:flex;align-items:center;justify-content:center;padding:20px;';
+    wrap.onclick = function(e) { if (e.target === wrap) wrap.remove(); };
+    wrap.innerHTML =
+      '<div style="background:#3a3a3a;border:1px solid #5e5e5e;border-radius:14px;width:100%;max-width:560px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6);">'
+      + '<div style="padding:16px 20px 12px;border-bottom:1px solid #5e5e5e;display:flex;align-items:center;gap:10px;">'
+      +   '<div style="flex:1;">'
+      +     '<div style="font-size:15px;font-weight:800;color:#ffffff;font-family:Outfit,sans-serif;">Users &amp; Companies</div>'
+      +     '<div style="font-size:11px;color:#8f8f8f;margin-top:2px;font-family:Outfit,sans-serif;">Logins, roles, and which company each person prices from</div>'
+      +   '</div>'
+      +   '<button onclick="adminNewUser()" style="padding:7px 12px;background:#FF8200;color:#fff;border:none;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">+ New User</button>'
+      +   '<button onclick="document.getElementById(\'adminModal\').remove()" style="background:none;border:none;color:#8f8f8f;font-size:22px;cursor:pointer;line-height:1;">&times;</button>'
+      + '</div>'
+      + '<div id="adminBody" style="flex:1;overflow-y:auto;padding:6px 20px 16px;"></div>'
+      + '<div style="padding:10px 20px 16px;border-top:1px solid #5e5e5e;">'
+      +   '<div id="adminStatus" style="font-size:11px;color:#8f8f8f;min-height:15px;font-family:Outfit,sans-serif;"></div>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(wrap);
+    _loadAdmin();
+  };
+
   // ── CONCRETE PRICING ─────────────────────────────────────────────────────
   // A company either charges one rate everywhere, or varies it by county. Both
   // shapes live in the same rate profile; this screen is where they're set.
@@ -38879,17 +39163,18 @@ window.SauceRates = (function() {
               : 'background:rgba(255,255,255,.03);color:#6b6b6b;border:1px solid #4a4a4a;cursor:not-allowed;';
             return '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #5e5e5e;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
           +   '<div style="flex:1;min-width:170px;font-size:10px;color:#8f8f8f;line-height:1.45;font-family:Outfit,sans-serif;">'
-          +     'SKU price list for ' + (((window.currentUser||{}).companyName) || 'your company') + '. CSV with SKU, Description, Price — replaces the whole list.<br>'
+          +     'SKU price list for ' + (((window.currentUser||{}).companyName) || (((window.currentUser||{}).companyId) || 'your company')) + '. CSV with SKU, Description, Price — replaces the whole list.<br>'
           +     (window._priceListInfo && window._priceListInfo.count
                   ? '<b style="color:#86efac;">' + window._priceListInfo.count.toLocaleString('en-US') + ' SKUs loaded</b> from ' + (window._priceListInfo.source || 'the sheet')
                   : '<b style="color:#fbbf24;">No price list loaded</b> — materials will price at $0.')
           +     why
           +   '</div>'
           +   '<button onclick="if(confirm(\'Clear the price lists cached on this browser?\\n\\nThe tool reloads them from the sheet on the next sign-in.\')){var n=clearCachedPriceTables();window.setRatesStatus(\'Cleared \'+n+\' cached price list(s). Reload to pull a fresh copy.\',\'#86efac\');}" style="padding:8px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Clear Cached Prices</button>'
+          +   (canUpload ? '<button onclick="pasteSkuPriceList()" title="Paste the CSV text instead of picking a file" style="padding:8px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Paste CSV</button>' : '')
           +   '<button ' + (canUpload ? 'onclick="document.getElementById(\'skuCsvInput\').click()"' : 'disabled')
           +     ' style="padding:8px 12px;' + btnStyle + 'border-radius:8px;font-size:11px;font-weight:700;font-family:Outfit,sans-serif;">Upload SKU Prices</button>'
           + '</div>'
-          + '<input id="skuCsvInput" type="file" accept=".csv,text/csv" style="display:none;">';
+          + '<input id="skuCsvInput" type="file" accept=".csv,.txt,text/csv,text/plain,application/csv,application/vnd.ms-excel,*/*" style="display:none;">';
           })()
       +   '<div style="margin-top:12px;padding-top:10px;border-top:1px solid rgba(239,68,68,.25);display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
       +     '<div style="flex:1;min-width:170px;font-size:10px;color:#8f8f8f;line-height:1.45;font-family:Outfit,sans-serif;">Zero every rate on this browser (save it to a profile to keep it), or download a copy of the tool with the rates stripped out of the file itself.</div>'
@@ -38897,10 +39182,27 @@ window.SauceRates = (function() {
       +     '<button onclick="downloadCleanCopy()" style="padding:8px 12px;background:rgba(239,68,68,.10);color:#ef4444;border:1px solid rgba(239,68,68,.35);border-radius:8px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Download Clean Copy</button>'
       +   '</div>'
       + '</div>'
-      + '<input id="ratesImportInput" type="file" accept="application/json,.json" style="display:none;">'
+      + '<input id="ratesImportInput" type="file" accept=".json,application/json,text/plain,*/*" style="display:none;">'
       + '</div>';
 
     document.body.appendChild(wrap);
+
+    // The permission check is asynchronous. If the modal opened before it landed,
+    // run it now and redraw when it answers, rather than leaving the user staring
+    // at a disabled button with a stale explanation.
+    if (!window.SauceRates.synced() && !window._ratesSyncRetried) {
+      window._ratesSyncRetried = true;
+      setStatus('Checking your permissions...', '#FF8200');
+      window.SauceRates.syncFromServer(true).then(function() {
+        if (document.getElementById('ratesModal')) {
+          openRatesModal();
+          setStatus(window.SauceRates.synced()
+            ? 'Connected.'
+            : 'Still no answer from the server — check the console for [Rates].',
+            window.SauceRates.synced() ? '#86efac' : '#ef4444');
+        }
+      });
+    }
 
     var zcsv = document.getElementById('zoneCsvInput');
     if (zcsv) zcsv.onchange = function(e) {
@@ -38970,11 +39272,32 @@ window.SauceRates = (function() {
     return rows.filter(function(r) { return r.some(function(x){ return String(x).trim() !== ''; }); });
   }
 
+  // Same import, but from pasted text — the file picker on some machines filters
+  // out a perfectly good CSV, and this route can't be blocked by that.
+  window.pasteSkuPriceList = function() {
+    var txt = prompt('Paste the CSV text (SKU, Description, Price — one per line):', '');
+    if (txt == null) { setStatus('Cancelled.'); return; }
+    if (!txt.trim()) { setStatus('Nothing pasted.', '#ef4444'); return; }
+    _importSkuText(txt);
+  };
+
   window.uploadSkuPriceList = function(file) {
+    console.log('[Inventory] picked file:', file.name, '| type:', file.type || '(none)', '| bytes:', file.size);
+    // A spreadsheet is the commonest wrong pick — it reads as binary, not rows.
+    if (/\.(xlsx|xls|numbers)$/i.test(file.name)) {
+      setStatus('That is the spreadsheet version. Pick the .csv file instead.', '#ef4444');
+      return;
+    }
+    if (!file.size) { setStatus('That file is empty.', '#ef4444'); return; }
     var fr = new FileReader();
     fr.onerror = function() { setStatus('Could not read that file.', '#ef4444'); };
-    fr.onload = async function() {
-      var rows = parseCsv(fr.result);
+    fr.onload = function() { _importSkuText(fr.result); };
+    fr.readAsText(file);
+  };
+
+  async function _importSkuText(text) {
+    {
+      var rows = parseCsv(text);
       if (!rows.length) { setStatus('That CSV came back empty.', '#ef4444'); return; }
 
       // Drop a header row if the first cell looks like a label rather than a SKU.
@@ -38987,22 +39310,19 @@ window.SauceRates = (function() {
       if (!priced) { setStatus('No priced SKUs found — expected columns: SKU, Description, Price.', '#ef4444'); return; }
       if (!confirm('Replace the SKU price list with ' + priced + ' priced item' + (priced === 1 ? '' : 's') + ' from this file?\n\nThis replaces the whole list for your company.')) { setStatus('Cancelled.'); return; }
 
-      setStatus('Uploading ' + priced + ' SKUs...', '#FF8200');
+      var co = _companyKey();
+      setStatus('Uploading ' + priced + ' SKUs for ' + co + '...', '#FF8200');
       try {
-        var j = await fetchWithTimeout(API_URL, {
-          method: 'POST', headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({ action: 'uploadInventory', rows: payload, token: getToken(), username: (window.currentUser||{}).username||'' })
-        }, 120000);
-        if (j && j.success) {
-          setStatus('Loaded ' + j.count + ' SKUs for ' + j.companyId + '. Reloading prices...', '#86efac');
-          if (typeof loadInventoryPricing === 'function') loadInventoryPricing();
-        } else {
-          setStatus('Upload failed: ' + ((j && j.error) || 'unknown error'), '#ef4444');
-        }
+        var sent = await sbReplaceInventory(payload, co, function(done, total) {
+          setStatus('Uploading ' + done.toLocaleString('en-US') + ' of ' + total.toLocaleString('en-US') + '...', '#FF8200');
+        });
+        setStatus('Loaded ' + sent.toLocaleString('en-US') + ' SKUs for ' + co + '. Reloading prices...', '#86efac');
+        if (typeof loadInventoryPricing === 'function') await loadInventoryPricing();
+        setStatus('Loaded ' + ((window._priceListInfo||{}).count || 0).toLocaleString('en-US') + ' SKUs for ' + co + '.', '#86efac');
+        if (document.getElementById('ratesModal')) openRatesModal();
       } catch(err) { setStatus('Upload failed: ' + err.message, '#ef4444'); }
-    };
-    fr.readAsText(file);
-  };
+    }
+  }
 
   window.exportRatesFile = function() {
     try {
