@@ -8419,7 +8419,28 @@ window.refreshAccountButtons = function() {
     }
   });
 };
-window.addEventListener('crm:authready', function() { try { refreshAccountButtons(); } catch(e) {} });
+window.addEventListener('crm:authready', function() { try { refreshAccountButtons(); } catch(e) {} try { updateDemoBadge(); } catch(e) {} });
+
+// A standing marker whenever demo pricing is on, so nobody sends a nudged figure
+// to a customer thinking it is a real quote.
+window.updateDemoBadge = function() {
+  var el = document.getElementById('demoPricingBadge');
+  var on = false;
+  try { on = window.SauceDemo && window.SauceDemo.active(); } catch(e) {}
+  if (!on) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'demoPricingBadge';
+    el.title = 'Prices are illustrative and change each login. Turn off in Rates once the company is registered.';
+    el.style.cssText = 'position:fixed;top:6px;left:50%;transform:translateX(-50%);z-index:99999;'
+      + 'background:rgba(255,130,0,.92);color:#fff;font-family:Outfit,sans-serif;font-size:10px;font-weight:800;'
+      + 'letter-spacing:1px;text-transform:uppercase;padding:3px 12px;border-radius:0 0 8px 8px;'
+      + 'box-shadow:0 2px 8px rgba(0,0,0,.4);pointer-events:auto;cursor:help;';
+    document.body.appendChild(el);
+  }
+  el.textContent = 'Demo pricing';
+};
+document.addEventListener('DOMContentLoaded', function() { setTimeout(function(){ try { updateDemoBadge(); } catch(e) {} }, 1200); });
 
 function initMobileQuote() {
   if (window.innerWidth > 700) return;
@@ -21180,8 +21201,8 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = '2026-08-10 13:59 UTC';
-console.log('%c[Sauce] build 2026-08-10 13:59 UTC', 'color:#FF8200;font-weight:bold');
+window.SAUCE_BUILD = '2026-08-10 14:39 UTC';
+console.log('%c[Sauce] build 2026-08-10 14:39 UTC', 'color:#FF8200;font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
 // ── WHERE THIS COPY TALKS TO ────────────────────────────────────────────────
@@ -21724,15 +21745,22 @@ async function sbReplaceInventory(rows, companyId, onProgress) {
 }
 
 // Building kits — stored in Supabase (kits table), never GAS
+// A kit belongs to the company that saved it. Rows written before the column
+// existed have no company_id and stay visible to everyone, so nothing vanishes.
+function _coFilter() {
+  var co = _companyKey();
+  return '&or=(company_id.eq.' + encodeURIComponent(co) + ',company_id.is.null)';
+}
+
 async function sbGetKits() {
-  var rows = await sbFetch('kits?select=id,name,description,config_encoded,package_url,preview_image,created_at&order=created_at.desc', { method: 'GET' });
+  var rows = await sbFetch('kits?select=id,name,description,config_encoded,package_url,preview_image,created_at,company_id&order=created_at.desc' + _coFilter(), { method: 'GET' });
   return (rows || []).map(function(r){
     return { kitId: r.id, name: r.name, description: r.description || '', date: (r.created_at||'').substring(0,10), configEncoded: r.config_encoded || '', packageUrl: r.package_url || '', previewImage: r.preview_image || '' };
   });
 }
 async function sbSaveKit(name, description, configEncoded, packageUrl, previewImage) {
   var id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('kit_' + Date.now() + '_' + Math.random().toString(36).slice(2,8));
-  var row = { id: id, name: name, description: description || '', config_encoded: configEncoded || '', package_url: packageUrl || '', preview_image: previewImage || '', username: (window.currentUser||{}).username || '', created_at: new Date().toISOString() };
+  var row = { id: id, name: name, description: description || '', config_encoded: configEncoded || '', package_url: packageUrl || '', preview_image: previewImage || '', username: (window.currentUser||{}).username || '', company_id: _companyKey(), created_at: new Date().toISOString() };
   var res = await sbFetch('kits', { method: 'POST', body: JSON.stringify(row) });
   return res === null ? null : ((res && res[0]) ? res[0] : row);
 }
@@ -21740,6 +21768,47 @@ async function sbUpdateKit(kitId, name, description, configEncoded, packageUrl, 
   return await sbFetch('kits?id=eq.' + encodeURIComponent(kitId), { method: 'PATCH',
     body: JSON.stringify({ name: name, description: description || '', config_encoded: configEncoded || '', package_url: packageUrl || '', preview_image: previewImage || '' }) });
 }
+// Remove every kit this company can see. Deliberately the same set the list
+// shows, so "delete all" never quietly takes more than what was on screen.
+async function sbDeleteAllKits() {
+  var rows = await sbGetKits();
+  var n = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var r = await sbDeleteKit(rows[i].kitId);
+    n++;
+  }
+  return n;
+}
+
+// Same for gallery, and the photo in storage goes with the row — otherwise the
+// build-photos bucket fills with images nothing points at any more.
+async function sbDeleteAllGallery() {
+  var rows = await sbGetGallery();
+  var n = 0;
+  for (var i = 0; i < rows.length; i++) {
+    await sbDeleteGalleryPhoto(rows[i].photoUrl);
+    await sbDeleteGalleryItem(rows[i].galId);
+    n++;
+  }
+  return n;
+}
+
+async function sbDeleteGalleryPhoto(photoUrl) {
+  if (!photoUrl) return false;
+  try {
+    var marker = '/storage/v1/object/public/build-photos/';
+    var at = String(photoUrl).indexOf(marker);
+    if (at < 0) return false;
+    var path = String(photoUrl).substring(at + marker.length).split('?')[0];
+    if (!path) return false;
+    await fetch(window.SAUCE_ENDPOINTS.supabaseUrl + '/storage/v1/object/build-photos/' + path, {
+      method: 'DELETE',
+      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY }
+    });
+    return true;
+  } catch(e) { console.warn('[Gallery] photo cleanup failed:', e); return false; }
+}
+
 async function sbDeleteKit(kitId) {
   return await sbFetch('kits?id=eq.' + encodeURIComponent(kitId), { method: 'DELETE',
     headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=representation' } });
@@ -21748,14 +21817,14 @@ async function sbDeleteKit(kitId) {
 // Photo gallery — completed-build photos. Same shape as kits, but the preview comes
 // from an uploaded photo (build-photos bucket) instead of a scraped package page.
 async function sbGetGallery() {
-  var rows = await sbFetch('gallery?select=id,name,description,config_encoded,photo_url,created_at&order=created_at.desc', { method: 'GET' });
+  var rows = await sbFetch('gallery?select=id,name,description,config_encoded,photo_url,created_at,company_id&order=created_at.desc' + _coFilter(), { method: 'GET' });
   return (rows || []).map(function(r){
     return { galId: r.id, name: r.name, description: r.description || '', date: (r.created_at||'').substring(0,10), configEncoded: r.config_encoded || '', photoUrl: r.photo_url || '' };
   });
 }
 async function sbSaveGalleryItem(name, description, configEncoded, photoUrl) {
   var id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('gal_' + Date.now() + '_' + Math.random().toString(36).slice(2,8));
-  var row = { id: id, name: name, description: description || '', config_encoded: configEncoded || '', photo_url: photoUrl || '', username: (window.currentUser||{}).username || '', created_at: new Date().toISOString() };
+  var row = { id: id, name: name, description: description || '', config_encoded: configEncoded || '', photo_url: photoUrl || '', username: (window.currentUser||{}).username || '', company_id: _companyKey(), created_at: new Date().toISOString() };
   var res = await sbFetch('gallery', { method: 'POST', body: JSON.stringify(row) });
   return res === null ? null : ((res && res[0]) ? res[0] : row);
 }
@@ -38082,11 +38151,75 @@ function priceForSku(sku, fallback) {
   return isNaN(f) ? 0 : f;
 }
 
+// ── DEMO PRICING ────────────────────────────────────────────────────────────
+// Until a company is properly registered, every figure the tool quotes is a demo
+// figure: the real shape of a quote, but never a real number. The nudge is
+// seeded from the session token, so it holds steady for the whole of one login
+// (a quote can't shift while you're building it) and lands somewhere different
+// the next time you sign in.
+window.SauceDemo = (function() {
+  var _seed = null, _seedFor = null;
+
+  function _hash(str) {
+    var h = 2166136261;
+    for (var i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return (h >>> 0);
+  }
+
+  // One seed per login. The session token changes when you sign in again, so the
+  // whole price list shifts with it.
+  function seed() {
+    var tok = '';
+    try { tok = (window.currentUser && window.currentUser.token) || ''; } catch(e) {}
+    if (!tok) { try { tok = sessionStorage.getItem('sauce_demo_seed') || ''; } catch(e) {} }
+    if (!tok) {
+      tok = 'anon-' + Date.now();
+      try { sessionStorage.setItem('sauce_demo_seed', tok); } catch(e) {}
+    }
+    if (_seedFor !== tok) { _seedFor = tok; _seed = _hash(tok); }
+    return _seed;
+  }
+
+  return {
+    // On until somebody deliberately turns it off. Deciding by Company ID would
+    // mean demo mode vanished the moment an account was tidied up, which is
+    // exactly when a live demo would be running.
+    active: function() {
+      try {
+        var d = (window.SauceRates && window.SauceRates.all().demo) || {};
+        return d.enabled !== false;
+      } catch(e) { return true; }
+    },
+
+    pct: function() {
+      var d = (window.SauceRates && window.SauceRates.all().demo) || {};
+      var n = parseFloat(d.jitterPct);
+      return (n > 0 && n <= 40) ? n : 9;
+    },
+
+    // Same key always moves the same way within a login; different keys move
+    // independently, so the list doesn't look uniformly inflated.
+    adjust: function(key, value) {
+      var v = parseFloat(value);
+      if (!this.active() || isNaN(v) || !v) return value;
+      var span = this.pct() / 100;
+      var r = (_hash(String(key) + '|' + seed()) % 2001) / 1000 - 1;   // -1..+1
+      var out = v * (1 + r * span);
+      return Math.abs(out) >= 100 ? Math.round(out * 100) / 100 : Math.round(out * 10000) / 10000;
+    },
+
+    // Shown wherever a demo figure could be mistaken for a real one.
+    label: function() { return 'DEMO PRICING — figures are illustrative, not quotable'; }
+  };
+})();
+
 function getPrice(sku) {
   if (!sku) return null;
   var pt = window.SauceMaterials._priceTable;
   var key = sku.trim().toUpperCase();
-  return pt[key] != null ? pt[key] : (pt[sku] != null ? pt[sku] : null);
+  var raw = pt[key] != null ? pt[key] : (pt[sku] != null ? pt[sku] : null);
+  if (raw == null) return null;
+  return window.SauceDemo.adjust('sku:' + key, raw);
 }
 
 // ====================================================================
@@ -38136,6 +38269,9 @@ window.SauceRates = (function() {
       rebar: 1.25,
       stamped: 10.00
     },
+    // Demo pricing. On until a registered company turns it off in Rates; the
+    // setting travels with the rate profile, not with one browser.
+    demo: { enabled: true, jitterPct: 9 },
     labor: {
       base: {
         rg:       { rate: 1.85, min: 2200 },
@@ -38227,6 +38363,21 @@ window.SauceRates = (function() {
     // v('labor.base.enclosed.rate') — 0 when the rate has been cleared or was
     // never entered. Never falls back to a default, or clearing would do nothing.
     v: function(path) {
+      var node = _load(), parts = String(path||'').split('.');
+      for (var i = 0; i < parts.length; i++) {
+        if (node == null || typeof node !== 'object') return 0;
+        node = node[parts[i]];
+      }
+      var n = parseFloat(node);
+      if (isNaN(n)) return 0;
+      // Tax and the zone number are not prices — nudging them makes nonsense.
+      if (path === 'labor.taxRate' || path === 'concrete.defaultZone') return n;
+      return (window.SauceDemo ? window.SauceDemo.adjust(path, n) : n);
+    },
+
+    // The stored figure, untouched by demo mode — what the rate editors show and
+    // save, so a demo nudge can never be written back as if it were the rate.
+    raw: function(path) {
       var node = _load(), parts = String(path||'').split('.');
       for (var i = 0; i < parts.length; i++) {
         if (node == null || typeof node !== 'object') return 0;
@@ -38853,7 +39004,9 @@ window.SauceRates = (function() {
   // A company either charges one rate everywhere, or varies it by county. Both
   // shapes live in the same rate profile; this screen is where they're set.
 
-  function _cRate(path) { return window.SauceRates.v('concrete.' + path); }
+  // Editors always show the stored rate — never the demo-adjusted one, or a
+  // save would write the nudge back as if it were the real number.
+  function _cRate(path) { return window.SauceRates.raw('concrete.' + path); }
 
   function cNum(path, label, val, width) {
     var id = 'cc_' + path.replace(/\./g, '__');
@@ -39086,6 +39239,9 @@ window.SauceRates = (function() {
       +   '</div>'
       +   '<button onclick="document.getElementById(\'concreteModal\').remove()" style="background:none;border:none;color:#8f8f8f;font-size:22px;cursor:pointer;line-height:1;">&times;</button>'
       + '</div>'
+      + (window.SauceDemo.active()
+          ? '<div style="margin:10px 20px 0;padding:7px 10px;background:rgba(255,130,0,.10);border:1px solid rgba(255,130,0,.4);border-radius:7px;font-size:10px;color:#FF8200;font-family:Outfit,sans-serif;">Demo pricing is on — the preview below shows nudged figures, the fields show your stored rates.</div>'
+          : '')
       + '<div id="concreteBody" style="flex:1;overflow-y:auto;padding:8px 20px 16px;">' + concreteBodyHtml() + '</div>'
       + '<div style="padding:10px 20px 16px;border-top:1px solid #5e5e5e;">'
       +   '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">'
@@ -39114,6 +39270,22 @@ window.SauceRates = (function() {
     previewConcrete();
   };
 
+  // Registering a company means turning this off; it is stored with the rates so
+  // it travels with the profile rather than living on one browser.
+  window.setDemoPricing = async function(on) {
+    var obj = window.SauceRates.all();
+    obj.demo = obj.demo || {};
+    obj.demo.enabled = !!on;
+    window.SauceRates.save(obj);
+    openRatesModal();
+    setStatus(on ? 'Demo pricing on — figures are illustrative.' : 'Demo pricing off — the tool now quotes your stored rates.', on ? '#FF8200' : '#86efac');
+    var act = window.SauceRates.active();
+    if (act && act.canEdit) {
+      await window.SauceRates.saveProfile({ id: act.id, scope: act.scope, owner: act.owner, name: act.name, rates: obj });
+    }
+    if (typeof updateDemoBadge === 'function') updateDemoBadge();
+  };
+
   window.openRatesModal = function() {
     var old = document.getElementById('ratesModal');
     if (old) old.remove();
@@ -39136,6 +39308,12 @@ window.SauceRates = (function() {
       +   '</div>'
       +   '<button onclick="document.getElementById(\'ratesModal\').remove()" style="background:none;border:none;color:#8f8f8f;font-size:22px;cursor:pointer;line-height:1;">&times;</button>'
       + '</div>'
+      + (window.SauceDemo.active()
+          ? '<div style="margin:12px 20px 0;padding:9px 12px;background:rgba(255,130,0,.10);border:1px solid rgba(255,130,0,.45);border-radius:8px;font-size:11px;color:#FF8200;font-family:Outfit,sans-serif;line-height:1.45;">'
+            + '<b>Demo pricing is on.</b> Every labor, concrete and material figure is nudged by about &plusmn;' + window.SauceDemo.pct() + '%, and lands somewhere different each time you sign in. The rates below are your real stored numbers.'
+            + '<div style="margin-top:7px;"><button onclick="setDemoPricing(false)" style="padding:5px 10px;background:rgba(255,255,255,.08);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Turn off — quote real prices</button></div>'
+            + '</div>'
+          : '<div style="margin:12px 20px 0;font-size:10px;color:#8f8f8f;font-family:Outfit,sans-serif;">Quoting real prices. <a href="#" onclick="setDemoPricing(true);return false;" style="color:#FF8200;">Switch to demo pricing</a></div>')
       + profileBarHtml()
       + (cleared ? '<div style="margin:12px 20px 0;padding:9px 12px;background:rgba(251,191,36,.10);border:1px solid rgba(251,191,36,.35);border-radius:8px;font-size:11px;color:#fbbf24;font-family:Outfit,sans-serif;">All rates are currently 0 — concrete and labor will price at $0 until rates are entered.</div>' : '')
       + '<div id="ratesBody" style="flex:1;overflow-y:auto;padding:4px 20px 16px;">' + renderGroup(window.SauceRates.all(), '', 0) + regionalHtml() + '</div>'
@@ -42413,11 +42591,11 @@ window.openKitsModal = function() {
           };
           acts.appendChild(editBtn);
           var delBtn = document.createElement('button');
-          delBtn.textContent = '\u00d7';
-          delBtn.title = 'Delete kit';
-          delBtn.style.cssText = 'margin-left:auto;background:none;border:none;color:#555;font-size:16px;cursor:pointer;padding:0 4px;';
-          delBtn.onmouseover = function(){ delBtn.style.color='#ef4444'; };
-          delBtn.onmouseout  = function(){ delBtn.style.color='#555'; };
+          delBtn.textContent = 'Delete';
+          delBtn.title = 'Delete this kit';
+          delBtn.style.cssText = 'margin-left:auto;padding:6px 9px;border-radius:6px;border:1px solid rgba(239,68,68,.35);background:rgba(239,68,68,.08);color:#ef4444;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+          delBtn.onmouseover = function(){ delBtn.style.background='rgba(239,68,68,.18)'; };
+          delBtn.onmouseout  = function(){ delBtn.style.background='rgba(239,68,68,.08)'; };
           delBtn.onclick = function() {
             if (!confirm('Delete kit "' + kit.name + '"?')) return;
             sbDeleteKit(kit.kitId).then(function(){ loadKitsList(wrap, lain); });
@@ -42429,6 +42607,28 @@ window.openKitsModal = function() {
       });
     })
     .catch(function(){ wrap.innerHTML = '<div style="font-size:11px;color:#ef4444;padding:8px 0;">Failed to load kits.</div>'; });
+  }
+
+  // Clearing the whole library — admins only, and only what this company can see.
+  if (isAdminUser) {
+    var kitBulk = document.createElement('div');
+    kitBulk.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid rgba(239,68,68,.25);flex-wrap:wrap;';
+    kitBulk.innerHTML = '<div style="flex:1;min-width:170px;font-size:10px;color:#8f8f8f;line-height:1.45;font-family:Outfit,sans-serif;">Removes every kit shown above. Saved quotes are not affected.</div>';
+    var kitDelAll = document.createElement('button');
+    kitDelAll.textContent = 'Delete All Kits';
+    kitDelAll.style.cssText = 'padding:8px 12px;border-radius:8px;border:1px solid rgba(239,68,68,.35);background:rgba(239,68,68,.10);color:#ef4444;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;';
+    kitDelAll.onclick = async function() {
+      var rows = await sbGetKits();
+      if (!rows.length) { alert('There are no kits to delete.'); return; }
+      if (!confirm('Delete all ' + rows.length + ' kit' + (rows.length === 1 ? '' : 's') + '?\n\nThis cannot be undone. Saved quotes are not affected.')) return;
+      kitDelAll.disabled = true; kitDelAll.textContent = 'Deleting...';
+      var n = await sbDeleteAllKits();
+      kitDelAll.disabled = false; kitDelAll.textContent = 'Delete All Kits';
+      loadKitsList(listWrap, isAdminUser);
+      alert('Deleted ' + n + ' kit' + (n === 1 ? '' : 's') + '.');
+    };
+    kitBulk.appendChild(kitDelAll);
+    panel.appendChild(kitBulk);
   }
 
   loadKitsList(listWrap, isAdminUser);
@@ -42725,14 +42925,16 @@ window.openGalleryModal = function() {
           acts.appendChild(editBtn);
 
           var delBtn = document.createElement('button');
-          delBtn.textContent = '\u00d7';
-          delBtn.title = 'Delete build';
-          delBtn.style.cssText = 'margin-left:auto;background:none;border:none;color:#555;font-size:16px;cursor:pointer;padding:0 4px;';
-          delBtn.onmouseover = function(){ delBtn.style.color='#ef4444'; };
-          delBtn.onmouseout  = function(){ delBtn.style.color='#555'; };
+          delBtn.textContent = 'Delete';
+          delBtn.title = 'Delete this build and its photo';
+          delBtn.style.cssText = 'margin-left:auto;padding:6px 9px;border-radius:6px;border:1px solid rgba(239,68,68,.35);background:rgba(239,68,68,.08);color:#ef4444;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;';
+          delBtn.onmouseover = function(){ delBtn.style.background='rgba(239,68,68,.18)'; };
+          delBtn.onmouseout  = function(){ delBtn.style.background='rgba(239,68,68,.08)'; };
           delBtn.onclick = function() {
             if (!confirm('Delete build "' + item.name + '"?')) return;
-            sbDeleteGalleryItem(item.galId).then(function(){ loadGalleryList(wrap, lain); });
+            sbDeleteGalleryPhoto(item.photoUrl).then(function(){
+              return sbDeleteGalleryItem(item.galId);
+            }).then(function(){ loadGalleryList(wrap, lain); });
           };
           acts.appendChild(delBtn);
         }
@@ -42742,6 +42944,28 @@ window.openGalleryModal = function() {
       });
     })
     .catch(function(){ wrap.innerHTML = '<div style="font-size:11px;color:#ef4444;padding:8px 0;">Failed to load gallery.</div>'; });
+  }
+
+  // Same for completed builds — the photos in storage go with them.
+  if (isAdminUser) {
+    var galBulk = document.createElement('div');
+    galBulk.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid rgba(239,68,68,.25);flex-wrap:wrap;';
+    galBulk.innerHTML = '<div style="flex:1;min-width:170px;font-size:10px;color:#8f8f8f;line-height:1.45;font-family:Outfit,sans-serif;">Removes every build shown above, and deletes its photo from storage.</div>';
+    var galDelAll = document.createElement('button');
+    galDelAll.textContent = 'Delete All Builds';
+    galDelAll.style.cssText = 'padding:8px 12px;border-radius:8px;border:1px solid rgba(239,68,68,.35);background:rgba(239,68,68,.10);color:#ef4444;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;';
+    galDelAll.onclick = async function() {
+      var rows = await sbGetGallery();
+      if (!rows.length) { alert('There are no builds to delete.'); return; }
+      if (!confirm('Delete all ' + rows.length + ' build' + (rows.length === 1 ? '' : 's') + ' and their photos?\n\nThis cannot be undone.')) return;
+      galDelAll.disabled = true; galDelAll.textContent = 'Deleting...';
+      var n = await sbDeleteAllGallery();
+      galDelAll.disabled = false; galDelAll.textContent = 'Delete All Builds';
+      loadGalleryList(listWrap, isAdminUser);
+      alert('Deleted ' + n + ' build' + (n === 1 ? '' : 's') + '.');
+    };
+    galBulk.appendChild(galDelAll);
+    panel.appendChild(galBulk);
   }
 
   loadGalleryList(listWrap, isAdminUser);
