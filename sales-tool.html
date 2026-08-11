@@ -1332,7 +1332,7 @@ body.customer-mode #stab_specs { display: block !important; }
           <button class="act-btn secondary" onclick="openConcreteModal()" style="flex:1;">&#x1FAA8; Concrete</button>
         </div>
         <div id="postSaveMobileRow" style="display:none;gap:6px;margin-bottom:6px;">
-          <button class="act-btn secondary" id="emailQuoteBtnMobile" onclick="openEmailQuoteModal()" style="flex:1;">✉ Email</button>
+          <button class="act-btn secondary" id="emailQuoteBtnMobile" onclick="openEmailQuoteModal()" style="flex:1;">PDF</button>
           <button class="act-btn secondary" id="textQuoteBtnMobile" onclick="openTextQuoteModal()" style="flex:1;">&#x1F4F1; Text</button>
           <button class="act-btn secondary" id="quotePdfBtnMobile" onclick="openQuotePDFModal()" style="flex:1;">&#x1F4C4; PDF</button>
         </div>
@@ -2316,7 +2316,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <button class="act-btn secondary" onclick="generatePostLayout()"> Post PDF</button>
         <button class="act-btn secondary" id="vpSaveDesign" onclick="generateChecklist()"> Checklist PDF</button>
         <button class="act-btn primary" id="saveQuoteBtn" onclick="saveSalesQuote()">Save Quote</button>
-        <button class="act-btn secondary" id="emailQuoteBtn" onclick="openEmailQuoteModal()" style="display:none;">✉ Email</button>
+        <button class="act-btn secondary" id="emailQuoteBtn" onclick="openEmailQuoteModal()" style="display:none;">PDF</button>
         <button class="act-btn secondary" id="textQuoteBtn" onclick="openTextQuoteModal()" style="display:none;"> Text</button>
         <button class="act-btn secondary" id="quotePdfBtn" onclick="openQuotePDFModal()" style="display:none;"> PDF</button>
       </div>
@@ -8011,7 +8011,7 @@ async function submitCustomerDesign() {
   if (!valid) { showToast('Please fill in your name and phone or email.', 'warn'); return; }
 
   var btn = document.getElementById('cust-submit-btn');
-  btn.textContent = 'Sending…'; btn.disabled = true;
+  btn.textContent = 'Building PDF…'; btn.disabled = true;
 
   try {
     // Serialize the full 3D config — same object salesman Save Quote uses
@@ -9932,17 +9932,8 @@ async function applyVoiceChunk(chunk, overlay, statusEl, micBtn, onDone) {
   var prompt = window._buildVoicePromptFn(chunk, colorList);
 
   try {
-    var resp = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({
-        action: 'parseVoice',
-        token: (typeof getToken === 'function' ? getToken() : ''),
-        transcript: chunk,
-        prompt: prompt
-      }),
-      redirect: 'follow'
-    });
+    var _vj = await sbFunction('tool-services', { action: 'parse', prompt: prompt, maxTokens: 1500 }, 60000);
+    var resp = { json: function() { return Promise.resolve(_vj); } };
     if (!resp.ok) throw new Error('Server ' + resp.status);
     var txt = await resp.text();
     var data;
@@ -21201,8 +21192,8 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = '2026-08-10 14:39 UTC';
-console.log('%c[Sauce] build 2026-08-10 14:39 UTC', 'color:#FF8200;font-weight:bold');
+window.SAUCE_BUILD = '2026-08-10 16:37 UTC';
+console.log('%c[Sauce] build 2026-08-10 16:37 UTC', 'color:#FF8200;font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
 // ── WHERE THIS COPY TALKS TO ────────────────────────────────────────────────
@@ -21210,12 +21201,15 @@ console.log('%c[Sauce] build 2026-08-10 14:39 UTC', 'color:#FF8200;font-weight:b
 // company standing up its own Apps Script deployment and Supabase project only
 // has to change these; nothing else in the file names an account.
 window.SAUCE_ENDPOINTS = {
-  // Apps Script web-app /exec URL — logins, sheets, email
-  gas:         'https://script.google.com/macros/s/AKfycbw8V4A6F2o8gaBFQDEcYt8V91S5we2elm2a4bKey6pzcAX4pj845VHdcHjQyc7-J7E1/exec',
-  // Supabase project URL and publishable key — quotes, kits, gallery
+  // The only address this tool needs. Logins, data, email, document parsing and
+  // mileage all run on this project — Supabase Auth, Postgres, and three Edge
+  // Functions (admin-users, send-email, tool-services).
   supabaseUrl: 'https://rvhzploxeeqgggjefsif.supabase.co',
   // Public link to a metal colour chart, if the company publishes one
-  colorChart:  ''
+  colorChart:  '',
+  // Set only if you are still running the old Apps Script deployment. Left
+  // empty, every call to it is refused before it is sent.
+  gas:         ''
 };
 /* @SAUCE-ENDPOINTS-END */
 
@@ -21660,17 +21654,58 @@ window.sendPromoEmails = async function () {
   btn.disabled = false;
 };
 
+// Signed with the user's session when there is one, so the row policies can
+// scope by company. Falls back to the publishable key only before sign-in
+// (the username → email lookup) and for anything left un-migrated.
+// Edge Functions: the three jobs that need a key the browser must not hold —
+// creating logins, sending mail, and talking to Claude or Maps. Each one checks
+// the caller's session before it does anything.
+async function sbFunction(name, payload, timeoutMs) {
+  var url = window.SAUCE_ENDPOINTS.supabaseUrl + '/functions/v1/' + name;
+  var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var timer = ctrl ? setTimeout(function(){ ctrl.abort(); }, timeoutMs || 60000) : null;
+  try {
+    var res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'apikey': _SB_KEY,
+        'Authorization': _sbAuthHeader(),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload || {}),
+      signal: ctrl ? ctrl.signal : undefined
+    });
+    var j = null;
+    try { j = await res.json(); } catch(e) {}
+    if (!j) return { success: false, error: 'No answer from ' + name + ' (' + res.status + ').' };
+    return j;
+  } catch(e) {
+    var why = (e && e.name === 'AbortError') ? 'timed out' : (e.message || 'network error');
+    console.warn('[fn]', name, why);
+    return { success: false, error: name + ' ' + why + '. Is the function deployed?' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function _sbAuthHeader() {
+  try { return 'Bearer ' + window.SauceAuth.token(); } catch(e) { return 'Bearer ' + _SB_KEY; }
+}
+
 async function sbFetch(path, opts) {
   if (!_SB_ON) return null;
   try {
-    var r = await fetch(_SB_URL + '/rest/v1/' + path, Object.assign({
-      headers: {
-        'apikey': _SB_KEY,
-        'Authorization': 'Bearer ' + _SB_KEY,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=representation'
-      }
-    }, opts));
+    // Callers pass their own headers, which would replace these wholesale, so
+    // merge rather than overwrite — and always sign with the current session so
+    // no call can accidentally fall back to the shared key once signed in.
+    var _o = Object.assign({}, opts);
+    _o.headers = Object.assign({
+      'apikey': _SB_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation'
+    }, (opts && opts.headers) || {});
+    _o.headers['Authorization'] = _sbAuthHeader();
+    var r = await fetch(_SB_URL + '/rest/v1/' + path, _o);
     if (!r.ok) { console.warn('[SB]', path, r.status, await r.text()); return null; }
     return r.status === 204 ? null : await r.json();
   } catch(e) { console.warn('[SB] fetch error:', e.message); return null; }
@@ -21768,23 +21803,18 @@ async function sbUpdateKit(kitId, name, description, configEncoded, packageUrl, 
   return await sbFetch('kits?id=eq.' + encodeURIComponent(kitId), { method: 'PATCH',
     body: JSON.stringify({ name: name, description: description || '', config_encoded: configEncoded || '', package_url: packageUrl || '', preview_image: previewImage || '' }) });
 }
-// Remove every kit this company can see. Deliberately the same set the list
-// shows, so "delete all" never quietly takes more than what was on screen.
+// Remove every kit this company can see — deliberately the same set the list
+// shows, so "delete all" never takes more than what was on screen.
 async function sbDeleteAllKits() {
-  var rows = await sbGetKits();
-  var n = 0;
-  for (var i = 0; i < rows.length; i++) {
-    var r = await sbDeleteKit(rows[i].kitId);
-    n++;
-  }
+  var rows = await sbGetKits(), n = 0;
+  for (var i = 0; i < rows.length; i++) { await sbDeleteKit(rows[i].kitId); n++; }
   return n;
 }
 
-// Same for gallery, and the photo in storage goes with the row — otherwise the
+// Same for completed builds, and the photo goes with the row — otherwise the
 // build-photos bucket fills with images nothing points at any more.
 async function sbDeleteAllGallery() {
-  var rows = await sbGetGallery();
-  var n = 0;
+  var rows = await sbGetGallery(), n = 0;
   for (var i = 0; i < rows.length; i++) {
     await sbDeleteGalleryPhoto(rows[i].photoUrl);
     await sbDeleteGalleryItem(rows[i].galId);
@@ -21802,8 +21832,7 @@ async function sbDeleteGalleryPhoto(photoUrl) {
     var path = String(photoUrl).substring(at + marker.length).split('?')[0];
     if (!path) return false;
     await fetch(window.SAUCE_ENDPOINTS.supabaseUrl + '/storage/v1/object/build-photos/' + path, {
-      method: 'DELETE',
-      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY }
+      method: 'DELETE', headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY }
     });
     return true;
   } catch(e) { console.warn('[Gallery] photo cleanup failed:', e); return false; }
@@ -24057,12 +24086,7 @@ function openEmailQuoteModal() {
   buildEmailQuoteModal();
   var modal = document.getElementById('emailQuoteModal');
 
-  // Pre-fill emails
-  var sEl = document.getElementById('eqSalesmanEmail');
-  var cEl = document.getElementById('eqCustomerEmail');
   var lbl = document.getElementById('eqQuoteIdLabel');
-  if (sEl) sEl.value = (window.currentUser || {}).email || '';
-  if (cEl) cEl.value = (document.getElementById('st_email')||{}).value || '';
   if (lbl) lbl.textContent = 'Quote ID: ' + window._savedQuoteId + (window._shedOnlyMode ? '  \u2022  SIDE SHED ONLY' : '');
 
   // Populate price selector — works for open and enclosed buildings
@@ -24132,13 +24156,10 @@ function buildEmailQuoteModal() {
   m.id = 'emailQuoteModal';
   m.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center;';
   m.innerHTML = '<div style="background:#2e2e2e;border:1px solid rgba(255,130,0,.25);border-radius:16px;padding:28px 28px 24px;width:90%;max-width:440px;font-family:Outfit,sans-serif;">'
-    + '<div style="font-size:15px;font-weight:800;color:#f0f3f7;margin-bottom:4px;">✉ Email Quote</div>'
+    + '<div style="font-size:15px;font-weight:800;color:#f0f3f7;margin-bottom:4px;">Download Quote PDF</div>'
+    + '<div style="font-size:10px;color:#8f8f8f;margin-bottom:8px;line-height:1.45;">Pick the prices to show, then download. Attach the PDF to your own email — replies come straight back to you.</div>'
     + '<div style="font-size:11px;color:#888888;margin-bottom:20px;" id="eqQuoteIdLabel"></div>'
     + '<div style="display:flex;flex-direction:column;gap:12px;">'
-    + '<div><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888888;margin-bottom:4px;">Salesman Email</div>'
-    + '<input id="eqSalesmanEmail" type="email" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,130,0,.25);background:#4B4B4B;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;"></div>'
-    + '<div><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888888;margin-bottom:4px;">Customer Email</div>'
-    + '<input id="eqCustomerEmail" type="email" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,130,0,.25);background:#4B4B4B;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;"></div>'
     + '<div id="eqPriceSelectWrap"><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888888;margin-bottom:8px;">Include Prices</div>'
     + '<div style="display:grid;grid-template-columns:1fr auto 20px;align-items:center;row-gap:10px;column-gap:12px;background:#111e30;border-radius:8px;padding:12px;">'
     + '<span id="eqRowOH" style="display:contents;">'
@@ -24178,11 +24199,11 @@ function buildEmailQuoteModal() {
     + '<div style=\'font-size:10px;color:#888888;margin-top:1px;\'>PDF attachment included with email</div></div>'
     + '</label>'
     + '<div><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888888;margin-bottom:4px;">Personal Note (optional)</div>'
-    + '<textarea id="eqNote" rows="3" placeholder="Add a personal message..." style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,130,0,.25);background:#4B4B4B;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;resize:vertical;"></textarea></div>'
+    + '<textarea id="eqNote" rows="3" placeholder="Notes to print on the quote (optional)" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,130,0,.25);background:#4B4B4B;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;resize:vertical;"></textarea></div>'
     + '</div>'
     + '<div style="display:flex;gap:10px;margin-top:20px;">'
     + '<button onclick="closeEmailQuoteModal()" style="flex:1;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:transparent;color:#888888;font-size:12px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Cancel</button>'
-    + '<button onclick="sendSalesQuoteEmail()" id="eqSendBtn" style="flex:2;padding:10px;border-radius:8px;border:none;background:linear-gradient(135deg,#FF8200,#cc6800);color:#4B4B4B;font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;letter-spacing:.3px;">Send Email</button>'
+    + '<button onclick="sendSalesQuoteEmail()" id="eqSendBtn" style="flex:2;padding:10px;border-radius:8px;border:none;background:linear-gradient(135deg,#FF8200,#cc6800);color:#4B4B4B;font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;letter-spacing:.3px;">Download PDF</button>'
     + '</div>'
     + '</div>';
   document.body.appendChild(m);
@@ -24508,13 +24529,10 @@ function buildSpecText() {
 }
 
 async function sendSalesQuoteEmail() {
-  var salesmanEmail = (document.getElementById('eqSalesmanEmail')||{}).value.trim();
-  var customerEmail = (document.getElementById('eqCustomerEmail')||{}).value.trim();
   var note = (document.getElementById('eqNote')||{}).value.trim();
-  if (!salesmanEmail && !customerEmail) { alert('Please enter at least one email address.'); return; }
 
   var btn = document.getElementById('eqSendBtn');
-  btn.disabled = true; btn.textContent = 'Sending…';
+  btn.disabled = true; btn.textContent = 'Building PDF…';
 
   try {
     // Build selected prices from checkboxes — same logic for open and enclosed buildings
@@ -24531,7 +24549,7 @@ async function sendSalesQuoteEmail() {
     if ((document.getElementById('eqChkStud')||{}).checked    && studR.total) selectedPrices.push({ type:'StudFramed',    label:'Wood Truss w/ 12" Soffit', results: studR });
     if ((document.getElementById('eqChkCypress')||{}).checked && cypR.total)  selectedPrices.push({ type:'Cypress',       label:'Wood Truss w/ 12" Soffit', results: cypR  });
     if ((document.getElementById('eqChkBB')||{}).checked      && bbR.total)   selectedPrices.push({ type:'MetalBB',       label:'Wood Truss w/ 12" Soffit', results: bbR   });
-    if (!selectedPrices.length) { alert('Please select at least one price to include.'); btn.disabled=false; btn.textContent='Send Email'; return; }
+    if (!selectedPrices.length) { alert('Please select at least one price to include.'); btn.disabled=false; btn.textContent='Download PDF'; return; }
 
     // Build filtered 3D link — only include totals for checked types
     var _filteredCfg = serializeConfig();
@@ -24557,57 +24575,45 @@ async function sendSalesQuoteEmail() {
     var _filteredEnc = await safeEncodeCompressed(_filteredCfg);
     var _filteredLink = toolBaseUrl() + '?view=1&config=' + _filteredEnc;
 
-    // Generate PDF and encode as base64 for attachment
-    var _quotePdfB64 = '';
+    // Build the PDF and hand it straight to the browser. The tool does not send
+    // mail: the salesman attaches this to his own message, from his own address,
+    // so replies land where the customer expects and nothing about the quote
+    // passes through a third party.
+    var _J = window.jspdf && window.jspdf.jsPDF;
+    if (!_J || typeof generateQuotePdfBlob !== 'function') {
+      throw new Error('PDF library not loaded yet — give it a moment and try again.');
+    }
+    var _pdfBlob = await generateQuotePdfBlob(selectedPrices);
+    if (!_pdfBlob) throw new Error('Could not build the PDF.');
+
+    var _custName = ((document.getElementById('st_name')||{}).value || 'Customer').trim();
+    var _fileName = _custName.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+      + (window._shedOnlyMode ? '_Side_Shed' : '_Building') + '_Quote'
+      + '_' + new Date().toISOString().slice(0, 10) + '.pdf';
+
+    var _dlUrl = URL.createObjectURL(_pdfBlob);
+    var _a = document.createElement('a');
+    _a.href = _dlUrl;
+    _a.download = _fileName;
+    document.body.appendChild(_a);
+    _a.click();
+    document.body.removeChild(_a);
+    setTimeout(function(){ URL.revokeObjectURL(_dlUrl); }, 10000);
+
+    // The 3D view link is worth having on the clipboard — it is the thing a
+    // salesman usually wants to paste into the same email as the attachment.
     try {
-      var _J = window.jspdf && window.jspdf.jsPDF;
-      if (_J && typeof generateQuotePdfBlob === 'function') {
-        var _pdfBlob = await generateQuotePdfBlob(selectedPrices);
-        if (_pdfBlob) {
-          _quotePdfB64 = await new Promise(function(res) {
-            var reader = new FileReader();
-            reader.onload = function(e) { res(e.target.result.split(',')[1]); };
-            reader.readAsDataURL(_pdfBlob);
-          });
-        }
-      }
-    } catch(pdfErr) { console.warn('[Email] PDF generation failed:', pdfErr.message); }
+      if (navigator.clipboard && _filteredLink) await navigator.clipboard.writeText(_filteredLink);
+    } catch(e) {}
 
-    // Pass full snapshot as _snapFallback — GAS uses this when sheet lookup fails
-    // (client-generated ST- IDs are never written to QuoteSnapshots sheet)
-    var _emailSnapshot = window._savedSnapshot || {};
-    var resp = await fetchWithTimeout(API_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'text/plain'},
-      body: JSON.stringify({
-        action: 'sendQuoteEmail',
-        token: getToken(),
-        snapshotId:    window._savedQuoteId,
-        _snapFallback: _emailSnapshot,
-        salesmanEmail: salesmanEmail,
-        customerEmail: customerEmail,
-        personalNote:  note,
-        configLink:    _filteredLink,
-        username:      (window.currentUser || {}).username || '',
-        selectedPrices: selectedPrices,
-        attachNewCustomer: !!(document.getElementById('eqAttachNewCustomer') && document.getElementById('eqAttachNewCustomer').checked),
-        attachPostFraming: !(typeof currentFrameType !== 'undefined' && (currentFrameType === 'stud' || currentFrameType === 'metalBB')),
-        pdfBase64:     _quotePdfB64 || '',
-        pdfFileName:   ((document.getElementById('st_name')||{}).value||'Customer').replace(/\s+/g,'_') + (window._shedOnlyMode ? '_SideShed_Quote.pdf' : '_Quote.pdf')
-      })
-    });
-    var data = await safeJson(resp);
-    if (!data.success) throw new Error(data.error || 'Send failed');
-
-    btn.textContent = '[OK] Sent!';
-    var sent = [salesmanEmail, customerEmail].filter(Boolean).join(' & ');
+    btn.textContent = '[OK] Downloaded';
     setTimeout(function(){
       closeEmailQuoteModal();
-      btn.disabled = false; btn.textContent = 'Send Email';
-    }, 1800);
+      btn.disabled = false; btn.textContent = 'Download PDF';
+    }, 1400);
   } catch(err) {
-    btn.disabled = false; btn.textContent = 'Send Email';
-    alert('Error sending email: ' + err.message);
+    btn.disabled = false; btn.textContent = 'Download PDF';
+    alert('Could not build the PDF: ' + err.message);
   }
 }
 
@@ -24893,7 +24899,7 @@ function vcSetColor(part, val) {
 }
 
 // Bootstrap currentUser from storage (same pattern as calculator)
-function initSalesAuth() {
+async function initSalesAuth() {
   setTimeout(adjustShellForBreakdownBar, 200);
   // View mode: no login required, no price calculation
   if (window._viewModeActive) {
@@ -24906,13 +24912,16 @@ function initSalesAuth() {
     return;
   }
   try {
-    var raw = sessionStorage.getItem('sauce_user') || localStorage.getItem('sauce_user');
-    console.log('[Sales] sauce_user raw:', raw ? raw.substring(0,60) : 'null');
-    if (raw) {
-      var u = JSON.parse(raw);
-      var sessionValid = u.loginExpiry && Date.now() < u.loginExpiry;
-      var hasToken = u.token && u.token.length > 0;
-      if (sessionValid && hasToken) {
+    // The refresh token is the source of truth. If it is still good the access
+    // token is renewed silently, which is why a reload no longer asks for a
+    // password just because a few hours passed.
+    var sess = await window.SauceAuth.restore();
+    console.log('[Sales] stored session:', sess ? 'found' : 'none');
+    if (sess) {
+      var u = await window.SauceAuth.loadProfile(sess.access_token);
+      if (u && u.active !== false) {
+        u.token = sess.access_token;
+        u.loginExpiry = (sess.expires_at || 0) * 1000;
         window.currentUser = u;
         window.dispatchEvent(new Event('crm:authready'));
         setTimeout(warmPing, 500);
@@ -24931,15 +24940,9 @@ function initSalesAuth() {
           if (addr && addr.length >= 4) doAddressLookup(addr);
         }, window.innerWidth < 700 ? 1500 : 800);
         return;
-      } else if (!hasToken) {
-        console.log('[Sales] Cached session has no token — forcing fresh login');
-        sessionStorage.removeItem('sauce_user');
-        localStorage.removeItem('sauce_user');
-      } else {
-        console.log('[Sales] Session expired');
-        sessionStorage.removeItem('sauce_user');
-        localStorage.removeItem('sauce_user');
       }
+      console.log('[Sales] Session valid but no usable profile — signing out');
+      await window.SauceAuth.signOut();
     }
   } catch(e) { console.log('[Sales] Auth error:', e); }
   console.log('[Sales] Showing login modal');
@@ -25002,6 +25005,137 @@ function hideSalesLoginModal() {
 
 var _priceCalcTimer = null;
 
+// ── SUPABASE AUTH ───────────────────────────────────────────────────────────
+// Logins are Supabase Auth accounts. People still type a username, so we resolve
+// it to the account email first — that lookup is the only call made before a
+// session exists, and it returns nothing but an address.
+//
+// The access token this returns is what every later request is signed with, so
+// the database can finally scope rows to the signed-in company instead of
+// trusting the browser.
+window.SauceAuth = (function() {
+
+  function _authUrl(path) { return window.SAUCE_ENDPOINTS.supabaseUrl + '/auth/v1' + path; }
+
+  async function _post(path, body, extraHeaders) {
+    var res = await fetch(_authUrl(path), {
+      method: 'POST',
+      headers: Object.assign({ 'apikey': _SB_KEY, 'Content-Type': 'application/json' }, extraHeaders || {}),
+      body: JSON.stringify(body)
+    });
+    var j = null;
+    try { j = await res.json(); } catch(e) {}
+    return { ok: res.ok, status: res.status, data: j };
+  }
+
+  return {
+    // username → the email the account was created with
+    emailForUsername: async function(username) {
+      var rows = await sbFetch('rpc/email_for_username', {
+        method: 'POST',
+        body: JSON.stringify({ u: username }),
+        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json' }
+      });
+      if (typeof rows === 'string') return rows;
+      if (rows && rows.length && rows[0] && rows[0].email_for_username) return rows[0].email_for_username;
+      return rows || '';
+    },
+
+    signIn: async function(usernameOrEmail, password) {
+      var email = usernameOrEmail;
+      if (email.indexOf('@') < 0) {
+        email = await this.emailForUsername(usernameOrEmail);
+        if (!email) return { success: false, error: 'No account with that username.' };
+      }
+      var r = await _post('/token?grant_type=password', { email: email, password: password });
+      if (!r.ok || !r.data || !r.data.access_token) {
+        return { success: false, error: (r.data && (r.data.error_description || r.data.msg)) || 'Invalid username or password.' };
+      }
+      return { success: true, session: r.data };
+    },
+
+    // Everything the tool needs about the person, from their own profile row.
+    loadProfile: async function(accessToken) {
+      var rows = await sbFetch('profiles?select=*', {
+        method: 'GET',
+        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + accessToken }
+      });
+      if (!rows || !rows.length) return null;
+      var me = rows[0];
+      // With more than one visible (an admin), pick our own row.
+      if (rows.length > 1) {
+        var uid = (window._sbSession || {}).user && window._sbSession.user.id;
+        me = rows.filter(function(r) { return r.id === uid; })[0] || rows[0];
+      }
+      return {
+        username:          me.username,
+        fullName:          me.full_name || me.username,
+        email:             me.email || '',
+        phone:             me.phone || '',
+        company:           me.company_name || '',
+        companyName:       me.company_name || '',
+        companyId:         me.company_id || 'default',
+        role:              me.role || 'user',
+        isCompanyAdmin:    me.role === 'admin' || me.role === 'super',
+        isSuperAdmin:      me.role === 'super',
+        savedQuote:        me.saved_quote !== false,
+        sendEmail:         me.send_email !== false,
+        materialList:      me.material_list !== false,
+        singleTotalPdf:    !!me.single_total_pdf,
+        isDemo:            !!me.is_demo,
+        depositPctOfTotal: me.deposit_pct || 0
+      };
+    },
+
+    refresh: async function(refreshToken) {
+      var r = await _post('/token?grant_type=refresh_token', { refresh_token: refreshToken });
+      return (r.ok && r.data && r.data.access_token) ? r.data : null;
+    },
+
+    signOut: async function() {
+      try {
+        var tok = (window._sbSession || {}).access_token;
+        if (tok) await _post('/logout', {}, { 'Authorization': 'Bearer ' + tok });
+      } catch(e) {}
+      try { localStorage.removeItem('sauce_session'); sessionStorage.removeItem('sauce_session'); } catch(e) {}
+      window._sbSession = null;
+    },
+
+    // Every later Supabase call is signed with the session, not the shared key,
+    // which is what lets the row policies scope by company.
+    token: function() {
+      return (window._sbSession && window._sbSession.access_token) || _SB_KEY;
+    },
+
+    saveSession: function(sess) {
+      window._sbSession = sess;
+      try {
+        var keep = { access_token: sess.access_token, refresh_token: sess.refresh_token,
+                     expires_at: sess.expires_at || (Math.floor(Date.now()/1000) + (sess.expires_in || 3600)),
+                     user: sess.user };
+        localStorage.setItem('sauce_session', JSON.stringify(keep));
+        sessionStorage.setItem('sauce_session', JSON.stringify(keep));
+      } catch(e) {}
+    },
+
+    // Restore on load, refreshing if the access token has aged out.
+    restore: async function() {
+      var raw = null;
+      try { raw = sessionStorage.getItem('sauce_session') || localStorage.getItem('sauce_session'); } catch(e) {}
+      if (!raw) return null;
+      var sess = null;
+      try { sess = JSON.parse(raw); } catch(e) { return null; }
+      if (!sess || !sess.refresh_token) return null;
+      var now = Math.floor(Date.now() / 1000);
+      if (sess.expires_at && sess.expires_at - 60 > now) { window._sbSession = sess; return sess; }
+      var fresh = await this.refresh(sess.refresh_token);
+      if (!fresh) return null;
+      this.saveSession(fresh);
+      return fresh;
+    }
+  };
+})();
+
 async function doSalesLogin() {
   var u = (document.getElementById('slUser')||{}).value || '';
   var p = (document.getElementById('slPass')||{}).value || '';
@@ -25010,11 +25144,26 @@ async function doSalesLogin() {
   if (!u || !p) { if(err) err.textContent = 'Enter username and password.'; return; }
   btn.textContent = 'Logging in…'; btn.disabled = true;
   try {
-    var resp = await fetchWithTimeout(window.SAUCE_ENDPOINTS.gas, {
-      method: 'POST', headers: {'Content-Type': 'text/plain'},
-      body: JSON.stringify({ action: 'login', username: u, password: p })
-    }, 55000);
-    var data = await safeJson(resp);
+    var signed = await window.SauceAuth.signIn(u.trim(), p);
+    if (!signed.success) {
+      if (err) err.textContent = signed.error;
+      btn.textContent = 'Log In'; btn.disabled = false;
+      return;
+    }
+    window.SauceAuth.saveSession(signed.session);
+    var profile = await window.SauceAuth.loadProfile(signed.session.access_token);
+    if (!profile) {
+      if (err) err.textContent = 'Signed in, but this account has no profile yet. An admin needs to finish setting it up.';
+      btn.textContent = 'Log In'; btn.disabled = false;
+      return;
+    }
+    if (profile.active === false) {
+      if (err) err.textContent = 'That account is inactive.';
+      btn.textContent = 'Log In'; btn.disabled = false;
+      return;
+    }
+    var data = Object.assign({ success: true, token: signed.session.access_token,
+                               tokenExpires: (signed.session.expires_at || 0) * 1000 }, profile);
     if (data.success) {
       window.currentUser = data.user || {
         username:     u,
@@ -25064,8 +25213,12 @@ async function doSalesLogin() {
           return now.getTime() + 20 * 3600000;
         }
       })();
-      sessionStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
-      localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
+      // The Supabase session is already stored; this cache is only so the UI can
+      // paint a name before the profile round-trip finishes.
+      try {
+        sessionStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
+        localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
+      } catch(e) {}
       hideSalesLoginModal();
       setTimeout(warmPing, 500);
       try { window._startSessionKeepAlive(); } catch(e) {}
@@ -25160,12 +25313,19 @@ window._companySettings = window._companySettings || {};
 // Pull the signed-in user's company settings and apply anything the client needs.
 async function loadCompanySettings() {
   try {
-    if (typeof API_URL === 'undefined' || !window.currentUser) return null;
-    var j = await fetchWithTimeout(API_URL, {
-      method: 'POST', headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({ action: 'getCompanySettings', token: getToken(), username: (window.currentUser||{}).username||'' })
-    }, 30000);
-    if (!j || !j.success) return null;
+    if (!window.currentUser) return null;
+    var co = _companyKey();
+    var rows = await sbFetch('company_settings?select=*&company_id=eq.' + encodeURIComponent(co), { method: 'GET' });
+    var r = (rows && rows[0]) || {};
+    var j = { success: true, settings: {
+      companyId:     r.company_id || co,
+      companyName:   r.company_name || ((window.currentUser||{}).companyName) || '',
+      shopAddress:   r.shop_address || '',
+      shopLat:       r.shop_lat, shopLng: r.shop_lng,
+      toolUrl:       r.tool_url || '', portalUrl: r.portal_url || '',
+      replyTo:       r.reply_to || '', colorChartUrl: r.color_chart || '',
+      attachments:   r.attachments || {}
+    } };
     window._companySettings = j.settings || {};
     SHOP_ADDRESS = window._companySettings.shopAddress || '';
     if (window.SauceShipping) window.SauceShipping.ORIGIN = SHOP_ADDRESS;
@@ -25411,7 +25571,37 @@ function payloadCacheKey() {
 }
 
 // ── FETCH HELPERS ───────────────────────────────────────────────────────────
+// Apps Script is the login system. These are the only things it is ever asked
+// for; everything else was moved to the app database. Anything not on this list
+// is refused here, in the browser, so no quote, price or customer detail can be
+// sent to that deployment even by an old code path nobody has pruned yet.
+var GAS_ALLOWED_ACTIONS = {
+  login: 1,
+  listUsers: 1, saveUser: 1, deleteUser: 1, listCompanies: 1,
+  getCompanySettings: 1, saveCompanySettings: 1,
+  lookupAddress: 1,                       // geocoding — sends an address, stores nothing
+  sendQuoteEmail: 1, sendPromoBlast: 1, sendFollowUpEmail: 1,
+  parsePdf: 1, parsePdfText: 1, parseVoice: 1
+};
+
+function _gasActionAllowed(url, opts) {
+  try {
+    if (typeof API_URL === 'undefined' || String(url).indexOf(API_URL) !== 0) return true;
+    var body = (opts && opts.body) ? JSON.parse(opts.body) : null;
+    var action = body && body.action;
+    if (!action) return true;
+    if (GAS_ALLOWED_ACTIONS[action]) return true;
+    console.warn('[GAS] blocked "' + action + '" — the login system does not hold that data.');
+    return false;
+  } catch(e) { return true; }
+}
+
 function fetchWithTimeout(url, opts, ms) {
+  // Refuse before anything is sent, and answer in the shape callers expect.
+  if (!_gasActionAllowed(url, opts)) {
+    return Promise.resolve({ success: false, loginOnly: true,
+      error: 'Not handled by the login system. This data lives in the app database.' });
+  }
   var timeout = ms || 55000;
   var timerRef = null;
   var timedOutFlag = false;
@@ -26236,9 +26426,9 @@ function buildPricePayload(calcType) {
       isDemo: (window.currentUser || {}).isDemo || false,
       token: getToken(),
       zipCode: _cachedZip || '', county: _cachedCounty || '', mileage: _cachedMileage || 0, taxRate: 0,
-      customerName: (document.getElementById('st_name')||{}).value || '',
-      phone: (document.getElementById('st_phone')||{}).value || '',
-      email: (document.getElementById('st_email')||{}).value || '',
+      // No customer details here. Pricing happens in this browser, and the only
+      // remaining reader of this payload is the local cache key.
+      customerName: '', phone: '', email: '',
       address: (document.getElementById('st_address')||{}).value || '',
       materialOnlyKit: (document.getElementById('st_materialKit') && document.getElementById('st_materialKit').checked) ? 'Yes' : 'No',
       farmTaxId: (document.getElementById('st_farmTax') && document.getElementById('st_farmTax').checked) ? 'Yes' : 'No',
@@ -26318,9 +26508,9 @@ function buildPricePayload(calcType) {
       isDemo: (window.currentUser || {}).isDemo || false,
       token: getToken(),
       zipCode: _cachedZip || '', county: _cachedCounty || '', mileage: _cachedMileage || 0, taxRate: 0,
-      customerName: (document.getElementById('st_name')||{}).value || '',
-      phone: (document.getElementById('st_phone')||{}).value || '',
-      email: (document.getElementById('st_email')||{}).value || '',
+      // No customer details here. Pricing happens in this browser, and the only
+      // remaining reader of this payload is the local cache key.
+      customerName: '', phone: '', email: '',
       address: (document.getElementById('st_address')||{}).value || '',
       manualAdder: getCombinedManualAdder(),
       mftRate: (function(){ var v=parseFloat((document.getElementById('st_mftRate')||{}).value); return isNaN(v)?0.12:v/100; })(),
@@ -38444,15 +38634,37 @@ window.SauceRates = (function() {
     syncFromServer: async function(force) {
       if (_synced && !force) return _profiles;
       try {
-        if (typeof API_URL === 'undefined' || !window.currentUser) return _profiles;
-        var j = await fetchWithTimeout(API_URL, {
-          method: 'POST', headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({ action: 'getRateProfiles', token: getToken(), username: (window.currentUser||{}).username||'' })
-        }, 30000);
-        if (!j || !j.success) return _profiles;
-        _profiles = j.profiles || [];
-        _isAdmin  = !!j.isAdmin;
-        _isSuperUser = !!j.isSuper;
+        if (!window.currentUser) return _profiles;
+        // Rates are pricing, so they live in the app database. The login system
+        // only tells us who this person is and what they may change.
+        var me   = (window.currentUser.username || '').toLowerCase().trim();
+        var myCo = ((window.currentUser.companyId) || 'default').toLowerCase().trim();
+        _isAdmin     = !!(window.currentUser.isCompanyAdmin || window.currentUser.role === 'admin' || window.currentUser.role === 'super' || window.currentUser.isSuperAdmin);
+        _isSuperUser = !!(window.currentUser.isSuperAdmin || window.currentUser.role === 'super');
+
+        var rows = await sbFetch('rate_profiles?select=id,name,scope,owner,is_default,company_id,rates,updated_at' +
+          (_isSuperUser ? '' : '&or=(company_id.eq.' + encodeURIComponent(myCo) + ',company_id.is.null)') +
+          '&order=updated_at.desc', { method: 'GET' });
+        if (rows === null) return _profiles;
+
+        var activeId = '', defaultId = '';
+        _profiles = (rows || []).filter(function(r) {
+          // A personal profile belongs to its owner alone.
+          if (r.scope === 'user' && String(r.owner || '').toLowerCase() !== me && !_isSuperUser && !_isAdmin) return false;
+          return true;
+        }).map(function(r) {
+          var canEdit = _isSuperUser
+            || (r.scope === 'user' && String(r.owner || '').toLowerCase() === me)
+            || (_isAdmin && (!r.company_id || r.company_id === myCo));
+          // Only your own company's default counts — a super admin can see every
+          // company's, and the last one iterated is not a sensible answer.
+          if (r.scope === 'company' && r.is_default && (!r.company_id || r.company_id === myCo)) defaultId = r.id;
+          if (r.scope === 'user' && String(r.owner || '').toLowerCase() === me) activeId = r.id;
+          return { id: r.id, name: r.name, scope: r.scope, owner: r.owner || '',
+                   isDefault: !!r.is_default, companyId: r.company_id || '',
+                   updated: r.updated_at || '', rates: r.rates || null, canEdit: canEdit };
+        });
+        var j = { activeId: activeId || defaultId };
         _synced   = true;
         var pick = null;
         for (var i = 0; i < _profiles.length; i++) if (_profiles[i].id === j.activeId) pick = _profiles[i];
@@ -38482,38 +38694,64 @@ window.SauceRates = (function() {
     // personal set for the signed-in salesman; 'company' needs admin.
     saveProfile: async function(opts) {
       opts = opts || {};
-      var j = await fetchWithTimeout(API_URL, {
-        method: 'POST', headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({
-          action: 'saveRateProfile',
-          profileId: opts.id || '',
-          name:      opts.name || 'Unnamed',
-          scope:     opts.scope || 'company',
-          owner:     opts.owner || ((window.currentUser||{}).username || ''),
-          rates:     opts.rates || _load(),
-          token: getToken(), username: (window.currentUser||{}).username||''
-        })
-      }, 30000);
-      if (j && j.success) { _synced = false; await this.syncFromServer(true); if (j.profileId) this.useProfile(j.profileId); }
+      var me   = ((window.currentUser||{}).username || '').toLowerCase().trim();
+      var myCo = (((window.currentUser||{}).companyId) || 'default').toLowerCase().trim();
+      var scope = (opts.scope === 'user') ? 'user' : 'company';
+      var id = opts.id || ((window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+                            : ('rate_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)));
+      var row = {
+        id: id,
+        name: opts.name || 'Unnamed',
+        scope: scope,
+        owner: scope === 'user' ? (opts.owner || me) : '',
+        company_id: myCo,
+        rates: opts.rates || _load(),
+        updated_at: new Date().toISOString()
+      };
+      // A salesman only ever has the one personal profile — reuse it.
+      if (scope === 'user' && !opts.id) {
+        var mine = _profiles.filter(function(p) { return p.scope === 'user' && String(p.owner||'').toLowerCase() === row.owner.toLowerCase(); })[0];
+        if (mine) row.id = id = mine.id;
+      }
+      var res = await sbFetch('rate_profiles?on_conflict=id', {
+        method: 'POST', body: JSON.stringify([row]),
+        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+                   'Content-Type': 'application/json',
+                   'Prefer': 'resolution=merge-duplicates,return=minimal' }
+      });
+      var j = { success: res !== null, profileId: id, error: res === null ? 'Could not reach the rate store.' : '' };
+      if (j.success) { _synced = false; await this.syncFromServer(true); this.useProfile(id); }
       return j;
     },
 
     deleteProfile: async function(id) {
-      var j = await fetchWithTimeout(API_URL, {
-        method: 'POST', headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ action: 'deleteRateProfile', profileId: id, token: getToken(), username: (window.currentUser||{}).username||'' })
-      }, 30000);
-      if (j && j.success) { if (_activeId === id) _activeId = ''; _synced = false; await this.syncFromServer(true); }
+      var res = await sbFetch('rate_profiles?id=eq.' + encodeURIComponent(id), {
+        method: 'DELETE',
+        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+                   'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+      });
+      var j = { success: true };
+      if (_activeId === id) _activeId = '';
+      _synced = false; await this.syncFromServer(true);
       return j;
     },
 
+    // Exactly one company profile carries the default flag, so clear this
+    // company's others before setting it.
     setCompanyDefault: async function(id) {
-      var j = await fetchWithTimeout(API_URL, {
-        method: 'POST', headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ action: 'setDefaultRateProfile', profileId: id, token: getToken(), username: (window.currentUser||{}).username||'' })
-      }, 30000);
-      if (j && j.success) { _synced = false; await this.syncFromServer(true); }
-      return j;
+      var myCo = (((window.currentUser||{}).companyId) || 'default').toLowerCase().trim();
+      await sbFetch('rate_profiles?company_id=eq.' + encodeURIComponent(myCo) + '&scope=eq.company', {
+        method: 'PATCH', body: JSON.stringify({ is_default: false }),
+        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+                   'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+      });
+      var res = await sbFetch('rate_profiles?id=eq.' + encodeURIComponent(id), {
+        method: 'PATCH', body: JSON.stringify({ is_default: true }),
+        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+                   'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+      });
+      _synced = false; await this.syncFromServer(true);
+      return { success: res !== null };
     }
   };
 })();
@@ -38796,12 +39034,26 @@ window.SauceRates = (function() {
 
   var _adminUsers = [], _adminCompanies = [], _adminEditing = null;
 
+  // User administration runs through the admin-users function, which holds the
+  // one key able to create a login. It works out who is asking from their own
+  // session, so the browser cannot claim a role it does not have.
   async function _gas(action, extra) {
-    var body = Object.assign({ action: action, token: getToken(),
-                               username: (window.currentUser||{}).username || '' }, extra || {});
-    return await fetchWithTimeout(API_URL, {
-      method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(body)
-    }, 30000);
+    var map = { listUsers: 'list', saveUser: 'save', deleteUser: 'delete', listCompanies: 'companies' };
+    var j = await sbFunction('admin-users', Object.assign({ action: map[action] || action }, extra || {}), 30000);
+    if (j && j.users) {
+      // The function returns database rows; the console speaks in tool terms.
+      j.users = j.users.map(function(r) {
+        return {
+          username: r.username, fullName: r.full_name || '', email: r.email || '', phone: r.phone || '',
+          companyId: r.company_id || 'default', companyName: r.company_name || '',
+          role: r.role || 'user', active: r.active !== false,
+          savedQuote: r.saved_quote !== false, sendEmail: r.send_email !== false,
+          materialList: r.material_list !== false, singleTotalPdf: !!r.single_total_pdf,
+          isDemo: !!r.is_demo, depositPct: r.deposit_pct || ''
+        };
+      });
+    }
+    return j;
   }
 
   function _aStatus(msg, color) {
@@ -42609,7 +42861,7 @@ window.openKitsModal = function() {
     .catch(function(){ wrap.innerHTML = '<div style="font-size:11px;color:#ef4444;padding:8px 0;">Failed to load kits.</div>'; });
   }
 
-  // Clearing the whole library — admins only, and only what this company can see.
+  // Clearing the whole library — admins only, and only what this company sees.
   if (isAdminUser) {
     var kitBulk = document.createElement('div');
     kitBulk.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid rgba(239,68,68,.25);flex-wrap:wrap;';
@@ -47371,7 +47623,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
           + '<input id="cmpToPhone" type="tel" placeholder="Customer phone" style="flex:1;min-width:130px;padding:7px 10px;border-radius:7px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:#e2e8f0;font-size:11px;font-family:Outfit,sans-serif;outline:none;">'
           + '<input id="cmpToEmail" type="email" placeholder="Customer email" style="flex:1;min-width:160px;padding:7px 10px;border-radius:7px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:#e2e8f0;font-size:11px;font-family:Outfit,sans-serif;outline:none;">'
           + '<button onclick="window._CompareEngine.sendComparisonText()" style="padding:7px 14px;border-radius:7px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:#e2e8f0;font-size:11px;font-weight:800;font-family:Outfit,sans-serif;cursor:pointer;white-space:nowrap;"> Text</button>'
-          + '<button id="cmpSendBtn" onclick="window._CompareEngine.sendComparison()" style="padding:7px 18px;border-radius:7px;border:none;background:linear-gradient(135deg,#FF8200,#cc6800);color:#1a2232;font-size:11px;font-weight:800;font-family:Outfit,sans-serif;cursor:pointer;letter-spacing:.3px;white-space:nowrap;">✉ Email</button>'
+          + '<button id="cmpSendBtn" onclick="window._CompareEngine.sendComparison()" style="padding:7px 18px;border-radius:7px;border:none;background:linear-gradient(135deg,#FF8200,#cc6800);color:#1a2232;font-size:11px;font-weight:800;font-family:Outfit,sans-serif;cursor:pointer;letter-spacing:.3px;white-space:nowrap;">PDF</button>'
           + '</div>'
         : '')
       + '</div>';
