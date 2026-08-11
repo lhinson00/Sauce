@@ -8027,7 +8027,7 @@ async function submitCustomerDesign() {
       method: 'POST',
       headers: {
         'apikey':        _SB_KEY,
-        'Authorization': 'Bearer ' + _SB_KEY,
+        'Authorization': _sbAuthHeader(),
         'Content-Type':  'application/json',
         'Prefer':        'return=minimal'
       },
@@ -19260,6 +19260,8 @@ function applyVoiceQuote(parsed, overlay) {
     </div>
     <div style="margin-top:16px;padding-top:12px;border-top:1px solid #5e5e5e;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
       <div id="wipeHistoryStatus" style="flex:1;min-width:180px;font-size:11px;color:#888888;font-family:Outfit,sans-serif;line-height:1.4;">Deleting is permanent: quote rows, follow-up records, sheet rows, customer info stored inside saved kits/gallery builds, and this browser's autosaved draft. No undo, no backup.</div>
+      <button id="factoryResetBtn" onclick="factoryResetAllData()" title="Owner only — erase every quote, kit, gallery build, price list and rate set" style="display:none;padding:8px 14px;background:rgba(239,68,68,.18);color:#ef4444;border:1px solid rgba(239,68,68,.6);border-radius:8px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Erase Everything</button>
+
       <button id="wipeHistoryBtn" onclick="wipeAllQuoteHistory()" style="padding:8px 14px;background:rgba(239,68,68,.10);color:#ef4444;border:1px solid rgba(239,68,68,.35);border-radius:8px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Delete All History</button>
     </div>
   </div>
@@ -21181,8 +21183,8 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = '2026-08-11 18:56 UTC';
-console.log('%c[Sauce] build 2026-08-11 18:56 UTC', 'color:#FF8200;font-weight:bold');
+window.SAUCE_BUILD = '2026-08-11 19:08 UTC';
+console.log('%c[Sauce] build 2026-08-11 19:08 UTC', 'color:#FF8200;font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
 // ── WHERE THIS COPY TALKS TO ────────────────────────────────────────────────
@@ -21366,7 +21368,7 @@ window.addEventListener('message', function (e) {
     try {
       sbFetch('quotes?id=eq.' + encodeURIComponent(qid), {
         method: 'PATCH', body: JSON.stringify({ snapshots: [snaps[0], window.PREVIEW_VER] }),
-        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+        headers: { 'Authorization': _sbAuthHeader(),
                    'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
       });
     } catch (err) {}
@@ -21421,7 +21423,7 @@ window.backfillPreviews = async function (limit) {
       var res2 = await sbFetch('quotes?id=eq.' + encodeURIComponent(r.id), {
         method: 'PATCH',
         body: JSON.stringify({ snapshots: snaps }),
-        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+        headers: { 'Authorization': _sbAuthHeader(), 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
       });
       ok++;
     } catch (e) { console.warn('[Backfill] failed on', r.id, e); fail++; }
@@ -21744,8 +21746,7 @@ async function sbReplaceInventory(rows, companyId, onProgress) {
   var co = companyId || _companyKey();
   var del = await sbFetch('inventory?company_id=eq.' + encodeURIComponent(co), {
     method: 'DELETE',
-    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
-               'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+    headers: { 'Prefer': 'return=minimal' }   // sbFetch signs with the session
   });
   var sent = 0, chunk = 500;
   for (var i = 0; i < rows.length; i += chunk) {
@@ -21762,8 +21763,7 @@ async function sbReplaceInventory(rows, companyId, onProgress) {
     var res = await sbFetch('inventory', {
       method: 'POST',
       body: JSON.stringify(batch),
-      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
-                 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+      headers: { 'Prefer': 'return=minimal' }   // sbFetch signs with the session
     });
     sent += batch.length;
     if (onProgress) onProgress(sent, rows.length);
@@ -21772,11 +21772,16 @@ async function sbReplaceInventory(rows, companyId, onProgress) {
 }
 
 // Building kits — stored in Supabase (kits table), never GAS
-// A kit belongs to the company that saved it. Rows written before the column
-// existed have no company_id and stay visible to everyone, so nothing vanishes.
+// A kit belongs to the company that saved it. Rows with no company are legacy
+// ones saved before the column existed; they are hidden by default, because
+// otherwise clearing your library leaves them on screen and it looks as though
+// the delete did nothing. Set window.SHOW_LEGACY_LIBRARY = true in the console
+// to see them, or claim them with the update in kits-gallery-company.sql.
 function _coFilter() {
   var co = _companyKey();
-  return '&or=(company_id.eq.' + encodeURIComponent(co) + ',company_id.is.null)';
+  return window.SHOW_LEGACY_LIBRARY
+    ? '&or=(company_id.eq.' + encodeURIComponent(co) + ',company_id.is.null)'
+    : '&company_id=eq.' + encodeURIComponent(co);
 }
 
 async function sbGetKits() {
@@ -21824,7 +21829,7 @@ async function sbDeleteGalleryPhoto(photoUrl) {
     var path = String(photoUrl).substring(at + marker.length).split('?')[0];
     if (!path) return false;
     await fetch(window.SAUCE_ENDPOINTS.supabaseUrl + '/storage/v1/object/build-photos/' + path, {
-      method: 'DELETE', headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY }
+      method: 'DELETE', headers: { 'apikey': _SB_KEY, 'Authorization': _sbAuthHeader() }
     });
     return true;
   } catch(e) { console.warn('[Gallery] photo cleanup failed:', e); return false; }
@@ -21832,7 +21837,7 @@ async function sbDeleteGalleryPhoto(photoUrl) {
 
 async function sbDeleteKit(kitId) {
   return await sbFetch('kits?id=eq.' + encodeURIComponent(kitId), { method: 'DELETE',
-    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=representation' } });
+    headers: { 'Authorization': _sbAuthHeader(), 'Content-Type': 'application/json', 'Prefer': 'return=representation' } });
 }
 
 // Photo gallery — completed-build photos. Same shape as kits, but the preview comes
@@ -21855,7 +21860,7 @@ async function sbUpdateGalleryItem(galId, name, description, configEncoded, phot
 }
 async function sbDeleteGalleryItem(galId) {
   return await sbFetch('gallery?id=eq.' + encodeURIComponent(galId), { method: 'DELETE',
-    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=representation' } });
+    headers: { 'Authorization': _sbAuthHeader(), 'Content-Type': 'application/json', 'Prefer': 'return=representation' } });
 }
 // Phone photos run 3-8MB; uploading them raw would make the gallery crawl. Cap the
 // longest edge and re-encode as JPEG before upload.
@@ -21890,7 +21895,7 @@ async function uploadGalleryPhoto(file) {
   var filename = 'build-' + Date.now() + '-' + (safe || 'photo') + '.jpg';
   var resp = await fetch(_SB_URL + '/storage/v1/object/build-photos/' + filename, {
     method: 'POST',
-    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'image/jpeg', 'x-upsert': 'true' },
+    headers: { 'apikey': _SB_KEY, 'Authorization': _sbAuthHeader(), 'Content-Type': 'image/jpeg', 'x-upsert': 'true' },
     body: blob
   });
   if (!resp.ok) {
@@ -21924,7 +21929,7 @@ async function sbSaveQuote(snap) {
   };
   if (!row.id) { console.warn('[SB] sbSaveQuote: no quoteId'); return null; }
   var result = await sbFetch('quotes?on_conflict=id', { method: 'POST', body: JSON.stringify(row),
-    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+    headers: { 'Authorization': _sbAuthHeader(),
                'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
 
   // Auto-upsert follow-up — only if customer has email and not already sent/closed
@@ -21940,7 +21945,7 @@ async function sbSaveQuote(snap) {
         if (fu.status === 'pending' || fu.status === 'snoozed') {
           await sbFetch('follow_ups?id=eq.' + fu.id, {
             method: 'PATCH',
-            headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+            headers: { 'Authorization': _sbAuthHeader(),
                        'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
             body: JSON.stringify({
               customer_name: snap.customerName || '',
@@ -21958,7 +21963,7 @@ async function sbSaveQuote(snap) {
         // Create new follow-up
         await sbFetch('follow_ups', {
           method: 'POST',
-          headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+          headers: { 'Authorization': _sbAuthHeader(),
                      'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
           body: JSON.stringify({
             quote_id:      row.id,
@@ -22014,7 +22019,7 @@ async function sbGetQuotes(salesman) {
 async function sbUpdateStatus(quoteId, status) {
   return sbFetch('quotes?id=eq.' + encodeURIComponent(quoteId),
     { method: 'PATCH', body: JSON.stringify({ status: status, updated_at: new Date().toISOString() }),
-      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+      headers: { 'Authorization': _sbAuthHeader(),
                  'Content-Type': 'application/json', 'Prefer': 'return=minimal' } });
 }
 
@@ -22022,7 +22027,7 @@ async function sbUpdateStatus(quoteId, status) {
 async function sbDeleteQuote(quoteId) {
   return sbFetch('quotes?id=eq.' + encodeURIComponent(quoteId),
     { method: 'DELETE',
-      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+      headers: { 'Authorization': _sbAuthHeader(),
                  'Content-Type': 'application/json', 'Prefer': 'return=minimal' } });
 }
 
@@ -22091,6 +22096,8 @@ function _setWipeBusy(busy) {
 }
 
 // Hard DELETE straight out of Supabase, 100 ids per request.
+// Deleting reports how many rows are actually gone, not how many were asked for.
+// A silent failure here is what makes deleted quotes reappear on the next load.
 async function sbDeleteQuotesBulk(ids) {
   var done = 0;
   for (var i = 0; i < ids.length; i += 100) {
@@ -22098,13 +22105,18 @@ async function sbDeleteQuotesBulk(ids) {
     var inList = chunk.map(function(id){ return encodeURIComponent('"' + String(id).replace(/"/g, '') + '"'); }).join(',');
     await sbFetch('quotes?id=in.(' + inList + ')', {
       method: 'DELETE',
-      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
-                 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+      headers: { 'Prefer': 'return=minimal' }   // sbFetch signs with the session
     });
     done += chunk.length;
     _setWipeStatus('Clearing database... ' + done + ' of ' + ids.length, '#FF8200');
   }
-  return done;
+  // Confirm rather than assume: count what is still there afterwards.
+  var left = await sbFetch('quotes?select=id&limit=20000' +
+    (ids.length ? '&id=in.(' + ids.map(function(id){ return encodeURIComponent('"' + String(id).replace(/"/g,'') + '"'); }).join(',') + ')' : ''),
+    { method: 'GET' });
+  var remaining = (left || []).length;
+  if (remaining) console.warn('[Delete]', remaining, 'quote(s) refused deletion — likely a permissions rule.');
+  return done - remaining;
 }
 
 // One request per 400 ids. GAS clears the row out of QuoteSnapshots, Configurator
@@ -22176,8 +22188,7 @@ async function sbPurgeFollowUps(ids, wipeScope) {
     var inList = chunk.map(function(id){ return encodeURIComponent('"' + String(id).replace(/"/g, '') + '"'); }).join(',');
     await sbFetch('follow_ups?quote_id=in.(' + inList + ')', {
       method: 'DELETE',
-      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
-                 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+      headers: { 'Prefer': 'return=minimal' }   // sbFetch signs with the session
     });
     n += chunk.length;
   }
@@ -22188,8 +22199,7 @@ async function sbPurgeFollowUps(ids, wipeScope) {
       : 'follow_ups?id=not.is.null';
     await sbFetch(q, {
       method: 'DELETE',
-      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
-                 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
+      headers: { 'Prefer': 'return=minimal' }   // sbFetch signs with the session
     });
   }
   return n;
@@ -22244,7 +22254,7 @@ async function scrubLibraryContacts(matchFn) {
         var enc = await safeEncodeCompressed(cfg);
         await sbFetch(table + '?id=eq.' + encodeURIComponent(r.id), {
           method: 'PATCH', body: JSON.stringify({ config_encoded: enc }),
-          headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+          headers: { 'Authorization': _sbAuthHeader(),
                      'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
         });
         cleaned++;
@@ -22359,6 +22369,138 @@ async function deleteCustomerQuotes(idsCsv, custName) {
 }
 
 // The nuclear option - everything in the current user's scope.
+// ── FACTORY RESET ────────────────────────────────────────────────────────────
+// Everything the tool has ever stored, removed in one pass. Owner only, because
+// unlike "Delete All History" this is not scoped to a company — it empties the
+// database. Intended for handing the tool on, or clearing a demo before a real
+// company starts using it.
+//
+// The listed tables are every table this tool writes to. `scoped` ones carry a
+// company_id and can be limited to one company; the rest are global.
+window.SAUCE_DATA_TABLES = [
+  { table: 'quotes',           label: 'Saved quotes',            scoped: true  },
+  { table: 'follow_ups',       label: 'Follow-up reminders',     scoped: false, owner: 'salesman' },
+  { table: 'submissions',      label: 'Customer design requests',scoped: false },
+  { table: 'kits',             label: 'Saved kits',              scoped: true },
+  { table: 'gallery',          label: 'Gallery builds',          scoped: true },
+  { table: 'inventory',        label: 'SKU price lists',         scoped: true },
+  { table: 'rate_profiles',    label: 'Labor & concrete rates',  scoped: true },
+  { table: 'company_settings', label: 'Company settings',        scoped: true },
+  { table: 'color_palette',    label: 'Shared colour palette',   scoped: false }
+];
+
+// Rows are matched with a filter that is always true, because PostgREST refuses
+// an unqualified DELETE — a deliberate guard against emptying a table by accident.
+function _wipeFilter(cfg, companyId) {
+  if (!companyId) return 'id=not.is.null';                  // erasing everything
+  if (cfg.scoped) return 'company_id=eq.' + encodeURIComponent(companyId);
+  return null;                                              // cannot be scoped — skip it
+}
+
+async function _countRows(table) {
+  var rows = await sbFetch(table + '?select=*&limit=1', {
+    method: 'GET', headers: { 'Prefer': 'count=exact' }
+  });
+  return Array.isArray(rows) ? rows.length : 0;
+}
+
+// Photos live in storage, not in a table, so deleting the gallery row is only
+// half the job — without this the bucket keeps every image forever.
+async function _wipeGalleryPhotos() {
+  var rows = await sbFetch('gallery?select=photo_url', { method: 'GET' });
+  var n = 0;
+  for (var i = 0; i < (rows || []).length; i++) {
+    if (rows[i].photo_url && await sbDeleteGalleryPhoto(rows[i].photo_url)) n++;
+  }
+  return n;
+}
+
+window.factoryResetAllData = async function() {
+  if (!isSuperUser()) {
+    alert('Only the owner account can do this.');
+    return;
+  }
+
+  var everything = confirm(
+    'FACTORY RESET\n\n' +
+    'OK      — erase EVERY company\'s data\n' +
+    'Cancel  — erase only your own company (' + _companyKey() + ')'
+  );
+  var companyId = everything ? '' : _companyKey();
+  var scopeLabel = everything ? 'every company' : 'company "' + _companyKey() + '"';
+
+  var lines = window.SAUCE_DATA_TABLES.filter(function(c) {
+    return !companyId || c.scoped;      // in company mode, only what can be scoped
+  }).map(function(c) { return '  \u2022 ' + c.label; }).join('\n');
+  if (!confirm(
+    'Permanently erase, for ' + scopeLabel + ':\n\n' + lines +
+    '\n  \u2022 Every gallery photo in storage\n\n' +
+    'Logins and companies are NOT touched — people can still sign in.\n\n' +
+    'There is no undo and no backup.'
+  )) return;
+
+  var typed = prompt('Last check.\n\nType   ERASE EVERYTHING   exactly to continue.');
+  if (!typed || typed.trim().toUpperCase() !== 'ERASE EVERYTHING') {
+    alert('Cancelled — nothing was deleted.');
+    return;
+  }
+
+  var log = [], failed = [], skipped = [];
+
+  // Photos first: once the gallery rows are gone their URLs are unrecoverable
+  // and the images would be stranded in the bucket.
+  try {
+    var photos = await _wipeGalleryPhotos();
+    if (photos) log.push(photos + ' gallery photo' + (photos === 1 ? '' : 's'));
+  } catch(e) { failed.push('gallery photos'); }
+
+  for (var i = 0; i < window.SAUCE_DATA_TABLES.length; i++) {
+    var cfg = window.SAUCE_DATA_TABLES[i];
+    var filter = _wipeFilter(cfg, companyId);
+    if (!filter) {
+      // Shared across companies with nothing to scope by. Leaving it alone is the
+      // only safe answer — the alternative is deleting somebody else's data.
+      skipped.push(cfg.label);
+      continue;
+    }
+    try {
+      var res = await sbFetch(cfg.table + '?' + filter, {
+        method: 'DELETE', headers: { 'Prefer': 'return=minimal' }
+      });
+      // Confirm rather than trust: a refused delete returns no error here.
+      var left = await sbFetch(cfg.table + '?select=*&limit=1' +
+        (companyId && cfg.scoped ? '&company_id=eq.' + encodeURIComponent(companyId) : ''), { method: 'GET' });
+      if (left && left.length) failed.push(cfg.label);
+      else log.push(cfg.label);
+      console.log('[Reset]', cfg.table, (left && left.length) ? 'REFUSED' : 'cleared');
+    } catch(e) {
+      failed.push(cfg.label);
+      console.warn('[Reset]', cfg.table, 'failed:', e);
+    }
+  }
+
+  // Anything this browser cached would otherwise repopulate the screen and look
+  // as though the reset had not worked.
+  try {
+    if (typeof clearCachedPriceTables === 'function') clearCachedPriceTables();
+    localStorage.removeItem('sauce_draft');
+    sessionStorage.removeItem('sauce_draft');
+    Object.keys(localStorage).forEach(function(k) {
+      if (k.indexOf('sauce_rates') === 0 || k.indexOf('saucePriceTable') === 0 ||
+          k.indexOf('sauceDescTable') === 0 || k === 'sauce_rate_profile') localStorage.removeItem(k);
+    });
+    window._savedDesigns = []; window._snapCache = {};
+  } catch(e) {}
+
+  alert(
+    'Factory reset complete for ' + scopeLabel + '.\n\n' +
+    'Cleared:\n  ' + (log.join('\n  ') || 'nothing found') +
+    (skipped.length ? '\n\nLeft alone (shared across companies):\n  ' + skipped.join('\n  ') : '') +
+    (failed.length ? '\n\nREFUSED (check the console):\n  ' + failed.join('\n  ') : '') +
+    '\n\nReload the page to start clean.'
+  );
+};
+
 async function wipeAllQuoteHistory() {
   var scope = _historyScopeUser();
   _setWipeBusy(true);
@@ -25026,7 +25168,7 @@ window.SauceAuth = (function() {
       var rows = await sbFetch('rpc/email_for_username', {
         method: 'POST',
         body: JSON.stringify({ u: username }),
-        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json' }
+        headers: { 'Authorization': _sbAuthHeader(), 'Content-Type': 'application/json' }
       });
       if (typeof rows === 'string') return rows;
       if (rows && rows.length && rows[0] && rows[0].email_for_username) return rows[0].email_for_username;
@@ -26042,7 +26184,7 @@ function handleSessionExpired() {
 
 async function _sbFuFetch(path, opts) {
   var defaults = {
-    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json' }
+    headers: { 'apikey': _SB_KEY, 'Authorization': _sbAuthHeader(), 'Content-Type': 'application/json' }
   };
   var merged = Object.assign({}, defaults, opts || {});
   if (opts && opts.headers) merged.headers = Object.assign({}, defaults.headers, opts.headers);
@@ -26118,7 +26260,7 @@ function _showFollowUpCard(followUps) {
 async function _fuUpdate(id, patch) {
   var r = await fetch(_SB_URL + '/rest/v1/follow_ups?id=eq.' + id, {
     method: 'PATCH',
-    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+    headers: { 'apikey': _SB_KEY, 'Authorization': _sbAuthHeader(),
                'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
     body: JSON.stringify(patch)
   });
@@ -26132,7 +26274,7 @@ async function _fuDelete(id) {
   try {
     await _sbFuFetch('follow_ups?id=eq.' + id, {
       method: 'DELETE',
-      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Prefer': 'return=minimal' }
+      headers: { 'Authorization': _sbAuthHeader(), 'Prefer': 'return=minimal' }
     });
   } catch(e) {
     if (row) row.style.opacity = '1';
@@ -26256,7 +26398,7 @@ async function _fuSendConfirm(id, quoteId) {
 async function loadQuoteById(quoteId) {
   var resp = await fetch(_SB_URL + '/rest/v1/quotes?id=eq.' + encodeURIComponent(quoteId)
     + '&select=config_encoded,snapshot,name,phone,email,city', {
-    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY }
+    headers: { 'apikey': _SB_KEY, 'Authorization': _sbAuthHeader() }
   });
   var rows = await resp.json();
   if (!rows || !rows[0]) throw new Error('Quote not found: ' + quoteId);
@@ -26313,7 +26455,7 @@ async function runFollowUpBackfill() {
 
     await _sbFuFetch('follow_ups', {
       method: 'POST',
-      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+      headers: { 'Authorization': _sbAuthHeader(),
                  'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
       body: JSON.stringify(rows)
     });
@@ -38229,7 +38371,7 @@ async function saveSkuPrice(sku, price, description) {
   var res = await sbFetch('inventory?on_conflict=company_id,sku', {
     method: 'POST',
     body: JSON.stringify([body]),
-    headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+    headers: { 'Authorization': _sbAuthHeader(),
                'Content-Type': 'application/json',
                'Prefer': 'resolution=merge-duplicates,return=minimal' }
   });
@@ -38716,7 +38858,7 @@ window.SauceRates = (function() {
       }
       var res = await sbFetch('rate_profiles?on_conflict=id', {
         method: 'POST', body: JSON.stringify([row]),
-        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+        headers: { 'Authorization': _sbAuthHeader(),
                    'Content-Type': 'application/json',
                    'Prefer': 'resolution=merge-duplicates,return=minimal' }
       });
@@ -38728,7 +38870,7 @@ window.SauceRates = (function() {
     deleteProfile: async function(id) {
       var res = await sbFetch('rate_profiles?id=eq.' + encodeURIComponent(id), {
         method: 'DELETE',
-        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+        headers: { 'Authorization': _sbAuthHeader(),
                    'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
       });
       var j = { success: true };
@@ -38743,12 +38885,12 @@ window.SauceRates = (function() {
       var myCo = (((window.currentUser||{}).companyId) || 'default').toLowerCase().trim();
       await sbFetch('rate_profiles?company_id=eq.' + encodeURIComponent(myCo) + '&scope=eq.company', {
         method: 'PATCH', body: JSON.stringify({ is_default: false }),
-        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+        headers: { 'Authorization': _sbAuthHeader(),
                    'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
       });
       var res = await sbFetch('rate_profiles?id=eq.' + encodeURIComponent(id), {
         method: 'PATCH', body: JSON.stringify({ is_default: true }),
-        headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+        headers: { 'Authorization': _sbAuthHeader(),
                    'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
       });
       _synced = false; await this.syncFromServer(true);
@@ -39641,6 +39783,10 @@ window.SauceRates = (function() {
       if (f) importZoneCsv(f);
       e.target.value = '';
     };
+
+    // Owner-only, and only ever shown to them.
+    var fr = document.getElementById('factoryResetBtn');
+    if (fr) fr.style.display = isSuperUser() ? '' : 'none';
 
     var sku = document.getElementById('skuCsvInput');
     if (sku) sku.onchange = function(e) {
@@ -42519,7 +42665,7 @@ window.fetchPackageMeta = async function(url) {
   for (var i=0;i<proxies.length;i++){
     try {
       var _isEdge = proxies[i].indexOf('/functions/v1/') > -1;
-      var r = await fetch(proxies[i] + encodeURIComponent(url), _isEdge ? { headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY } } : undefined);
+      var r = await fetch(proxies[i] + encodeURIComponent(url), _isEdge ? { headers: { 'Authorization': _sbAuthHeader() } } : undefined);
       if (r.ok) {
         var t = await r.text();
         // allorigins /get wraps the page in JSON {contents:"..."}
@@ -49030,7 +49176,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     };
     fetch(_SB_URL + '/rest/v1/quotes?on_conflict=id', {
       method: 'POST',
-      headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY,
+      headers: { 'apikey': _SB_KEY, 'Authorization': _sbAuthHeader(),
                  'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify(row)
     })
@@ -49855,7 +50001,7 @@ window.custMirrorVal = function(stId, val){ var s=document.getElementById(stId);
   // Supabase REST (uses the tool's existing anon key / URL globals)
   function sbReady() { return (typeof _SB_URL !== 'undefined' && typeof _SB_KEY !== 'undefined' && (typeof _SB_ON === 'undefined' || _SB_ON)); }
   function sbHeaders(extra) {
-    var h = { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json' };
+    var h = { 'apikey': _SB_KEY, 'Authorization': _sbAuthHeader(), 'Content-Type': 'application/json' };
     if (extra) Object.keys(extra).forEach(function (k) { h[k] = extra[k]; });
     return h;
   }
