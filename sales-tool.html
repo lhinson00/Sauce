@@ -2882,12 +2882,17 @@ function logToolEvent(eventType, meta) {
       meta:      meta || {},
       timestamp: new Date().toISOString()
     };
-    // Fire and forget — don't await, don't block
-    fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(payload)
-    }).catch(function(){});
+    // Activity used to go to an Apps Script sheet. Nothing receives it now, so
+    // keep it in the console rather than POSTing into the void.
+    if (window.SAUCE_ENDPOINTS && window.SAUCE_ENDPOINTS.gas) {
+      fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(payload)
+      }).catch(function(){});
+    } else {
+      console.log('[Activity]', eventType, meta || '');
+    }
   } catch(e) {}
 }
 
@@ -21177,8 +21182,8 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = '2026-08-12 16:37 UTC';
-console.log('%c[Sauce] build 2026-08-12 16:37 UTC', 'color:#FF8200;font-weight:bold');
+window.SAUCE_BUILD = '2026-08-12 16:47 UTC';
+console.log('%c[Sauce] build 2026-08-12 16:47 UTC', 'color:#FF8200;font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
 // ── WHERE THIS COPY TALKS TO ────────────────────────────────────────────────
@@ -26071,21 +26076,17 @@ function safeJson(r) {
 }
 
 function warmPing() {
-  // Fire a cheap request to wake up Apps Script before salesman touches anything.
-  // Carries the token so that if the GAS session store uses a sliding expiry, this
-  // also keeps the session alive rather than only warming the container.
-  try {
-    fetch(API_URL, {
-      method: 'POST',
-      headers: {'Content-Type':'text/plain'},
-      body: JSON.stringify({calcType:'WoodOH', warmPing:true, token: getToken(), w:40, l:60, h:14})
-    }).catch(function(){});
-  } catch(e) {}
+  // There is no Apps Script container left to warm, and the session lives in
+  // Supabase now. With API_URL blank this was POSTing to the page itself, which
+  // is what the 405s in the console were.
 }
 
 // Repeat the warm ping through the work day. Stops on its own once the client-side
 // login has actually expired, so it never hammers GAS for a logged-out tab.
 window._startSessionKeepAlive = function() {
+  // Supabase refreshes its own token; there is no Apps Script session to hold
+  // open any more, so this only runs if a GAS endpoint is actually configured.
+  if (!(window.SAUCE_ENDPOINTS && window.SAUCE_ENDPOINTS.gas)) return;
   if (window._keepAliveTimer) return;
   window._keepAliveTimer = setInterval(function() {
     var cu = window.currentUser || {};
@@ -40350,10 +40351,8 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     obj.demo.enabled = true;
     window.SauceRates.save(obj);
     try { updateDemoBadge(); } catch(e) {}
-    var act = window.SauceRates.active();
-    if (act && act.canEdit) {
-      await window.SauceRates.saveProfile({ id: act.id, scope: act.scope, owner: act.owner, name: act.name, rates: obj });
-    }
+    var saved = await _persistRatesForCompany(obj, 'Demo Pricing');
+    if (!saved.ok) { say('Rates applied on this device only — ' + saved.why, '#fbbf24'); }
 
     // Then the item prices.
     var cat = window.SAUCE_CATALOG || [];
@@ -40395,10 +40394,7 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     var _c = window.SauceRates.all(); _c.demo = _c.demo || {}; _c.demo.enabled = false;
     window.SauceRates.save(_c);
     try { updateDemoBadge(); } catch(e) {}
-    var act = window.SauceRates.active();
-    if (act && act.canEdit) {
-      await window.SauceRates.saveProfile({ id: act.id, scope: act.scope, owner: act.owner, name: act.name, rates: window.SauceRates.all() });
-    }
+    await _persistRatesForCompany(window.SauceRates.all(), 'Company Rates');
     await sbFetch('inventory?company_id=eq.' + encodeURIComponent(co), {
       method: 'DELETE', headers: { 'Prefer': 'return=minimal' }
     });
@@ -40820,6 +40816,28 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     document.body.appendChild(wrap);
   }
 
+  // Write rates where the whole company can see them. If this company has no
+  // profile yet, make one — otherwise the numbers live in one browser and every
+  // salesman still prices on zeros.
+  async function _persistRatesForCompany(rates, newName) {
+    var act = null;
+    try { act = window.SauceRates.active(); } catch(e) {}
+    if (act && act.canEdit) {
+      var j = await window.SauceRates.saveProfile({ id: act.id, scope: act.scope, owner: act.owner, name: act.name, rates: rates });
+      return (j && j.success) ? { ok: true } : { ok: false, why: (j && j.error) || 'the rate store refused the write.' };
+    }
+    if (act && !act.canEdit) return { ok: false, why: 'those are company rates you cannot change.' };
+
+    if (!isSuperUser() && !isCompanyAdminUser()) return { ok: false, why: 'only an admin can create the company rate profile.' };
+    var j2 = await window.SauceRates.saveProfile({ scope: 'company', name: newName || 'Company Rates', rates: rates });
+    if (j2 && j2.success) {
+      try { await window.SauceRates.setCompanyDefault(j2.profileId); } catch(e) {}
+      try { await window.SauceRates.syncFromServer(true); } catch(e) {}
+      return { ok: true, created: true };
+    }
+    return { ok: false, why: (j2 && j2.error) || 'the rate store refused the write.' };
+  }
+
   window.savePricingPanel = async function(id) {
     var obj = window.SauceRates.all();
     var inputs = document.querySelectorAll('#' + id + 'Body [data-pc-path]');
@@ -40837,12 +40855,11 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     var st = document.getElementById(id + 'Status');
     function say(m, c) { if (st) { st.textContent = m; st.style.color = c || '#8f8f8f'; } }
 
-    var act = window.SauceRates.active();
-    if (!act)          { say('Applied here. Open Advanced to save it as a profile.', '#fbbf24'); return; }
-    if (!act.canEdit)  { say('Applied here only — those are company rates you cannot change.', '#fbbf24'); return; }
-    say('Saving to "' + act.name + '"...', '#FF8200');
-    var j = await window.SauceRates.saveProfile({ id: act.id, scope: act.scope, owner: act.owner, name: act.name, rates: obj });
-    say(j && j.success ? 'Saved.' : 'Could not save: ' + ((j && j.error) || 'unknown'), (j && j.success) ? '#86efac' : '#ef4444');
+    say('Saving...', '#FF8200');
+    var res = await _persistRatesForCompany(obj, 'Company Rates');
+    say(res.ok ? (res.created ? 'Saved — created this company\'s rate profile.' : 'Saved.')
+               : 'Applied on this device only — ' + res.why,
+        res.ok ? '#86efac' : '#fbbf24');
     try { updateStripFromLocalCalc(); } catch(e) {}
   };
 
