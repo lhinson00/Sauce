@@ -21184,8 +21184,8 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = '2026-08-12 14:19 UTC';
-console.log('%c[Sauce] build 2026-08-12 14:19 UTC', 'color:#FF8200;font-weight:bold');
+window.SAUCE_BUILD = '2026-08-12 14:22 UTC';
+console.log('%c[Sauce] build 2026-08-12 14:22 UTC', 'color:#FF8200;font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
 // ── WHERE THIS COPY TALKS TO ────────────────────────────────────────────────
@@ -25336,16 +25336,65 @@ window.SauceAuth = (function() {
       return rows || '';
     },
 
+    // Throttling and the audit trail both live in Postgres, so neither can be
+    // skipped by editing this page. They fail open: if the database cannot be
+    // reached, a legitimate salesman still gets to sign in.
+    _rpc: async function(fn, args) {
+      try {
+        return await sbFetch('rpc/' + fn, {
+          method: 'POST',
+          body: JSON.stringify(args || {}),
+          headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + _SB_KEY, 'Content-Type': 'application/json' }
+        });
+      } catch(e) { return null; }
+    },
+
+    // Same as _rpc but signed with the session, for calls that check the
+    // caller's role server-side.
+    _rpcAuthed: async function(fn, args) {
+      try {
+        return await sbFetch('rpc/' + fn, {
+          method: 'POST',
+          body: JSON.stringify(args || {}),
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch(e) { return null; }
+    },
+
+    _note: async function(username, ok, why) {
+      var agent = '';
+      try { agent = (navigator.userAgent || '').slice(0, 300); } catch(e) {}
+      await this._rpc('record_login_attempt', { u: username, succeeded: !!ok, why: why || '', agent: agent });
+    },
+
     signIn: async function(usernameOrEmail, password) {
-      var email = usernameOrEmail;
+      var typed = String(usernameOrEmail || '').trim();
+
+      // Too many wrong passwords for this username locks it briefly.
+      var gate = await this._rpc('login_throttle_check', { u: typed });
+      if (gate && gate.blocked) {
+        var mins = Math.max(1, Math.ceil((gate.retry_after_seconds || 60) / 60));
+        return { success: false, throttled: true,
+                 error: 'Too many failed attempts. Try again in ' + mins + ' minute' + (mins === 1 ? '' : 's') + '.' };
+      }
+
+      var email = typed;
       if (email.indexOf('@') < 0) {
-        email = await this.emailForUsername(usernameOrEmail);
-        if (!email) return { success: false, error: 'No account with that username.' };
+        email = await this.emailForUsername(typed);
+        if (!email) {
+          await this._note(typed, false, 'no such username');
+          return { success: false, error: 'No account with that username.' };
+        }
       }
       var r = await _post('/token?grant_type=password', { email: email, password: password });
       if (!r.ok || !r.data || !r.data.access_token) {
-        return { success: false, error: (r.data && (r.data.error_description || r.data.msg)) || 'Invalid username or password.' };
+        await this._note(typed, false, 'bad password');
+        var left = (gate && typeof gate.remaining === 'number') ? gate.remaining - 1 : null;
+        var msg = (r.data && (r.data.error_description || r.data.msg)) || 'Invalid username or password.';
+        if (left !== null && left > 0 && left <= 2) msg += ' ' + left + ' attempt' + (left === 1 ? '' : 's') + ' left.';
+        return { success: false, error: msg };
       }
+      await this._note(typed, true, 'ok');
       return { success: true, session: r.data };
     },
 
@@ -39494,6 +39543,56 @@ window.SauceRates = (function() {
     _renderAdmin();
   }
 
+  // Who has been signing in, and what failed. Company admins see their own
+  // people; the owner sees everybody.
+  window.openLoginHistory = async function() {
+    var wrap = document.getElementById('loginHistoryModal');
+    if (wrap) wrap.remove();
+    wrap = document.createElement('div');
+    wrap.id = 'loginHistoryModal';
+    wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:100015;display:flex;align-items:center;justify-content:center;padding:20px;';
+    wrap.onclick = function(e) { if (e.target === wrap) wrap.remove(); };
+    wrap.innerHTML =
+      '<div style="background:#3a3a3a;border:1px solid #5e5e5e;border-radius:14px;width:100%;max-width:620px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6);">'
+      + '<div style="padding:16px 20px 12px;border-bottom:1px solid #5e5e5e;display:flex;align-items:center;gap:10px;">'
+      +   '<div style="flex:1;font-size:15px;font-weight:800;color:#fff;font-family:Outfit,sans-serif;">Sign-in History</div>'
+      +   '<button onclick="document.getElementById(\'loginHistoryModal\').remove()" style="background:none;border:none;color:#8f8f8f;font-size:22px;cursor:pointer;line-height:1;">&times;</button>'
+      + '</div>'
+      + '<div id="loginHistoryBody" style="flex:1;overflow-y:auto;padding:10px 20px 16px;font-family:Outfit,sans-serif;">'
+      +   '<div style="font-size:11px;color:#8f8f8f;">Loading...</div>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(wrap);
+
+    var rows = await window.SauceAuth._rpcAuthed('login_history', { limit_n: 200 });
+    var body = document.getElementById('loginHistoryBody');
+    if (!body) return;
+    if (!rows || !rows.length) {
+      body.innerHTML = '<div style="font-size:11px;color:#8f8f8f;">'
+        + (rows === null ? 'Could not load the history — is login-security.sql installed?' : 'No sign-ins recorded yet.')
+        + '</div>';
+      return;
+    }
+    var fails = rows.filter(function(r) { return !r.ok; }).length;
+    body.innerHTML =
+      '<div style="font-size:10px;color:#8f8f8f;margin-bottom:10px;">'
+      + rows.length + ' most recent · ' + fails + ' failed</div>'
+      + rows.map(function(r) {
+          var when = '';
+          try { when = new Date(r.at).toLocaleString(); } catch(e) { when = r.at; }
+          var mob = /iPhone|Android|iPad/i.test(r.agent || '') ? 'mobile' : 'desktop';
+          return '<div style="display:flex;align-items:center;gap:10px;padding:7px 9px;border:1px solid #4a4a4a;border-radius:7px;margin-bottom:5px;background:'
+            + (r.ok ? 'rgba(255,255,255,.03)' : 'rgba(239,68,68,.07)') + ';">'
+            + '<div style="flex:1;min-width:0;">'
+            +   '<div style="font-size:12px;font-weight:700;color:#fff;">' + _esc(r.username)
+            +     (r.ok ? '' : ' <span style="color:#ef4444;font-size:10px;font-weight:800;">FAILED</span>') + '</div>'
+            +   '<div style="font-size:10px;color:#8f8f8f;">' + _esc(when) + ' · ' + mob
+            +     (r.ok ? '' : ' · ' + _esc(r.reason || '')) + '</div>'
+            + '</div>'
+            + '</div>';
+        }).join('');
+  };
+
   window.openAdminModal = function() {
     var old = document.getElementById('adminModal');
     if (old) old.remove();
@@ -39508,6 +39607,7 @@ window.SauceRates = (function() {
       +     '<div style="font-size:15px;font-weight:800;color:#ffffff;font-family:Outfit,sans-serif;">Users &amp; Companies</div>'
       +     '<div style="font-size:11px;color:#8f8f8f;margin-top:2px;font-family:Outfit,sans-serif;">Logins, roles, and which company each person prices from</div>'
       +   '</div>'
+      +   '<button onclick="openLoginHistory()" title="Who has signed in, and what failed" style="padding:7px 10px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">History</button>'
       +   '<button onclick="adminNewUser()" style="padding:7px 12px;background:#FF8200;color:#fff;border:none;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">+ New User</button>'
       +   '<button onclick="document.getElementById(\'adminModal\').remove()" style="background:none;border:none;color:#8f8f8f;font-size:22px;cursor:pointer;line-height:1;">&times;</button>'
       + '</div>'
