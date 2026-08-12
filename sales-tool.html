@@ -21177,8 +21177,8 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = '2026-08-12 16:16 UTC';
-console.log('%c[Sauce] build 2026-08-12 16:16 UTC', 'color:#FF8200;font-weight:bold');
+window.SAUCE_BUILD = '2026-08-12 16:32 UTC';
+console.log('%c[Sauce] build 2026-08-12 16:32 UTC', 'color:#FF8200;font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
 // ── WHERE THIS COPY TALKS TO ────────────────────────────────────────────────
@@ -21682,6 +21682,8 @@ function _sbAuthHeader() {
 
 async function sbFetch(path, opts) {
   if (!_SB_ON) return null;
+  // Start each call clean so a stale failure can't be read as this one's.
+  window._sbLastError = null;
   try {
     // Callers pass their own headers, which would replace these wholesale, so
     // merge rather than overwrite — and always sign with the current session so
@@ -21694,9 +21696,68 @@ async function sbFetch(path, opts) {
     }, (opts && opts.headers) || {});
     _o.headers['Authorization'] = _sbAuthHeader();
     var r = await fetch(_SB_URL + '/rest/v1/' + path, _o);
-    if (!r.ok) { console.warn('[SB]', path, r.status, await r.text()); return null; }
+    if (!r.ok) {
+      // Hold on to why. Callers used to get a bare null and could only report
+      // "the write was refused", which is no help in fixing it.
+      var _body = '';
+      try { _body = await r.text(); } catch(e2) {}
+      window._sbLastError = { path: path, status: r.status, body: _body };
+      console.warn('[SB]', path, r.status, _body);
+      return null;
+    }
     return r.status === 204 ? null : await r.json();
-  } catch(e) { console.warn('[SB] fetch error:', e.message); return null; }
+  } catch(e) {
+    window._sbLastError = { path: path, status: 0, body: e.message };
+    console.warn('[SB] fetch error:', e.message);
+    return null;
+  }
+}
+
+// Did the last sbFetch actually fail? A null return means either "refused" or
+// "succeeded with nothing to return" — a 204 from Prefer: return=minimal — so
+// the recorded error is the only reliable way to tell them apart. Reading null
+// as failure was announcing perfectly good uploads as refusals.
+function sbFailed() { return !!window._sbLastError; }
+
+// Write price rows, surviving a database that has not had vendor-sku-column.sql
+// run against it yet — the prices matter, the company's own part codes are a
+// nicety, so losing the column should not lose the whole upload.
+async function sbUpsertInventory(rows) {
+  await sbFetch('inventory?on_conflict=company_id,sku', {
+    method: 'POST', body: JSON.stringify(rows),
+    headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
+  });
+  if (!sbFailed()) return { ok: true };
+  var why = String((window._sbLastError || {}).body || '');
+  if (!/vendor_sku/.test(why)) return { ok: false, why: sbWhyRefused() };
+
+  var stripped = rows.map(function(r) {
+    var c = {}; Object.keys(r).forEach(function(k) { if (k !== 'vendor_sku') c[k] = r[k]; });
+    return c;
+  });
+  await sbFetch('inventory?on_conflict=company_id,sku', {
+    method: 'POST', body: JSON.stringify(stripped),
+    headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
+  });
+  if (sbFailed()) return { ok: false, why: sbWhyRefused() };
+  return { ok: true, note: 'Prices saved. Your own part codes were skipped — run vendor-sku-column.sql to store those too.' };
+}
+
+// Turn a database refusal into something a person can act on.
+function sbWhyRefused() {
+  var e = window._sbLastError;
+  if (!e) return 'No detail was returned.';
+  var b = String(e.body || '');
+  if (/vendor_sku/.test(b))
+    return 'The price list has no "vendor_sku" column yet — run vendor-sku-column.sql in Supabase, then try again.';
+  if (/row-level security|permission denied|42501/i.test(b))
+    return 'The database refused the write for this account — you need to be a company admin.';
+  if (/does not exist|42P01/i.test(b))
+    return 'A table this needs does not exist yet — check the setup SQL has been run.';
+  if (/duplicate key|23505|no unique|42P10/i.test(b))
+    return 'The (company_id, sku) unique index is missing — re-run inventory-table.sql.';
+  try { var j = JSON.parse(b); return String(j.message || j.hint || b).slice(0, 220); } catch(err) {}
+  return (b || ('HTTP ' + e.status)).slice(0, 220);
 }
 
 // ── SKU PRICING ─────────────────────────────────────────────────────────────
@@ -38548,7 +38609,7 @@ async function saveSkuPrice(sku, price, description) {
                'Content-Type': 'application/json',
                'Prefer': 'resolution=merge-duplicates,return=minimal' }
   });
-  console.log('[Prices]', key, '=', body.price, res === null ? '(write may have failed)' : 'saved');
+  console.log('[Prices]', key, '=', body.price, sbFailed() ? '(write failed: ' + sbWhyRefused() + ')' : 'saved');
   return true;
 }
 
@@ -39068,7 +39129,7 @@ window.SauceRates = (function() {
                    'Content-Type': 'application/json',
                    'Prefer': 'resolution=merge-duplicates,return=minimal' }
       });
-      var j = { success: res !== null, profileId: id, error: res === null ? 'Could not reach the rate store.' : '' };
+      var j = { success: !sbFailed(), profileId: id, error: sbFailed() ? sbWhyRefused() : '' };
       if (j.success) { _synced = false; await this.syncFromServer(true); this.useProfile(id); }
       return j;
     },
@@ -39100,7 +39161,7 @@ window.SauceRates = (function() {
                    'Content-Type': 'application/json', 'Prefer': 'return=minimal' }
       });
       _synced = false; await this.syncFromServer(true);
-      return { success: res !== null };
+      return { success: !sbFailed() };
     }
   };
 })();
@@ -40057,7 +40118,7 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       method: 'POST', body: JSON.stringify([row]),
       headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
     });
-    if (res === null) { alert('Could not add that item — the price list refused the write.'); return; }
+    if (sbFailed()) { alert('Could not add that item. ' + sbWhyRefused()); return; }
     _skuRows.push({ sku: row.sku, description: row.description, price: row.price });
     _skuRows.sort(function(a, b) { return String(a.sku) < String(b.sku) ? -1 : 1; });
     _skuFilter = sku;
@@ -40273,20 +40334,19 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
                vendor_sku: 'DEMO-' + String(c[0]).slice(0, 18),
                price: _demoPriceFor(c[0], c[2]) };
     });
-    var sent = 0;
+    var sent = 0, _demoNote = '';
     for (var i = 0; i < rows.length; i += 400) {
       var chunk = rows.slice(i, i + 400);
-      var res = await sbFetch('inventory?on_conflict=company_id,sku', {
-        method: 'POST', body: JSON.stringify(chunk),
-        headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
-      });
-      if (res === null) { say('Rates are in, but the price list refused the write after ' + sent + '.', '#ef4444'); return; }
+      var up = await sbUpsertInventory(chunk);
+      if (!up.ok) { say('Rates are in, but the price list refused the write. ' + up.why, '#ef4444'); return; }
+      if (up.note) _demoNote = up.note;
       sent += chunk.length;
       say('Loading prices... ' + sent + ' of ' + rows.length, '#FF8200');
     }
 
     if (typeof loadInventoryPricing === 'function') await loadInventoryPricing();
-    say('Demo pricing loaded — ' + sent.toLocaleString('en-US') + ' items and every rate.', '#86efac');
+    say('Demo pricing loaded — ' + sent.toLocaleString('en-US') + ' items and every rate.'
+      + (_demoNote ? ' ' + _demoNote : ''), '#86efac');
     try { updateStripFromLocalCalc(); } catch(e) {}
     setTimeout(function() {
       var m = document.getElementById('pricingHubModal');
@@ -40465,17 +40525,12 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
                price: isNaN(n) ? 0 : n };
     });
 
-    var sent = 0;
+    var sent = 0, _sheetNote = '';
     for (var i = 0; i < batch.length; i += 400) {
       var chunk = batch.slice(i, i + 400);
-      var res = await sbFetch('inventory?on_conflict=company_id,sku', {
-        method: 'POST', body: JSON.stringify(chunk),
-        headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
-      });
-      if (res === null) {
-        say('The price list refused the write after ' + sent + '. Are you a company admin?', '#ef4444');
-        return;
-      }
+      var up = await sbUpsertInventory(chunk);
+      if (!up.ok) { say('The price list refused the write after ' + sent + '. ' + up.why, '#ef4444'); return; }
+      if (up.note) _sheetNote = up.note;
       sent += chunk.length;
       say('Saving ' + sent + ' of ' + batch.length + '...', '#FF8200');
     }
@@ -40487,7 +40542,8 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     _shEdits = {};
     var c = document.getElementById('shCounter');
     if (c) { c.textContent = 'saved'; c.style.color = '#86efac'; }
-    say('Saved ' + sent.toLocaleString('en-US') + ' item' + (sent === 1 ? '' : 's') + '.', '#86efac');
+    say('Saved ' + sent.toLocaleString('en-US') + ' item' + (sent === 1 ? '' : 's') + '.'
+      + (_sheetNote ? ' ' + _sheetNote : ''), '#86efac');
     _shRender();
     if (typeof loadInventoryPricing === 'function') loadInventoryPricing();
   };
