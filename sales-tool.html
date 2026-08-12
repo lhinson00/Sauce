@@ -1251,6 +1251,7 @@ body.customer-mode #stab_specs { display: block !important; }
   <div style="background:#fff;border-radius:16px;padding:32px;width:100%;max-width:360px;box-shadow:0 20px 60px rgba(0,0,0,.4);">
     <div style="font-family:'Outfit',sans-serif;font-weight:900;font-size:22px;color:#4B4B4B;margin-bottom:4px;">Sales Tool</div>
     <div style="font-size:12px;color:#888888;margin-bottom:24px;letter-spacing:.5px;">Sauce Estimator · Internal</div>
+    <div id="salesLoginNote" style="display:none;font-size:12px;color:#0f766e;background:#ccfbf1;border:1px solid #5eead4;border-radius:8px;padding:9px 11px;margin-bottom:12px;line-height:1.45;"></div>
     <div id="slErr" style="color:#dc2626;font-size:12px;margin-bottom:12px;min-height:16px;"></div>
     <div style="margin-bottom:12px;">
       <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#888888;margin-bottom:5px;">Username</div>
@@ -21183,8 +21184,8 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = '2026-08-11 19:20 UTC';
-console.log('%c[Sauce] build 2026-08-11 19:20 UTC', 'color:#FF8200;font-weight:bold');
+window.SAUCE_BUILD = '2026-08-12 14:19 UTC';
+console.log('%c[Sauce] build 2026-08-12 14:19 UTC', 'color:#FF8200;font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
 // ── WHERE THIS COPY TALKS TO ────────────────────────────────────────────────
@@ -25057,6 +25058,12 @@ async function initSalesAuth() {
         u.token = sess.access_token;
         u.loginExpiry = (sess.expires_at || 0) * 1000;
         window.currentUser = u;
+        // Restored session: the absolute cap counts from the original sign-in,
+        // not from this page load, or reloading would reset it forever.
+        try {
+          var _since = parseInt(localStorage.getItem('sauce_signed_in_at'), 10);
+          window.SauceSession.start(_since > 0 ? _since : Date.now());
+        } catch(e) { window.SauceSession.start(); }
         window.dispatchEvent(new Event('crm:authready'));
         setTimeout(warmPing, 500);
       try { window._startSessionKeepAlive(); } catch(e) {}
@@ -25104,10 +25111,12 @@ if (document.readyState === 'loading') {
     banner.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:9999;background:#1e293b;border:1.5px solid rgba(255,130,0,.5);border-radius:12px;padding:12px 18px;display:flex;align-items:center;gap:12px;box-shadow:0 8px 32px rgba(0,0,0,.5);font-family:Outfit,sans-serif;white-space:nowrap;';
     banner.innerHTML = '<span style="font-size:12px;color:rgba(255,255,255,.8);font-weight:600;">Unsaved design found — restore it?</span>'
       + '<button onclick="restoreDraft()" style="padding:5px 14px;background:rgba(255,130,0,.15);border:1.5px solid rgba(255,130,0,.5);border-radius:7px;color:#FF8200;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;letter-spacing:.5px;">Restore</button>'
-      + '<button onclick="dismissDraft()" style="padding:5px 10px;background:none;border:1px solid rgba(255,255,255,.15);border-radius:7px;color:rgba(255,255,255,.35);font-size:11px;font-weight:600;cursor:pointer;font-family:Outfit,sans-serif;">Discard</button>';
+      + '<button onclick="dismissDraft()" title="Throw this design away" style="padding:5px 10px;background:none;border:1px solid rgba(255,255,255,.15);border-radius:7px;color:rgba(255,255,255,.35);font-size:11px;font-weight:600;cursor:pointer;font-family:Outfit,sans-serif;">Discard</button>';
     document.body.appendChild(banner);
-    // Auto-dismiss after 20s
-    setTimeout(function() { if (document.getElementById('draftRestoreBanner')) dismissDraft(); }, 20000);
+    // Hide the banner after a while, but KEEP the draft — a salesman who steps
+    // away mid-quote must still find his work when he comes back. Only an
+    // explicit Discard, or restoring it, throws it away.
+    setTimeout(function() { hideDraftBanner(); }, 45000);
   } catch(e) {}
 })();
 
@@ -25119,12 +25128,20 @@ function restoreDraft() {
     restoreConfig(draft);
     setTimeout(function() { schedulePrice(); }, 500);
   } catch(e) { console.error('Draft restore failed:', e); }
-  dismissDraft();
+  hideDraftBanner();
+  try { localStorage.removeItem('sauce_draft'); } catch(e) {}
 }
-function dismissDraft() {
+
+// Takes the banner off screen and leaves the saved work alone.
+function hideDraftBanner() {
   var b = document.getElementById('draftRestoreBanner');
   if (b) b.remove();
-  localStorage.removeItem('sauce_draft');
+}
+
+// Throws the saved work away. Only ever called from the Discard button.
+function dismissDraft() {
+  hideDraftBanner();
+  try { localStorage.removeItem('sauce_draft'); } catch(e) {}
 }
 
 function showSalesLoginModal() {
@@ -25147,6 +25164,150 @@ var _priceCalcTimer = null;
 // The access token this returns is what every later request is signed with, so
 // the database can finally scope rows to the signed-in company instead of
 // trusting the browser.
+// ── SESSION TIMEOUT ─────────────────────────────────────────────────────────
+// Two limits, both aimed at a laptop left open rather than at the salesman:
+//
+//   idle      no interaction for this long → warn, then sign out
+//   absolute  this long since sign-in → sign out whatever happens
+//
+// Nothing here can cost anybody work: every edit is already written to
+// localStorage, the warning saves again before the countdown starts, and
+// signing out never touches the saved draft. Worst case is typing a password
+// and pressing Restore.
+window.SAUCE_SESSION = {
+  idleMinutes: 60,
+  absoluteHours: 12,
+  warnSeconds: 120        // how long the "still there?" warning waits
+};
+
+window.SauceSession = (function() {
+  var _lastActivity = Date.now();
+  var _signedInAt   = Date.now();
+  var _tick = null, _warnEl = null, _warnUntil = 0;
+
+  function _minutes(n) { return n * 60 * 1000; }
+
+  function _saveDraftNow() {
+    // Belt and braces — the design is saved on every edit, but save again at
+    // the moment we are about to end the session.
+    try {
+      if (typeof serializeConfig === 'function') {
+        var d = serializeConfig();
+        if (d && d.Q) localStorage.setItem('sauce_draft', JSON.stringify(d));
+      }
+    } catch(e) {}
+  }
+
+  function _clearWarning() {
+    if (_warnEl) { _warnEl.remove(); _warnEl = null; }
+    _warnUntil = 0;
+  }
+
+  window.sauceStaySignedIn = function() {
+    _lastActivity = Date.now();
+    _clearWarning();
+  };
+
+  function _showWarning() {
+    if (_warnEl) return;
+    _saveDraftNow();
+    _warnUntil = Date.now() + (window.SAUCE_SESSION.warnSeconds * 1000);
+    _warnEl = document.createElement('div');
+    _warnEl.id = 'sessionWarnBanner';
+    _warnEl.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:100020;'
+      + 'background:#7c2d12;color:#fff;font-family:Outfit,sans-serif;'
+      + 'padding:10px 16px;display:flex;align-items:center;gap:12px;justify-content:center;'
+      + 'box-shadow:0 2px 14px rgba(0,0,0,.5);flex-wrap:wrap;';
+    _warnEl.innerHTML =
+        '<span style="font-size:12px;font-weight:700;">Still there? Signing out in '
+      +   '<b id="sessionWarnCount">' + window.SAUCE_SESSION.warnSeconds + '</b>s.</span>'
+      + '<span style="font-size:11px;opacity:.85;">Your design is saved either way.</span>'
+      + '<button onclick="sauceStaySignedIn()" style="padding:6px 14px;background:#fff;color:#7c2d12;'
+      +   'border:none;border-radius:7px;font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">'
+      +   'Stay signed in</button>';
+    document.body.appendChild(_warnEl);
+  }
+
+  var _ending = false;
+  async function _endSession(why) {
+    // signOut is async, so a second tick can arrive before currentUser is
+    // cleared and sign the user out twice.
+    if (_ending) return;
+    _ending = true;
+    if (_tick) { clearInterval(_tick); _tick = null; }
+    _saveDraftNow();
+    _clearWarning();
+    try { sessionStorage.setItem('sauce_logout_reason', why); } catch(e) {}
+    try { await window.SauceAuth.signOut(); } catch(e) {}
+    window.currentUser = null;
+    try { showSalesLoginModal(); } catch(e) {}
+    // Tell them why, and that nothing was lost.
+    try {
+      var note = document.getElementById('salesLoginNote');
+      if (note) {
+        note.textContent = (why === 'idle')
+          ? 'Signed out after a period of inactivity. Your design is saved — sign in and choose Restore.'
+          : 'Your session reached its time limit. Your design is saved — sign in and choose Restore.';
+        note.style.display = '';
+      }
+    } catch(e) {}
+    console.log('[Session] ended:', why);
+  }
+
+  function _check() {
+    if (!window.currentUser) return;
+    var now = Date.now();
+
+    // Absolute cap first — it is not negotiable.
+    if (now - _signedInAt > window.SAUCE_SESSION.absoluteHours * 3600 * 1000) {
+      _endSession('absolute');
+      return;
+    }
+
+    if (_warnUntil) {
+      var left = Math.max(0, Math.ceil((_warnUntil - now) / 1000));
+      var c = document.getElementById('sessionWarnCount');
+      if (c) c.textContent = left;
+      if (left <= 0) _endSession('idle');
+      return;
+    }
+
+    if (now - _lastActivity > _minutes(window.SAUCE_SESSION.idleMinutes)) _showWarning();
+  }
+
+  function _touch() {
+    // Any real interaction counts, including while the warning is up: a
+    // salesman who is clearly at the keyboard should never be logged out.
+    _lastActivity = Date.now();
+    if (_warnUntil) _clearWarning();
+  }
+
+  return {
+    start: function(signedInAtMs) {
+      _ending = false;
+      _signedInAt   = signedInAtMs || Date.now();
+      _lastActivity = Date.now();
+      _clearWarning();
+      if (_tick) clearInterval(_tick);
+      _tick = setInterval(_check, 1000);
+      ['mousedown', 'keydown', 'touchstart', 'wheel', 'pointerdown'].forEach(function(ev) {
+        document.addEventListener(ev, _touch, { passive: true });
+      });
+      try { localStorage.setItem('sauce_signed_in_at', String(_signedInAt)); } catch(e) {}
+      console.log('[Session] idle', window.SAUCE_SESSION.idleMinutes + 'm,',
+                  'cap', window.SAUCE_SESSION.absoluteHours + 'h');
+    },
+    stop: function() { if (_tick) clearInterval(_tick); _tick = null; _clearWarning(); },
+    // Minutes until each limit — handy from the console.
+    status: function() {
+      return {
+        idleInMin: Math.round((_minutes(window.SAUCE_SESSION.idleMinutes) - (Date.now() - _lastActivity)) / 60000),
+        capInMin:  Math.round((window.SAUCE_SESSION.absoluteHours * 3600000 - (Date.now() - _signedInAt)) / 60000)
+      };
+    }
+  };
+})();
+
 window.SauceAuth = (function() {
 
   function _authUrl(path) { return window.SAUCE_ENDPOINTS.supabaseUrl + '/auth/v1' + path; }
@@ -25314,39 +25475,11 @@ async function doSalesLogin() {
       };
 
       try { logToolEvent('page_load', { referrer: document.referrer || 'direct' }); } catch(e) {}      window.currentUser.token = data.token || '';
-      // Expire at next 1:00 AM Central (UTC-6 standard / UTC-5 daylight)
-      // Calculate ms until next 1am Central from now
-      // Expire at the next 1:00 AM Central.
-      //
-      // The old version shifted a Date by a hand-rolled Central offset and then called
-      // getHours()/setHours() on it -- but those read the BROWSER's timezone, not
-      // Central, so the offset got applied twice. Net effect: expiry landed at 6:00 AM
-      // instead of 1:00 AM, and a login between 5:00 and 5:59 AM Central expired at
-      // 6:00 AM the SAME morning -- as little as fifteen minutes of session.
-      //
-      // Read the Central wall clock directly instead. Handles DST for free.
-      window.currentUser.loginExpiry = (function() {
-        var now = new Date();
-        // GAS is the authority on when the session dies -- it owns the Sessions sheet.
-        // When it sends its expiry back, use that verbatim so the browser and the server
-        // can't disagree. The local calculation below is only a fallback for older
-        // deployments that don't return tokenExpires yet.
-        if (data.tokenExpires && data.tokenExpires > now.getTime()) return data.tokenExpires;
-        try {
-          var parts = {};
-          new Intl.DateTimeFormat('en-US', {
-            timeZone: 'America/Chicago', hour12: false, hour: '2-digit', minute: '2-digit'
-          }).formatToParts(now).forEach(function(pt){ parts[pt.type] = pt.value; });
-          var cHour = parseInt(parts.hour, 10) % 24;
-          var cMin  = parseInt(parts.minute, 10);
-          var cNow  = cHour + cMin / 60;                       // Central time, decimal hours
-          var until = (cNow >= 1) ? (25 - cNow) : (1 - cNow);  // hours to the next 1 AM Central
-          return now.getTime() + Math.round(until * 3600000);
-        } catch(e) {
-          // Intl unavailable (very old browser): flat 20 hours, never a short session.
-          return now.getTime() + 20 * 3600000;
-        }
-      })();
+      // Session length is now the timeout module's job, not a fixed wall-clock
+      // hour. loginExpiry follows the Supabase token so anything still checking
+      // it keeps working.
+      window.currentUser.loginExpiry = (signed.session.expires_at || 0) * 1000;
+      window.SauceSession.start(Date.now());
       // The Supabase session is already stored; this cache is only so the UI can
       // paint a name before the profile round-trip finishes.
       try {
