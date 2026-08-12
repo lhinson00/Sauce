@@ -2423,7 +2423,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <button id="vpActivityBtn" onclick="openActivityLog()"     style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Activity Log</button>
         <button id="vpHardRefreshBtn" onclick="hardRefreshApp()" title="Force-reload the newest build (bypasses cache, same as Ctrl+Shift+R)" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(96,165,250,.55);border-radius:8px;color:#93c5fd;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Hard Refresh</button>
         <button id="vpUsersBtn" onclick="openAdminModal()" title="Users, roles and company setup" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Users</button>
-        <button id="vpRatesBtn" onclick="openRatesModal()" title="Concrete and labor rates — your own or the company's" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Rates</button>
+        <button id="vpRatesBtn" onclick="openPricingHub()" title="Materials, labor, concrete and shipping prices — your own or the company's" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Pricing</button>
         <button id="vpPromoBtn" onclick="openPromoModal()" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Promos</button>
       </div>
       <div class="vp-btn-row" id="vpBtnRow" style="display:none;"></div>
@@ -21184,8 +21184,8 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = '2026-08-12 14:22 UTC';
-console.log('%c[Sauce] build 2026-08-12 14:22 UTC', 'color:#FF8200;font-weight:bold');
+window.SAUCE_BUILD = '2026-08-12 14:41 UTC';
+console.log('%c[Sauce] build 2026-08-12 14:41 UTC', 'color:#FF8200;font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
 // ── WHERE THIS COPY TALKS TO ────────────────────────────────────────────────
@@ -28897,7 +28897,7 @@ window.SauceMaterials.calcWoodTrusses = function(Q, shedCfgs) {
       sku:         'SCISSOR-UPGRADE',
       quantity:    totalTrusses,
       detail:      totalTrusses + ' trusses x $30/ea',
-      fixedCost:   totalTrusses * 30
+      fixedCost:   totalTrusses * (window.SauceRates ? window.SauceRates.v('materials.scissorTrussEach') : 0)
     });
   }
 
@@ -28910,7 +28910,7 @@ window.SauceMaterials.calcWoodTrusses = function(Q, shedCfgs) {
       sku:         'ATTIC-UPGRADE',
       quantity:    totalTrusses,
       detail:      totalTrusses + ' trusses x $40/ea',
-      fixedCost:   totalTrusses * 40
+      fixedCost:   totalTrusses * (window.SauceRates ? window.SauceRates.v('materials.atticTrussEach') : 0)
     });
     // Attic floor OSB
     var atticFloorEl = document.getElementById('st_atticFloor');
@@ -31710,24 +31710,18 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
   } else {
     sku = 'GDIP>205MILES';
   }
-  if (miles <= 0 || miles <= 100) {
-    rate   = 4.25;
-    detail = (miles > 0 ? miles + ' mi  |  ' : '') + '$4.25/sqft';
-  } else if (miles <= 150) {
-    rate   = 4.50;
-    detail = miles + ' mi  |  $4.50/sqft';
-  } else if (miles <= 205) {
-    rate   = 5.00;
-    detail = miles + ' mi  |  $5.00/sqft';
+  var _longHaul = (window.SauceRates ? window.SauceRates.v('shipping.longHaulPerMile') : 0);
+  rate = priceForSku(sku, 0);
+  if (miles <= 205) {
+    detail = (miles > 0 ? miles + ' mi  |  ' : '') + '$' + rate.toFixed(2) + '/sqft';
   } else {
-    rate   = 5.00;
     var extraMiles = miles - 205;
-    var extraFee   = extraMiles * 6.00;
-    detail = miles + ' mi  |  $5.00/sqft base + $6.00 × ' + extraMiles + ' extra mi ($' + extraFee.toFixed(2) + ' added)';
+    var extraFee   = extraMiles * _longHaul;
+    detail = miles + ' mi  |  $' + rate.toFixed(2) + '/sqft base + $' + _longHaul.toFixed(2) + ' × ' + extraMiles + ' extra mi ($' + extraFee.toFixed(2) + ' added)';
   }
 
   var baseCost  = totalSqFt * rate;
-  var extraCost = miles > 205 ? (miles - 205) * 6.00 : 0;
+  var extraCost = miles > 205 ? (miles - 205) * _longHaul : 0;
   var total     = baseCost + extraCost;
 
   return [{
@@ -31839,10 +31833,12 @@ window.SauceMaterials.calcDrumDoorInstall = function(allDoors) {
   var totalSqFt = drumDoors.reduce(function(sum,d){ return sum+(d.w*d.h); }, 0);
   var miles = window._cachedMileage || 0;
   var rate, sku;
-  if (miles <= 100)      { sku = 'GDID<100MILES';    rate = 5.00; }
-  else if (miles <= 150) { sku = 'GDID100-150MILES'; rate = 5.25; }
-  else                   { sku = 'GDID150-205MILES'; rate = 5.75; }
-  var cost = Math.max(300, totalSqFt * rate);
+  if (miles <= 100)      { sku = 'GDID<100MILES';    }
+  else if (miles <= 150) { sku = 'GDID100-150MILES'; }
+  else                   { sku = 'GDID150-205MILES'; }
+  rate = priceForSku(sku, 0);
+  var _drumMin = (window.SauceRates ? window.SauceRates.v('materials.drumDoorMinCharge') : 0);
+  var cost = Math.max(_drumMin, totalSqFt * rate);
   var detail = totalSqFt + ' sqft x $' + rate.toFixed(2) + '/sqft' + (miles > 0 ? '  |  ' + miles + ' mi' : '') + (cost === 300 ? '  |  $300 minimum' : '');
   return [{ category:'Garage Doors', description:'Drum Door Install Fee', sku:sku, quantity:totalSqFt, fixedCost:cost, detail:detail }];
 };
@@ -31999,11 +31995,11 @@ window.SauceMaterials.calcGarageDoorTracks = function(allDoors) {
   var items = [];
   if (hlQty > 0) items.push({
     category: 'Garage Doors', description: 'High Lift Track', sku: 'GDC',
-    quantity: hlQty, detail: '$300 each', fixedCost: hlQty * 300
+    quantity: hlQty, detail: 'per door', fixedCost: hlQty * (window.SauceRates ? window.SauceRates.v('materials.highLiftPerDoor') : 0)
   });
   if (vtQty > 0) items.push({
     category: 'Garage Doors', description: 'Vertical Track', sku: 'GDC',
-    quantity: vtQty, detail: '$300 each', fixedCost: vtQty * 300
+    quantity: vtQty, detail: 'per door', fixedCost: vtQty * (window.SauceRates ? window.SauceRates.v('materials.verticalTrackPerDoor') : 0)
   });
   return items;
 };
@@ -36443,7 +36439,7 @@ window.SauceMaterials.calcStandingSeam = function(Q, shedCfgs) {
 
   var items = [];
   var PS = 2; // always 2' spacing
-  var RATE = 2.65;
+  var RATE = (window.SauceRates ? window.SauceRates.v('materials.standingSeamPerFt') : 0);
 
   // Panel length from soffit chart — same as calcSoffitMetal uses
   var chart = {
@@ -36749,7 +36745,10 @@ window.SauceMaterials.calcRockWainscot = function(Q, WALLS, shedCfgs) {
   var on = !!(document.getElementById('st_rockWainscot')||{}).checked;
   if (!on) return [];
   var miles = window._cachedMileage || 0;
-  var rate  = miles >= 100 ? 25.00 : 23.50;
+  var _far  = (window.SauceRates ? window.SauceRates.v('materials.rockWainscotFarMiles') : 0);
+  var rate  = (_far > 0 && miles >= _far)
+    ? (window.SauceRates ? window.SauceRates.v('materials.rockWainscotFarPerSqft') : 0)
+    : (window.SauceRates ? window.SauceRates.v('materials.rockWainscotPerSqft') : 0);
   var items = [];
 
   function wallEncl(wallId) {
@@ -36895,10 +36894,11 @@ window.SauceMaterials.calcGutters = function(Q, shedCfgs) {
   var ohFt     = ((Q||window._ckQ||{}).oh || 0) / 12; // overhang in feet
 
   // Rates per LF
-  var rates = { SGS: 9.50, SGSCOM: 12.50, SGSC: 21.00, SGSGA: 15.50 };
-  var rate  = rates[matType] || 9.50;
-  var guardRate = 8.00;
-  var minCharge = (matType === 'SGSC') ? 1000 : 500;
+  // Per-foot gutter rate. One rate for every gutter type unless the company
+  // sets a SKU price for the specific type it sells.
+  var rate  = priceForSku(matType, (window.SauceRates ? window.SauceRates.v('materials.gutterPerFt') : 0));
+  var guardRate = (window.SauceRates ? window.SauceRates.v('materials.gutterGuardPerFt') : 0);
+  var minCharge = (window.SauceRates ? window.SauceRates.v('materials.gutterMinCharge') : 0);
 
   // ── Gutter runs ────────────────────────────────────────
   // Main building: both eave sides (left + right)
@@ -36938,7 +36938,9 @@ window.SauceMaterials.calcGutters = function(Q, shedCfgs) {
   // ── Cost calculations ──────────────────────────────────
   var gutterCost  = totalBillableLF * rate;
   var guardCost   = hasGuard ? totalGutterLF * guardRate : 0;
-  var fuelCost    = miles > 75 ? (miles - 75) * 0.75 : 0;
+  var _fuelStart = (window.SauceRates ? window.SauceRates.v('shipping.fuelStartMiles') : 0);
+  var _fuelRate  = (window.SauceRates ? window.SauceRates.v('shipping.fuelPerMile') : 0);
+  var fuelCost   = (_fuelStart > 0 && miles > _fuelStart) ? (miles - _fuelStart) * _fuelRate : 0;
   var subtotal    = gutterCost + guardCost + fuelCost;
   var finalCost   = Math.max(subtotal, minCharge);
   var minApplied  = finalCost > subtotal;
@@ -37095,7 +37097,7 @@ window.SauceMaterials.calcCraneFee = function(Q, forcedType) {
     description: 'Crane Fee',
     sku:         'CRANE',
     quantity:    1,
-    fixedCost:   2000,
+    fixedCost:   (window.SauceRates ? window.SauceRates.v('materials.craneFee') : 0),
     detail:      autoFire ? 'Auto — ' + (Q.w > 30 ? 'width > 30\'' : '') + (Q.h > 10 ? (Q.w > 30 ? ' + ' : '') + 'height > 10\'' : '') : 'Manual'
   }];
 };
@@ -38753,6 +38755,34 @@ window.SauceRates = (function() {
   // file that leaves here carries no pricing.
   /* @SAUCE-RATE-DEFAULTS-START */
   var RATE_DEFAULTS = {
+    // Per-unit material rates that are not SKUs — they are charged by the foot,
+    // the square foot or the each, so no price list entry can carry them. Every
+    // one ships at zero: a company enters its own or the line prices at $0.
+    materials: {
+      standingSeamPerFt:   0,   // standing seam roof panel, per foot of panel
+      boardBattenPerFt:    0,   // B&B wall panel, per foot (falls back to the BB6 SKU)
+      rockWainscotPerSqft: 0,   // rock wainscot, per square foot
+      rockWainscotFarPerSqft: 0,// same, when the job is beyond the far-haul mileage
+      rockWainscotFarMiles:   0,// miles at which the far rate takes over (0 = never)
+      gutterPerFt:         0,   // gutter and downspout, per foot
+      gutterGuardPerFt:    0,   // gutter guard, per foot
+      gutterMinCharge:     0,   // never bill less than this for gutters
+      drumDoorMinCharge:   0,   // minimum charge for a drum door install
+      craneFee:            0,   // flat crane charge when one is needed
+      highLiftPerDoor:     0,   // garage door high lift track, each
+      verticalTrackPerDoor:0,   // garage door vertical track, each
+      scissorTrussEach:    0,   // scissor truss upgrade, per truss
+      atticTrussEach:      0    // attic truss upgrade, per truss
+    },
+    // Everything to do with getting it there.
+    shipping: {
+      perMile:            0,    // one-way rate per mile
+      minCharge:          0,    // never charge less than this when miles > 0
+      freeMiles:          0,    // miles included before per-mile billing starts
+      fuelStartMiles:     0,    // surcharge applies beyond this distance (0 = off)
+      fuelPerMile:        0,    // surcharge per mile past fuelStartMiles
+      longHaulPerMile:    0     // extra per mile on installs beyond 205 miles
+    },
     concrete: {
       // 'flat'  — one set of rates for every job, wherever it is
       // 'zones' — rates vary by county, using zoneMap below
@@ -39904,6 +39934,439 @@ window.SauceRates = (function() {
       await window.SauceRates.saveProfile({ id: act.id, scope: act.scope, owner: act.owner, name: act.name, rates: obj });
     }
     if (typeof updateDemoBadge === 'function') updateDemoBadge();
+  };
+
+  // ── PRICING CONTROL ──────────────────────────────────────────────────────
+  // Four separate screens rather than one long list. Each one owns a single
+  // kind of cost, so setting a company up is four short jobs instead of one
+  // overwhelming form:
+  //
+  //   Materials  the SKU price list, plus the per-unit rates that are not SKUs
+  //   Labor      what it costs to build it
+  //   Concrete   flat or by county
+  //   Shipping   getting it there
+  //
+  // Everything ships at zero. Nothing prices until somebody puts a number in.
+
+  function _pcTile(title, blurb, count, fn, accent) {
+    return '<button onclick="' + fn + '" style="display:block;width:100%;text-align:left;'
+      + 'padding:13px 15px;margin-bottom:9px;background:rgba(255,255,255,.03);'
+      + 'border:1px solid #5e5e5e;border-left:3px solid ' + (accent || '#FF8200') + ';'
+      + 'border-radius:9px;cursor:pointer;font-family:Outfit,sans-serif;">'
+      + '<div style="display:flex;align-items:center;gap:10px;">'
+      +   '<div style="flex:1;">'
+      +     '<div style="font-size:13px;font-weight:800;color:#fff;">' + title + '</div>'
+      +     '<div style="font-size:10px;color:#8f8f8f;margin-top:2px;line-height:1.4;">' + blurb + '</div>'
+      +   '</div>'
+      +   '<div style="font-size:10px;font-weight:800;color:' + (accent || '#FF8200') + ';white-space:nowrap;">' + count + '</div>'
+      + '</div></button>';
+  }
+
+  // ── SKU EDITOR ───────────────────────────────────────────────────────────
+  // The company's price list, editable by hand. A big list is unusable without
+  // a filter, so nothing renders until there is something to look at: a search
+  // box, the items that match, and a way to add one.
+
+  var _skuRows = [], _skuFilter = '', _skuDirty = {};
+
+  async function _skuLoad() {
+    var co = _companyKey();
+    var rows = await sbFetch('inventory?select=sku,description,price&company_id=eq.' +
+      encodeURIComponent(co) + '&order=sku.asc&limit=20000', { method: 'GET' });
+    _skuRows = rows || [];
+    _skuDirty = {};
+    return _skuRows !== null;
+  }
+
+  function _skuMatches() {
+    var f = _skuFilter.trim().toUpperCase();
+    if (!f) return _skuRows.slice(0, 60);
+    return _skuRows.filter(function(r) {
+      return (r.sku || '').toUpperCase().indexOf(f) >= 0
+          || (r.description || '').toUpperCase().indexOf(f) >= 0;
+    }).slice(0, 200);
+  }
+
+  function _skuRowHtml(r) {
+    var id = 'sku_' + String(r.sku).replace(/[^A-Za-z0-9]/g, '_');
+    return '<div style="display:flex;align-items:center;gap:7px;padding:6px 8px;border:1px solid #4a4a4a;border-radius:7px;margin-bottom:4px;background:rgba(255,255,255,.02);">'
+      + '<div style="flex:1;min-width:0;">'
+      +   '<div style="font-size:11px;font-weight:700;color:#fff;font-family:Outfit,sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + _esc(r.description || r.sku) + '</div>'
+      +   '<div style="font-size:9px;color:#8f8f8f;font-family:monospace;">' + _esc(r.sku) + '</div>'
+      + '</div>'
+      + '<span style="font-size:11px;color:#8f8f8f;">$</span>'
+      + '<input id="' + id + '" data-sku="' + _esc(r.sku) + '" type="number" step="any" value="' + (r.price == null ? '' : r.price) + '" '
+      +   'oninput="markSkuDirty(this)" placeholder="0" '
+      +   'style="width:82px;padding:5px 6px;border-radius:6px;border:1px solid #5e5e5e;background:#2b2b2b;color:#fff;font-size:12px;font-weight:700;text-align:right;font-family:Outfit,sans-serif;">'
+      + '<button onclick="deleteSkuRow(\'' + _esc(r.sku) + '\')" title="Remove this item" style="padding:5px 7px;background:rgba(239,68,68,.10);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">&times;</button>'
+      + '</div>';
+  }
+
+  window.markSkuDirty = function(el) {
+    _skuDirty[el.getAttribute('data-sku')] = el.value;
+    var st = document.getElementById('skuEditorStatus');
+    var n = Object.keys(_skuDirty).length;
+    if (st) { st.textContent = n + ' unsaved change' + (n === 1 ? '' : 's'); st.style.color = '#fbbf24'; }
+  };
+
+  window.filterSkuList = function(v) {
+    _skuFilter = v || '';
+    _skuRender();
+  };
+
+  function _skuRender() {
+    var body = document.getElementById('skuEditorList');
+    if (!body) return;
+    var rows = _skuMatches();
+    if (!_skuRows.length) {
+      body.innerHTML = '<div style="font-size:11px;color:#8f8f8f;padding:14px 0;line-height:1.5;font-family:Outfit,sans-serif;">'
+        + 'This company has no price list yet.<br>Add items one at a time below, or upload a CSV.</div>';
+      return;
+    }
+    body.innerHTML =
+      '<div style="font-size:10px;color:#8f8f8f;margin-bottom:6px;font-family:Outfit,sans-serif;">'
+      + (_skuFilter ? rows.length + ' match' + (rows.length === 1 ? '' : 'es') + ' of ' + _skuRows.length.toLocaleString('en-US')
+                    : 'showing the first ' + rows.length + ' of ' + _skuRows.length.toLocaleString('en-US') + ' — search to narrow it down')
+      + '</div>'
+      + rows.map(_skuRowHtml).join('');
+  }
+
+  window.addSkuRow = async function() {
+    var sku = prompt('Item code (SKU):');
+    if (!sku || !sku.trim()) return;
+    sku = sku.trim().toUpperCase();
+    if (_skuRows.some(function(r) { return String(r.sku).toUpperCase() === sku; })) {
+      alert('That item is already in the list. Search for it to change its price.');
+      return;
+    }
+    var desc  = prompt('Description for ' + sku + ':') || '';
+    var price = prompt('Price for ' + sku + ':', '0');
+    var n = parseFloat(price);
+    var row = { company_id: _companyKey(), sku: sku, description: desc.trim(), price: isNaN(n) ? 0 : n };
+    var res = await sbFetch('inventory?on_conflict=company_id,sku', {
+      method: 'POST', body: JSON.stringify([row]),
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
+    });
+    if (res === null) { alert('Could not add that item — the price list refused the write.'); return; }
+    _skuRows.push({ sku: row.sku, description: row.description, price: row.price });
+    _skuRows.sort(function(a, b) { return String(a.sku) < String(b.sku) ? -1 : 1; });
+    _skuFilter = sku;
+    var box = document.getElementById('skuSearchBox');
+    if (box) box.value = sku;
+    _skuRender();
+    _skuAfterChange();
+  };
+
+  window.deleteSkuRow = async function(sku) {
+    if (!confirm('Remove ' + sku + ' from the price list?')) return;
+    var res = await sbFetch('inventory?company_id=eq.' + encodeURIComponent(_companyKey()) +
+      '&sku=eq.' + encodeURIComponent(sku), { method: 'DELETE', headers: { 'Prefer': 'return=minimal' } });
+    _skuRows = _skuRows.filter(function(r) { return String(r.sku) !== String(sku); });
+    delete _skuDirty[sku];
+    _skuRender();
+    _skuAfterChange();
+  };
+
+  window.saveSkuEdits = async function() {
+    var keys = Object.keys(_skuDirty);
+    var st = document.getElementById('skuEditorStatus');
+    if (!keys.length) { if (st) { st.textContent = 'Nothing to save.'; st.style.color = '#8f8f8f'; } return; }
+    if (st) { st.textContent = 'Saving ' + keys.length + '...'; st.style.color = '#FF8200'; }
+    var co = _companyKey();
+    var batch = keys.map(function(k) {
+      var n = parseFloat(_skuDirty[k]);
+      var existing = _skuRows.filter(function(r) { return String(r.sku) === k; })[0] || {};
+      return { company_id: co, sku: k, description: existing.description || '', price: isNaN(n) ? 0 : n };
+    });
+    var res = await sbFetch('inventory?on_conflict=company_id,sku', {
+      method: 'POST', body: JSON.stringify(batch),
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
+    });
+    if (res === null) {
+      if (st) { st.textContent = 'The price list refused the write — check you are a company admin.'; st.style.color = '#ef4444'; }
+      return;
+    }
+    batch.forEach(function(b) {
+      var r = _skuRows.filter(function(x) { return String(x.sku) === b.sku; })[0];
+      if (r) r.price = b.price;
+    });
+    _skuDirty = {};
+    if (st) { st.textContent = 'Saved ' + batch.length + ' price' + (batch.length === 1 ? '' : 's') + '.'; st.style.color = '#86efac'; }
+    _skuAfterChange();
+  };
+
+  // Any change to the list has to reach the quote on screen, or the salesman is
+  // looking at yesterday's prices.
+  function _skuAfterChange() {
+    if (typeof loadInventoryPricing === 'function') loadInventoryPricing();
+  }
+
+  window.openSkuEditor = async function() {
+    var old = document.getElementById('skuEditorModal');
+    if (old) old.remove();
+    var wrap = document.createElement('div');
+    wrap.id = 'skuEditorModal';
+    wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:100008;display:flex;align-items:center;justify-content:center;padding:20px;';
+    wrap.onclick = function(e) { if (e.target === wrap) wrap.remove(); };
+    wrap.innerHTML =
+      '<div style="background:#3a3a3a;border:1px solid #5e5e5e;border-radius:14px;width:100%;max-width:560px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6);">'
+      + '<div style="padding:16px 20px 10px;border-bottom:1px solid #5e5e5e;display:flex;align-items:center;gap:10px;">'
+      +   '<div style="flex:1;"><div style="font-size:15px;font-weight:800;color:#fff;font-family:Outfit,sans-serif;">Price List</div>'
+      +     '<div style="font-size:11px;color:#8f8f8f;margin-top:2px;font-family:Outfit,sans-serif;">' + _esc(_companyKey()) + '</div></div>'
+      +   '<button onclick="addSkuRow()" style="padding:7px 12px;background:#FF8200;color:#fff;border:none;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">+ Add Item</button>'
+      +   '<button onclick="document.getElementById(\'skuEditorModal\').remove()" style="background:none;border:none;color:#8f8f8f;font-size:22px;cursor:pointer;line-height:1;">&times;</button>'
+      + '</div>'
+      + '<div style="padding:10px 20px 6px;">'
+      +   '<input id="skuSearchBox" oninput="filterSkuList(this.value)" placeholder="Search by code or description..." '
+      +     'style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid #5e5e5e;background:#2b2b2b;color:#fff;font-size:12px;font-family:Outfit,sans-serif;">'
+      + '</div>'
+      + '<div id="skuEditorList" style="flex:1;overflow-y:auto;padding:4px 20px 12px;">'
+      +   '<div style="font-size:11px;color:#8f8f8f;padding:14px 0;font-family:Outfit,sans-serif;">Loading...</div>'
+      + '</div>'
+      + '<div style="padding:10px 20px 16px;border-top:1px solid #5e5e5e;">'
+      +   '<div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">'
+      +     '<button onclick="document.getElementById(\'skuCsvInput2\').click()" style="padding:7px 11px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Upload CSV</button>'
+      +     '<button onclick="pasteSkuPriceList()" style="padding:7px 11px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Paste CSV</button>'
+      +     '<span style="flex:1;"></span>'
+      +     '<button onclick="wipeSkuList()" style="padding:7px 11px;background:rgba(239,68,68,.10);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Clear List</button>'
+      +     '<input id="skuCsvInput2" type="file" accept=".csv,.txt,text/csv,text/plain,*/*" style="display:none;">'
+      +   '</div>'
+      +   '<div style="font-size:9px;color:#8f8f8f;margin-bottom:7px;font-family:Outfit,sans-serif;">CSV columns: SKU, Description, Price. Uploading replaces the whole list.</div>'
+      +   '<div id="skuEditorStatus" style="font-size:11px;color:#8f8f8f;min-height:15px;margin-bottom:7px;font-family:Outfit,sans-serif;"></div>'
+      +   '<button onclick="saveSkuEdits()" style="width:100%;padding:9px 14px;background:#FF8200;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Save Prices</button>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(wrap);
+
+    var inp = document.getElementById('skuCsvInput2');
+    if (inp) inp.onchange = function(e) {
+      var f = e.target.files && e.target.files[0];
+      if (f) uploadSkuPriceList(f);
+      e.target.value = '';
+    };
+
+    var ok = await _skuLoad();
+    if (!ok) {
+      var b = document.getElementById('skuEditorList');
+      if (b) b.innerHTML = '<div style="font-size:11px;color:#ef4444;padding:14px 0;font-family:Outfit,sans-serif;">Could not reach the price list.</div>';
+      return;
+    }
+    _skuRender();
+  };
+
+  window.wipeSkuList = async function() {
+    if (!_skuRows.length) { alert('The list is already empty.'); return; }
+    if (!confirm('Remove all ' + _skuRows.length.toLocaleString('en-US') + ' items from this company\'s price list?\n\nEvery material will price at $0 until a new list is loaded.')) return;
+    await sbFetch('inventory?company_id=eq.' + encodeURIComponent(_companyKey()), {
+      method: 'DELETE', headers: { 'Prefer': 'return=minimal' }
+    });
+    _skuRows = []; _skuDirty = {};
+    _skuRender();
+    _skuAfterChange();
+    var st = document.getElementById('skuEditorStatus');
+    if (st) { st.textContent = 'Price list cleared.'; st.style.color = '#86efac'; }
+  };
+
+  window.openPricingHub = function() {
+    var old = document.getElementById('pricingHubModal');
+    if (old) old.remove();
+
+    var info  = window._priceListInfo || {};
+    var skuN  = info.count || 0;
+    var co    = (window.currentUser || {}).companyName || _companyKey();
+    var act   = window.SauceRates.active();
+
+    function anySet(section) {
+      try {
+        var o = window.SauceRates.all()[section] || {};
+        return Object.keys(o).some(function(k) { return typeof o[k] === 'number' && o[k] > 0; });
+      } catch(e) { return false; }
+    }
+    function mark(ok) {
+      return ok ? '<span style="color:#86efac;">set</span>' : '<span style="color:#ef4444;">not set</span>';
+    }
+
+    var wrap = document.createElement('div');
+    wrap.id = 'pricingHubModal';
+    wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:100004;display:flex;align-items:center;justify-content:center;padding:20px;';
+    wrap.onclick = function(e) { if (e.target === wrap) wrap.remove(); };
+    wrap.innerHTML =
+      '<div style="background:#3a3a3a;border:1px solid #5e5e5e;border-radius:14px;width:100%;max-width:480px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6);">'
+      + '<div style="padding:16px 20px 12px;border-bottom:1px solid #5e5e5e;display:flex;align-items:center;gap:10px;">'
+      +   '<div style="flex:1;">'
+      +     '<div style="font-size:15px;font-weight:800;color:#fff;font-family:Outfit,sans-serif;">Pricing</div>'
+      +     '<div style="font-size:11px;color:#8f8f8f;margin-top:2px;font-family:Outfit,sans-serif;">'
+      +       _esc(co) + (act ? ' &middot; ' + _esc(act.name) : '') + '</div>'
+      +   '</div>'
+      +   '<button onclick="document.getElementById(\'pricingHubModal\').remove()" style="background:none;border:none;color:#8f8f8f;font-size:22px;cursor:pointer;line-height:1;">&times;</button>'
+      + '</div>'
+      + '<div style="flex:1;overflow-y:auto;padding:14px 20px 16px;">'
+      +   _pcTile('Materials', 'The price list, and the rates charged by the foot or the each.',
+                 skuN ? skuN.toLocaleString('en-US') + ' SKUs' : 'empty', 'openMaterialsPricing()')
+      +   _pcTile('Labor', 'What it costs to put the building up.', mark(anySet('labor')), 'openLaborPricing()', '#93c5fd')
+      +   _pcTile('Concrete', 'One flat rate, or different rates by county.',
+                 (window.SauceConcrete.mode() === 'zones' ? 'by county' : 'flat'), 'openConcreteModal()', '#fbbf24')
+      +   _pcTile('Shipping', 'Per mile, minimums and surcharges.', mark(anySet('shipping')), 'openShippingPricing()', '#86efac')
+      +   '<div style="margin-top:14px;padding-top:12px;border-top:1px solid #4a4a4a;">'
+      +     '<button onclick="openRatesModal()" style="width:100%;padding:9px;background:rgba(255,255,255,.05);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">'
+      +       'Advanced &mdash; every rate on one screen, import/export, profiles</button>'
+      +   '</div>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(wrap);
+  };
+
+  // ── one shared screen builder for the simple rate panels ─────────────────
+  function _pcNum(path, label, hint) {
+    var v = window.SauceRates.raw(path);
+    return '<div style="padding:5px 0;border-bottom:1px solid rgba(255,255,255,.05);">'
+      + '<div style="display:flex;align-items:center;gap:8px;">'
+      +   '<label style="flex:1;font-size:11px;color:#c8c8c8;font-family:Outfit,sans-serif;">' + label + '</label>'
+      +   '<input data-pc-path="' + path + '" type="number" step="any" value="' + (v || 0) + '" '
+      +     'style="width:96px;padding:5px 7px;border-radius:6px;border:1px solid #5e5e5e;background:#2b2b2b;color:#fff;font-size:12px;font-weight:700;text-align:right;font-family:Outfit,sans-serif;">'
+      + '</div>'
+      + (hint ? '<div style="font-size:9px;color:#8f8f8f;margin-top:1px;font-family:Outfit,sans-serif;">' + hint + '</div>' : '')
+      + '</div>';
+  }
+
+  function _pcSection(t) {
+    return '<div style="margin:14px 0 4px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;font-family:Outfit,sans-serif;">' + t + '</div>';
+  }
+
+  function _pcShell(id, title, sub, bodyHtml, extraFooter) {
+    var old = document.getElementById(id);
+    if (old) old.remove();
+    var wrap = document.createElement('div');
+    wrap.id = id;
+    wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:100006;display:flex;align-items:center;justify-content:center;padding:20px;';
+    wrap.onclick = function(e) { if (e.target === wrap) wrap.remove(); };
+    wrap.innerHTML =
+      '<div style="background:#3a3a3a;border:1px solid #5e5e5e;border-radius:14px;width:100%;max-width:520px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6);">'
+      + '<div style="padding:16px 20px 12px;border-bottom:1px solid #5e5e5e;display:flex;align-items:center;gap:10px;">'
+      +   '<div style="flex:1;"><div style="font-size:15px;font-weight:800;color:#fff;font-family:Outfit,sans-serif;">' + title + '</div>'
+      +     '<div style="font-size:11px;color:#8f8f8f;margin-top:2px;font-family:Outfit,sans-serif;">' + sub + '</div></div>'
+      +   '<button onclick="document.getElementById(\'' + id + '\').remove()" style="background:none;border:none;color:#8f8f8f;font-size:22px;cursor:pointer;line-height:1;">&times;</button>'
+      + '</div>'
+      + '<div id="' + id + 'Body" style="flex:1;overflow-y:auto;padding:8px 20px 16px;">' + bodyHtml + '</div>'
+      + '<div style="padding:10px 20px 16px;border-top:1px solid #5e5e5e;">'
+      +   (extraFooter || '')
+      +   '<div id="' + id + 'Status" style="font-size:11px;color:#8f8f8f;min-height:15px;margin-bottom:7px;font-family:Outfit,sans-serif;"></div>'
+      +   '<div style="display:flex;gap:8px;">'
+      +     '<button onclick="savePricingPanel(\'' + id + '\')" style="flex:1;padding:9px 14px;background:#FF8200;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Save</button>'
+      +     '<button onclick="document.getElementById(\'' + id + '\').remove();openPricingHub();" style="padding:9px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Back</button>'
+      +   '</div>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(wrap);
+  }
+
+  window.savePricingPanel = async function(id) {
+    var obj = window.SauceRates.all();
+    var inputs = document.querySelectorAll('#' + id + 'Body [data-pc-path]');
+    for (var i = 0; i < inputs.length; i++) {
+      var parts = inputs[i].getAttribute('data-pc-path').split('.');
+      var node = obj;
+      for (var j = 0; j < parts.length - 1; j++) {
+        if (!node[parts[j]] || typeof node[parts[j]] !== 'object') node[parts[j]] = {};
+        node = node[parts[j]];
+      }
+      var n = parseFloat(inputs[i].value);
+      node[parts[parts.length - 1]] = isNaN(n) ? 0 : n;
+    }
+    window.SauceRates.save(obj);
+    var st = document.getElementById(id + 'Status');
+    function say(m, c) { if (st) { st.textContent = m; st.style.color = c || '#8f8f8f'; } }
+
+    var act = window.SauceRates.active();
+    if (!act)          { say('Applied here. Open Advanced to save it as a profile.', '#fbbf24'); return; }
+    if (!act.canEdit)  { say('Applied here only — those are company rates you cannot change.', '#fbbf24'); return; }
+    say('Saving to "' + act.name + '"...', '#FF8200');
+    var j = await window.SauceRates.saveProfile({ id: act.id, scope: act.scope, owner: act.owner, name: act.name, rates: obj });
+    say(j && j.success ? 'Saved.' : 'Could not save: ' + ((j && j.error) || 'unknown'), (j && j.success) ? '#86efac' : '#ef4444');
+    try { updateStripFromLocalCalc(); } catch(e) {}
+  };
+
+  // ── LABOR ────────────────────────────────────────────────────────────────
+  window.openLaborPricing = function() {
+    var L = window.SauceRates.all().labor || {};
+    var html = '<div style="font-size:10px;color:#8f8f8f;padding:6px 0 2px;line-height:1.45;font-family:Outfit,sans-serif;">'
+      + 'What this company charges to erect the building. Anything left at zero simply does not bill.</div>';
+
+    function walk(obj, prefix, title) {
+      var keys = Object.keys(obj || {}).filter(function(k) { return typeof obj[k] === 'number'; });
+      if (!keys.length) return '';
+      var out = _pcSection(title);
+      keys.forEach(function(k) {
+        out += _pcNum(prefix + '.' + k, k.replace(/([A-Z])/g, ' $1').replace(/^./, function(c){ return c.toUpperCase(); }));
+      });
+      return out;
+    }
+    html += walk(L, 'labor', 'General');
+    Object.keys(L).forEach(function(k) {
+      if (L[k] && typeof L[k] === 'object' && !Array.isArray(L[k])) {
+        html += walk(L[k], 'labor.' + k, k.replace(/([A-Z])/g, ' $1'));
+        Object.keys(L[k]).forEach(function(k2) {
+          if (L[k][k2] && typeof L[k][k2] === 'object' && !Array.isArray(L[k][k2])) {
+            html += walk(L[k][k2], 'labor.' + k + '.' + k2, k + ' · ' + k2);
+          }
+        });
+      }
+    });
+    _pcShell('laborPricingModal', 'Labor', 'Erection and install rates', html);
+  };
+
+  // ── SHIPPING ─────────────────────────────────────────────────────────────
+  window.openShippingPricing = function() {
+    var origin = (window._companySettings && window._companySettings.shopAddress) || SHOP_ADDRESS || '';
+    var html = '<div style="font-size:10px;color:#8f8f8f;padding:6px 0 8px;line-height:1.45;font-family:Outfit,sans-serif;">'
+      + 'Measured one way from <b style="color:#c8c8c8;">' + (_esc(origin) || 'no delivery origin set') + '</b>.'
+      + (origin ? '' : ' Set one in Company Settings or every job shows zero miles.') + '</div>'
+      + _pcSection('Per mile')
+      + _pcNum('shipping.perMile',   'Rate per mile',      'One way, from the yard to the site.')
+      + _pcNum('shipping.freeMiles', 'Miles included',     'Billing starts after this many miles. 0 bills from the first mile.')
+      + _pcNum('shipping.minCharge', 'Minimum charge',     'Never bill less than this once there is any mileage.')
+      + _pcSection('Fuel surcharge')
+      + _pcNum('shipping.fuelStartMiles', 'Applies beyond', 'Miles. Leave 0 to switch the surcharge off entirely.')
+      + _pcNum('shipping.fuelPerMile',    'Per mile past that')
+      + _pcSection('Long-haul installs')
+      + _pcNum('shipping.longHaulPerMile', 'Per mile beyond 205', 'Added to door install jobs at a distance.');
+    _pcShell('shippingPricingModal', 'Shipping', 'Delivery and mileage', html);
+  };
+
+  // ── MATERIALS ────────────────────────────────────────────────────────────
+  window.openMaterialsPricing = function() {
+    var info = window._priceListInfo || {};
+    var n = info.count || 0;
+    var html =
+        '<div style="display:flex;align-items:center;gap:10px;padding:9px 11px;background:rgba(255,255,255,.03);border:1px solid #5e5e5e;border-radius:8px;margin:6px 0 4px;">'
+      +   '<div style="flex:1;font-size:11px;color:#c8c8c8;font-family:Outfit,sans-serif;">'
+      +     (n ? '<b style="color:#86efac;">' + n.toLocaleString('en-US') + ' SKUs</b> in this company\'s price list'
+                : '<b style="color:#ef4444;">No price list</b> — every material prices at $0')
+      +   '</div>'
+      +   '<button onclick="openSkuEditor()" style="padding:7px 12px;background:#FF8200;color:#fff;border:none;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;white-space:nowrap;">Manage list</button>'
+      + '</div>'
+      + '<div style="font-size:10px;color:#8f8f8f;margin-bottom:4px;line-height:1.45;font-family:Outfit,sans-serif;">'
+      +   'Below are the rates that are charged by the foot, the square foot or the each — no SKU can carry them.</div>'
+      + _pcSection('Panels')
+      + _pcNum('materials.standingSeamPerFt', 'Standing seam, per ft')
+      + _pcNum('materials.boardBattenPerFt',  'Board &amp; batten, per ft', 'Used when the BB6 SKU has no price.')
+      + _pcSection('Wainscot')
+      + _pcNum('materials.rockWainscotPerSqft',    'Rock wainscot, per sqft')
+      + _pcNum('materials.rockWainscotFarMiles',   'Far-haul starts at (miles)', 'Leave 0 to use one rate everywhere.')
+      + _pcNum('materials.rockWainscotFarPerSqft', 'Rock wainscot beyond that')
+      + _pcSection('Gutters')
+      + _pcNum('materials.gutterPerFt',      'Gutter, per ft', 'A SKU price for the gutter type wins over this.')
+      + _pcNum('materials.gutterGuardPerFt', 'Gutter guard, per ft')
+      + _pcNum('materials.gutterMinCharge',  'Minimum gutter charge')
+      + _pcSection('Doors')
+      + _pcNum('materials.highLiftPerDoor',      'High lift track, each')
+      + _pcNum('materials.verticalTrackPerDoor', 'Vertical track, each')
+      + _pcNum('materials.drumDoorMinCharge',    'Drum door install minimum')
+      + _pcSection('Trusses & equipment')
+      + _pcNum('materials.scissorTrussEach', 'Scissor truss upgrade, each')
+      + _pcNum('materials.atticTrussEach',   'Attic truss upgrade, each')
+      + _pcNum('materials.craneFee',         'Crane fee', 'Flat charge when a crane is needed.');
+    _pcShell('materialsPricingModal', 'Materials', 'Price list and per-unit rates', html);
   };
 
   window.openRatesModal = function() {
@@ -41142,13 +41605,20 @@ window.SauceTax = {
 // Reads _cachedMileage set by zip lookup
 // ====================================================================
 window.SauceShipping = {
-  RATE:   6.00,
+  RATE:   0,
   ORIGIN: '',
   calculate: function(miles) {
     miles = parseFloat(miles) || 0;
     if (miles <= 0) return { miles: 0, amount: 0, label: 'Shipping — no mileage set' };
-    var perMile = (window.SauceRates ? window.SauceRates.v('labor.shippingPerMile') : 0) || this.RATE;
-    var amount = miles * perMile;
+    var R = window.SauceRates;
+    var perMile   = R ? (R.v('shipping.perMile') || R.v('labor.shippingPerMile')) : this.RATE;
+    var freeMiles = R ? R.v('shipping.freeMiles') : 0;
+    var minCharge = R ? R.v('shipping.minCharge') : 0;
+    var billable  = Math.max(0, miles - freeMiles);
+    var amount    = billable * perMile;
+    // The minimum only applies once there is something to bill. A job inside
+    // the included radius is free, not minimum-charged.
+    if (billable > 0 && minCharge > 0 && amount < minCharge) amount = minCharge;
     return {
       miles:  miles,
       amount: amount,
