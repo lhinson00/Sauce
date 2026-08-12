@@ -21182,8 +21182,8 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = '2026-08-12 16:47 UTC';
-console.log('%c[Sauce] build 2026-08-12 16:47 UTC', 'color:#FF8200;font-weight:bold');
+window.SAUCE_BUILD = '2026-08-12 17:08 UTC';
+console.log('%c[Sauce] build 2026-08-12 17:08 UTC', 'color:#FF8200;font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
 // ── WHERE THIS COPY TALKS TO ────────────────────────────────────────────────
@@ -38814,7 +38814,16 @@ function getPrice(sku) {
   var pt = window.SauceMaterials._priceTable;
   var key = sku.trim().toUpperCase();
   var raw = pt[key] != null ? pt[key] : (pt[sku] != null ? pt[sku] : null);
-  if (raw == null) return null;
+  if (raw == null) {
+    // In demo mode an unpriced item is priced on the spot rather than showing
+    // $0. The figure is derived from the item's own name, so it is the same
+    // every time and needs no price list, no upload and no database.
+    if (window.SauceDemo && window.SauceDemo.active() && typeof window.demoPriceFor === 'function') {
+      var d = window.demoPriceFor(key);
+      if (d > 0) return window.SauceDemo.adjust('sku:' + key, d);
+    }
+    return null;
+  }
   return window.SauceDemo.adjust('sku:' + key, raw);
 }
 
@@ -40322,6 +40331,19 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     return _demoBand(b[0], b[1], b[2], key);
   }
 
+  // Any item can be priced from its own name. Used by getPrice() when demo
+  // mode is on and the company has no list of its own.
+  var _catCache = null;
+  window.demoPriceFor = function(key) {
+    if (!key) return 0;
+    if (!_catCache) {
+      _catCache = {};
+      (window.SAUCE_CATALOG || []).forEach(function(r) { _catCache[String(r[0]).toUpperCase()] = r[2]; });
+    }
+    var k = String(key).toUpperCase();
+    return _demoPriceFor(k, _catCache[k] || 'Other');
+  };
+
   window.loadDemoPricing = async function() {
     if (!isSuperUser() && !isCompanyAdminUser()) { alert('Only an admin can load demo pricing.'); return; }
     var co = _companyKey();
@@ -40352,7 +40374,18 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     window.SauceRates.save(obj);
     try { updateDemoBadge(); } catch(e) {}
     var saved = await _persistRatesForCompany(obj, 'Demo Pricing');
-    if (!saved.ok) { say('Rates applied on this device only — ' + saved.why, '#fbbf24'); }
+    try { if (typeof loadInventoryPricing === 'function') await loadInventoryPricing(); } catch(e) {}
+    try { updateStripFromLocalCalc(); } catch(e) {}
+    say('Demo pricing is on — every rate and all '
+      + ((window.SAUCE_CATALOG || []).length) + ' items are priced.'
+      + (saved.ok ? (saved.created ? ' Saved as this company\'s rate profile.' : '')
+                  : ' (Rates are on this device only — ' + saved.why + ')'),
+        saved.ok ? '#86efac' : '#fbbf24');
+    setTimeout(function() {
+      var m = document.getElementById('pricingHubModal');
+      if (m) { m.remove(); openPricingHub(); }
+    }, 1400);
+    return;
 
     // Then the item prices.
     var cat = window.SAUCE_CATALOG || [];
