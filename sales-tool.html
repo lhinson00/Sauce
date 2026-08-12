@@ -3029,7 +3029,7 @@ function updateStripFromLocalCalc() {
   var shedCfgs = window._shedConfigs || [];
   var county   = window._cachedCounty || '';
   var miles    = window._cachedMileage || 0;
-  var mftVal      = parseFloat((document.getElementById('st_mftRate')||{}).value) || 8;
+  var mftVal      = parseFloat((document.getElementById('st_mftRate')||{}).value) || (window.SauceRates ? window.SauceRates.v('materials.markupPct') : 0);
   var materialKit = !!(document.getElementById('st_materialKit')||{}).checked;
   var farmTax     = !!(document.getElementById('st_farmTax')||{}).checked;
   var sqft     = Q.w * Q.l;
@@ -7273,7 +7273,7 @@ function serializeConfig() {
       materialKit:!!(document.getElementById('st_materialKit')||{}).checked,
       farmTax:   !!(document.getElementById('st_farmTax')||{}).checked,
       matPack:   window._matPackFilter || 'all',
-      mftRate:   (parseFloat((document.getElementById('st_mftRate')||{}).value) || 8).toString(),
+      mftRate:   (parseFloat((document.getElementById('st_mftRate')||{}).value) || (window.SauceRates ? window.SauceRates.v('materials.markupPct') : 0)).toString(),
       // Spec panel sf_ fields
       gdOpener:      (document.getElementById('sf_gdOpener')||{}).value||'None',
       gdOpenerQty:   (document.getElementById('sf_gdOpenerQty')||{}).value||'0',
@@ -21182,8 +21182,8 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = '2026-08-12 17:08 UTC';
-console.log('%c[Sauce] build 2026-08-12 17:08 UTC', 'color:#FF8200;font-weight:bold');
+window.SAUCE_BUILD = '2026-08-12 19:24 UTC';
+console.log('%c[Sauce] build 2026-08-12 19:24 UTC', 'color:#FF8200;font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
 // ── WHERE THIS COPY TALKS TO ────────────────────────────────────────────────
@@ -40375,7 +40375,10 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     try { updateDemoBadge(); } catch(e) {}
     var saved = await _persistRatesForCompany(obj, 'Demo Pricing');
     try { if (typeof loadInventoryPricing === 'function') await loadInventoryPricing(); } catch(e) {}
-    try { updateStripFromLocalCalc(); } catch(e) {}
+    // Every build type reprices at once, so run the same path a field edit runs
+    // rather than repainting the strip from its cached (possibly errored) state.
+    try { schedulePrice(); } catch(e) {}
+    try { triggerBuild(); } catch(e) {}
     say('Demo pricing is on — every rate and all '
       + ((window.SAUCE_CATALOG || []).length) + ' items are priced.'
       + (saved.ok ? (saved.created ? ' Saved as this company\'s rate profile.' : '')
@@ -40433,7 +40436,8 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     });
     if (typeof loadInventoryPricing === 'function') await loadInventoryPricing();
     say('Everything back to zero.', '#86efac');
-    try { updateStripFromLocalCalc(); } catch(e) {}
+    try { schedulePrice(); } catch(e) {}
+    try { triggerBuild(); } catch(e) {}
     setTimeout(function() {
       var m = document.getElementById('pricingHubModal');
       if (m) { m.remove(); openPricingHub(); }
@@ -40646,6 +40650,7 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       +   '<button onclick="document.getElementById(\'skuCsvInput3\').click()" style="padding:7px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Upload CSV</button>'
       +   '<button onclick="pasteSkuPriceList()" style="padding:7px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Paste CSV</button>'
       +   '<button onclick="exportPricingSheet()" style="padding:7px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Download as CSV</button>'
+      +   '<button onclick="clearPricingSheet()" style="padding:7px 12px;background:rgba(239,68,68,.10);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Clear List</button>'
       +   '<input id="skuCsvInput3" type="file" accept=".csv,.txt,text/csv,text/plain,*/*" style="display:none;">'
       + '</div>';
     document.body.appendChild(wrap);
@@ -40664,6 +40669,36 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       return;
     }
     _shRender();
+  };
+
+  // Empty this company's price list. Everything falls back to $0 — or to the
+  // generated figures if demo pricing is on.
+  window.clearPricingSheet = async function() {
+    var st = document.getElementById('shStatus');
+    function say(m, c) { if (st) { st.textContent = m; st.style.color = c || '#8f8f8f'; } }
+    var priced = _shPricedCount();
+    if (!priced && !_shRows.some(function(r) { return r.price !== '' || r.vendor; })) {
+      say('The list is already empty.');
+      return;
+    }
+    if (!confirm('Remove every price for ' + _companyKey() + '?\n\n'
+      + priced.toLocaleString('en-US') + ' priced item' + (priced === 1 ? '' : 's') + ' will be deleted.\n'
+      + 'Materials go back to $0 unless demo pricing is on.')) return;
+
+    say('Clearing...', '#FF8200');
+    await sbFetch('inventory?company_id=eq.' + encodeURIComponent(_companyKey()), {
+      method: 'DELETE', headers: { 'Prefer': 'return=minimal' }
+    });
+    if (sbFailed()) { say('Could not clear it. ' + sbWhyRefused(), '#ef4444'); return; }
+
+    _shRows.forEach(function(r) { r.price = ''; r.vendor = ''; });
+    _shEdits = {};
+    var c = document.getElementById('shCounter');
+    if (c) { c.textContent = ''; }
+    _shRender();
+    say('Price list cleared.', '#86efac');
+    if (typeof loadInventoryPricing === 'function') await loadInventoryPricing();
+    try { updateStripFromLocalCalc(); } catch(e) {}
   };
 
   // Hand the whole catalog out as a spreadsheet so a company can fill it in
@@ -40893,7 +40928,7 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     say(res.ok ? (res.created ? 'Saved — created this company\'s rate profile.' : 'Saved.')
                : 'Applied on this device only — ' + res.why,
         res.ok ? '#86efac' : '#fbbf24');
-    try { updateStripFromLocalCalc(); } catch(e) {}
+    try { schedulePrice(); } catch(e) {}
   };
 
   // ── LABOR ────────────────────────────────────────────────────────────────
@@ -47072,7 +47107,7 @@ window.openMaterialsModal = function(initialTab) {
 
     // Grand total
     if (grandTotal > 0) {
-      var mftVal = parseFloat((document.getElementById('st_mftRate')||{}).value) || 8;
+      var mftVal = parseFloat((document.getElementById('st_mftRate')||{}).value) || (window.SauceRates ? window.SauceRates.v('materials.markupPct') : 0);
       var mftAmt = grandTotal * (mftVal / 100);
 
       // MFT line
@@ -48832,7 +48867,7 @@ window.exportMaterialCSV = function(buildType, labelStr) {
 
     // ── Material markup row ──────────────────────────────────────────────
     try {
-      var mftRate = parseFloat((document.getElementById('st_mftRate')||{}).value) || 8;
+      var mftRate = parseFloat((document.getElementById('st_mftRate')||{}).value) || (window.SauceRates ? window.SauceRates.v('materials.markupPct') : 0);
       if (mftRate > 0) {
         // Calc material total for this build type (same as modal)
         var mftMatTotal = 0;
