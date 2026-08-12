@@ -21177,8 +21177,8 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = '2026-08-12 16:32 UTC';
-console.log('%c[Sauce] build 2026-08-12 16:32 UTC', 'color:#FF8200;font-weight:bold');
+window.SAUCE_BUILD = '2026-08-12 16:37 UTC';
+console.log('%c[Sauce] build 2026-08-12 16:37 UTC', 'color:#FF8200;font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
 // ── WHERE THIS COPY TALKS TO ────────────────────────────────────────────────
@@ -21723,24 +21723,52 @@ function sbFailed() { return !!window._sbLastError; }
 // run against it yet — the prices matter, the company's own part codes are a
 // nicety, so losing the column should not lose the whole upload.
 async function sbUpsertInventory(rows) {
-  await sbFetch('inventory?on_conflict=company_id,sku', {
-    method: 'POST', body: JSON.stringify(rows),
-    headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
-  });
-  if (!sbFailed()) return { ok: true };
-  var why = String((window._sbLastError || {}).body || '');
-  if (!/vendor_sku/.test(why)) return { ok: false, why: sbWhyRefused() };
+  var note = '';
 
-  var stripped = rows.map(function(r) {
-    var c = {}; Object.keys(r).forEach(function(k) { if (k !== 'vendor_sku') c[k] = r[k]; });
-    return c;
-  });
-  await sbFetch('inventory?on_conflict=company_id,sku', {
-    method: 'POST', body: JSON.stringify(stripped),
-    headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
-  });
-  if (sbFailed()) return { ok: false, why: sbWhyRefused() };
-  return { ok: true, note: 'Prices saved. Your own part codes were skipped — run vendor-sku-column.sql to store those too.' };
+  function drop(list, field) {
+    return list.map(function(r) {
+      var c = {}; Object.keys(r).forEach(function(k) { if (k !== field) c[k] = r[k]; });
+      return c;
+    });
+  }
+  async function post(list, conflict) {
+    await sbFetch('inventory' + (conflict ? '?on_conflict=company_id,sku' : ''), {
+      method: 'POST', body: JSON.stringify(list),
+      headers: { 'Prefer': (conflict ? 'resolution=merge-duplicates,' : '') + 'return=minimal' }
+    });
+    return !sbFailed();
+  }
+
+  var payload = rows;
+
+  // Attempt 1 — the way it should work.
+  if (await post(payload, true)) return { ok: true };
+
+  // Attempt 2 — the database may not have a column for the company's own part
+  // codes yet. The prices matter more than the codes, so drop them and retry.
+  if (/vendor_sku/.test(String((window._sbLastError || {}).body || ''))) {
+    payload = drop(payload, 'vendor_sku');
+    note = 'Your own part codes were skipped — run vendor-sku-column.sql to store those too.';
+    if (await post(payload, true)) return { ok: true, note: note };
+  }
+
+  // Attempt 3 — an upsert needs a unique index on (company_id, sku) and this
+  // table may predate its company_id column, so that index was never built.
+  // Fall back to delete-then-insert for just these rows, which needs no index.
+  if (/unique|exclusion constraint|42P10|23505|on conflict/i.test(String((window._sbLastError || {}).body || ''))) {
+    var co = (payload[0] || {}).company_id;
+    var skus = payload.map(function(r) { return '"' + String(r.sku).replace(/"/g, '""') + '"'; }).join(',');
+    await sbFetch('inventory?company_id=eq.' + encodeURIComponent(co) + '&sku=in.(' + encodeURIComponent(skus) + ')', {
+      method: 'DELETE', headers: { 'Prefer': 'return=minimal' }
+    });
+    if (sbFailed()) return { ok: false, why: sbWhyRefused() };
+    if (await post(payload, false)) {
+      return { ok: true, note: (note ? note + ' ' : '')
+        + 'Saved, but the price list has no unique index — run inventory-fix.sql so this stays reliable.' };
+    }
+  }
+
+  return { ok: false, why: sbWhyRefused() };
 }
 
 // Turn a database refusal into something a person can act on.
@@ -21755,7 +21783,7 @@ function sbWhyRefused() {
   if (/does not exist|42P01/i.test(b))
     return 'A table this needs does not exist yet — check the setup SQL has been run.';
   if (/duplicate key|23505|no unique|42P10/i.test(b))
-    return 'The (company_id, sku) unique index is missing — re-run inventory-table.sql.';
+    return 'The (company_id, sku) unique index is missing — run inventory-fix.sql in Supabase.';
   try { var j = JSON.parse(b); return String(j.message || j.hint || b).slice(0, 220); } catch(err) {}
   return (b || ('HTTP ' + e.status)).slice(0, 220);
 }
