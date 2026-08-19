@@ -115,6 +115,14 @@
   table.mm tr:hover td{background:rgba(255,255,255,.03);}
   table.mm .sz{font-weight:700;color:#fff;}
   table.mm .qty{font-weight:800;color:#86efac;}
+  .mm-grp{border:1px solid #4a4a4a;border-radius:8px;margin-bottom:6px;overflow:hidden;}
+  .mm-grp-hd{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;
+    background:rgba(255,255,255,.03);font-size:12.5px;user-select:none;}
+  .mm-grp-hd:hover{background:rgba(255,255,255,.06);}
+  .mm-caret{display:inline-block;transition:transform .12s;color:var(--house);font-size:16px;line-height:1;}
+  .mm-caret.open{transform:rotate(90deg);}
+  .mm-grp-bd{display:none;padding:2px 12px 10px;}
+  .mm-grp-bd.open{display:block;}
   .mm-note{font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:8px;}
   .mm-tot{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:18px;}
   .mm-tot div{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 14px;}
@@ -143,6 +151,15 @@
 
   #planHint{position:absolute;left:12px;bottom:12px;z-index:6;font-size:10px;color:var(--muted);
     background:rgba(0,0,0,.45);border-radius:6px;padding:6px 10px;pointer-events:none;max-width:60%;}
+
+  #openBox{position:absolute;left:50%;bottom:44px;transform:translateX(-50%);z-index:7;
+    display:none;align-items:center;gap:7px;background:#232323;border:1px solid var(--house);
+    border-radius:9px;padding:7px 11px;box-shadow:0 8px 26px rgba(0,0,0,.5);}
+  #openBox.on{display:flex;}
+  #openBox label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.9px;font-weight:800;}
+  #openBox select,#openBox input{padding:6px 9px;border-radius:6px;border:1px solid var(--line);
+    background:#2b2b2b;color:var(--text);font-size:13px;font-weight:700;font-family:inherit;outline:none;}
+  #openBox .hintk{font-size:10px;color:var(--muted);}
 
   #lenBox{position:absolute;left:50%;bottom:44px;transform:translateX(-50%);z-index:7;
     display:none;align-items:center;gap:7px;background:#232323;border:1px solid var(--house);
@@ -286,6 +303,8 @@
         <button class="ptool on" id="ptWall"   onclick="PLAN.setTool('wall')">Draw Wall</button>
         <button class="ptool"    id="ptInt"    onclick="PLAN.setTool('interior')">Interior</button>
         <button class="ptool"    id="ptPorch"  onclick="PLAN.setTool('porch')">Porch Edge</button>
+        <button class="ptool"    id="ptDoor"   onclick="PLAN.setTool('door')">Door</button>
+        <button class="ptool"    id="ptWindow" onclick="PLAN.setTool('window')">Window</button>
         <button class="ptool"    id="ptSelect" onclick="PLAN.setTool('select')">Select</button>
         <span style="width:8px;"></span>
         <button class="ptool" id="ptFinish" onclick="PLAN.finish()" style="display:none;">Finish Run <span style="opacity:.6;font-weight:600;">Esc</span></button>
@@ -295,6 +314,13 @@
       </div>
       <div id="planHUD"></div>
       <div id="planHint">Click to start &middot; type a length + Enter, or click to set. Walls chain on &mdash; <b>double-click or Esc</b> to end the run.</div>
+      <div id="openBox">
+        <label>Size</label>
+        <select id="openPreset" onchange="PLAN.presetChanged()"></select>
+        <input id="openW" type="text" placeholder="width" style="width:66px;">
+        <input id="openH" type="text" placeholder="height" style="width:66px;">
+        <span class="hintk" id="openHint">click a wall to place</span>
+      </div>
       <div id="lenBox">
         <label>Length</label>
         <input id="lenInput" type="text" placeholder="24 or 24' 6&quot;"
@@ -1502,23 +1528,62 @@ window.MATLIST = (function(){
     });
     html += '</tbody></table></div>';
 
-    // CUT LIST
-    html += '<div class="mm-sec"><h3>Cut list &mdash; make this</h3>'
-      + '<table class="mm"><thead><tr>'
-      + '<th>Part</th><th>Item</th><th>Cut to</th><th style="text-align:right;">Qty</th>'
-      + '</tr></thead><tbody>';
-    rows.forEach(function(r){
+    // CUT LIST — one row per part, click to open the lengths inside it
+    html += '<div class="mm-sec"><h3>Cut list &mdash; make this</h3>';
+    rows.forEach(function(r, idx){
       var lens = Object.keys(r.lengths).map(parseFloat).sort(function(a,b){ return b - a; });
-      lens.forEach(function(L, i){
-        html += '<tr>'
-          + '<td>' + (i === 0 ? esc(LABEL[r.kind] || r.kind) : '') + '</td>'
-          + '<td class="sz">' + esc(r.size) + '</td>'
-          + '<td>' + F.fmtLen(L) + '</td>'
+      var gid = 'mmg' + idx;
+      html += '<div class="mm-grp">'
+        + '<div class="mm-grp-hd" onclick="MATLIST.toggle(\'' + gid + '\')">'
+        +   '<span class="mm-caret" id="' + gid + 'c">&rsaquo;</span>'
+        +   '<span style="flex:1;">' + esc(LABEL[r.kind] || r.kind)
+        +     ' <b class="sz">' + esc(r.size) + '</b></span>'
+        +   '<span style="color:var(--muted);font-size:11px;">' + lens.length
+        +     (lens.length === 1 ? ' length' : ' lengths') + '</span>'
+        +   '<span class="qty" style="width:58px;text-align:right;">' + r.count + ' pcs</span>'
+        +   '<span style="color:#6f6f6f;width:62px;text-align:right;font-size:11px;">'
+        +     Math.round(r.totalLf) + ' lf</span>'
+        + '</div>'
+        + '<div class="mm-grp-bd" id="' + gid + '">'
+        +   '<table class="mm"><thead><tr><th>Cut to</th>'
+        +   '<th style="text-align:right;">Qty</th><th style="text-align:right;">Lineal ft</th>'
+        +   '<th>Where</th></tr></thead><tbody>';
+      lens.forEach(function(L){
+        var where = (r.kind === 'stud') ? 'wall framing'
+                  : (r.kind === 'king' || r.kind === 'jack' || r.kind === 'header'
+                     || r.kind === 'cripple' || r.kind === 'sill') ? 'openings'
+                  : (r.kind === 'post' || r.kind === 'beam') ? 'porch'
+                  : 'plates';
+        html += '<tr><td>' + F.fmtLen(L) + '</td>'
           + '<td class="num qty">' + r.lengths[L] + '</td>'
+          + '<td class="num" style="color:var(--muted);">' + Math.round(L * r.lengths[L]) + '</td>'
+          + '<td style="color:#6f6f6f;font-size:11px;">' + where + '</td></tr>';
+      });
+      html += '</tbody></table></div></div>';
+    });
+    html += '</div>';
+
+    // OPENINGS — so a door or window can be checked against the plan
+    var ops = [];
+    M.walls.forEach(function(w){
+      (w.openings || []).forEach(function(o){ ops.push({ w: w, o: o }); });
+    });
+    if (ops.length) {
+      html += '<div class="mm-sec"><h3>Openings</h3>'
+        + '<table class="mm"><thead><tr><th>Type</th><th>Size</th><th>Head</th>'
+        + '<th>Header</th><th style="text-align:right;">On wall</th></tr></thead><tbody>';
+      ops.forEach(function(e){
+        var o = e.o;
+        html += '<tr>'
+          + '<td>' + esc(o.type) + (o.tag ? ' <span style="color:#6f6f6f;">' + esc(o.tag) + '</span>' : '') + '</td>'
+          + '<td class="sz">' + F.fmtLen(o.width) + ' &times; ' + F.fmtLen(o.height) + '</td>'
+          + '<td>' + F.fmtLen((o.sill || 0) + o.height) + '</td>'
+          + '<td class="sz">' + F.headerFor(o.width, e.w.bearing) + '</td>'
+          + '<td class="num" style="color:var(--muted);">#' + e.w.id + ' @ ' + F.fmtLen(o.pos) + '</td>'
           + '</tr>';
       });
-    });
-    html += '</tbody></table></div>';
+      html += '</tbody></table></div>';
+    }
 
     // WALL SUMMARY — sheet goods and finishes come off these areas next
     var by = M.byAssembly();
@@ -1567,6 +1632,14 @@ window.MATLIST = (function(){
   }
 
   return {
+    toggle: function(id) {
+      var b = document.getElementById(id);
+      var c = document.getElementById(id + 'c');
+      if (!b) return;
+      var on = b.className.indexOf('open') >= 0;
+      b.className = on ? 'mm-grp-bd' : 'mm-grp-bd open';
+      if (c) c.className = on ? 'mm-caret' : 'mm-caret open';
+    },
     open: function() {
       var m = document.getElementById('matModal');
       var b = document.getElementById('mmBody');
@@ -1668,6 +1741,91 @@ window.PLAN = (function(){
     return (neg ? '-' : '') + f + "'" + (i ? ' ' + i + '"' : '');
   }
 
+  /* ── OPENINGS ──────────────────────────────────────────────────────────
+     Click a wall and an opening lands on it, at the point clicked. The sizes
+     are the ones that actually get ordered; anything else can be typed.
+     Head height follows convention — 6'-8" for doors, and a window's head
+     lines up with it, which is what sets the sill.
+     ─────────────────────────────────────────────────────────────────────── */
+  var DOOR_PRESETS = [
+    { label: "2'-6\" x 6'-8\"", w: 2.5,  h: 6.667 },
+    { label: "2'-8\" x 6'-8\"", w: 2.667, h: 6.667 },
+    { label: "3'-0\" x 6'-8\"", w: 3,    h: 6.667 },
+    { label: "5'-0\" x 6'-8\" (double)", w: 5, h: 6.667 },
+    { label: "6'-0\" x 6'-8\" (slider)", w: 6, h: 6.667 },
+    { label: "9'-0\" x 8'-0\" (garage)", w: 9, h: 8 },
+    { label: "16'-0\" x 8'-0\" (garage)", w: 16, h: 8 }
+  ];
+  var WINDOW_PRESETS = [
+    { label: "2'-0\" x 3'-0\"", w: 2, h: 3 },
+    { label: "3'-0\" x 3'-0\"", w: 3, h: 3 },
+    { label: "3'-0\" x 5'-0\"", w: 3, h: 5 },
+    { label: "4'-0\" x 4'-0\"", w: 4, h: 4 },
+    { label: "6'-0\" x 5'-0\"", w: 6, h: 5 },
+    { label: "8'-0\" x 5'-0\"", w: 8, h: 5 }
+  ];
+  var HEAD_HEIGHT = 6.667;      // 6'-8", the usual head for doors and windows
+
+  function fillPresets() {
+    var sel = document.getElementById('openPreset');
+    if (!sel) return;
+    var list = (tool === 'window') ? WINDOW_PRESETS : DOOR_PRESETS;
+    sel.innerHTML = list.map(function(o, i){
+      return '<option value="' + i + '">' + o.label + '</option>';
+    }).join('') + '<option value="custom">Custom…</option>';
+    var d = (tool === 'window') ? list[2] : list[2];
+    document.getElementById('openW').value = d.w;
+    document.getElementById('openH').value = d.h;
+  }
+
+  // Distance from a point to a segment, and how far along it lands.
+  function nearestWall(fx, fy) {
+    var M = window.HouseModel;
+    var best = null;
+    M.walls.forEach(function(w){
+      var a = window.HouseModel.asm(w);
+      if (a.kind !== 'framed') return;             // no openings in a post run
+      var dx = w.x2 - w.x1, dy = w.y2 - w.y1;
+      var L2 = dx*dx + dy*dy;
+      if (!L2) return;
+      var t = ((fx - w.x1) * dx + (fy - w.y1) * dy) / L2;
+      t = Math.max(0, Math.min(1, t));
+      var px = w.x1 + dx * t, py = w.y1 + dy * t;
+      var d = Math.sqrt((fx-px)*(fx-px) + (fy-py)*(fy-py));
+      if (!best || d < best.dist) {
+        best = { wall: w, dist: d, along: t * Math.sqrt(L2) };
+      }
+    });
+    return best;
+  }
+
+  function placeOpening(fx, fy) {
+    var hit = nearestWall(fx, fy);
+    if (!hit || hit.dist > 4) return;              // must click near a wall
+    var M = window.HouseModel;
+    var ow = parseFeet(document.getElementById('openW').value) || 3;
+    var oh = parseFeet(document.getElementById('openH').value) || HEAD_HEIGHT;
+    var wallLen = M.lengthOf(hit.wall);
+
+    // Centre it on the click, then keep it inside the wall with room for the
+    // king studs at each end.
+    var pos = hit.along - ow / 2;
+    pos = Math.max(0.5, Math.min(wallLen - ow - 0.5, pos));
+    if (wallLen < ow + 1.2) { alert('That wall is too short for a ' + ow + " ft opening."); return; }
+
+    // A door starts at the floor. A window hangs from the same head height,
+    // so its sill is whatever is left underneath.
+    var sill = (tool === 'window') ? Math.max(0, HEAD_HEIGHT - oh) : 0;
+
+    M.addOpening(hit.wall.id, {
+      pos: Math.round(pos * 96) / 96,
+      width: ow, height: oh, sill: sill,
+      type: (tool === 'window') ? 'window' : 'door'
+    });
+    draw();
+    if (window.HW) HW.rebuild();
+  }
+
   function assemblyForTool() {
     if (tool === 'interior') return '2x4-int';
     if (tool === 'porch')    return 'porch-post';
@@ -1760,6 +1918,26 @@ window.PLAN = (function(){
         ctx.fillText(label, 0, -8);
         ctx.restore();
       }
+
+      // openings, drawn as a gap in the wall with its size beside it
+      (w.openings || []).forEach(function(o){
+        var u = { x: (w.x2 - w.x1) / len, y: (w.y2 - w.y1) / len };
+        var s1 = ft2px(w.x1 + u.x * o.pos,             w.y1 + u.y * o.pos);
+        var s2 = ft2px(w.x1 + u.x * (o.pos + o.width), w.y1 + u.y * (o.pos + o.width));
+        ctx.strokeStyle = '#232323';
+        ctx.lineWidth = Math.max(3, (a.thk || 0.46) * view.scale + 2);
+        ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke();
+        ctx.strokeStyle = (o.type === 'window') ? '#5b9dd9' : '#FF8200';
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke();
+        if (o.width * view.scale > 24) {
+          var mx2 = (s1.x + s2.x) / 2, my2 = (s1.y + s2.y) / 2;
+          ctx.font = '700 9px Outfit, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = (o.type === 'window') ? '#5b9dd9' : '#FF8200';
+          ctx.fillText(fmtFeet(o.width), mx2, my2 + 13);
+        }
+      });
 
       // corner dots
       [p1, p2].forEach(function(pt){
@@ -1890,6 +2068,7 @@ window.PLAN = (function(){
     if (tool === 'select') return;
     var r = cv.getBoundingClientRect();
     var f = px2ft(e.clientX - r.left, e.clientY - r.top);
+    if (tool === 'door' || tool === 'window') { placeOpening(f.x, f.y); return; }
     var sx = snap(f.x), sy = snap(f.y);
     if (!start) { start = { x: sx, y: sy }; cursor = { x: sx, y: sy }; showLenBox(true); draw(); return; }
     place(cursor.x, cursor.y);
@@ -1934,14 +2113,28 @@ window.PLAN = (function(){
       tool = t;
       start = null;
       showLenBox(false);
-      ['ptWall','ptInt','ptPorch','ptSelect'].forEach(function(id){
+      ['ptWall','ptInt','ptPorch','ptDoor','ptWindow','ptSelect'].forEach(function(id){
         var el = document.getElementById(id);
         if (el) el.className = 'ptool';
       });
-      var on = { wall:'ptWall', interior:'ptInt', porch:'ptPorch', select:'ptSelect' }[t];
+      var on = { wall:'ptWall', interior:'ptInt', porch:'ptPorch',
+                 door:'ptDoor', window:'ptWindow', select:'ptSelect' }[t];
       var e2 = document.getElementById(on);
       if (e2) e2.className = 'ptool on';
+      var ob = document.getElementById('openBox');
+      if (ob) ob.className = (t === 'door' || t === 'window') ? 'on' : '';
+      if (t === 'door' || t === 'window') fillPresets();
       draw();
+    },
+
+    presetChanged: function() {
+      var sel = document.getElementById('openPreset');
+      if (!sel || sel.value === 'custom') return;
+      var list = (tool === 'window') ? WINDOW_PRESETS : DOOR_PRESETS;
+      var o = list[parseInt(sel.value, 10)];
+      if (!o) return;
+      document.getElementById('openW').value = o.w;
+      document.getElementById('openH').value = o.h;
     },
 
     // The number off the plan, placed exactly. Direction from the cursor,
@@ -2374,10 +2567,10 @@ document.addEventListener('DOMContentLoaded', function(){
   PLAN.init();
   HW.setRect();
   HW.resetView();
-  console.log('[House] build 2026-08-19 19:29 UTC');
+  console.log('[House] build 2026-08-19 20:28 UTC');
 });
 </script>
 
-<script>window.SAUCE_BUILD = '2026-08-19 19:29 UTC';</script>
+<script>window.SAUCE_BUILD = '2026-08-19 20:28 UTC';</script>
 </body>
 </html>
