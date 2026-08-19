@@ -220,6 +220,11 @@
     </div>
 
     <div class="sec">
+      <div class="sec-title">Framing Take-off</div>
+      <div id="takeoff" style="font-size:10.5px;color:#c8c8c8;"></div>
+    </div>
+
+    <div class="sec">
       <div class="sec-title">Status</div>
       <div style="font-size:10.5px;color:var(--muted);line-height:1.6;">
         This is the foundation only — shared sign-in, the shared database, and the
@@ -242,12 +247,13 @@
         <button class="ptool"    id="ptPorch"  onclick="PLAN.setTool('porch')">Porch Edge</button>
         <button class="ptool"    id="ptSelect" onclick="PLAN.setTool('select')">Select</button>
         <span style="width:8px;"></span>
+        <button class="ptool" id="ptFinish" onclick="PLAN.finish()" style="display:none;">Finish Run <span style="opacity:.6;font-weight:600;">Esc</span></button>
         <button class="ptool" onclick="PLAN.undo()">Undo</button>
         <button class="ptool" onclick="PLAN.closeLoop()">Close Loop</button>
         <button class="ptool" onclick="PLAN.clearAll()">Clear</button>
       </div>
       <div id="planHUD"></div>
-      <div id="planHint">Click to start a wall &middot; move &middot; click to set. Type a length and press Enter to place it exactly.</div>
+      <div id="planHint">Click to start &middot; type a length + Enter, or click to set. Walls chain on &mdash; <b>double-click or Esc</b> to end the run.</div>
       <div id="lenBox">
         <label>Length</label>
         <input id="lenInput" type="text" placeholder="24 or 24' 6&quot;"
@@ -256,6 +262,7 @@
       </div>
     </div>
     <div id="stageBtns">
+      <button class="tbtn" id="btnFraming" onclick="HW.toggleFraming()">Show Framing</button>
       <button class="tbtn" onclick="HW.resetView()">Reset View</button>
       <button class="tbtn" onclick="HW.toggleGrid()">Grid</button>
     </div>
@@ -1079,6 +1086,251 @@ window.HouseModel = {
    changes the model shows up here without a second code path.
    ═══════════════════════════════════════════════════════════════════════ */
 
+/* ══ FRAMING GENERATOR ═══════════════════════════════════════════════════
+   Turns a wall into the pieces of lumber that make it. This is the heart of
+   the tool: the members it returns are what the 3D view DRAWS and what the
+   material list COUNTS. One array, two consumers, so the picture and the
+   price can never disagree.
+
+   Every member is positioned, not estimated:
+
+     { kind, size, len, x, y, z, rot, wallId }
+
+   x/z are plan feet, y is elevation, len is along the member. A stud is a
+   box; so is a plate, a king, a header. The take-off groups them by size and
+   length, which also yields a cut list for free.
+
+   Conventions, stated once:
+     - studs lay out from the wall's start end, at the assembly's spacing
+     - stud length = wall height less the plates it sits between
+     - openings interrupt the layout: kings outside, jacks inside, header
+       across, cripples above, and below for a window
+     - corners get a stud at each end regardless of where the spacing lands
+   ═══════════════════════════════════════════════════════════════════════ */
+window.FRAMING = (function(){
+
+  // Nominal to actual, in feet. Only used for drawing and for stud length.
+  var ACTUAL = {
+    '2x4':  [0.1250, 0.2917],   // 1½" x 3½"
+    '2x6':  [0.1250, 0.4583],   // 1½" x 5½"
+    '2x8':  [0.1250, 0.6042],
+    '2x10': [0.1250, 0.7708],
+    '2x12': [0.1250, 0.9375],
+    '6x6':  [0.4583, 0.4583]
+  };
+  function act(size) { return ACTUAL[size] || ACTUAL['2x4']; }
+
+  // Header depth by span — a starting point, from common residential practice.
+  // A designer signs off on the real one; this is here so a take-off has a
+  // number rather than a blank.
+  function headerFor(spanFt, bearing) {
+    if (!bearing)        return '2x6';
+    if (spanFt <= 3.5)   return '2x6';
+    if (spanFt <= 5)     return '2x8';
+    if (spanFt <= 6.5)   return '2x10';
+    if (spanFt <= 9)     return '2x12';
+    return '2x12';                       // beyond this wants an engineered beam
+  }
+
+  function unit(w) {
+    var dx = w.x2 - w.x1, dy = w.y2 - w.y1;
+    var L = Math.sqrt(dx*dx + dy*dy) || 1;
+    return { ux: dx / L, uy: dy / L, len: L, rot: -Math.atan2(dy, dx) };
+  }
+
+  // A point `d` feet along the wall from its start.
+  function along(w, u, d) {
+    return { x: w.x1 + u.ux * d, z: w.y1 + u.uy * d };
+  }
+
+  function member(kind, size, len, pt, y, rot, wallId, extra) {
+    var m = { kind: kind, size: size, len: Math.round(len * 1000) / 1000,
+              x: pt.x, z: pt.z, y: y, rot: rot, wallId: wallId };
+    if (extra) for (var k in extra) m[k] = extra[k];
+    return m;
+  }
+
+  /* Generate every member in one wall. */
+  function wallMembers(w) {
+    var M = window.HouseModel;
+    var a = M.asm(w);
+    var out = [];
+    var u = unit(w);
+    var L = u.len;
+    var H = M.heightOf(w);
+    if (L <= 0 || H <= 0) return out;
+
+    // Posts are not a framed wall — a porch edge is posts and a beam.
+    if (a.kind === 'posts') {
+      var span = a.spacing || 10;
+      var n = Math.max(2, Math.round(L / span) + 1);
+      for (var i = 0; i < n; i++) {
+        var d = (L * i) / (n - 1);
+        out.push(member('post', a.postSize || '6x6', H, along(w, u, d), w.baseElev, u.rot, w.id));
+      }
+      out.push(member('beam', a.beam || '2x10 dbl', L, along(w, u, L / 2), w.topElev - 0.8, u.rot, w.id));
+      return out;
+    }
+
+    // Masonry and concrete are not framed either — counted by the yard or the
+    // block, which the take-off does from wall area.
+    if (a.kind !== 'framed') return out;
+
+    var studSize = a.studSize || '2x4';
+    var plateT   = act(studSize)[0];              // 1½"
+    var nBot = (a.plates && a.plates.bottom) || 1;
+    var nTop = (a.plates && a.plates.top)    || 2;
+    var studLen = H - (nBot + nTop) * plateT;
+    if (studLen <= 0) return out;
+
+    // ── plates ────────────────────────────────────────────────────────────
+    var mid = along(w, u, L / 2);
+    for (var b = 0; b < nBot; b++) {
+      out.push(member('plate_bottom', studSize, L, mid, w.baseElev + b * plateT, u.rot, w.id));
+    }
+    for (var t = 0; t < nTop; t++) {
+      out.push(member('plate_top', studSize, L, mid, w.topElev - (t + 1) * plateT, u.rot, w.id));
+    }
+
+    var studY = w.baseElev + nBot * plateT;
+
+    // ── openings first, so the stud layout can avoid them ────────────────
+    var ops = (w.openings || []).slice().sort(function(p, q){ return p.pos - q.pos; });
+    var blocked = [];                              // [from,to] along the wall
+
+    ops.forEach(function(o){
+      var ow = o.width || 3;
+      var oh = o.height || 6.67;
+      var sill = o.sill || 0;
+      var x0 = o.pos, x1 = o.pos + ow;
+      var jackW = act(studSize)[0];
+
+      // king each side, full height
+      out.push(member('king', studSize, studLen, along(w, u, x0 - jackW / 2), studY, u.rot, w.id, { opening: o.tag || '' }));
+      out.push(member('king', studSize, studLen, along(w, u, x1 + jackW / 2), studY, u.rot, w.id, { opening: o.tag || '' }));
+
+      // jacks carry the header
+      var jackLen = sill + oh - w.baseElev + w.baseElev - studY;
+      jackLen = (sill + oh) - (nBot * plateT);
+      if (jackLen < 0) jackLen = oh;
+      out.push(member('jack', studSize, jackLen, along(w, u, x0), studY, u.rot, w.id, { opening: o.tag || '' }));
+      out.push(member('jack', studSize, jackLen, along(w, u, x1), studY, u.rot, w.id, { opening: o.tag || '' }));
+
+      // header spans king to king
+      var hdrSize = headerFor(ow, w.bearing);
+      var hdrLen = ow + 2 * jackW;
+      out.push(member('header', hdrSize, hdrLen, along(w, u, x0 + ow / 2), studY + jackLen, u.rot, w.id,
+                      { opening: o.tag || '', qty: 2 }));
+
+      // cripples above the header
+      var hdrTop = studY + jackLen + act(hdrSize)[1];
+      var above = (w.topElev - nTop * plateT) - hdrTop;
+      if (above > 0.15) {
+        var nAbove = Math.max(1, Math.floor(ow / (a.spacing || 1.3333)));
+        for (var c = 0; c <= nAbove; c++) {
+          out.push(member('cripple', studSize, above, along(w, u, x0 + (ow * c) / nAbove), hdrTop, u.rot, w.id,
+                          { opening: o.tag || '', where: 'above' }));
+        }
+      }
+
+      // a window also sits on a sill with cripples beneath
+      if (sill > 0.05) {
+        out.push(member('sill', studSize, ow, along(w, u, x0 + ow / 2), studY + sill, u.rot, w.id, { opening: o.tag || '' }));
+        var below = sill - plateT;
+        if (below > 0.15) {
+          var nBelow = Math.max(1, Math.floor(ow / (a.spacing || 1.3333)));
+          for (var c2 = 0; c2 <= nBelow; c2++) {
+            out.push(member('cripple', studSize, below, along(w, u, x0 + (ow * c2) / nBelow), studY, u.rot, w.id,
+                            { opening: o.tag || '', where: 'below' }));
+          }
+        }
+      }
+
+      blocked.push([x0 - jackW, x1 + jackW]);
+    });
+
+    // ── studs, laid out from the start end ───────────────────────────────
+    var sp = a.spacing || 1.3333;
+    function isBlocked(d) {
+      for (var i = 0; i < blocked.length; i++) {
+        if (d > blocked[i][0] - 0.01 && d < blocked[i][1] + 0.01) return true;
+      }
+      return false;
+    }
+
+    // A stud at each end — the corner — regardless of where spacing falls.
+    var half = act(studSize)[0] / 2;
+    out.push(member('stud', studSize, studLen, along(w, u, half), studY, u.rot, w.id, { corner: true }));
+    if (L > sp) out.push(member('stud', studSize, studLen, along(w, u, L - half), studY, u.rot, w.id, { corner: true }));
+
+    for (var d = sp; d < L - 0.05; d += sp) {
+      if (isBlocked(d)) continue;
+      if (d < half * 3 || d > L - half * 3) continue;      // too close to a corner stud
+      out.push(member('stud', studSize, studLen, along(w, u, d), studY, u.rot, w.id));
+    }
+
+    return out;
+  }
+
+  /* Every member in the building. */
+  function all() {
+    var out = [];
+    window.HouseModel.walls.forEach(function(w){
+      wallMembers(w).forEach(function(m){ out.push(m); });
+    });
+    return out;
+  }
+
+  /* The take-off. Same array, grouped — never a separate calculation. */
+  function takeoff(members) {
+    members = members || all();
+    var byItem = {};
+    members.forEach(function(m){
+      var qty = m.qty || 1;
+      var key = m.kind + '|' + m.size;
+      if (!byItem[key]) {
+        byItem[key] = { kind: m.kind, size: m.size, count: 0, totalLf: 0, lengths: {} };
+      }
+      var row = byItem[key];
+      row.count   += qty;
+      row.totalLf += m.len * qty;
+      // a cut list falls straight out of knowing every length
+      var L = Math.round(m.len * 12) / 12;
+      row.lengths[L] = (row.lengths[L] || 0) + qty;
+    });
+    return Object.keys(byItem).map(function(k){ return byItem[k]; })
+      .sort(function(a, b){
+        if (a.kind === b.kind) return a.size < b.size ? -1 : 1;
+        return a.kind < b.kind ? -1 : 1;
+      });
+  }
+
+  /* What to buy: round each piece up to a stock length. */
+  var STOCK = [8, 10, 12, 14, 16, 20];
+  function buyList(members) {
+    var rows = takeoff(members);
+    var out = [];
+    rows.forEach(function(r){
+      if (r.kind === 'plate_bottom' || r.kind === 'plate_top' || r.kind === 'beam') return; // by the foot
+      Object.keys(r.lengths).forEach(function(L){
+        var need = parseFloat(L);
+        var stock = STOCK.filter(function(x){ return x >= need - 0.02; })[0] || Math.ceil(need);
+        out.push({ kind: r.kind, size: r.size, cut: need, stock: stock, qty: r.lengths[L] });
+      });
+    });
+    return out;
+  }
+
+  return {
+    wallMembers: wallMembers,
+    all: all,
+    takeoff: takeoff,
+    buyList: buyList,
+    headerFor: headerFor,
+    ACTUAL: ACTUAL
+  };
+})();
+
 /* ══ PLAN EDITOR ═════════════════════════════════════════════════════════
    Draw the footprint at real measurements on a grid. Two ways to place a
    wall, and they work together:
@@ -1266,6 +1518,13 @@ window.PLAN = (function(){
   }
 
   function hud() {
+    var hint = document.getElementById('planHint');
+    if (hint) {
+      hint.innerHTML = start
+        ? 'Drawing from ' + fmtFeet(start.x) + ', ' + fmtFeet(start.y)
+          + ' &middot; <b>double-click or Esc</b> to end &middot; <b>Close Loop</b> to join the start'
+        : 'Click to start &middot; type a length + Enter, or click to set. Walls chain on &mdash; <b>double-click or Esc</b> to end the run.';
+    }
     var el = document.getElementById('planHUD');
     if (!el) return;
     var M = window.HouseModel;
@@ -1304,6 +1563,8 @@ window.PLAN = (function(){
 
   function showLenBox(on) {
     var b = document.getElementById('lenBox');
+    var f = document.getElementById('ptFinish');
+    if (f) f.style.display = on ? '' : 'none';
     if (!b) return;
     b.className = on ? 'on' : '';
     if (on) {
@@ -1361,7 +1622,7 @@ window.PLAN = (function(){
   }
 
   function onKey(e) {
-    if (e.key === 'Escape') { start = null; showLenBox(false); draw(); }
+    if (e.key === 'Escape') { window.PLAN.finish(); }
   }
 
   return {
@@ -1370,6 +1631,7 @@ window.PLAN = (function(){
       if (!cv) return;
       ctx = cv.getContext('2d');
       cv.addEventListener('mousedown', onDown);
+      cv.addEventListener('dblclick', function(e){ e.preventDefault(); PLAN.finish(); });
       cv.addEventListener('mousemove', onMove);
       window.addEventListener('mouseup', onUp);
       cv.addEventListener('wheel', onWheel, { passive: false });
@@ -1409,6 +1671,17 @@ window.PLAN = (function(){
       i.focus();
     },
 
+    // End the run without joining back to the start. Chaining is right for
+    // tracing a perimeter, but a stray wall or a partition needs a way out —
+    // and Escape alone was too well hidden.
+    finish: function() {
+      start = null;
+      showLenBox(false);
+      var f = document.getElementById('ptFinish');
+      if (f) f.style.display = 'none';
+      draw();
+    },
+
     undo: function() {
       var M = window.HouseModel;
       if (!M.walls.length) return;
@@ -1427,6 +1700,8 @@ window.PLAN = (function(){
       place(ext[0].x1, ext[0].y1);
       start = null;
       showLenBox(false);
+      var f2 = document.getElementById('ptFinish');
+      if (f2) f2.style.display = 'none';
       draw();
     },
 
@@ -1567,11 +1842,60 @@ window.HW = (function(){
 
   // Draw every wall in the model as a slab. Deliberately plain — this is the
   // hook the framing generator replaces later.
+  var showFraming = false;
+
+  // Every member the generator produced, drawn as a box. This is the same
+  // array the take-off counts — draw and count can never drift apart.
+  function drawFraming() {
+    var mats = {
+      plate_bottom: 0xc98b4b, plate_top: 0xc98b4b,
+      stud:  0xd8b083, king: 0xe0a86a, jack: 0xe0a86a,
+      header: 0xb5651d, cripple: 0xd8b083, sill: 0xb5651d,
+      post: 0x8a6a45, beam: 0x8a6a45
+    };
+    var cache = {};
+    function matFor(kind) {
+      if (!cache[kind]) {
+        cache[kind] = new THREE.MeshStandardMaterial({ color: mats[kind] || 0xd0d0d0, roughness: .82 });
+      }
+      return cache[kind];
+    }
+
+    var members = window.FRAMING.all();
+    members.forEach(function(m){
+      var a = window.FRAMING.ACTUAL[m.size] || window.FRAMING.ACTUAL['2x4'];
+      var thk = a[0], wide = a[1];
+      var geo, mesh;
+
+      if (m.kind === 'plate_bottom' || m.kind === 'plate_top' || m.kind === 'beam'
+          || m.kind === 'header' || m.kind === 'sill') {
+        // lies along the wall
+        geo = new THREE.BoxGeometry(m.len, thk, wide);
+        mesh = new THREE.Mesh(geo, matFor(m.kind));
+        mesh.position.set(m.x, m.y + thk / 2, m.z);
+      } else {
+        // stands up
+        geo = new THREE.BoxGeometry(thk, m.len, wide);
+        mesh = new THREE.Mesh(geo, matFor(m.kind));
+        mesh.position.set(m.x, m.y + m.len / 2, m.z);
+      }
+      mesh.rotation.y = m.rot;
+      mesh.castShadow = true;
+      root.add(mesh);
+    });
+  }
+
   function rebuild() {
     if (!root) return;
     while (root.children.length) root.remove(root.children[0]);
 
     var M = window.HouseModel;
+
+    if (showFraming) {
+      drawFraming();
+      paintSidebar();
+      return;
+    }
     var matExt = new THREE.MeshStandardMaterial({ color: 0xd8dde3, roughness: .85 });
     var matInt = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: .9 });
 
@@ -1639,6 +1963,27 @@ window.HW = (function(){
           + '</div>';
       }).join('') || '<div style="font-size:11px;color:var(--muted);padding:6px 0;">No walls yet.</div>';
     }
+    // The take-off is a tally of the very members drawn above, never a
+    // second calculation.
+    var to = document.getElementById('takeoff');
+    if (to && window.FRAMING) {
+      var rows = window.FRAMING.takeoff();
+      if (!rows.length) {
+        to.innerHTML = '<span style="color:var(--muted);">Draw a wall to see the framing.</span>';
+      } else {
+        var total = rows.reduce(function(a,r){ return a + r.count; }, 0);
+        to.innerHTML = rows.map(function(r){
+          return '<div style="display:flex;gap:6px;padding:2px 0;">'
+            + '<span style="flex:1;">' + r.kind.replace(/_/g,' ') + ' <b style="color:#fff;">' + r.size + '</b></span>'
+            + '<span style="color:var(--muted);">' + r.count + '</span>'
+            + '<span style="color:#6f6f6f;width:52px;text-align:right;">' + Math.round(r.totalLf) + ' lf</span>'
+            + '</div>';
+        }).join('')
+        + '<div style="margin-top:6px;padding-top:6px;border-top:1px solid #4a4a4a;font-size:10px;color:var(--muted);">'
+        + total.toLocaleString('en-US') + ' pieces total</div>';
+      }
+    }
+
     var c = document.getElementById('pillCount');
     var p = document.getElementById('pillPerim');
     var a = document.getElementById('pillArea');
@@ -1675,6 +2020,12 @@ window.HW = (function(){
     init: init,
     rebuild: rebuild,
     setRect: setRect,
+    toggleFraming: function() {
+      showFraming = !showFraming;
+      var b = document.getElementById('btnFraming');
+      if (b) b.textContent = showFraming ? 'Show Walls' : 'Show Framing';
+      rebuild();
+    },
     showTab: function(which) {
       var pw = document.getElementById('planWrap');
       var t3 = document.getElementById('tab3d');
@@ -1700,10 +2051,10 @@ document.addEventListener('DOMContentLoaded', function(){
   PLAN.init();
   HW.setRect();
   HW.resetView();
-  console.log('[House] build 2026-08-19 18:52 UTC');
+  console.log('[House] build 2026-08-19 19:08 UTC');
 });
 </script>
 
-<script>window.SAUCE_BUILD = '2026-08-19 18:53 UTC';</script>
+<script>window.SAUCE_BUILD = '2026-08-19 19:08 UTC';</script>
 </body>
 </html>
