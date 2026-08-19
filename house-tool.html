@@ -247,6 +247,34 @@
     </div>
 
     <div class="sec">
+      <div class="sec-title">Roof</div>
+      <div class="row">
+        <div class="fld"><label>Pitch (/12)</label><input id="fpPitch" type="number" value="4"></div>
+        <div class="fld"><label>Overhang (ft)</label><input id="fpOH" type="number" value="1" step="0.5"></div>
+      </div>
+      <div class="row">
+        <div class="fld"><label>Style</label>
+          <select id="fpRoofStyle">
+            <option value="gable">Gable</option>
+            <option value="hip">Hip</option>
+            <option value="shed">Shed</option>
+          </select>
+        </div>
+        <div class="fld"><label>Framing</label>
+          <select id="fpRoofAsm">
+            <option value="roof-rafter">2x8 rafters @ 24"</option>
+            <option value="roof-rafter-2x10">2x10 rafters @ 16"</option>
+            <option value="roof-truss">Trusses @ 24"</option>
+          </select>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--muted);line-height:1.5;">
+        Pick the settings, then use the <b>Roof</b> tool on the Plan tab to drag out
+        the area it covers. Several roofs can overlap a wing or a porch.
+      </div>
+    </div>
+
+    <div class="sec">
       <div class="sec-title">Framing Take-off</div>
       <div id="takeoff" style="font-size:10.5px;color:#c8c8c8;"></div>
     </div>
@@ -284,6 +312,7 @@
         <button class="ptool"    id="ptInt"    onclick="PLAN.setTool('interior')">Interior</button>
         <button class="ptool"    id="ptPorch"  onclick="PLAN.setTool('porch')">Porch Edge</button>
         <button class="ptool"    id="ptDeck"   onclick="PLAN.setTool('deck')">Floor Deck</button>
+        <button class="ptool"    id="ptRoof"   onclick="PLAN.setTool('roof')">Roof</button>
         <button class="ptool"    id="ptDoor"   onclick="PLAN.setTool('door')">Door</button>
         <button class="ptool"    id="ptWindow" onclick="PLAN.setTool('window')">Window</button>
         <button class="ptool"    id="ptSelect" onclick="PLAN.setTool('select')">Select</button>
@@ -997,6 +1026,34 @@ window.ASSEMBLIES = {
     rim:      'LSL rim',
     subfloor: '3/4 OSB'
   },
+  'roof-rafter': {
+    label:   'Roof — 2x8 rafters @ 24"',
+    kind:    'roof',
+    rafter:  '2x8',
+    spacing: 2,                    // 24" o.c.
+    ridge:   '2x10',
+    ceiling: '2x6',                // ceiling joists / collar ties
+    sheath:  '7/16 OSB',
+    subfascia: '2x6'
+  },
+  'roof-rafter-2x10': {
+    label:   'Roof — 2x10 rafters @ 16"',
+    kind:    'roof',
+    rafter:  '2x10',
+    spacing: 1.3333,
+    ridge:   '2x12',
+    ceiling: '2x8',
+    sheath:  '7/16 OSB',
+    subfascia: '2x6'
+  },
+  'roof-truss': {
+    label:   'Roof — engineered trusses @ 24"',
+    kind:    'roof',
+    truss:   'Truss',
+    spacing: 2,
+    sheath:  '7/16 OSB',
+    subfascia: '2x6'
+  },
   'porch-post': {
     label:    'Porch edge — 6x6 posts',
     kind:     'posts',
@@ -1036,6 +1093,11 @@ window.HouseModel = {
   // none; a second storey needs one, and so does a crawlspace or basement.
   //   { id, x, y, w, d, elev, assembly, span:'auto'|'w'|'d', levelId }
   floors: [],
+  // A roof is a rectangle too, drawn over what it covers. Its style decides
+  // the geometry: a gable runs a ridge down the middle, a hip slopes on all
+  // four sides, a shed slopes one way.
+  //   { id, x, y, w, d, plateElev, pitch, style:'gable'|'hip'|'shed', ridgeAxis, assembly }
+  roofs: [],
   _nextId: 1
 };
 
@@ -1064,7 +1126,7 @@ window.HouseModel = {
   };
 
   M.clear = function() {
-    M.walls = []; M.floors = [];
+    M.walls = []; M.floors = []; M.roofs = [];
     M.levels = [ { id: 1, name: 'Main Floor', elevFt: 0, wallHeight: 10 } ];
     M._nextId = 1;
   };
@@ -1115,6 +1177,64 @@ window.HouseModel = {
     if (opts.d < 0) { f.y = y + opts.d; f.d = -opts.d; }
     M.floors.push(f);
     return f;
+  };
+
+  M.addRoof = function(x, y, w, d, opts) {
+    opts = opts || {};
+    var r = {
+      id: M._nextId++,
+      x: x, y: y, w: w, d: d,
+      plateElev: opts.plateElev != null ? opts.plateElev : 10,
+      pitch:     opts.pitch != null ? opts.pitch : 4,      // rise per 12
+      style:     opts.style || 'gable',
+      // Which way the ridge runs. 'auto' puts it along the LONG side, which
+      // keeps the rafter span short — what a framer would do.
+      ridgeAxis: opts.ridgeAxis || 'auto',
+      overhang:  opts.overhang != null ? opts.overhang : 1,
+      assembly:  opts.assembly || 'roof-rafter',
+      levelId:   opts.levelId || 1
+    };
+    M.roofs.push(r);
+    return r;
+  };
+
+  M.roofAsm = function(r) {
+    return window.ASSEMBLIES[r.assembly] || window.ASSEMBLIES['roof-rafter'];
+  };
+
+  M.roofsOn = function(id) { return M.roofs.filter(function(r){ return r.levelId === id; }); };
+
+  // Ridge along the long side unless told otherwise.
+  M.ridgeAlong = function(r) {
+    if (r.ridgeAxis !== 'auto') return r.ridgeAxis;
+    return (r.w >= r.d) ? 'w' : 'd';
+  };
+
+  // How far a rafter reaches horizontally, and how high the ridge sits.
+  M.roofGeom = function(r) {
+    var along = M.ridgeAlong(r);
+    var span  = (along === 'w') ? r.d : r.w;     // across the ridge
+    var run   = span / 2 + (r.overhang || 0);    // horizontal reach of one rafter
+    var rise  = (span / 2) * (r.pitch / 12);
+    var slopeFactor = Math.sqrt(144 + r.pitch * r.pitch) / 12;
+    return {
+      along: along,
+      span: span,
+      halfSpan: span / 2,
+      run: run,
+      rise: rise,
+      ridgeElev: r.plateElev + rise,
+      rafterLen: run * slopeFactor,
+      slopeFactor: slopeFactor,
+      ridgeLen: ((along === 'w') ? r.w : r.d) + 2 * (r.overhang || 0)
+    };
+  };
+
+  M.roofAreaOn = function(id) {
+    return M.roofsOn(id).reduce(function(a, r){
+      var g = M.roofGeom(r);
+      return a + (2 * g.rafterLen) * (((g.along === 'w') ? r.w : r.d) + 2 * (r.overhang||0));
+    }, 0);
   };
 
   M.floorAsm = function(f) {
@@ -1265,7 +1385,7 @@ window.HouseModel = {
    ═══════════════════════════════════════════════════════════════════════ */
 window.FRAMING = (function(){
 
-  var STOCK = [8, 10, 12, 14, 16, 20];
+  var STOCK = [8, 10, 12, 14, 16, 20, 22, 24];
   // Plates run long, so they are bought long — 16' is the usual stick, and
   // fewer splices means fewer joints to stagger.
   var PLATE_STOCK = [8, 10, 12, 14, 16];
@@ -1283,7 +1403,9 @@ window.FRAMING = (function(){
     '2x10 tpl': [0.375, 0.7708],
     'TJI 11-7/8': [0.1458, 0.9896],
     'LSL rim':    [0.1146, 0.9896],
-    '3/4 OSB':    [0.0625, 4]
+    '3/4 OSB':    [0.0625, 4],
+    '7/16 OSB':   [0.0365, 4],
+    'Truss':      [0.1250, 0.4583]
   };
   function act(size) { return ACTUAL[size] || ACTUAL['2x4']; }
 
@@ -1308,6 +1430,28 @@ window.FRAMING = (function(){
   // A point `d` feet along the wall from its start.
   function along(w, u, d) {
     return { x: w.x1 + u.ux * d, z: w.y1 + u.uy * d };
+  }
+
+  // Any run longer than a stick is built from several. Plates, rim, ridge,
+  // fascia and beams all work this way — emitting one long member is what
+  // produced 60ft plates, 40ft ceiling joists and 60ft beams in turn.
+  function layRun(out, kind, size, totalLen, at, y, rot, extra, stockList) {
+    var stock = stockList || PLATE_STOCK;
+    var placed = 0, guard = 0;
+    while (placed < totalLen - 0.02 && guard++ < 400) {
+      var left = totalLen - placed;
+      var pick = null;
+      for (var j = stock.length - 1; j >= 0; j--) {
+        if (stock[j] <= left + 0.02) { pick = stock[j]; break; }
+      }
+      if (pick === null) pick = Math.min(left, stock[0]);
+      var seg = Math.min(pick, left);
+      var frac = (placed + seg / 2) - totalLen / 2;
+      out.push(member(kind, size, seg,
+        { x: at.x + (rot === 0 ? frac : 0), z: at.z + (rot === 0 ? 0 : frac) },
+        y, rot, null, extra));
+      placed += seg;
+    }
   }
 
   function member(kind, size, len, pt, y, rot, wallId, extra) {
@@ -1525,7 +1669,8 @@ window.FRAMING = (function(){
       var bx, bz, brot, blen;
       if (spanDir === 'd') { bx = f.x + run / 2; bz = f.y + at; brot = 0;            blen = run; }
       else                 { bx = f.x + at;      bz = f.y + run / 2; brot = -Math.PI/2; blen = run; }
-      out.push(member('floor_beam', '2x10 tpl', blen, { x: bx, z: bz }, joistY, brot, null, { floorId: f.id, qty: 3 }));
+      layRun(out, 'floor_beam', '2x10 tpl', blen, { x: bx, z: bz }, joistY, brot,
+             { floorId: f.id, qty: 3 });
 
       // posts under the beam, no more than 8ft apart
       var nPosts = Math.max(2, Math.ceil(blen / 8) + 1);
@@ -1573,6 +1718,140 @@ window.FRAMING = (function(){
     return out;
   }
 
+  /* ── ROOF FRAMING ──────────────────────────────────────────────────────
+     A gable is two banks of common rafters against a ridge board, with a
+     ceiling joist tying each pair. A hip adds four hip rafters running to the
+     corners and jacks filling in beneath them. A shed slopes one way with no
+     ridge at all.
+
+     Rafter length is the horizontal run times the slope factor — the same
+     arithmetic a framer does with a rafter square, so the number on the cut
+     list is the number he cuts.
+     ─────────────────────────────────────────────────────────────────────── */
+  function roofMembers(r) {
+    var M = window.HouseModel;
+    var a = M.roofAsm(r);
+    var out = [];
+    if (!a || a.kind !== 'roof') return out;
+    if (!(r.w > 0) || !(r.d > 0)) return out;
+
+    var g = M.roofGeom(r);
+    var sp = a.spacing || 2;
+    var oh = r.overhang || 0;
+    var ridgeRuns = (g.along === 'w');            // ridge parallel to width
+    var ridgeLen  = ridgeRuns ? r.w : r.d;
+    var isTruss   = !!a.truss;
+
+    var cx = r.x + r.w / 2, cz = r.y + r.d / 2;
+
+    // ── ridge board (not on a truss roof, not on a shed) ────────────────
+    if (!isTruss && r.style !== 'shed') {
+      var placed = 0, guard = 0;
+      var total = ridgeLen + 2 * oh;
+      while (placed < total - 0.02 && guard++ < 100) {
+        var left = total - placed;
+        var pick = null;
+        for (var j = PLATE_STOCK.length - 1; j >= 0; j--) {
+          if (PLATE_STOCK[j] <= left + 0.02) { pick = PLATE_STOCK[j]; break; }
+        }
+        if (pick === null) pick = Math.min(left, PLATE_STOCK[0]);
+        var seg = Math.min(pick, left);
+        var frac = (placed + seg / 2) - total / 2;
+        out.push(member('ridge', a.ridge || '2x10', seg,
+          { x: ridgeRuns ? cx + frac : cx, z: ridgeRuns ? cz : cz + frac },
+          g.ridgeElev, ridgeRuns ? 0 : -Math.PI / 2, null, { roofId: r.id }));
+        placed += seg;
+      }
+    }
+
+    // ── rafters (or trusses) ────────────────────────────────────────────
+    var count = Math.floor(ridgeLen / sp) + 1;
+    for (var i = 0; i <= count; i++) {
+      var off = Math.min(i * sp, ridgeLen);
+      var px = ridgeRuns ? (r.x + off) : cx;
+      var pz = ridgeRuns ? cz : (r.y + off);
+
+      if (isTruss) {
+        // A truss is one manufactured unit spanning the whole width.
+        out.push(member('truss', a.truss, g.span + 2 * oh, { x: px, z: pz },
+                        r.plateElev, ridgeRuns ? -Math.PI/2 : 0, null,
+                        { roofId: r.id, span: g.span, pitch: r.pitch }));
+      } else if (r.style === 'shed') {
+        // one slope, full width
+        var shedRun = g.span + oh;
+        out.push(member('rafter', a.rafter, shedRun * g.slopeFactor, { x: px, z: pz },
+                        r.plateElev, ridgeRuns ? -Math.PI/2 : 0, null, { roofId: r.id }));
+      } else {
+        // a pair either side of the ridge
+        out.push(member('rafter', a.rafter, g.rafterLen, { x: px, z: pz },
+                        r.plateElev, ridgeRuns ? -Math.PI/2 : 0, null, { roofId: r.id, side: 'a' }));
+        out.push(member('rafter', a.rafter, g.rafterLen, { x: px, z: pz },
+                        r.plateElev, ridgeRuns ? -Math.PI/2 : 0, null, { roofId: r.id, side: 'b' }));
+        // Ceiling joist ties the pair. Past what one stick reaches it laps
+        // over an interior bearing wall, which is what a framer does and what
+        // the order has to reflect.
+        if (a.ceiling) {
+          var MAX_JOIST = 20;
+          var pieces = Math.max(1, Math.ceil(g.span / MAX_JOIST));
+          var each = g.span / pieces;
+          for (var cj = 0; cj < pieces; cj++) {
+            out.push(member('ceiling_joist', a.ceiling, each, { x: px, z: pz },
+                            r.plateElev, ridgeRuns ? -Math.PI/2 : 0, null,
+                            { roofId: r.id, lapped: pieces > 1 }));
+          }
+        }
+      }
+      if (off >= ridgeLen) break;
+    }
+
+    // ── a hip slopes on all four sides ──────────────────────────────────
+    if (r.style === 'hip' && !isTruss) {
+      // four hip rafters, corner to where the ridge starts
+      var hipRun = Math.sqrt(g.halfSpan * g.halfSpan + g.halfSpan * g.halfSpan);
+      var hipLen = Math.sqrt(hipRun * hipRun + g.rise * g.rise);
+      for (var hcorner = 0; hcorner < 4; hcorner++) {
+        out.push(member('hip_rafter', a.rafter, hipLen,
+          { x: r.x + (hcorner % 2 ? r.w : 0), z: r.y + (hcorner < 2 ? 0 : r.d) },
+          r.plateElev, 0, null, { roofId: r.id }));
+      }
+      // jack rafters fill the hip ends
+      var jacks = Math.max(0, Math.floor(g.halfSpan / sp));
+      for (var hj = 1; hj <= jacks; hj++) {
+        var jl = (g.rafterLen * hj) / (jacks + 1);
+        for (var k = 0; k < 4; k++) {
+          out.push(member('jack_rafter', a.rafter, jl, { x: cx, z: cz },
+                          r.plateElev, 0, null, { roofId: r.id }));
+        }
+      }
+    }
+
+    // ── sub-fascia round the eaves ──────────────────────────────────────
+    if (a.subfascia) {
+      var eaves = 2 * ((ridgeRuns ? r.w : r.d) + 2 * oh);
+      var fplaced = 0, fguard = 0;
+      while (fplaced < eaves - 0.02 && fguard++ < 200) {
+        var fleft = eaves - fplaced;
+        var fpick = null;
+        for (var fj = PLATE_STOCK.length - 1; fj >= 0; fj--) {
+          if (PLATE_STOCK[fj] <= fleft + 0.02) { fpick = PLATE_STOCK[fj]; break; }
+        }
+        if (fpick === null) fpick = Math.min(fleft, PLATE_STOCK[0]);
+        var fseg = Math.min(fpick, fleft);
+        out.push(member('subfascia', a.subfascia, fseg, { x: cx, z: cz },
+                        r.plateElev, 0, null, { roofId: r.id }));
+        fplaced += fseg;
+      }
+    }
+
+    // ── sheathing, by the sheet, over the sloped area ───────────────────
+    var roofArea = (2 * g.rafterLen) * ((ridgeRuns ? r.w : r.d) + 2 * oh);
+    if (r.style === 'shed') roofArea = roofArea / 2;
+    out.push(member('roof_sheath', a.sheath, 0, { x: cx, z: cz }, g.ridgeElev, 0, null,
+                    { roofId: r.id, qty: Math.ceil(roofArea / 32), sheet: true }));
+
+    return out;
+  }
+
   /* Every member in the building. */
   function all() {
     var out = [];
@@ -1581,6 +1860,9 @@ window.FRAMING = (function(){
     });
     (window.HouseModel.floors || []).forEach(function(f){
       floorMembers(f).forEach(function(m){ out.push(m); });
+    });
+    (window.HouseModel.roofs || []).forEach(function(r){
+      roofMembers(r).forEach(function(m){ out.push(m); });
     });
     return out;
   }
@@ -1619,13 +1901,16 @@ window.FRAMING = (function(){
       // Plates arrive already broken into sticks by the generator, so every
       // kind is treated the same here: round each cut up to a stock length.
       if (r.kind === 'header_spacer') return;   // cut from sheet, not sticks
-      if (r.kind === 'subfloor') {               // sold by the sheet
+      if (r.kind === 'subfloor' || r.kind === 'roof_sheath') {   // sold by the sheet
         out.push({ kind: r.kind, size: r.size, cut: 0, stock: 0, qty: r.count, sheet: true });
         return;
       }
       Object.keys(r.lengths).forEach(function(L){
         var need = parseFloat(L);
-        var stock = STOCK.filter(function(x){ return x >= need - 0.02; })[0] || Math.ceil(need);
+        // Never invent a length. If nothing stocked reaches, the piece has to
+        // be spliced — flag it rather than quietly ordering a 23ft stick.
+        var stock = STOCK.filter(function(x){ return x >= need - 0.02; })[0];
+        if (stock == null) { stock = STOCK[STOCK.length - 1]; }
         out.push({ kind: r.kind, size: r.size, cut: need, stock: stock, qty: r.lengths[L] });
       });
     });
@@ -1653,6 +1938,7 @@ window.FRAMING = (function(){
   return {
     wallMembers: wallMembers,
     floorMembers: floorMembers,
+    roofMembers: roofMembers,
     fmtLen: fmtLen,
     all: all,
     takeoff: takeoff,
@@ -1679,19 +1965,26 @@ window.MATLIST = (function(){
     header: 'Header', header_spacer: 'Header Spacer', cripple: 'Cripple', sill: 'Window Sill',
     post: 'Porch Post', beam: 'Porch Beam',
     joist: 'Floor Joist', rim_joist: 'Rim Joist', floor_beam: 'Floor Beam',
-    floor_post: 'Floor Post', subfloor: 'Subfloor'
+    floor_post: 'Floor Post', subfloor: 'Subfloor',
+    rafter: 'Rafter', hip_rafter: 'Hip Rafter', jack_rafter: 'Jack Rafter',
+    ridge: 'Ridge Board', ceiling_joist: 'Ceiling Joist', truss: 'Roof Truss',
+    subfascia: 'Sub-fascia', roof_sheath: 'Roof Sheathing'
   };
 
   // Same idea as the barn tool's CATEGORY_ORDER — a fixed reading order so
   // the list always looks the same way round.
-  var CATEGORY_ORDER = ['Floor System', 'Wall Framing', 'Openings', 'Porch', 'Wall Areas'];
+  var CATEGORY_ORDER = ['Floor System', 'Wall Framing', 'Openings',
+                        'Roof Framing', 'Porch', 'Wall Areas'];
   var CAT_OF = {
     plate_bottom:'Wall Framing', plate_top:'Wall Framing', stud:'Wall Framing',
     king:'Openings', jack:'Openings', header:'Openings', header_spacer:'Openings',
     cripple:'Openings', sill:'Openings',
     post:'Porch', beam:'Porch',
     joist:'Floor System', rim_joist:'Floor System', floor_beam:'Floor System',
-    floor_post:'Floor System', subfloor:'Floor System'
+    floor_post:'Floor System', subfloor:'Floor System',
+    rafter:'Roof Framing', hip_rafter:'Roof Framing', jack_rafter:'Roof Framing',
+    ridge:'Roof Framing', ceiling_joist:'Roof Framing', truss:'Roof Framing',
+    subfascia:'Roof Framing', roof_sheath:'Roof Framing'
   };
 
   window.closeMaterialsModal = function() {
@@ -1728,7 +2021,7 @@ window.MATLIST = (function(){
         out.push({
           category:    CAT_OF[r.kind] || 'Other',
           description: (LABEL[r.kind] || r.kind) + ' ' + r.size,
-          detail:      (r.kind === 'subfloor')
+          detail:      (r.kind === 'subfloor' || r.kind === 'roof_sheath')
                          ? '4x8 sheets'
                          : 'cut ' + F.fmtLen(L) + (stock ? "  |  order " + stock + "' stock" : ''),
           quantity:    r.lengths[L],
@@ -2147,6 +2440,7 @@ window.PLAN = (function(){
     ctx.clearRect(0, 0, W, H);
     drawGrid();
     drawDecks();
+    drawRoofs();
     drawWalls();
     drawPending();
     hud();
@@ -2207,6 +2501,36 @@ window.PLAN = (function(){
         ctx.textAlign = 'center';
         ctx.fillText(Math.round(f.w * f.d).toLocaleString('en-US') + ' sqft deck',
                      (p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
+      }
+    });
+  }
+
+  function drawRoofs() {
+    var M = window.HouseModel;
+    (M.roofs || []).forEach(function(r){
+      var p1 = ft2px(r.x, r.y), p2 = ft2px(r.x + r.w, r.y + r.d);
+      ctx.strokeStyle = 'rgba(120,180,255,.55)';
+      ctx.setLineDash([9, 5]); ctx.lineWidth = 1.5;
+      ctx.strokeRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
+      // the ridge line
+      var g = M.roofGeom(r);
+      ctx.strokeStyle = 'rgba(120,180,255,.85)';
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      if (g.along === 'w') {
+        var my = (p1.y + p2.y) / 2;
+        ctx.moveTo(p1.x, my); ctx.lineTo(p2.x, my);
+      } else {
+        var mx = (p1.x + p2.x) / 2;
+        ctx.moveTo(mx, p1.y); ctx.lineTo(mx, p2.y);
+      }
+      ctx.stroke();
+      if (Math.abs(p2.x - p1.x) > 80) {
+        ctx.font = '700 10px Outfit, sans-serif';
+        ctx.fillStyle = 'rgba(120,180,255,.9)';
+        ctx.textAlign = 'center';
+        ctx.fillText(r.pitch + '/12 ' + r.style + '  ridge ' + g.ridgeElev.toFixed(1) + " ft",
+                     (p1.x + p2.x) / 2, p1.y + 16);
       }
     });
   }
@@ -2433,6 +2757,28 @@ window.PLAN = (function(){
     var r = cv.getBoundingClientRect();
     var f = px2ft(e.clientX - r.left, e.clientY - r.top);
     if (tool === 'door' || tool === 'window') { placeOpening(f.x, f.y); return; }
+    if (tool === 'roof') {
+      if (!deckStart) { deckStart = { x: snap(f.x), y: snap(f.y) }; cursor = deckStart; draw(); }
+      else {
+        var lvR = levelOf();
+        var rx = Math.min(deckStart.x, cursor.x), ry = Math.min(deckStart.y, cursor.y);
+        var rw = Math.abs(cursor.x - deckStart.x), rd = Math.abs(cursor.y - deckStart.y);
+        if (rw > 1 && rd > 1) {
+          window.HouseModel.addRoof(rx, ry, rw, rd, {
+            plateElev: lvR.elevFt + lvR.wallHeight,
+            pitch:  parseFloat((document.getElementById('fpPitch')||{}).value) || 4,
+            style:  (document.getElementById('fpRoofStyle')||{}).value || 'gable',
+            assembly: (document.getElementById('fpRoofAsm')||{}).value || 'roof-rafter',
+            overhang: parseFloat((document.getElementById('fpOH')||{}).value) || 1,
+            levelId: activeLevel
+          });
+        }
+        deckStart = null;
+        draw();
+        if (window.HW) HW.rebuild();
+      }
+      return;
+    }
     if (tool === 'deck') {
       if (!deckStart) { deckStart = { x: snap(f.x), y: snap(f.y) }; cursor = deckStart; draw(); }
       else {
@@ -2511,12 +2857,12 @@ window.PLAN = (function(){
       start = null;
       showLenBox(false);
       deckStart = null; selected = null;
-      ['ptWall','ptInt','ptPorch','ptDeck','ptDoor','ptWindow','ptSelect'].forEach(function(id){
+      ['ptWall','ptInt','ptPorch','ptDeck','ptRoof','ptDoor','ptWindow','ptSelect'].forEach(function(id){
         var el = document.getElementById(id);
         if (el) el.className = 'ptool';
       });
       var on = { wall:'ptWall', interior:'ptInt', porch:'ptPorch', deck:'ptDeck',
-                 door:'ptDoor', window:'ptWindow', select:'ptSelect' }[t];
+                 roof:'ptRoof', door:'ptDoor', window:'ptWindow', select:'ptSelect' }[t];
       var e2 = document.getElementById(on);
       if (e2) e2.className = 'ptool on';
       var ob = document.getElementById('openBox');
@@ -2758,7 +3104,10 @@ window.HW = (function(){
       header: 0xb5651d, header_spacer: 0xd6c9a8, cripple: 0xd8b083, sill: 0xb5651d,
       post: 0x8a6a45, beam: 0x8a6a45,
       joist: 0xc9a06a, rim_joist: 0xb5844a, floor_beam: 0x8a6a45,
-      floor_post: 0x8a6a45, subfloor: 0xcbb894
+      floor_post: 0x8a6a45, subfloor: 0xcbb894,
+      rafter: 0xd8b083, hip_rafter: 0xb5651d, jack_rafter: 0xd8b083,
+      ridge: 0xb5651d, ceiling_joist: 0xc9a06a, truss: 0xd8b083,
+      subfascia: 0xb5844a, roof_sheath: 0xcbb894
     };
     var cache = {};
     function matFor(kind) {
@@ -2786,6 +3135,51 @@ window.HW = (function(){
           deck.receiveShadow = true;
           root.add(deck);
         }
+        return;
+      }
+
+      if (m.kind === 'rafter' || m.kind === 'hip_rafter' || m.kind === 'jack_rafter'
+          || m.kind === 'truss') {
+        var rf = (window.HouseModel.roofs || []).filter(function(x){ return x.id === m.roofId; })[0];
+        if (!rf) return;
+        var gg = window.HouseModel.roofGeom(rf);
+        var ang2 = Math.atan2(gg.rise, gg.halfSpan + (rf.overhang || 0));
+        var sgn = (m.side === 'b') ? -1 : 1;
+        var gr = new THREE.BoxGeometry(m.len, wide, thk);
+        var mr = new THREE.Mesh(gr, matFor(m.kind));
+        var alongW2 = (gg.along === 'w');
+        // sit it on the plate and tilt up to the ridge
+        mr.rotation.order = 'YXZ';
+        mr.rotation.y = alongW2 ? Math.PI / 2 : 0;
+        mr.rotation.z = sgn * ang2 * (alongW2 ? 1 : 1);
+        var midOut = sgn * (gg.halfSpan + (rf.overhang || 0)) / 2;
+        mr.position.set(
+          m.x + (alongW2 ? 0 : midOut),
+          rf.plateElev + gg.rise / 2,
+          m.z + (alongW2 ? midOut : 0)
+        );
+        mr.castShadow = true;
+        root.add(mr);
+        return;
+      }
+
+      if (m.kind === 'ridge') {
+        var gd = new THREE.BoxGeometry(m.len, wide, thk);
+        var md = new THREE.Mesh(gd, matFor(m.kind));
+        md.position.set(m.x, m.y, m.z);
+        md.rotation.y = m.rot;
+        md.castShadow = true;
+        root.add(md);
+        return;
+      }
+
+      if (m.kind === 'roof_sheath' || m.kind === 'subfascia' || m.kind === 'ceiling_joist') {
+        if (m.kind !== 'ceiling_joist') return;   // sheathing shown on the solid view
+        var gc = new THREE.BoxGeometry(m.len, wide, thk);
+        var mc = new THREE.Mesh(gc, matFor(m.kind));
+        mc.position.set(m.x, m.y, m.z);
+        mc.rotation.y = m.rot;
+        root.add(mc);
         return;
       }
 
@@ -2873,6 +3267,38 @@ window.HW = (function(){
 
     var matFdn = new THREE.MeshStandardMaterial({ color: 0x8a8a8a, roughness: 1 });
     var matPost = new THREE.MeshStandardMaterial({ color: 0x8a6a45, roughness: .9 });
+
+    // ── roofs, drawn as the planes they are ──────────────────────────────
+    var matRoof = new THREE.MeshStandardMaterial({ color: 0x4a5568, roughness: .9, side: THREE.DoubleSide });
+    (M.roofs || []).forEach(function(r){
+      var g = M.roofGeom(r);
+      var oh = r.overhang || 0;
+      var alongW = (g.along === 'w');
+      var ridgeLen = (alongW ? r.w : r.d) + 2 * oh;
+      var cx = r.x + r.w / 2, cz = r.y + r.d / 2;
+
+      function slope(sign) {
+        var plane = new THREE.Mesh(new THREE.PlaneGeometry(ridgeLen, g.rafterLen), matRoof);
+        var ang = Math.atan2(g.rise, g.halfSpan + oh);
+        plane.rotation.order = 'YXZ';
+        if (alongW) {
+          plane.rotation.y = 0;
+          plane.rotation.x = -Math.PI / 2 + sign * ang;
+          plane.position.set(cx, r.plateElev + g.rise / 2,
+                             cz + sign * (g.halfSpan + oh) / 2);
+        } else {
+          plane.rotation.y = Math.PI / 2;
+          plane.rotation.x = -Math.PI / 2 + sign * ang;
+          plane.position.set(cx + sign * (g.halfSpan + oh) / 2,
+                             r.plateElev + g.rise / 2, cz);
+        }
+        plane.castShadow = true;
+        plane.receiveShadow = true;
+        root.add(plane);
+      }
+      if (r.style === 'shed') { slope(1); }
+      else { slope(1); slope(-1); }
+    });
 
     M.walls.forEach(function(w){
       var len = M.lengthOf(w);
@@ -3103,10 +3529,10 @@ document.addEventListener('DOMContentLoaded', function(){
   PLAN.init();
   HW.setRect();
   HW.resetView();
-  console.log('[House] build 2026-08-19 21:40 UTC');
+  console.log('[House] build 2026-08-19 21:47 UTC');
 });
 </script>
 
-<script>window.SAUCE_BUILD = '2026-08-19 21:40 UTC';</script>
+<script>window.SAUCE_BUILD = '2026-08-19 21:47 UTC';</script>
 </body>
 </html>
