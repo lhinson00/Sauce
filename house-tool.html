@@ -220,6 +220,26 @@
     </div>
 
     <div class="sec">
+      <div class="sec-title">Floors &amp; Levels</div>
+      <div class="row">
+        <div class="fld"><label>Storeys</label>
+          <select id="fpStoreys" onchange="HW.setRect()">
+            <option value="1">1 — slab on grade</option>
+            <option value="2">2 — second storey</option>
+          </select>
+        </div>
+        <div class="fld"><label>Floor system</label>
+          <select id="fpFloor" onchange="HW.setRect()">
+            <option value="floor-2x10">2x10 joists</option>
+            <option value="floor-2x12">2x12 joists</option>
+            <option value="floor-tji">I-joists</option>
+          </select>
+        </div>
+      </div>
+      <div id="floorInfo" style="font-size:10px;color:var(--muted);line-height:1.5;"></div>
+    </div>
+
+    <div class="sec">
       <div class="sec-title">Framing Take-off</div>
       <div id="takeoff" style="font-size:10.5px;color:#c8c8c8;"></div>
     </div>
@@ -929,6 +949,33 @@ window.ASSEMBLIES = {
     thk:    0.667,
     layers: []
   },
+  'floor-2x10': {
+    label:    'Floor — 2x10 joists @ 16"',
+    kind:     'floor',
+    joist:    '2x10',
+    spacing:  1.3333,
+    maxSpan:  16.5,            // beyond this the span wants a beam under it
+    rim:      '2x10',
+    subfloor: '3/4 OSB'
+  },
+  'floor-2x12': {
+    label:    'Floor — 2x12 joists @ 16"',
+    kind:     'floor',
+    joist:    '2x12',
+    spacing:  1.3333,
+    maxSpan:  19.5,
+    rim:      '2x12',
+    subfloor: '3/4 OSB'
+  },
+  'floor-tji': {
+    label:    'Floor — 11-7/8 I-joists @ 16"',
+    kind:     'floor',
+    joist:    'TJI 11-7/8',
+    spacing:  1.3333,
+    maxSpan:  22,
+    rim:      'LSL rim',
+    subfloor: '3/4 OSB'
+  },
   'porch-post': {
     label:    'Porch edge — 6x6 posts',
     kind:     'posts',
@@ -961,6 +1008,10 @@ window.ASSEMBLIES = {
 window.HouseModel = {
   levels: [ { id: 1, name: 'Main Floor', elevFt: 0 } ],
   walls:  [],
+  // A floor is a rectangle of framing at an elevation. Slab-on-grade needs
+  // none; a second storey needs one, and so does a crawlspace or basement.
+  //   { id, x, y, w, d, elev, assembly, span:'auto'|'w'|'d', levelId }
+  floors: [],
   _nextId: 1
 };
 
@@ -988,7 +1039,41 @@ window.HouseModel = {
     return w;
   };
 
-  M.clear = function() { M.walls = []; M._nextId = 1; };
+  M.clear = function() { M.walls = []; M.floors = []; M._nextId = 1; };
+
+  M.addFloor = function(x, y, w, d, opts) {
+    opts = opts || {};
+    var f = {
+      id: M._nextId++,
+      x: x, y: y, w: w, d: d,
+      elev:     opts.elev != null ? opts.elev : 0,
+      assembly: opts.assembly || 'floor-2x10',
+      span:     opts.span || 'auto',
+      levelId:  opts.levelId || 1
+    };
+    M.floors.push(f);
+    return f;
+  };
+
+  M.floorAsm = function(f) {
+    return window.ASSEMBLIES[f.assembly] || window.ASSEMBLIES['floor-2x10'];
+  };
+
+  // A floor covering everything the exterior walls enclose, at a given
+  // elevation — the usual case for a second storey.
+  M.addFloorOverFootprint = function(elev, assembly) {
+    var ext = M.walls.filter(function(w){ return w.exterior; });
+    if (!ext.length) return null;
+    var xs = [], ys = [];
+    ext.forEach(function(w){ xs.push(w.x1, w.x2); ys.push(w.y1, w.y2); });
+    var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+    var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+    return M.addFloor(x0, y0, x1 - x0, y1 - y0, { elev: elev, assembly: assembly });
+  };
+
+  M.floorArea = function() {
+    return M.floors.reduce(function(a, f){ return a + f.w * f.d; }, 0);
+  };
 
   M.asm = function(w) {
     return window.ASSEMBLIES[w.assembly] || window.ASSEMBLIES['2x6-ext'];
@@ -1125,12 +1210,18 @@ window.FRAMING = (function(){
 
   // Nominal to actual, in feet. Only used for drawing and for stud length.
   var ACTUAL = {
+    '1/2 ply': [0.042, 0.7708],
     '2x4':  [0.1250, 0.2917],   // 1½" x 3½"
     '2x6':  [0.1250, 0.4583],   // 1½" x 5½"
     '2x8':  [0.1250, 0.6042],
     '2x10': [0.1250, 0.7708],
     '2x12': [0.1250, 0.9375],
-    '6x6':  [0.4583, 0.4583]
+    '6x6':  [0.4583, 0.4583],
+    '4x4':  [0.2917, 0.2917],
+    '2x10 tpl': [0.375, 0.7708],
+    'TJI 11-7/8': [0.1458, 0.9896],
+    'LSL rim':    [0.1146, 0.9896],
+    '3/4 OSB':    [0.0625, 4]
   };
   function act(size) { return ACTUAL[size] || ACTUAL['2x4']; }
 
@@ -1253,6 +1344,13 @@ window.FRAMING = (function(){
       var hdrLen = ow + 2 * jackW;
       out.push(member('header', hdrSize, hdrLen, along(w, u, x0 + ow / 2), studY + jackLen, u.rot, w.id,
                       { opening: o.tag || '', qty: 2 }));
+      // Two plies do not fill a 2x6 wall, so a plywood spacer packs it out.
+      var wallThk = act(studSize)[1];
+      var plyGap = wallThk - 2 * act(hdrSize)[0];
+      if (plyGap > 0.02) {
+        out.push(member('header_spacer', '1/2 ply', hdrLen, along(w, u, x0 + ow / 2),
+                        studY + jackLen, u.rot, w.id, { opening: o.tag || '' }));
+      }
 
       // cripples above the header
       var hdrTop = studY + jackLen + act(hdrSize)[1];
@@ -1304,11 +1402,123 @@ window.FRAMING = (function(){
     return out;
   }
 
+  /* ── FLOOR FRAMING ─────────────────────────────────────────────────────
+     Joists run the SHORT way unless told otherwise, because that is what
+     keeps them within span. If the span still exceeds what the joist can
+     carry, a beam goes down the middle and the joists become two shorter
+     runs — which is what a framer would do, and it changes the take-off, so
+     the tool has to do it too rather than quietly over-spanning.
+     ─────────────────────────────────────────────────────────────────────── */
+  function floorMembers(f) {
+    var M = window.HouseModel;
+    var a = M.floorAsm(f);
+    var out = [];
+    if (!a || a.kind !== 'floor') return out;
+    if (!(f.w > 0) || !(f.d > 0)) return out;
+
+    // Which way do the joists run?
+    var spanDir = f.span;
+    if (spanDir === 'auto') spanDir = (f.d <= f.w) ? 'd' : 'w';
+    var span   = (spanDir === 'd') ? f.d : f.w;   // how far a joist reaches
+    var run    = (spanDir === 'd') ? f.w : f.d;   // how far the row of joists extends
+    var joistY = f.elev;
+
+    // Too far for the joist — put a beam in and halve the span.
+    var beams = 0;
+    var maxSpan = a.maxSpan || 16;
+    var segments = [span];
+    if (span > maxSpan) {
+      beams = Math.ceil(span / maxSpan) - 1;
+      var each = span / (beams + 1);
+      segments = [];
+      for (var b = 0; b < beams + 1; b++) segments.push(each);
+    }
+
+    // joists
+    var sp = a.spacing || 1.3333;
+    var count = Math.floor(run / sp) + 1;
+    for (var i = 0; i <= count; i++) {
+      var off = Math.min(i * sp, run);
+      var placed = 0;
+      segments.forEach(function(segLen){
+        var cx, cz, rot;
+        if (spanDir === 'd') {
+          cx = f.x + off;
+          cz = f.y + placed + segLen / 2;
+          rot = -Math.PI / 2;
+        } else {
+          cx = f.x + placed + segLen / 2;
+          cz = f.y + off;
+          rot = 0;
+        }
+        out.push(member('joist', a.joist, segLen, { x: cx, z: cz }, joistY, rot, null, { floorId: f.id }));
+        placed += segLen;
+      });
+      if (off >= run) break;
+    }
+
+    // beams under the joist splices, on posts
+    for (var bi = 1; bi <= beams; bi++) {
+      var at = (span / (beams + 1)) * bi;
+      var bx, bz, brot, blen;
+      if (spanDir === 'd') { bx = f.x + run / 2; bz = f.y + at; brot = 0;            blen = run; }
+      else                 { bx = f.x + at;      bz = f.y + run / 2; brot = -Math.PI/2; blen = run; }
+      out.push(member('floor_beam', '2x10 tpl', blen, { x: bx, z: bz }, joistY, brot, null, { floorId: f.id, qty: 3 }));
+
+      // posts under the beam, no more than 8ft apart
+      var nPosts = Math.max(2, Math.ceil(blen / 8) + 1);
+      for (var pi = 0; pi < nPosts; pi++) {
+        var t = pi / (nPosts - 1);
+        var px = (spanDir === 'd') ? f.x + run * t : f.x + at;
+        var pz = (spanDir === 'd') ? f.y + at      : f.y + run * t;
+        out.push(member('floor_post', '4x4', Math.max(1, joistY - (joistY - 8)), { x: px, z: pz },
+                        joistY - 8, 0, null, { floorId: f.id }));
+      }
+    }
+
+    // rim joist all the way round
+    var rimRuns = [
+      { len: f.w, x: f.x + f.w / 2, z: f.y,         rot: 0 },
+      { len: f.w, x: f.x + f.w / 2, z: f.y + f.d,   rot: 0 },
+      { len: f.d, x: f.x,           z: f.y + f.d/2, rot: -Math.PI / 2 },
+      { len: f.d, x: f.x + f.w,     z: f.y + f.d/2, rot: -Math.PI / 2 }
+    ];
+    rimRuns.forEach(function(r){
+      // rim comes in sticks like a plate does
+      var placed = 0, guard = 0;
+      while (placed < r.len - 0.02 && guard++ < 200) {
+        var left = r.len - placed;
+        var pick = null;
+        for (var j = PLATE_STOCK.length - 1; j >= 0; j--) {
+          if (PLATE_STOCK[j] <= left + 0.02) { pick = PLATE_STOCK[j]; break; }
+        }
+        if (pick === null) pick = Math.min(left, PLATE_STOCK[0]);
+        var seg = Math.min(pick, left);
+        var frac = (placed + seg / 2) / r.len - 0.5;
+        out.push(member('rim_joist', a.rim, seg,
+          { x: r.x + (r.rot === 0 ? frac * r.len : 0),
+            z: r.z + (r.rot === 0 ? 0 : frac * r.len) },
+          joistY, r.rot, null, { floorId: f.id }));
+        placed += seg;
+      }
+    });
+
+    // subfloor, counted in sheets
+    var sheets = Math.ceil((f.w * f.d) / 32);
+    out.push(member('subfloor', a.subfloor, 0, { x: f.x + f.w/2, z: f.y + f.d/2 },
+                    joistY, 0, null, { floorId: f.id, qty: sheets, sheet: true }));
+
+    return out;
+  }
+
   /* Every member in the building. */
   function all() {
     var out = [];
     window.HouseModel.walls.forEach(function(w){
       wallMembers(w).forEach(function(m){ out.push(m); });
+    });
+    (window.HouseModel.floors || []).forEach(function(f){
+      floorMembers(f).forEach(function(m){ out.push(m); });
     });
     return out;
   }
@@ -1346,6 +1556,11 @@ window.FRAMING = (function(){
     rows.forEach(function(r){
       // Plates arrive already broken into sticks by the generator, so every
       // kind is treated the same here: round each cut up to a stock length.
+      if (r.kind === 'header_spacer') return;   // cut from sheet, not sticks
+      if (r.kind === 'subfloor') {               // sold by the sheet
+        out.push({ kind: r.kind, size: r.size, cut: 0, stock: 0, qty: r.count, sheet: true });
+        return;
+      }
       Object.keys(r.lengths).forEach(function(L){
         var need = parseFloat(L);
         var stock = STOCK.filter(function(x){ return x >= need - 0.02; })[0] || Math.ceil(need);
@@ -1375,6 +1590,7 @@ window.FRAMING = (function(){
 
   return {
     wallMembers: wallMembers,
+    floorMembers: floorMembers,
     fmtLen: fmtLen,
     all: all,
     takeoff: takeoff,
@@ -1398,17 +1614,22 @@ window.MATLIST = (function(){
   var LABEL = {
     plate_bottom: 'Bottom Plate', plate_top: 'Top Plate',
     stud: 'Stud', king: 'King Stud', jack: 'Jack Stud',
-    header: 'Header', cripple: 'Cripple', sill: 'Window Sill',
-    post: 'Porch Post', beam: 'Porch Beam'
+    header: 'Header', header_spacer: 'Header Spacer', cripple: 'Cripple', sill: 'Window Sill',
+    post: 'Porch Post', beam: 'Porch Beam',
+    joist: 'Floor Joist', rim_joist: 'Rim Joist', floor_beam: 'Floor Beam',
+    floor_post: 'Floor Post', subfloor: 'Subfloor'
   };
 
   // Same idea as the barn tool's CATEGORY_ORDER — a fixed reading order so
   // the list always looks the same way round.
-  var CATEGORY_ORDER = ['Wall Framing', 'Openings', 'Porch', 'Wall Areas'];
+  var CATEGORY_ORDER = ['Floor System', 'Wall Framing', 'Openings', 'Porch', 'Wall Areas'];
   var CAT_OF = {
     plate_bottom:'Wall Framing', plate_top:'Wall Framing', stud:'Wall Framing',
-    king:'Openings', jack:'Openings', header:'Openings', cripple:'Openings', sill:'Openings',
-    post:'Porch', beam:'Porch'
+    king:'Openings', jack:'Openings', header:'Openings', header_spacer:'Openings',
+    cripple:'Openings', sill:'Openings',
+    post:'Porch', beam:'Porch',
+    joist:'Floor System', rim_joist:'Floor System', floor_beam:'Floor System',
+    floor_post:'Floor System', subfloor:'Floor System'
   };
 
   window.closeMaterialsModal = function() {
@@ -1445,7 +1666,9 @@ window.MATLIST = (function(){
         out.push({
           category:    CAT_OF[r.kind] || 'Other',
           description: (LABEL[r.kind] || r.kind) + ' ' + r.size,
-          detail:      'cut ' + F.fmtLen(L) + (stock ? "  |  order " + stock + "' stock" : ''),
+          detail:      (r.kind === 'subfloor')
+                         ? '4x8 sheets'
+                         : 'cut ' + F.fmtLen(L) + (stock ? "  |  order " + stock + "' stock" : ''),
           quantity:    r.lengths[L],
           lf:          L * r.lengths[L]
         });
@@ -2307,8 +2530,10 @@ window.HW = (function(){
     var mats = {
       plate_bottom: 0xc98b4b, plate_top: 0xc98b4b,
       stud:  0xd8b083, king: 0xe0a86a, jack: 0xe0a86a,
-      header: 0xb5651d, cripple: 0xd8b083, sill: 0xb5651d,
-      post: 0x8a6a45, beam: 0x8a6a45
+      header: 0xb5651d, header_spacer: 0xd6c9a8, cripple: 0xd8b083, sill: 0xb5651d,
+      post: 0x8a6a45, beam: 0x8a6a45,
+      joist: 0xc9a06a, rim_joist: 0xb5844a, floor_beam: 0x8a6a45,
+      floor_post: 0x8a6a45, subfloor: 0xcbb894
     };
     var cache = {};
     function matFor(kind) {
@@ -2324,9 +2549,74 @@ window.HW = (function(){
       var thk = a[0], wide = a[1];
       var geo, mesh;
 
-      if (m.kind === 'plate_bottom' || m.kind === 'plate_top' || m.kind === 'beam'
-          || m.kind === 'header' || m.kind === 'sill') {
-        // lies along the wall
+      // a subfloor is a deck, drawn as one plane rather than 200 sheets
+      if (m.kind === 'subfloor') {
+        var f = (window.HouseModel.floors || []).filter(function(x){ return x.id === m.floorId; })[0];
+        if (f) {
+          var deck = new THREE.Mesh(
+            new THREE.BoxGeometry(f.w, 0.0625, f.d),
+            new THREE.MeshStandardMaterial({ color: 0xcbb894, roughness: .95 })
+          );
+          deck.position.set(f.x + f.w / 2, m.y + 0.9, f.y + f.d / 2);
+          deck.receiveShadow = true;
+          root.add(deck);
+        }
+        return;
+      }
+
+      if (m.kind === 'joist' || m.kind === 'rim_joist' || m.kind === 'floor_beam') {
+        // lies flat in plan, standing on edge — depth carries the load
+        var gj = new THREE.BoxGeometry(m.len, wide, thk * (m.qty || 1));
+        var mj = new THREE.Mesh(gj, matFor(m.kind));
+        mj.position.set(m.x, m.y - wide / 2, m.z);
+        mj.rotation.y = m.rot;
+        mj.castShadow = true;
+        root.add(mj);
+        return;
+      }
+
+      if (m.kind === 'floor_post') {
+        var gp = new THREE.BoxGeometry(thk, m.len, thk);
+        var mp = new THREE.Mesh(gp, matFor(m.kind));
+        mp.position.set(m.x, m.y + m.len / 2, m.z);
+        mp.castShadow = true;
+        root.add(mp);
+        return;
+      }
+
+      if (m.kind === 'header_spacer') {
+        var g3 = new THREE.BoxGeometry(m.len, wide, 0.042);   // 1/2" ply
+        var s3 = new THREE.Mesh(g3, matFor(m.kind));
+        s3.position.set(m.x, m.y + wide / 2, m.z);
+        s3.rotation.y = m.rot;
+        root.add(s3);
+        return;
+      }
+
+      if (m.kind === 'header' || m.kind === 'beam') {
+        // A header is not a board laid flat over the opening — it is plies
+        // stood ON EDGE so the depth carries the load, usually two of them
+        // with a spacer between. Draw it as it is built.
+        var plies = m.qty || 2;
+        for (var pIdx = 0; pIdx < plies; pIdx++) {
+          var g2 = new THREE.BoxGeometry(m.len, wide, thk);
+          var h2 = new THREE.Mesh(g2, matFor(m.kind));
+          // spread the plies across the wall thickness
+          var off = (pIdx - (plies - 1) / 2) * (thk + 0.03);
+          h2.position.set(
+            m.x + Math.sin(-m.rot) * off,
+            m.y + wide / 2,
+            m.z + Math.cos(-m.rot) * off
+          );
+          h2.rotation.y = m.rot;
+          h2.castShadow = true;
+          root.add(h2);
+        }
+        return;
+      }
+
+      if (m.kind === 'plate_bottom' || m.kind === 'plate_top' || m.kind === 'sill') {
+        // lies flat along the wall
         geo = new THREE.BoxGeometry(m.len, thk, wide);
         mesh = new THREE.Mesh(geo, matFor(m.kind));
         mesh.position.set(m.x, m.y + thk / 2, m.z);
@@ -2387,15 +2677,43 @@ window.HW = (function(){
 
       var mat = (a.kind === 'masonry' || a.kind === 'concrete') ? matFdn
               : (w.exterior ? matExt : matInt);
-      var geo = new THREE.BoxGeometry(len, h, a.thk || 0.46);
-      var mesh = new THREE.Mesh(geo, mat);
-      // Positioned by its own base elevation, so a stepped slab or a wall
-      // below grade lands where it belongs instead of on the ground plane.
-      mesh.position.set((w.x1 + w.x2) / 2, w.baseElev + h / 2, (w.y1 + w.y2) / 2);
-      mesh.rotation.y = -Math.atan2(w.y2 - w.y1, w.x2 - w.x1);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      root.add(mesh);
+      var th = a.thk || 0.46;
+      var rot = -Math.atan2(w.y2 - w.y1, w.x2 - w.x1);
+      var ux = (w.x2 - w.x1) / len, uz = (w.y2 - w.y1) / len;
+
+      // A wall with a door in it should have a hole in it. Rather than boolean
+      // geometry, build the wall from the pieces AROUND each opening: the
+      // panels either side, the strip above, and the sill panel below a window.
+      var ops = (w.openings || []).slice().sort(function(p, q){ return p.pos - q.pos; });
+
+      function slab(startFt, spanFt, yBase, hgt) {
+        if (spanFt <= 0.01 || hgt <= 0.01) return;
+        var g = new THREE.BoxGeometry(spanFt, hgt, th);
+        var mm = new THREE.Mesh(g, mat);
+        var c = startFt + spanFt / 2;
+        mm.position.set(w.x1 + ux * c, yBase + hgt / 2, w.y1 + uz * c);
+        mm.rotation.y = rot;
+        mm.castShadow = true;
+        mm.receiveShadow = true;
+        root.add(mm);
+      }
+
+      if (!ops.length) {
+        slab(0, len, w.baseElev, h);
+      } else {
+        var cursor = 0;
+        ops.forEach(function(o){
+          var oStart = Math.max(0, o.pos);
+          var oEnd   = Math.min(len, o.pos + o.width);
+          slab(cursor, oStart - cursor, w.baseElev, h);          // full-height panel before it
+          var sill = o.sill || 0;
+          var head = sill + o.height;
+          if (sill > 0.02) slab(oStart, oEnd - oStart, w.baseElev, sill);        // under a window
+          if (head < h - 0.02) slab(oStart, oEnd - oStart, w.baseElev + head, h - head); // over the opening
+          cursor = oEnd;
+        });
+        slab(cursor, len - cursor, w.baseElev, h);               // and the panel after the last one
+      }
     });
 
     paintSidebar();
@@ -2492,6 +2810,9 @@ window.HW = (function(){
     var h = parseFloat((document.getElementById('fpH')||{}).value) || 9;
     var shape = (document.getElementById('fpShape')||{}).value || 'rect';
 
+    var storeys = parseInt((document.getElementById('fpStoreys')||{}).value, 10) || 1;
+    var floorAsm = (document.getElementById('fpFloor')||{}).value || 'floor-2x10';
+
     M.clear();
     if (shape === 'rect') {
       M.fromOutline([[0,0],[w,0],[w,l],[0,l]], { topElev: h, assembly:'2x6-ext' });
@@ -2505,6 +2826,27 @@ window.HW = (function(){
         [w-arm,mid+arm],[w-arm,l],[arm,l],[arm,mid+arm],[0,mid+arm],[0,mid],[arm,mid]
       ], { topElev: h, assembly:'2x6-ext' });
     }
+    // A second storey is a floor at wall height with another set of walls
+    // standing on it. Nothing about the wall code changes — only baseElev.
+    if (storeys > 1) {
+      M.addFloorOverFootprint(h, floorAsm);
+      var outline = M.walls.filter(function(x){ return x.exterior; })
+                           .map(function(x){ return [x.x1, x.y1]; });
+      M.fromOutline(outline, { baseElev: h, topElev: h + h, assembly: '2x6-ext' });
+    }
+
+    var fi = document.getElementById('floorInfo');
+    if (fi) {
+      if (!M.floors.length) {
+        fi.textContent = 'Slab on grade — no floor framing.';
+      } else {
+        var f0 = M.floors[0];
+        var a0 = M.floorAsm(f0);
+        fi.textContent = a0.label + ' at ' + f0.elev + " ft  ·  "
+          + Math.round(f0.w * f0.d).toLocaleString('en-US') + ' sqft';
+      }
+    }
+
     rebuild();
   }
 
@@ -2543,10 +2885,10 @@ document.addEventListener('DOMContentLoaded', function(){
   PLAN.init();
   HW.setRect();
   HW.resetView();
-  console.log('[House] build 2026-08-19 20:56 UTC');
+  console.log('[House] build 2026-08-19 21:18 UTC');
 });
 </script>
 
-<script>window.SAUCE_BUILD = '2026-08-19 20:56 UTC';</script>
+<script>window.SAUCE_BUILD = '2026-08-19 21:18 UTC';</script>
 </body>
 </html>
