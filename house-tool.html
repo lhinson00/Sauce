@@ -96,6 +96,39 @@
   }
   #stageBtns{position:absolute;right:12px;top:12px;display:flex;flex-direction:column;gap:6px;}
 
+  #stageTabs{position:absolute;left:12px;top:12px;z-index:6;display:flex;gap:0;
+    background:#232323;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  .stab{background:none;border:none;color:var(--muted);font-family:inherit;
+    font-size:11px;font-weight:700;padding:7px 15px;cursor:pointer;}
+  .stab.on{background:var(--house);color:#fff;}
+
+  #planWrap{position:absolute;inset:0;display:none;background:#232323;}
+  #planWrap.on{display:block;}
+  #planCanvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair;}
+
+  #planTools{position:absolute;left:12px;top:52px;z-index:6;display:flex;gap:5px;flex-wrap:wrap;max-width:calc(100% - 24px);}
+  .ptool{background:#232323;color:#c8c8c8;border:1px solid var(--line);border-radius:7px;
+    padding:6px 11px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;}
+  .ptool.on{background:var(--house);color:#fff;border-color:var(--house);}
+  .ptool:hover{color:#fff;}
+
+  #planHUD{position:absolute;right:12px;top:52px;z-index:6;font-size:11px;color:var(--muted);
+    background:rgba(0,0,0,.5);border-radius:7px;padding:7px 11px;line-height:1.6;text-align:right;pointer-events:none;}
+  #planHUD b{color:var(--text);font-weight:700;}
+
+  #planHint{position:absolute;left:12px;bottom:12px;z-index:6;font-size:10px;color:var(--muted);
+    background:rgba(0,0,0,.45);border-radius:6px;padding:6px 10px;pointer-events:none;max-width:60%;}
+
+  #lenBox{position:absolute;left:50%;bottom:44px;transform:translateX(-50%);z-index:7;
+    display:none;align-items:center;gap:7px;background:#232323;border:1px solid var(--house);
+    border-radius:9px;padding:7px 11px;box-shadow:0 8px 26px rgba(0,0,0,.5);}
+  #lenBox.on{display:flex;}
+  #lenBox label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.9px;font-weight:800;}
+  #lenBox input{width:120px;padding:6px 9px;border-radius:6px;border:1px solid var(--line);
+    background:#2b2b2b;color:var(--text);font-size:14px;font-weight:700;font-family:inherit;outline:none;}
+  #lenBox input:focus{border-color:var(--house);}
+  #lenBox .hintk{font-size:10px;color:var(--muted);}
+
   /* ── login ───────────────────────────────────────────────────────────── */
   #salesLoginModal{
     display:none;position:fixed;inset:0;background:rgba(10,16,32,.85);z-index:500;
@@ -196,7 +229,32 @@
   </div>
 
   <div id="stage">
+    <div id="stageTabs">
+      <button class="stab on"  id="tab3d"   onclick="HW.showTab('3d')">3D</button>
+      <button class="stab"     id="tabPlan" onclick="HW.showTab('plan')">Plan</button>
+    </div>
     <div id="view"></div>
+    <div id="planWrap">
+      <canvas id="planCanvas"></canvas>
+      <div id="planTools">
+        <button class="ptool on" id="ptWall"   onclick="PLAN.setTool('wall')">Draw Wall</button>
+        <button class="ptool"    id="ptInt"    onclick="PLAN.setTool('interior')">Interior</button>
+        <button class="ptool"    id="ptPorch"  onclick="PLAN.setTool('porch')">Porch Edge</button>
+        <button class="ptool"    id="ptSelect" onclick="PLAN.setTool('select')">Select</button>
+        <span style="width:8px;"></span>
+        <button class="ptool" onclick="PLAN.undo()">Undo</button>
+        <button class="ptool" onclick="PLAN.closeLoop()">Close Loop</button>
+        <button class="ptool" onclick="PLAN.clearAll()">Clear</button>
+      </div>
+      <div id="planHUD"></div>
+      <div id="planHint">Click to start a wall &middot; move &middot; click to set. Type a length and press Enter to place it exactly.</div>
+      <div id="lenBox">
+        <label>Length</label>
+        <input id="lenInput" type="text" placeholder="24 or 24' 6&quot;"
+               onkeydown="if(event.key==='Enter'){PLAN.commitTyped();}">
+        <span class="hintk">ft</span>
+      </div>
+    </div>
     <div id="stageBtns">
       <button class="tbtn" onclick="HW.resetView()">Reset View</button>
       <button class="tbtn" onclick="HW.toggleGrid()">Grid</button>
@@ -1021,6 +1079,386 @@ window.HouseModel = {
    changes the model shows up here without a second code path.
    ═══════════════════════════════════════════════════════════════════════ */
 
+/* ══ PLAN EDITOR ═════════════════════════════════════════════════════════
+   Draw the footprint at real measurements on a grid. Two ways to place a
+   wall, and they work together:
+
+     click, move, click        the quick way — snaps to the grid
+     click, type "24' 6", Enter  the exact way — the number off the plan
+
+   Typing wins over the mouse, because a plan's dimensions are the truth and
+   a mouse position is an approximation. The direction comes from where the
+   cursor is; the length comes from what you typed.
+   ═══════════════════════════════════════════════════════════════════════ */
+window.PLAN = (function(){
+  var cv, ctx, W = 0, H = 0, dpr = 1;
+
+  var view = { ox: 90, oy: 90, scale: 6 };   // pixels per foot
+  var tool = 'wall';
+  var start = null;                          // {x,y} in feet — the run in progress
+  var cursor = { x: 0, y: 0 };               // snapped feet
+  var raw = { x: 0, y: 0 };                  // unsnapped feet
+  var panning = null;
+  var GRID = 1;                              // foot
+  var SNAP = 0.5;                            // half-foot
+
+  function ft2px(x, y) { return { x: view.ox + x * view.scale, y: view.oy + y * view.scale }; }
+  function px2ft(px, py) { return { x: (px - view.ox) / view.scale, y: (py - view.oy) / view.scale }; }
+  function snap(v) { return Math.round(v / SNAP) * SNAP; }
+
+  // "24" · "24.5" · "24' 6" · "24'6\"" · "24 6" all mean the same thing.
+  function parseFeet(str) {
+    if (!str) return null;
+    var t = String(str).trim().replace(/[""]/g, '"').replace(/['']/g, "'");
+    // Plans write it as 86' - 0", so tolerate the dash between feet and inches.
+    var m = t.match(/^(-?\d+(?:\.\d+)?)\s*'\s*[-\u2013]?\s*(?:(\d+(?:\.\d+)?)\s*(?:"|in)?)?$/);
+    if (m) return parseFloat(m[1]) + (m[2] ? parseFloat(m[2]) / 12 : 0);
+    m = t.match(/^(-?\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$/);
+    if (m) return parseFloat(m[1]) + parseFloat(m[2]) / 12;
+    m = t.match(/^(-?\d+(?:\.\d+)?)\s*(?:ft|feet)?$/i);
+    if (m) return parseFloat(m[1]);
+    return null;
+  }
+
+  function fmtFeet(v) {
+    var neg = v < 0; v = Math.abs(v);
+    var f = Math.floor(v + 1e-9);
+    var i = Math.round((v - f) * 12);
+    if (i === 12) { f++; i = 0; }
+    return (neg ? '-' : '') + f + "'" + (i ? ' ' + i + '"' : '');
+  }
+
+  function assemblyForTool() {
+    if (tool === 'interior') return '2x4-int';
+    if (tool === 'porch')    return 'porch-post';
+    return '2x6-ext';
+  }
+
+  function resize() {
+    if (!cv) return;
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = cv.clientWidth; H = cv.clientHeight;
+    cv.width = W * dpr; cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  // ── drawing ─────────────────────────────────────────────────────────────
+  function draw() {
+    if (!ctx) return;
+    ctx.clearRect(0, 0, W, H);
+    drawGrid();
+    drawWalls();
+    drawPending();
+    hud();
+  }
+
+  function drawGrid() {
+    var step = GRID * view.scale;
+    if (step < 6) step = GRID * view.scale * 5;      // thin out when zoomed far
+    var x0 = view.ox % step, y0 = view.oy % step;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,.045)';
+    ctx.beginPath();
+    for (var x = x0; x < W; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+    for (var y = y0; y < H; y += step) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+    ctx.stroke();
+
+    // every 10 feet, heavier
+    var big = 10 * view.scale;
+    if (big > 14) {
+      ctx.strokeStyle = 'rgba(255,255,255,.10)';
+      ctx.beginPath();
+      for (var bx = view.ox % big; bx < W; bx += big) { ctx.moveTo(bx, 0); ctx.lineTo(bx, H); }
+      for (var by = view.oy % big; by < H; by += big) { ctx.moveTo(0, by); ctx.lineTo(W, by); }
+      ctx.stroke();
+    }
+
+    // origin
+    var o = ft2px(0, 0);
+    ctx.strokeStyle = 'rgba(91,157,217,.5)';
+    ctx.beginPath();
+    ctx.moveTo(o.x - 9, o.y); ctx.lineTo(o.x + 9, o.y);
+    ctx.moveTo(o.x, o.y - 9); ctx.lineTo(o.x, o.y + 9);
+    ctx.stroke();
+  }
+
+  function wallColor(w) {
+    var a = window.HouseModel.asm(w);
+    if (a.kind === 'posts')   return '#c08a4a';
+    if (a.kind === 'masonry' || a.kind === 'concrete') return '#9a9a9a';
+    return w.exterior ? '#e6ebf1' : '#7f8b98';
+  }
+
+  function drawWalls() {
+    var M = window.HouseModel;
+    M.walls.forEach(function(w){
+      var a = M.asm(w);
+      var p1 = ft2px(w.x1, w.y1), p2 = ft2px(w.x2, w.y2);
+      ctx.strokeStyle = wallColor(w);
+      ctx.lineWidth = Math.max(2, (a.thk || 0.46) * view.scale);
+      ctx.lineCap = 'butt';
+      if (a.kind === 'posts') { ctx.setLineDash([7, 5]); ctx.lineWidth = 3; }
+      ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+      ctx.setLineDash([]);
+
+      // its length, along the wall
+      var len = M.lengthOf(w);
+      if (len * view.scale > 34) {
+        var mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+        var ang = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+        if (ang > Math.PI / 2 || ang < -Math.PI / 2) ang += Math.PI;
+        ctx.save();
+        ctx.translate(mx, my); ctx.rotate(ang);
+        ctx.font = '600 11px Outfit, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(0,0,0,.65)';
+        var label = fmtFeet(len);
+        var tw = ctx.measureText(label).width;
+        ctx.fillRect(-tw / 2 - 4, -19, tw + 8, 14);
+        ctx.fillStyle = '#cfd8e3';
+        ctx.fillText(label, 0, -8);
+        ctx.restore();
+      }
+
+      // corner dots
+      [p1, p2].forEach(function(pt){
+        ctx.fillStyle = '#5b9dd9';
+        ctx.beginPath(); ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2); ctx.fill();
+      });
+    });
+  }
+
+  function drawPending() {
+    if (!start) return;
+    var p1 = ft2px(start.x, start.y), p2 = ft2px(cursor.x, cursor.y);
+    ctx.strokeStyle = '#FF8200';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+    ctx.setLineDash([]);
+
+    var dx = cursor.x - start.x, dy = cursor.y - start.y;
+    var len = Math.sqrt(dx*dx + dy*dy);
+    if (len > 0.01) {
+      ctx.font = '700 12px Outfit, sans-serif';
+      ctx.textAlign = 'center';
+      var t = fmtFeet(len);
+      var mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+      var tw = ctx.measureText(t).width;
+      ctx.fillStyle = 'rgba(255,130,0,.92)';
+      ctx.fillRect(mx - tw/2 - 6, my - 24, tw + 12, 17);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(t, mx, my - 11);
+    }
+  }
+
+  // The perimeter has to come back to where it started. If it does not, a
+  // dimension was misread — better to say so here than to find it in the
+  // material list.
+  function closureGap() {
+    var M = window.HouseModel;
+    var ext = M.walls.filter(function(w){ return w.exterior; });
+    if (ext.length < 3) return null;
+    var first = ext[0], last = ext[ext.length - 1];
+    var dx = last.x2 - first.x1, dy = last.y2 - first.y1;
+    return Math.sqrt(dx*dx + dy*dy);
+  }
+
+  function hud() {
+    var el = document.getElementById('planHUD');
+    if (!el) return;
+    var M = window.HouseModel;
+    var gap = closureGap();
+    var closed = (gap !== null && gap < 0.05);
+    var lines = [
+      'x <b>' + fmtFeet(cursor.x) + '</b>  y <b>' + fmtFeet(cursor.y) + '</b>',
+      '<b>' + M.walls.length + '</b> walls &middot; <b>' + Math.round(M.perimeter()) + '</b> lf'
+    ];
+    if (gap !== null) {
+      lines.push(closed
+        ? '<span style="color:#86efac;">outline closed &middot; <b>' + Math.round(M.area()).toLocaleString('en-US') + '</b> sqft</span>'
+        : '<span style="color:#fbbf24;">' + fmtFeet(gap) + ' from closed</span>');
+    }
+    el.innerHTML = lines.join('<br>');
+  }
+
+  // ── placing walls ───────────────────────────────────────────────────────
+  function place(x2, y2) {
+    if (!start) return;
+    if (Math.abs(x2 - start.x) < 0.01 && Math.abs(y2 - start.y) < 0.01) return;
+    var M = window.HouseModel;
+    var h = parseFloat((document.getElementById('fpH') || {}).value) || 10;
+    M.addWall(start.x, start.y, x2, y2, {
+      assembly: assemblyForTool(),
+      exterior: (tool === 'wall'),
+      bearing:  (tool !== 'interior'),
+      topElev:  h
+    });
+    start = { x: x2, y: y2 };          // chain straight into the next wall
+    cursor = { x: x2, y: y2 };
+    showLenBox(true);
+    draw();
+    if (window.HW) HW.rebuild();
+  }
+
+  function showLenBox(on) {
+    var b = document.getElementById('lenBox');
+    if (!b) return;
+    b.className = on ? 'on' : '';
+    if (on) {
+      var i = document.getElementById('lenInput');
+      if (i) { i.value = ''; setTimeout(function(){ i.focus(); }, 30); }
+    }
+  }
+
+  // ── events ──────────────────────────────────────────────────────────────
+  function onMove(e) {
+    var r = cv.getBoundingClientRect();
+    var f = px2ft(e.clientX - r.left, e.clientY - r.top);
+    raw = f;
+    if (panning) {
+      view.ox += (e.clientX - panning.x);
+      view.oy += (e.clientY - panning.y);
+      panning = { x: e.clientX, y: e.clientY };
+      draw();
+      return;
+    }
+    var sx = snap(f.x), sy = snap(f.y);
+    // Hold the run square unless the cursor is clearly off-axis — most walls
+    // are, and fighting a half-degree of drift is miserable.
+    if (start) {
+      var dx = Math.abs(sx - start.x), dy = Math.abs(sy - start.y);
+      if (dy < dx * 0.28) sy = start.y;
+      else if (dx < dy * 0.28) sx = start.x;
+    }
+    cursor = { x: sx, y: sy };
+    draw();
+  }
+
+  function onDown(e) {
+    if (e.button === 1 || e.shiftKey) { panning = { x: e.clientX, y: e.clientY }; return; }
+    if (tool === 'select') return;
+    var r = cv.getBoundingClientRect();
+    var f = px2ft(e.clientX - r.left, e.clientY - r.top);
+    var sx = snap(f.x), sy = snap(f.y);
+    if (!start) { start = { x: sx, y: sy }; cursor = { x: sx, y: sy }; showLenBox(true); draw(); return; }
+    place(cursor.x, cursor.y);
+  }
+
+  function onUp() { panning = null; }
+
+  function onWheel(e) {
+    e.preventDefault();
+    var r = cv.getBoundingClientRect();
+    var mx = e.clientX - r.left, my = e.clientY - r.top;
+    var before = px2ft(mx, my);
+    view.scale = Math.max(1.2, Math.min(40, view.scale * (e.deltaY > 0 ? 0.9 : 1.1)));
+    var after = px2ft(mx, my);
+    view.ox += (after.x - before.x) * view.scale;
+    view.oy += (after.y - before.y) * view.scale;
+    draw();
+  }
+
+  function onKey(e) {
+    if (e.key === 'Escape') { start = null; showLenBox(false); draw(); }
+  }
+
+  return {
+    init: function() {
+      cv = document.getElementById('planCanvas');
+      if (!cv) return;
+      ctx = cv.getContext('2d');
+      cv.addEventListener('mousedown', onDown);
+      cv.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+      cv.addEventListener('wheel', onWheel, { passive: false });
+      window.addEventListener('keydown', onKey);
+      window.addEventListener('resize', resize);
+      resize();
+    },
+    resize: resize,
+    draw: draw,
+
+    setTool: function(t) {
+      tool = t;
+      start = null;
+      showLenBox(false);
+      ['ptWall','ptInt','ptPorch','ptSelect'].forEach(function(id){
+        var el = document.getElementById(id);
+        if (el) el.className = 'ptool';
+      });
+      var on = { wall:'ptWall', interior:'ptInt', porch:'ptPorch', select:'ptSelect' }[t];
+      var e2 = document.getElementById(on);
+      if (e2) e2.className = 'ptool on';
+      draw();
+    },
+
+    // The number off the plan, placed exactly. Direction from the cursor,
+    // length from what was typed.
+    commitTyped: function() {
+      var i = document.getElementById('lenInput');
+      if (!i || !start) return;
+      var len = parseFeet(i.value);
+      if (len === null || !(len > 0)) { i.value = ''; return; }
+      var dx = cursor.x - start.x, dy = cursor.y - start.y;
+      if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) dx = 1;   // default east
+      var m = Math.sqrt(dx*dx + dy*dy);
+      place(start.x + (dx / m) * len, start.y + (dy / m) * len);
+      i.value = '';
+      i.focus();
+    },
+
+    undo: function() {
+      var M = window.HouseModel;
+      if (!M.walls.length) return;
+      var w = M.walls.pop();
+      start = { x: w.x1, y: w.y1 };
+      cursor = { x: w.x1, y: w.y1 };
+      draw();
+      if (window.HW) HW.rebuild();
+    },
+
+    // Join the run back to where it began — the last wall of a footprint.
+    closeLoop: function() {
+      var M = window.HouseModel;
+      var ext = M.walls.filter(function(w){ return w.exterior; });
+      if (!ext.length || !start) return;
+      place(ext[0].x1, ext[0].y1);
+      start = null;
+      showLenBox(false);
+      draw();
+    },
+
+    clearAll: function() {
+      if (!confirm('Clear every wall and start again?')) return;
+      window.HouseModel.clear();
+      start = null;
+      showLenBox(false);
+      draw();
+      if (window.HW) HW.rebuild();
+    },
+
+    // Frame the drawing in the window.
+    fit: function() {
+      var M = window.HouseModel;
+      if (!M.walls.length || !W) return;
+      var xs = [], ys = [];
+      M.walls.forEach(function(w){ xs.push(w.x1, w.x2); ys.push(w.y1, w.y2); });
+      var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+      var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+      var pad = 70;
+      view.scale = Math.max(1.5, Math.min(
+        (W - pad * 2) / Math.max(1, maxX - minX),
+        (H - pad * 2) / Math.max(1, maxY - minY)
+      ));
+      view.ox = pad - minX * view.scale;
+      view.oy = pad - minY * view.scale;
+      draw();
+    }
+  };
+})();
+
 window.HW = (function(){
   var scene, camera, renderer, root, grid;
   var showGrid = true;
@@ -1237,6 +1675,21 @@ window.HW = (function(){
     init: init,
     rebuild: rebuild,
     setRect: setRect,
+    showTab: function(which) {
+      var pw = document.getElementById('planWrap');
+      var t3 = document.getElementById('tab3d');
+      var tp = document.getElementById('tabPlan');
+      if (which === 'plan') {
+        pw.className = 'on';
+        t3.className = 'stab'; tp.className = 'stab on';
+        PLAN.resize();
+        PLAN.fit();
+      } else {
+        pw.className = '';
+        t3.className = 'stab on'; tp.className = 'stab';
+        onResize();
+      }
+    },
     resetView: function(){ rot = { theta:-0.9, phi:1.05, dist: Math.max(70, window.HouseModel.perimeter() / 5) }; },
     toggleGrid: function(){ showGrid = !showGrid; if (grid) grid.visible = showGrid; }
   };
@@ -1244,12 +1697,13 @@ window.HW = (function(){
 
 document.addEventListener('DOMContentLoaded', function(){
   HW.init();
+  PLAN.init();
   HW.setRect();
   HW.resetView();
-  console.log('[House] build 2026-08-19 18:45 UTC');
+  console.log('[House] build 2026-08-19 18:52 UTC');
 });
 </script>
 
-<script>window.SAUCE_BUILD = '2026-08-19 18:45 UTC';</script>
+<script>window.SAUCE_BUILD = '2026-08-19 18:53 UTC';</script>
 </body>
 </html>
