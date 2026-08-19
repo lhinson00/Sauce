@@ -532,6 +532,12 @@ window.SauceAuth = (function() {
   };
 })();
 
+window.SAUCE_SESSION = {
+  idleMinutes: 60,
+  absoluteHours: 12,
+  warnSeconds: 120        // how long the "still there?" warning waits
+};
+
 window.SauceSession = (function() {
   var _lastActivity = Date.now();
   var _signedInAt   = Date.now();
@@ -703,38 +709,27 @@ async function doSalesLogin() {
         depositPctOfTotal: data.depositPctOfTotal || 0
       };
 
-      try { logToolEvent('page_load', { referrer: document.referrer || 'direct' }); } catch(e) {}      window.currentUser.token = data.token || '';
-      // Session length is now the timeout module's job, not a fixed wall-clock
-      // hour. loginExpiry follows the Supabase token so anything still checking
-      // it keeps working.
+      window.currentUser.token = data.token || '';
       window.currentUser.loginExpiry = (signed.session.expires_at || 0) * 1000;
       window.SauceSession.start(Date.now());
-      // The Supabase session is already stored; this cache is only so the UI can
-      // paint a name before the profile round-trip finishes.
+      // Cache so the name can paint before the profile round-trip finishes.
       try {
         sessionStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
         localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       } catch(e) {}
       hideSalesLoginModal();
-      setTimeout(warmPing, 500);
-      try { window._startSessionKeepAlive(); } catch(e) {}
-      initLainFeatures(); // unlock save/email/pdf for this user
-      // Demo badge
-      var smTxt = document.querySelector('.salesman-txt');
-      var smDot = document.querySelector('.salesman-dot');
-      if (window.currentUser.isDemo) {
-        if (smTxt) { smTxt.textContent = 'DEMO MODE'; smTxt.style.color = '#f97316'; }
-        if (smDot) { smDot.style.background = '#f97316'; }
-      } else {
-        if (smTxt) smTxt.textContent = window.currentUser.fullName || window.currentUser.username || 'Salesman';
-        if (smDot) smDot.style.background = '';
-      }
+      paintUser();
+      HW.rebuild();
     } else {
-      if(err) err.textContent = data.error || 'Invalid credentials.';
+      if (err) err.textContent = data.error || 'Invalid credentials.';
       btn.textContent = 'Log In'; btn.disabled = false;
     }
   } catch(e) {
-    if(err) err.textContent = 'Network error. Try again.';
+    // Say what actually happened. The barn tool reported every exception here
+    // as "Network error", which hid three missing functions rather than a
+    // network problem.
+    console.error('[House] login failed:', e);
+    if (err) err.textContent = (e && e.message) ? ('Login failed: ' + e.message) : 'Login failed. Try again.';
     btn.textContent = 'Log In'; btn.disabled = false;
   }
 }
