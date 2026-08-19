@@ -797,6 +797,93 @@ window.hwSignOut = async function() {
        assembly, openings:[] }
    ═══════════════════════════════════════════════════════════════════════ */
 
+/* ── ASSEMBLIES ──────────────────────────────────────────────────────────
+   What a wall is made of, as data rather than code. A builder who frames
+   2x4 at 24" edits one entry here and every wall in every future job follows.
+   `members` drives framing; `layers` drives sheet goods and finishes.
+
+   Everything is in feet. Lumber is named by nominal size; actual thickness
+   only matters for drawing, and lives in `thk`.
+   ─────────────────────────────────────────────────────────────────────── */
+window.ASSEMBLIES = {
+  '2x6-ext': {
+    label:    'Exterior wall — 2x6 @ 16"',
+    kind:     'framed',
+    thk:      0.458,                    // 5½" framing
+    studSize: '2x6',
+    spacing:  1.3333,                   // 16" o.c.
+    plates:   { bottom: 1, top: 2 },
+    layers: [
+      { face:'out', item:'OSB Sheathing 7/16"',  unit:'sheet', sheet:[4,8] },
+      { face:'out', item:'House Wrap',           unit:'sqft' },
+      { face:'in',  item:'Drywall 1/2"',         unit:'sheet', sheet:[4,8] },
+      { face:'in',  item:'Batt Insulation R-21', unit:'sqft' }
+    ]
+  },
+  '2x4-int': {
+    label:    'Interior partition — 2x4 @ 16"',
+    kind:     'framed',
+    thk:      0.292,                    // 3½"
+    studSize: '2x4',
+    spacing:  1.3333,
+    plates:   { bottom: 1, top: 1 },
+    layers: [
+      { face:'both', item:'Drywall 1/2"', unit:'sheet', sheet:[4,8] }
+    ]
+  },
+  '2x4-int-bearing': {
+    label:    'Interior bearing wall — 2x4 @ 16"',
+    kind:     'framed',
+    thk:      0.292,
+    studSize: '2x4',
+    spacing:  1.3333,
+    plates:   { bottom: 1, top: 2 },    // doubled top plate carries load
+    layers: [
+      { face:'both', item:'Drywall 1/2"', unit:'sheet', sheet:[4,8] }
+    ]
+  },
+  '8-cmu': {
+    label:  'Foundation — 8" block',
+    kind:   'masonry',
+    thk:    0.667,
+    block:  [1.333, 0.667],             // 16" x 8" face
+    layers: []
+  },
+  'poured': {
+    label:  'Foundation — poured concrete',
+    kind:   'concrete',
+    thk:    0.667,
+    layers: []
+  },
+  'porch-post': {
+    label:    'Porch edge — 6x6 posts',
+    kind:     'posts',
+    thk:      0.458,
+    postSize: '6x6',
+    spacing:  10,                       // beam span between posts
+    beam:     '2x10 dbl',
+    layers:   []
+  }
+};
+
+/* ── THE BUILDING MODEL ──────────────────────────────────────────────────
+   A building is a list of wall segments. A rectangle is four of them, an
+   L is six, the Hewitt is ten. Nothing here knows which.
+
+   Every wall carries a BOTTOM and a TOP elevation rather than a height,
+   because real buildings step: a garage slab sits low, a foundation wall
+   runs below grade, a walkout basement is open on one side. Height is
+   derived, never stored.
+
+     {
+       id, x1, y1, x2, y2,          plan position, feet
+       baseElev, topElev,           feet, 0 = main floor
+       assembly,                    key into window.ASSEMBLIES
+       exterior, bearing,
+       levelId,
+       openings: []                 { pos, width, height, sill, type }
+     }
+   ─────────────────────────────────────────────────────────────────────── */
 window.HouseModel = {
   levels: [ { id: 1, name: 'Main Floor', elevFt: 0 } ],
   walls:  [],
@@ -808,15 +895,20 @@ window.HouseModel = {
 
   M.addWall = function(x1, y1, x2, y2, opts) {
     opts = opts || {};
+    var asm = opts.assembly || (opts.exterior === false ? '2x4-int' : '2x6-ext');
+    var base = (opts.baseElev != null) ? opts.baseElev : 0;
+    var top  = (opts.topElev  != null) ? opts.topElev
+                                       : base + (opts.height != null ? opts.height : 10);
     var w = {
       id:       M._nextId++,
-      x1: x1, y1: y1, x2: x2, y2: y2,
-      levelId:  opts.levelId  || 1,
+      x1:x1, y1:y1, x2:x2, y2:y2,
+      baseElev: base,
+      topElev:  top,
+      assembly: asm,
       exterior: opts.exterior !== false,
       bearing:  opts.bearing  !== false,
-      height:   opts.height   || 9,
-      assembly: opts.assembly || '2x6-ext',
-      openings: []
+      levelId:  opts.levelId  || 1,
+      openings: opts.openings || []
     };
     M.walls.push(w);
     return w;
@@ -824,9 +916,25 @@ window.HouseModel = {
 
   M.clear = function() { M.walls = []; M._nextId = 1; };
 
+  M.asm = function(w) {
+    return window.ASSEMBLIES[w.assembly] || window.ASSEMBLIES['2x6-ext'];
+  };
+
+  // Height is a consequence of where the wall starts and stops.
+  M.heightOf = function(w) { return Math.max(0, w.topElev - w.baseElev); };
+
   M.lengthOf = function(w) {
     var dx = w.x2 - w.x1, dy = w.y2 - w.y1;
     return Math.sqrt(dx*dx + dy*dy);
+  };
+
+  // Net wall area, openings removed — what sheathing and drywall actually cover.
+  M.netAreaOf = function(w) {
+    var gross = M.lengthOf(w) * M.heightOf(w);
+    var cut = (w.openings || []).reduce(function(a, o) {
+      return a + (o.width || 0) * (o.height || 0);
+    }, 0);
+    return Math.max(0, gross - cut);
   };
 
   M.perimeter = function() {
@@ -834,8 +942,8 @@ window.HouseModel = {
                   .reduce(function(a,w){ return a + M.lengthOf(w); }, 0);
   };
 
-  // Shoelace over the exterior walls, taken in order. Correct for any simple
-  // polygon, so an L or a T needs no special case.
+  // Shoelace over the exterior walls in order — correct for any simple
+  // polygon, so an L, a T or the Hewitt's stepped outline need no special case.
   M.area = function() {
     var ext = M.walls.filter(function(w){ return w.exterior; });
     if (ext.length < 3) return 0;
@@ -844,12 +952,65 @@ window.HouseModel = {
     return Math.abs(a / 2);
   };
 
-  // Build a closed loop of exterior walls from an ordered list of points.
-  M.fromOutline = function(pts, height) {
+  // Everything the building spans vertically, including below grade.
+  M.elevRange = function() {
+    if (!M.walls.length) return { min:0, max:0 };
+    var lo = Infinity, hi = -Infinity;
+    M.walls.forEach(function(w){
+      lo = Math.min(lo, w.baseElev);
+      hi = Math.max(hi, w.topElev);
+    });
+    return { min: lo, max: hi };
+  };
+
+  M.byAssembly = function() {
+    var out = {};
+    M.walls.forEach(function(w){
+      var k = w.assembly;
+      if (!out[k]) out[k] = { count:0, lf:0, sqft:0 };
+      out[k].count++;
+      out[k].lf   += M.lengthOf(w);
+      out[k].sqft += M.netAreaOf(w);
+    });
+    return out;
+  };
+
+  M.addOpening = function(wallId, o) {
+    var w = M.walls.filter(function(x){ return x.id === wallId; })[0];
+    if (!w) return null;
+    var op = {
+      pos:    o.pos    || 0,
+      width:  o.width  || 3,
+      height: o.height || 6.67,
+      sill:   (o.sill != null) ? o.sill : 0,
+      type:   o.type   || 'door',
+      tag:    o.tag    || ''
+    };
+    w.openings.push(op);
+    return op;
+  };
+
+  // Build a closed loop of walls from an ordered list of points.
+  M.fromOutline = function(pts, opts) {
+    opts = opts || {};
     for (var i = 0; i < pts.length; i++) {
       var p = pts[i], q = pts[(i + 1) % pts.length];
-      M.addWall(p[0], p[1], q[0], q[1], { exterior: true, bearing: true, height: height });
+      M.addWall(p[0], p[1], q[0], q[1], opts);
     }
+  };
+
+  // A foundation beneath an existing run of walls: same footprint, sitting
+  // below them. Depth is positive, measured down from the wall's own base.
+  M.addFoundationUnder = function(walls, depthFt, assembly) {
+    (walls || M.walls.filter(function(w){ return w.exterior; })).forEach(function(w){
+      M.addWall(w.x1, w.y1, w.x2, w.y2, {
+        baseElev: w.baseElev - depthFt,
+        topElev:  w.baseElev,
+        assembly: assembly || '8-cmu',
+        exterior: true,
+        bearing:  true
+      });
+    });
   };
 })();
 </script>
@@ -976,13 +1137,42 @@ window.HW = (function(){
     var matExt = new THREE.MeshStandardMaterial({ color: 0xd8dde3, roughness: .85 });
     var matInt = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: .9 });
 
+    var matFdn = new THREE.MeshStandardMaterial({ color: 0x8a8a8a, roughness: 1 });
+    var matPost = new THREE.MeshStandardMaterial({ color: 0x8a6a45, roughness: .9 });
+
     M.walls.forEach(function(w){
       var len = M.lengthOf(w);
-      if (len <= 0) return;
-      var th = w.exterior ? 0.54 : 0.35;          // 6.5" and 4.5" in feet
-      var geo = new THREE.BoxGeometry(len, w.height, th);
-      var mesh = new THREE.Mesh(geo, w.exterior ? matExt : matInt);
-      mesh.position.set((w.x1 + w.x2) / 2, w.height / 2, (w.y1 + w.y2) / 2);
+      var h   = M.heightOf(w);
+      if (len <= 0 || h <= 0) return;
+      var a   = M.asm(w);
+
+      // Posts are drawn as posts, not as a wall — a porch edge is open.
+      if (a.kind === 'posts') {
+        var n = Math.max(2, Math.round(len / (a.spacing || 10)) + 1);
+        for (var i = 0; i < n; i++) {
+          var t = i / (n - 1);
+          var px = w.x1 + (w.x2 - w.x1) * t;
+          var pz = w.y1 + (w.y2 - w.y1) * t;
+          var post = new THREE.Mesh(new THREE.BoxGeometry(0.5, h, 0.5), matPost);
+          post.position.set(px, w.baseElev + h / 2, pz);
+          post.castShadow = true;
+          root.add(post);
+        }
+        var beam = new THREE.Mesh(new THREE.BoxGeometry(len, 0.8, 0.5), matPost);
+        beam.position.set((w.x1 + w.x2) / 2, w.topElev - 0.4, (w.y1 + w.y2) / 2);
+        beam.rotation.y = -Math.atan2(w.y2 - w.y1, w.x2 - w.x1);
+        beam.castShadow = true;
+        root.add(beam);
+        return;
+      }
+
+      var mat = (a.kind === 'masonry' || a.kind === 'concrete') ? matFdn
+              : (w.exterior ? matExt : matInt);
+      var geo = new THREE.BoxGeometry(len, h, a.thk || 0.46);
+      var mesh = new THREE.Mesh(geo, mat);
+      // Positioned by its own base elevation, so a stepped slab or a wall
+      // below grade lands where it belongs instead of on the ground plane.
+      mesh.position.set((w.x1 + w.x2) / 2, w.baseElev + h / 2, (w.y1 + w.y2) / 2);
       mesh.rotation.y = -Math.atan2(w.y2 - w.y1, w.x2 - w.x1);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -997,10 +1187,17 @@ window.HW = (function(){
     var list = document.getElementById('wallList');
     if (list) {
       list.innerHTML = M.walls.map(function(w, i){
-        return '<div class="wrow">'
-          + '<span style="flex:1;">Wall ' + (i + 1) + '</span>'
-          + '<span class="len">' + M.lengthOf(w).toFixed(1) + " ft</span>"
-          + (w.exterior ? '<span class="ext">ext</span>' : '')
+        var a = M.asm(w);
+        var elev = (w.baseElev !== 0)
+          ? (w.baseElev.toFixed(1) + " to " + w.topElev.toFixed(1) + " ft")
+          : (M.heightOf(w).toFixed(0) + " ft tall");
+        return '<div class="wrow" style="flex-direction:column;align-items:stretch;gap:2px;">'
+          + '<div style="display:flex;align-items:center;gap:8px;">'
+          +   '<span style="flex:1;">Wall ' + (i + 1) + '</span>'
+          +   '<span class="len">' + M.lengthOf(w).toFixed(1) + " ft</span>"
+          +   (w.exterior ? '<span class="ext">ext</span>' : '')
+          + '</div>'
+          + '<div style="font-size:9px;color:#6f6f6f;">' + a.label + ' &middot; ' + elev + '</div>'
           + '</div>';
       }).join('') || '<div style="font-size:11px;color:var(--muted);padding:6px 0;">No walls yet.</div>';
     }
@@ -1022,16 +1219,16 @@ window.HW = (function(){
 
     M.clear();
     if (shape === 'rect') {
-      M.fromOutline([[0,0],[w,0],[w,l],[0,l]], h);
+      M.fromOutline([[0,0],[w,0],[w,l],[0,l]], { topElev: h, assembly:'2x6-ext' });
     } else if (shape === 'L') {
       var w2 = w * 0.55, l2 = l * 0.55;
-      M.fromOutline([[0,0],[w,0],[w,l2],[w2,l2],[w2,l],[0,l]], h);
+      M.fromOutline([[0,0],[w,0],[w,l2],[w2,l2],[w2,l],[0,l]], { topElev: h, assembly:'2x6-ext' });
     } else {
       var arm = w * 0.3, mid = l * 0.35;
       M.fromOutline([
         [arm,0],[w-arm,0],[w-arm,mid],[w,mid],[w,mid+arm],
         [w-arm,mid+arm],[w-arm,l],[arm,l],[arm,mid+arm],[0,mid+arm],[0,mid],[arm,mid]
-      ], h);
+      ], { topElev: h, assembly:'2x6-ext' });
     }
     rebuild();
   }
@@ -1049,10 +1246,10 @@ document.addEventListener('DOMContentLoaded', function(){
   HW.init();
   HW.setRect();
   HW.resetView();
-  console.log('[House] build 2026-08-19 17:58 UTC');
+  console.log('[House] build 2026-08-19 18:45 UTC');
 });
 </script>
 
-<script>window.SAUCE_BUILD = '2026-08-19 17:58 UTC';</script>
+<script>window.SAUCE_BUILD = '2026-08-19 18:45 UTC';</script>
 </body>
 </html>
