@@ -115,14 +115,25 @@
   table.mm tr:hover td{background:rgba(255,255,255,.03);}
   table.mm .sz{font-weight:700;color:#fff;}
   table.mm .qty{font-weight:800;color:#86efac;}
-  .mm-grp{border:1px solid #4a4a4a;border-radius:8px;margin-bottom:6px;overflow:hidden;}
-  .mm-grp-hd{display:flex;align-items:center;gap:9px;padding:9px 12px;cursor:pointer;
-    background:rgba(255,255,255,.03);font-size:12.5px;user-select:none;}
-  .mm-grp-hd:hover{background:rgba(255,255,255,.06);}
-  .mm-caret{display:inline-block;transition:transform .12s;color:var(--house);font-size:16px;line-height:1;}
+  .mm-cat{margin-bottom:4px;}
+  .mm-cat-hd{display:flex;align-items:center;gap:9px;padding:11px 4px 7px;cursor:pointer;
+    font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;user-select:none;}
+  .mm-cat-tot{font-size:10px;font-weight:800;opacity:.85;letter-spacing:.4px;text-transform:none;}
+  .mm-caret{display:inline-block;transition:transform .12s;font-size:15px;line-height:1;}
   .mm-caret.open{transform:rotate(90deg);}
-  .mm-grp-bd{display:none;padding:2px 12px 10px;}
-  .mm-grp-bd.open{display:block;}
+  .mm-cat-bd{display:none;}
+  .mm-cat-bd.open{display:block;}
+  .mm-row{display:grid;grid-template-columns:1fr 62px 44px 92px;align-items:center;gap:8px;
+    padding:8px 10px;background:#383838;border-radius:7px;margin-bottom:4px;font-size:12.5px;}
+  .mm-desc{color:#f0f3f7;line-height:1.35;}
+  .mm-stock{display:block;font-size:10px;color:var(--muted);margin-top:1px;}
+  .mm-qty{text-align:right;font-weight:800;color:#86efac;font-variant-numeric:tabular-nums;}
+  .mm-unit{font-size:10.5px;color:var(--muted);}
+  .mm-ext{text-align:right;color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums;}
+  .mm-grand{display:flex;justify-content:space-between;align-items:center;margin-top:18px;
+    padding:14px 12px;background:var(--panel);border:1px solid var(--line);border-radius:10px;}
+  .mm-grand span{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1.4px;color:var(--muted);}
+  .mm-grand b{font-size:15px;font-weight:800;color:#fff;}
   .mm-note{font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:8px;}
   .mm-tot{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:18px;}
   .mm-tot div{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 14px;}
@@ -1452,14 +1463,20 @@ window.FRAMING = (function(){
 })();
 
 /* ══ MATERIAL LIST ═══════════════════════════════════════════════════════
-   What the framing generator produced, arranged the way a lumber order and a
-   cut list are read. Two views of one array:
+   Built to read the same way as the barn tool's, so a salesman moving between
+   the two is not learning a second program:
 
-     ORDER    what to buy — every piece rounded up to a stock length
-     CUT LIST every piece at the length it is actually cut to
+     - grouped into CATEGORIES, each with its own heading and total
+     - one row per line item: description, quantity, unit, extended
+     - a grand total at the foot
+     - the same Category / Description / Qty / Unit / Total shape
 
-   Nothing here recalculates anything. If the drawing changes, this changes,
-   because it is the same members the 3D view is drawing.
+   The difference is what fills it. The barn tool lists SKUs; a house is
+   framed, so a line is "2x6 stud — 8'-7½"" and the quantity is a piece count.
+   Same list, different building.
+
+   Nothing is recalculated here. Every row comes from the members the 3D view
+   is drawing.
    ═══════════════════════════════════════════════════════════════════════ */
 window.MATLIST = (function(){
 
@@ -1471,174 +1488,217 @@ window.MATLIST = (function(){
   var LABEL = {
     plate_bottom: 'Bottom plate', plate_top: 'Top plate',
     stud: 'Stud', king: 'King stud', jack: 'Jack stud',
-    header: 'Header', cripple: 'Cripple', sill: 'Sill',
+    header: 'Header', cripple: 'Cripple', sill: 'Window sill',
     post: 'Post', beam: 'Beam'
   };
 
+  // Which section of the list a part belongs to, in the order it should read.
+  var CATS = [
+    { key: 'Wall Framing',   kinds: ['plate_bottom','plate_top','stud'],                 color: '#c084fc' },
+    { key: 'Openings',       kinds: ['king','jack','header','cripple','sill'],           color: '#60a5fa' },
+    { key: 'Porch',          kinds: ['post','beam'],                                     color: '#fbbf24' }
+  ];
+  function catFor(kind) {
+    for (var i = 0; i < CATS.length; i++) {
+      if (CATS[i].kinds.indexOf(kind) >= 0) return CATS[i];
+    }
+    return { key: 'Other', color: '#8f8f8f' };
+  }
+
+  var collapsed = {};
+
+  /* One row per part AND length — that is a line item you can order and cut. */
+  function lines() {
+    var F = window.FRAMING;
+    var rows = F.takeoff();
+    var out = [];
+    rows.forEach(function(r){
+      Object.keys(r.lengths).map(parseFloat).sort(function(a,b){ return b - a; }).forEach(function(L){
+        var qty = r.lengths[L];
+        var stock = null;
+        F.buyList().forEach(function(b){
+          if (b.size === r.size && Math.abs(b.cut - L) < 0.02 && stock === null) stock = b.stock;
+        });
+        out.push({
+          cat:   catFor(r.kind).key,
+          color: catFor(r.kind).color,
+          kind:  r.kind,
+          desc:  (LABEL[r.kind] || r.kind) + ' — ' + r.size + ' @ ' + F.fmtLen(L),
+          size:  r.size,
+          cut:   L,
+          stock: stock,
+          qty:   qty,
+          lf:    L * qty
+        });
+      });
+    });
+    return out;
+  }
+
   function build() {
     var M = window.HouseModel, F = window.FRAMING;
-    var members = F.all();
-    var rows = F.takeoff(members);
-
-    if (!members.length) {
-      return '<div style="color:var(--muted);font-size:13px;padding:20px 0;">'
-        + 'Nothing drawn yet. Add walls on the Plan tab and the list fills itself in.</div>';
+    if (!M.walls.length) {
+      return '<div style="color:var(--muted);font-size:13px;padding:24px 0;">'
+        + 'Nothing drawn yet. Add walls on the Plan tab and this fills itself in.</div>';
     }
 
-    // ── what to buy ──────────────────────────────────────────────────────
-    var buy = {};
-    F.buyList(members).forEach(function(b){
-      var k = b.size + '|' + b.stock;
-      if (!buy[k]) buy[k] = { size: b.size, stock: b.stock, qty: 0, lf: 0 };
-      buy[k].qty += b.qty;
-      buy[k].lf  += b.stock * b.qty;
-    });
-    var buyRows = Object.keys(buy).map(function(k){ return buy[k]; })
-      .sort(function(a,b){
-        if (a.size !== b.size) return a.size < b.size ? -1 : 1;
-        return a.stock - b.stock;
-      });
+    var all = lines();
+    var byCat = {};
+    all.forEach(function(l){ (byCat[l.cat] = byCat[l.cat] || []).push(l); });
 
-    var totalPieces = buyRows.reduce(function(a,r){ return a + r.qty; }, 0);
-    var totalLf     = buyRows.reduce(function(a,r){ return a + r.lf;  }, 0);
-    var cutLf       = rows.reduce(function(a,r){ return a + r.totalLf; }, 0);
-    var wastePct    = totalLf > 0 ? ((totalLf - cutLf) / totalLf * 100) : 0;
+    var order = CATS.map(function(c){ return c.key; }).concat(['Other']);
+    var totalPcs = 0, totalLf = 0;
+    all.forEach(function(l){ totalPcs += l.qty; totalLf += l.lf; });
 
     var html = '';
 
-    html += '<div class="mm-tot">'
-      + '<div><b>' + totalPieces.toLocaleString('en-US') + '</b><span>Pieces</span></div>'
-      + '<div><b>' + Math.round(totalLf).toLocaleString('en-US') + '</b><span>Lineal ft ordered</span></div>'
-      + '<div><b>' + Math.round(cutLf).toLocaleString('en-US') + '</b><span>Lineal ft used</span></div>'
-      + '<div><b>' + wastePct.toFixed(1) + '%</b><span>Offcut</span></div>'
-      + '</div>';
+    order.forEach(function(catKey){
+      var rows = byCat[catKey];
+      if (!rows || !rows.length) return;
+      var color = rows[0].color;
+      var catPcs = rows.reduce(function(a,r){ return a + r.qty; }, 0);
+      var catLf  = rows.reduce(function(a,r){ return a + r.lf;  }, 0);
+      var id = 'mmc_' + catKey.replace(/\W/g,'');
+      var isOpen = !collapsed[catKey];
 
-    // ORDER
-    html += '<div class="mm-sec"><h3>Order &mdash; buy this</h3>'
-      + '<table class="mm"><thead><tr>'
-      + '<th>Item</th><th>Length</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Lineal ft</th>'
-      + '</tr></thead><tbody>';
-    buyRows.forEach(function(r){
-      html += '<tr>'
-        + '<td class="sz">' + esc(r.size) + '</td>'
-        + '<td>' + r.stock + "'</td>"
-        + '<td class="num qty">' + r.qty + '</td>'
-        + '<td class="num" style="color:var(--muted);">' + Math.round(r.lf).toLocaleString('en-US') + '</td>'
-        + '</tr>';
-    });
-    html += '</tbody></table></div>';
-
-    // CUT LIST — one row per part, click to open the lengths inside it
-    html += '<div class="mm-sec"><h3>Cut list &mdash; make this</h3>';
-    rows.forEach(function(r, idx){
-      var lens = Object.keys(r.lengths).map(parseFloat).sort(function(a,b){ return b - a; });
-      var gid = 'mmg' + idx;
-      html += '<div class="mm-grp">'
-        + '<div class="mm-grp-hd" onclick="MATLIST.toggle(\'' + gid + '\')">'
-        +   '<span class="mm-caret" id="' + gid + 'c">&rsaquo;</span>'
-        +   '<span style="flex:1;">' + esc(LABEL[r.kind] || r.kind)
-        +     ' <b class="sz">' + esc(r.size) + '</b></span>'
-        +   '<span style="color:var(--muted);font-size:11px;">' + lens.length
-        +     (lens.length === 1 ? ' length' : ' lengths') + '</span>'
-        +   '<span class="qty" style="width:58px;text-align:right;">' + r.count + ' pcs</span>'
-        +   '<span style="color:#6f6f6f;width:62px;text-align:right;font-size:11px;">'
-        +     Math.round(r.totalLf) + ' lf</span>'
+      html += '<div class="mm-cat">'
+        + '<div class="mm-cat-hd" style="color:' + color + ';" onclick="MATLIST.toggle(\'' + catKey + '\')">'
+        +   '<span class="mm-caret' + (isOpen ? ' open' : '') + '" id="' + id + 'c">&rsaquo;</span>'
+        +   '<span style="flex:1;">' + esc(catKey) + '</span>'
+        +   '<span class="mm-cat-tot">' + catPcs.toLocaleString('en-US') + ' pcs &middot; '
+        +     Math.round(catLf).toLocaleString('en-US') + ' lf</span>'
         + '</div>'
-        + '<div class="mm-grp-bd" id="' + gid + '">'
-        +   '<table class="mm"><thead><tr><th>Cut to</th>'
-        +   '<th style="text-align:right;">Qty</th><th style="text-align:right;">Lineal ft</th>'
-        +   '<th>Where</th></tr></thead><tbody>';
-      lens.forEach(function(L){
-        var where = (r.kind === 'stud') ? 'wall framing'
-                  : (r.kind === 'king' || r.kind === 'jack' || r.kind === 'header'
-                     || r.kind === 'cripple' || r.kind === 'sill') ? 'openings'
-                  : (r.kind === 'post' || r.kind === 'beam') ? 'porch'
-                  : 'plates';
-        html += '<tr><td>' + F.fmtLen(L) + '</td>'
-          + '<td class="num qty">' + r.lengths[L] + '</td>'
-          + '<td class="num" style="color:var(--muted);">' + Math.round(L * r.lengths[L]) + '</td>'
-          + '<td style="color:#6f6f6f;font-size:11px;">' + where + '</td></tr>';
-      });
-      html += '</tbody></table></div></div>';
-    });
-    html += '</div>';
+        + '<div class="mm-cat-bd' + (isOpen ? ' open' : '') + '" id="' + id + '">';
 
-    // OPENINGS — so a door or window can be checked against the plan
+      rows.forEach(function(l){
+        html += '<div class="mm-row">'
+          + '<div class="mm-desc">' + esc(l.desc)
+          +   (l.stock ? '<span class="mm-stock">order ' + l.stock + "' stock</span>" : '')
+          + '</div>'
+          + '<div class="mm-qty">' + l.qty + '</div>'
+          + '<div class="mm-unit">pcs</div>'
+          + '<div class="mm-ext">' + Math.round(l.lf).toLocaleString('en-US') + ' lf</div>'
+          + '</div>';
+      });
+
+      html += '</div></div>';
+    });
+
+    // ── openings, so a door or window can be checked against the plan ─────
     var ops = [];
     M.walls.forEach(function(w){
       (w.openings || []).forEach(function(o){ ops.push({ w: w, o: o }); });
     });
     if (ops.length) {
-      html += '<div class="mm-sec"><h3>Openings</h3>'
-        + '<table class="mm"><thead><tr><th>Type</th><th>Size</th><th>Head</th>'
-        + '<th>Header</th><th style="text-align:right;">On wall</th></tr></thead><tbody>';
+      var oId = 'mmc_Openings2';
+      var oOpen = !collapsed['__ops'];
+      html += '<div class="mm-cat">'
+        + '<div class="mm-cat-hd" style="color:#86efac;" onclick="MATLIST.toggle(\'__ops\')">'
+        +   '<span class="mm-caret' + (oOpen ? ' open' : '') + '" id="' + oId + 'c">&rsaquo;</span>'
+        +   '<span style="flex:1;">Doors &amp; Windows</span>'
+        +   '<span class="mm-cat-tot">' + ops.length + ' openings</span>'
+        + '</div>'
+        + '<div class="mm-cat-bd' + (oOpen ? ' open' : '') + '" id="' + oId + '">';
       ops.forEach(function(e){
         var o = e.o;
-        html += '<tr>'
-          + '<td>' + esc(o.type) + (o.tag ? ' <span style="color:#6f6f6f;">' + esc(o.tag) + '</span>' : '') + '</td>'
-          + '<td class="sz">' + F.fmtLen(o.width) + ' &times; ' + F.fmtLen(o.height) + '</td>'
-          + '<td>' + F.fmtLen((o.sill || 0) + o.height) + '</td>'
-          + '<td class="sz">' + F.headerFor(o.width, e.w.bearing) + '</td>'
-          + '<td class="num" style="color:var(--muted);">#' + e.w.id + ' @ ' + F.fmtLen(o.pos) + '</td>'
-          + '</tr>';
+        html += '<div class="mm-row">'
+          + '<div class="mm-desc">' + esc(o.type === 'window' ? 'Window' : 'Door') + ' '
+          +   window.FRAMING.fmtLen(o.width) + ' &times; ' + window.FRAMING.fmtLen(o.height)
+          +   '<span class="mm-stock">' + window.FRAMING.headerFor(o.width, e.w.bearing)
+          +   ' header &middot; wall ' + e.w.id + '</span></div>'
+          + '<div class="mm-qty">1</div>'
+          + '<div class="mm-unit">ea</div>'
+          + '<div class="mm-ext">&mdash;</div>'
+          + '</div>';
       });
-      html += '</tbody></table></div>';
+      html += '</div></div>';
     }
 
-    // WALL SUMMARY — sheet goods and finishes come off these areas next
+    // ── walls, the basis for sheet goods when those arrive ───────────────
     var by = M.byAssembly();
-    html += '<div class="mm-sec"><h3>Walls</h3>'
-      + '<table class="mm"><thead><tr>'
-      + '<th>Assembly</th><th style="text-align:right;">Runs</th>'
-      + '<th style="text-align:right;">Lineal ft</th><th style="text-align:right;">Net sqft</th>'
-      + '</tr></thead><tbody>';
+    var wId = 'mmc_Walls';
+    var wOpen = !collapsed['__walls'];
+    html += '<div class="mm-cat">'
+      + '<div class="mm-cat-hd" style="color:#8f8f8f;" onclick="MATLIST.toggle(\'__walls\')">'
+      +   '<span class="mm-caret' + (wOpen ? ' open' : '') + '" id="' + wId + 'c">&rsaquo;</span>'
+      +   '<span style="flex:1;">Wall Areas</span>'
+      +   '<span class="mm-cat-tot">' + Math.round(M.perimeter()) + ' lf</span>'
+      + '</div>'
+      + '<div class="mm-cat-bd' + (wOpen ? ' open' : '') + '" id="' + wId + '">';
     Object.keys(by).forEach(function(k){
       var a = window.ASSEMBLIES[k] || { label: k };
-      html += '<tr>'
-        + '<td>' + esc(a.label) + '</td>'
-        + '<td class="num">' + by[k].count + '</td>'
-        + '<td class="num">' + Math.round(by[k].lf) + '</td>'
-        + '<td class="num">' + Math.round(by[k].sqft).toLocaleString('en-US') + '</td>'
-        + '</tr>';
+      html += '<div class="mm-row">'
+        + '<div class="mm-desc">' + esc(a.label)
+        +   '<span class="mm-stock">' + by[k].count + ' runs</span></div>'
+        + '<div class="mm-qty">' + Math.round(by[k].sqft).toLocaleString('en-US') + '</div>'
+        + '<div class="mm-unit">sqft</div>'
+        + '<div class="mm-ext">' + Math.round(by[k].lf) + ' lf</div>'
+        + '</div>';
     });
-    html += '</tbody></table>'
-      + '<div class="mm-note">Net square footage has openings removed &mdash; it is what sheathing, '
-      + 'insulation and drywall actually cover. Those, and the roof, are not counted yet.</div></div>';
+    html += '<div class="mm-note">Net of openings — what sheathing, insulation and drywall cover. '
+      + 'Those and the roof are not counted yet.</div>';
+    html += '</div></div>';
+
+    // ── the foot ─────────────────────────────────────────────────────────
+    var buy = {};
+    window.FRAMING.buyList().forEach(function(b){
+      var k = b.size + '|' + b.stock;
+      buy[k] = (buy[k] || 0) + b.qty;
+    });
+    var orderLines = Object.keys(buy).sort(function(a,b){
+      var pa = a.split('|'), pb = b.split('|');
+      if (pa[0] !== pb[0]) return pa[0] < pb[0] ? -1 : 1;
+      return parseFloat(pa[1]) - parseFloat(pb[1]);
+    }).map(function(k){
+      var pr = k.split('|');
+      return '<div class="mm-row"><div class="mm-desc">' + esc(pr[0]) + ' &times; ' + pr[1] + "'</div>"
+        + '<div class="mm-qty">' + buy[k] + '</div><div class="mm-unit">pcs</div>'
+        + '<div class="mm-ext">&mdash;</div></div>';
+    }).join('');
+
+    html += '<div class="mm-cat">'
+      + '<div class="mm-cat-hd" style="color:#FF8200;" onclick="MATLIST.toggle(\'__order\')">'
+      +   '<span class="mm-caret' + (!collapsed['__order'] ? ' open' : '') + '" id="mmc_Orderc">&rsaquo;</span>'
+      +   '<span style="flex:1;">Order &mdash; stock lengths</span>'
+      +   '<span class="mm-cat-tot">what to buy</span>'
+      + '</div>'
+      + '<div class="mm-cat-bd' + (!collapsed['__order'] ? ' open' : '') + '" id="mmc_Order">'
+      + orderLines + '</div></div>';
+
+    html += '<div class="mm-grand">'
+      + '<span>Total</span>'
+      + '<b>' + totalPcs.toLocaleString('en-US') + ' pieces &middot; '
+      + Math.round(totalLf).toLocaleString('en-US') + ' lineal ft</b>'
+      + '</div>';
 
     return html;
   }
 
   function plain() {
-    var F = window.FRAMING, M = window.HouseModel;
-    var members = F.all();
+    var F = window.FRAMING;
     var out = ['MATERIAL LIST', ''];
+    var byCat = {};
+    lines().forEach(function(l){ (byCat[l.cat] = byCat[l.cat] || []).push(l); });
+    Object.keys(byCat).forEach(function(c){
+      out.push(c.toUpperCase());
+      byCat[c].forEach(function(l){ out.push('  ' + l.desc + '   ' + l.qty + ' pcs'); });
+      out.push('');
+    });
     out.push('ORDER');
     var buy = {};
-    F.buyList(members).forEach(function(b){
-      var k = b.size + '|' + b.stock;
-      buy[k] = (buy[k] || 0) + b.qty;
-    });
+    F.buyList().forEach(function(b){ var k = b.size + '|' + b.stock; buy[k] = (buy[k] || 0) + b.qty; });
     Object.keys(buy).sort().forEach(function(k){
-      var p = k.split('|');
-      out.push('  ' + p[0] + ' x ' + p[1] + "'  " + buy[k] + ' pcs');
-    });
-    out.push('', 'CUT LIST');
-    F.takeoff(members).forEach(function(r){
-      Object.keys(r.lengths).map(parseFloat).sort(function(a,b){ return b-a; }).forEach(function(L){
-        out.push('  ' + (LABEL[r.kind] || r.kind) + '  ' + r.size + '  ' + F.fmtLen(L) + '  ' + r.lengths[L] + ' pcs');
-      });
+      var pr = k.split('|');
+      out.push('  ' + pr[0] + ' x ' + pr[1] + "'   " + buy[k] + ' pcs');
     });
     return out.join('\n');
   }
 
   return {
-    toggle: function(id) {
-      var b = document.getElementById(id);
-      var c = document.getElementById(id + 'c');
-      if (!b) return;
-      var on = b.className.indexOf('open') >= 0;
-      b.className = on ? 'mm-grp-bd' : 'mm-grp-bd open';
-      if (c) c.className = on ? 'mm-caret' : 'mm-caret open';
+    toggle: function(catKey) {
+      collapsed[catKey] = !collapsed[catKey];
+      var b = document.getElementById('mmBody');
+      if (b) b.innerHTML = build();
     },
     open: function() {
       var m = document.getElementById('matModal');
@@ -1659,30 +1719,15 @@ window.MATLIST = (function(){
       if (m) m.className = '';
     },
     copy: function() {
-      try {
-        navigator.clipboard.writeText(plain());
-        alert('Material list copied.');
-      } catch(e) { alert('Could not copy — use Download CSV instead.'); }
+      try { navigator.clipboard.writeText(plain()); alert('Material list copied.'); }
+      catch(e) { alert('Could not copy — use Download CSV instead.'); }
     },
     csv: function() {
-      var F = window.FRAMING;
-      var members = F.all();
-      var lines = ['Section,Part,Item,Length,Qty'];
-      var buy = {};
-      F.buyList(members).forEach(function(b){
-        var k = b.size + '|' + b.stock;
-        buy[k] = (buy[k] || 0) + b.qty;
+      var rows = ['Category,Description,Qty,Unit,Lineal ft'];
+      lines().forEach(function(l){
+        rows.push('"' + l.cat + '","' + l.desc.replace(/"/g,'""') + '",' + l.qty + ',pcs,' + Math.round(l.lf));
       });
-      Object.keys(buy).sort().forEach(function(k){
-        var p = k.split('|');
-        lines.push('Order,,' + p[0] + ',' + p[1] + " ft," + buy[k]);
-      });
-      F.takeoff(members).forEach(function(r){
-        Object.keys(r.lengths).map(parseFloat).sort(function(a,b){ return b-a; }).forEach(function(L){
-          lines.push('Cut list,' + (LABEL[r.kind] || r.kind) + ',' + r.size + ',"' + F.fmtLen(L) + '",' + r.lengths[L]);
-        });
-      });
-      var blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+      var blob = new Blob([rows.join('\n')], { type: 'text/csv' });
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a');
       a.href = url; a.download = 'material-list.csv';
@@ -2567,10 +2612,10 @@ document.addEventListener('DOMContentLoaded', function(){
   PLAN.init();
   HW.setRect();
   HW.resetView();
-  console.log('[House] build 2026-08-19 20:28 UTC');
+  console.log('[House] build 2026-08-19 20:36 UTC');
 });
 </script>
 
-<script>window.SAUCE_BUILD = '2026-08-19 20:28 UTC';</script>
+<script>window.SAUCE_BUILD = '2026-08-19 20:36 UTC';</script>
 </body>
 </html>
