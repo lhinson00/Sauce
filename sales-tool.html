@@ -41068,6 +41068,7 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       +   '<div style="width:90px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;text-align:right;">Price</div>'
       +   '<div style="width:340px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;">Matches catalog item</div>'
       + '</div>'
+      + _miPickListHtml()
       + '<div id="miList" style="flex:1;overflow-y:auto;"></div>'
       + '<div style="padding:9px 20px;border-top:1px solid #4a4a4a;font-size:11px;color:#8f8f8f;font-family:Outfit,sans-serif;" id="miStatus">'
       +   'Check the guessed rows, fix anything wrong, then Save. Your choices are remembered against their codes.'
@@ -41146,29 +41147,96 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
           : '');
   }
 
-  function _miRowHtml(r, i) {
-    var cands = r.sku ? [] : _miCandidates(r.theirCode, r.theirDesc, 6);
-    var tone = !r.sku ? '#ef4444' : (r.how === 'guessed' ? '#fbbf24' : '#86efac');
-    var label = !r.sku ? 'no match' : (r.how === 'remembered' ? 'remembered' : r.how === 'code' ? 'exact code' : Math.round(r.score * 100) + '%');
-    var opts = '<option value="">- skip this row -</option>';
-    var pool = r.sku ? _miCandidates(r.theirCode, r.theirDesc, 6) : cands;
-    var have = {};
-    pool.forEach(function(c) {
-      have[c.key] = 1;
-      opts += '<option value="' + _esc(c.key) + '"' + (c.key === r.sku ? ' selected' : '') + '>'
-            + _esc(c.desc) + '  (' + Math.round(c.score * 100) + '%)</option>';
+  // One datalist for the whole screen. Every catalog item is selectable by
+  // typing, so a row the matcher could not place is still one field away from
+  // being set - the old top-candidates-only dropdown left those rows with
+  // nothing to choose at all.
+  var _miPickList = null;
+  function _miPickListHtml() {
+    if (_miPickList) return _miPickList;
+    var seen = {}, opts = '';
+    _miBuildIndex().forEach(function(it) {
+      var label = it.desc || it.key;
+      if (seen[label]) label = label + ' [' + it.key + ']';
+      seen[label] = it.key;
+      opts += '<option value="' + _esc(label) + '"></option>';
     });
-    if (r.sku && !have[r.sku]) {
-      var it = _miBuildIndex().filter(function(x) { return x.key === r.sku; })[0];
-      opts = '<option value="' + _esc(r.sku) + '" selected>' + _esc(it ? it.desc : r.sku) + '</option>' + opts;
+    _miLabelToKey = seen;
+    _miPickList = '<datalist id="miAllItems">' + opts + '</datalist>';
+    return _miPickList;
+  }
+  var _miLabelToKey = {};
+
+  function _miKeyLabel(key) {
+    if (!key) return '';
+    _miPickListHtml();
+    for (var lbl in _miLabelToKey) if (_miLabelToKey[lbl] === key) return lbl;
+    return key;
+  }
+
+  // Typed text -> catalog key. Exact label first, then a forgiving contains
+  // match so a half-typed entry still resolves.
+  window.miPick = function(i, text) {
+    if (!_miRows[i]) return;
+    var t = String(text || '').trim();
+    if (!t) { _miRows[i].sku = ''; _miRows[i].how = ''; _miRows[i].score = 0; _miRender(null); return; }
+    _miPickListHtml();
+    var key = _miLabelToKey[t];
+    if (!key) {
+      var lc = t.toLowerCase();
+      for (var lbl in _miLabelToKey) {
+        if (lbl.toLowerCase() === lc) { key = _miLabelToKey[lbl]; break; }
+      }
     }
-    return '<div style="display:flex;gap:10px;align-items:center;padding:7px 20px;border-bottom:1px solid rgba(255,255,255,.05);font-family:Outfit,sans-serif;">'
+    if (!key) {
+      var hits = Object.keys(_miLabelToKey).filter(function(l) { return l.toLowerCase().indexOf(t.toLowerCase()) >= 0; });
+      if (hits.length === 1) key = _miLabelToKey[hits[0]];
+    }
+    if (!key) { _miSay('No catalog item matches "' + t + '" - keep typing and pick from the list.', '#ef4444'); return; }
+    _miRows[i].sku = key;
+    _miRows[i].how = 'chosen';
+    _miRows[i].score = 1;
+    _miRender(null);
+  };
+
+  function _miSay(m, c) {
+    var st = document.getElementById('miStatus');
+    if (st) { st.textContent = m; st.style.color = c || '#8f8f8f'; }
+  }
+
+  function _miRowHtml(r, i) {
+    var tone = !r.sku ? '#ef4444' : (r.how === 'guessed' ? '#fbbf24' : '#86efac');
+    var label = !r.sku ? 'no match'
+              : r.how === 'remembered' ? 'remembered'
+              : r.how === 'code' ? 'exact code'
+              : r.how === 'chosen' ? 'you set this'
+              : Math.round(r.score * 100) + '%';
+
+    // Top suggestions as one-click chips - faster than typing when the matcher
+    // got close but not close enough to accept on its own.
+    var chips = '';
+    if (!r.sku || r.how === 'guessed') {
+      _miCandidates(r.theirCode, r.theirDesc, 3).forEach(function(c) {
+        if (c.key === r.sku) return;
+        chips += '<button onclick="miSet(' + i + ',\'' + _esc(c.key) + '\')" title="' + _esc(c.desc) + '" '
+          + 'style="padding:3px 7px;margin:2px 3px 0 0;background:rgba(255,130,0,.12);color:#FF8200;border:1px solid rgba(255,130,0,.4);border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+          + _esc(c.desc) + ' ' + Math.round(c.score * 100) + '%</button>';
+      });
+    }
+
+    return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 20px;border-bottom:1px solid rgba(255,255,255,.05);font-family:Outfit,sans-serif;">'
       + '<div style="flex:1;min-width:0;">'
-      +   '<div style="font-size:12px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + _esc(r.theirDesc || '(no description)') + '</div>'
+      +   '<div style="font-size:12px;color:#fff;">' + _esc(r.theirDesc || '(no description)') + '</div>'
       +   '<div style="font-size:10px;color:#8f8f8f;">' + _esc(r.theirCode || '(no code)') + ' &middot; <span style="color:' + tone + ';">' + label + '</span></div>'
       + '</div>'
-      + '<div style="width:90px;text-align:right;font-size:12px;font-weight:700;color:#c8c8c8;">' + (r.price === '' ? '—' : '$' + r.price) + '</div>'
-      + '<select onchange="miSet(' + i + ',this.value)" style="width:340px;padding:6px 8px;border-radius:6px;border:1px solid ' + (r.sku ? '#5e5e5e' : '#ef4444') + ';background:#3a3a3a;color:#fff;font-size:11px;font-family:Outfit,sans-serif;">' + opts + '</select>'
+      + '<div style="width:80px;text-align:right;font-size:12px;font-weight:700;color:#c8c8c8;padding-top:2px;">' + (r.price === '' ? '\u2014' : '$' + r.price) + '</div>'
+      + '<div style="width:340px;">'
+      +   '<input list="miAllItems" value="' + _esc(_miKeyLabel(r.sku)) + '" placeholder="Type to find any item\u2026" '
+      +     'onchange="miPick(' + i + ',this.value)" '
+      +     'style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid ' + (r.sku ? '#5e5e5e' : '#ef4444') + ';background:#3a3a3a;color:#fff;font-size:11px;font-family:Outfit,sans-serif;">'
+      +   (chips ? '<div style="margin-top:2px;">' + chips + '</div>' : '')
+      +   (r.sku ? '<button onclick="miSet(' + i + ',\'\')" style="margin-top:3px;padding:2px 7px;background:none;color:#8f8f8f;border:1px solid #5e5e5e;border-radius:5px;font-size:10px;cursor:pointer;font-family:Outfit,sans-serif;">skip this row</button>' : '')
+      + '</div>'
       + '</div>';
   }
 
