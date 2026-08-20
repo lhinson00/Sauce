@@ -21802,8 +21802,28 @@ function sbWhyRefused() {
 // deleting that company's rows and inserting the new ones.
 
 function _companyKey() {
+  // A super admin can point the pricing tools at another company for the
+  // session, so onboarding a customer never means borrowing their password.
+  // Only honoured for a super - everyone else is pinned to their own company.
+  try {
+    var ov = window._coOverride;
+    if (ov && window.SauceRates && window.SauceRates.isSuper && window.SauceRates.isSuper()) {
+      return String(ov).toLowerCase().trim();
+    }
+  } catch(e) {}
   return ((window.currentUser || {}).companyId || 'default').toLowerCase().trim();
 }
+
+// Set or clear the company the pricing screens act on. Returns the key in force.
+window.setCompanyOverride = function(co) {
+  window._coOverride = (co && String(co).trim()) ? String(co).toLowerCase().trim() : null;
+  try { localStorage.setItem('sauce_co_override', window._coOverride || ''); } catch(e) {}
+  return _companyKey();
+};
+try {
+  var _ovSaved = localStorage.getItem('sauce_co_override');
+  if (_ovSaved) window._coOverride = _ovSaved;
+} catch(e) {}
 
 // Pull this company's price list. Paged, because a full catalogue runs to
 // thousands of rows and PostgREST caps a single response.
@@ -21840,12 +21860,16 @@ async function sbReplaceInventory(rows, companyId, onProgress) {
   for (var i = 0; i < rows.length; i += chunk) {
     var batch = rows.slice(i, i + chunk).map(function(r) {
       var price = parseFloat(String(r[2] == null ? '' : r[2]).replace(/[^0-9.\-]/g, ''));
-      return {
+      var o = {
         company_id:  co,
         sku:         String(r[0] || '').trim().toUpperCase(),
         description: String(r[1] || '').trim(),
         price:       isNaN(price) ? null : price
       };
+      // The company's own part number, when the CSV carried one.
+      var vs = String(r[3] == null ? '' : r[3]).trim();
+      if (vs) o.vendor_sku = vs;
+      return o;
     }).filter(function(o) { return o.sku; });
     if (!batch.length) continue;
     var res = await sbFetch('inventory', {
@@ -21853,6 +21877,19 @@ async function sbReplaceInventory(rows, companyId, onProgress) {
       body: JSON.stringify(batch),
       headers: { 'Prefer': 'return=minimal' }   // sbFetch signs with the session
     });
+    // Older projects have no vendor_sku column. Rather than lose the whole
+    // upload over a display-only field, resend the batch without it.
+    if (sbFailed() && batch.some(function(o) { return o.vendor_sku; })) {
+      var plain = batch.map(function(o) {
+        return { company_id: o.company_id, sku: o.sku, description: o.description, price: o.price };
+      });
+      res = await sbFetch('inventory', {
+        method: 'POST',
+        body: JSON.stringify(plain),
+        headers: { 'Prefer': 'return=minimal' }
+      });
+      if (!sbFailed()) window._vendorSkuMissing = true;
+    }
     sent += batch.length;
     if (onProgress) onProgress(sent, rows.length);
   }
@@ -39336,7 +39373,12 @@ window.SauceRates = (function() {
         : (pr.isDefault ? 'company · default' : 'company');
       opts += '<option value="' + pr.id + '"' + (pr.id === activeId ? ' selected' : '') + '>' + pr.name + '  —  ' + tag + '</option>';
     });
-    if (!profs.length) opts = '<option value="">No saved profiles yet — built-in rates</option>';
+    if (!profs.length) opts = '<option value="">No saved profiles yet &mdash; built-in rates</option>';
+    // Nothing selected means the browser shows the FIRST option, which reads as
+    // though that profile is in force when it is not. Say so plainly instead.
+    else if (!activeId || !profs.some(function(p) { return p.id === activeId; })) {
+      opts = '<option value="" selected>Built-in rates (no profile) &mdash; pick one to load it</option>' + opts;
+    }
 
     var act = R.active();
     var readOnly = act && !act.canEdit;
@@ -40625,6 +40667,60 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     if (typeof loadInventoryPricing === 'function') loadInventoryPricing();
   };
 
+  // ── which company am I editing? ──────────────────────────────────────────
+  // Only a super sees this. It lets the owner load a customer's price list
+  // without signing in as that customer. Everyone else edits their own company
+  // and never sees the control at all.
+  function _shIsSuper() {
+    try { return !!(window.SauceRates && window.SauceRates.isSuper && window.SauceRates.isSuper()); }
+    catch(e) { return false; }
+  }
+
+  function _shCoPickerHtml() {
+    if (!_shIsSuper()) return '';
+    var mine = ((window.currentUser || {}).companyId || 'default').toLowerCase();
+    var cur  = _companyKey();
+    var away = (cur !== mine);
+    return '<div style="display:flex;align-items:center;gap:7px;padding:5px 10px;border-radius:8px;'
+      + (away ? 'background:rgba(255,130,0,.12);border:1px solid rgba(255,130,0,.5);' : 'background:rgba(255,255,255,.04);border:1px solid #5e5e5e;')
+      + '">'
+      + '<span style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:' + (away ? '#FF8200' : '#8f8f8f') + ';font-family:Outfit,sans-serif;">Editing</span>'
+      + '<input id="shCoInput" value="' + _esc(cur) + '" list="shCoList" '
+      +   'style="width:130px;padding:5px 7px;border-radius:6px;border:1px solid #5e5e5e;background:#2b2b2b;color:' + (away ? '#FF8200' : '#fff') + ';font-size:12px;font-weight:800;font-family:Outfit,sans-serif;">'
+      + '<datalist id="shCoList"></datalist>'
+      + '<button onclick="shSwitchCompany()" style="padding:5px 10px;background:#FF8200;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Load</button>'
+      + (away ? '<button onclick="shSwitchCompany(\'\')" title="Back to your own company" style="padding:5px 9px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Mine</button>' : '')
+      + '</div>';
+  }
+
+  // Reopen the sheet against another company. Everything downstream reads
+  // _companyKey(), so the whole screen follows - load, save, upload and clear.
+  window.shSwitchCompany = async function(forced) {
+    var v = (forced !== undefined)
+      ? forced
+      : ((document.getElementById('shCoInput') || {}).value || '');
+    var mine = ((window.currentUser || {}).companyId || 'default').toLowerCase();
+    var next = window.setCompanyOverride(v && v.trim().toLowerCase() !== mine ? v : '');
+    _shEdits = {};                       // never carry one company's edits to another
+    if (typeof loadInventoryPricing === 'function') { try { await loadInventoryPricing(); } catch(e) {} }
+    openPricingSheet();
+    console.log('[Inventory] editing company:', next);
+  };
+
+  // Fill the datalist from the companies the admin console knows about.
+  async function _shFillCompanies() {
+    if (!_shIsSuper()) return;
+    var dl = document.getElementById('shCoList');
+    if (!dl) return;
+    try {
+      var j = await sbFunction('admin-users', { action: 'companies' }, 20000);
+      var list = (j && j.companies) || [];
+      dl.innerHTML = list.map(function(c) {
+        return '<option value="' + _esc(c.companyId) + '">' + _esc(c.companyName || c.companyId) + '</option>';
+      }).join('');
+    } catch(e) { /* the picker still accepts a typed id */ }
+  }
+
   window.openPricingSheet = async function() {
     var old = document.getElementById('pricingSheetModal');
     if (old) old.remove();
@@ -40637,6 +40733,7 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
         '<div style="padding:14px 20px 10px;border-bottom:1px solid #4a4a4a;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">'
       +   '<div><div style="font-size:16px;font-weight:800;color:#fff;font-family:Outfit,sans-serif;">Pricing Sheet</div>'
       +     '<div id="shHeadInfo" style="font-size:11px;color:#8f8f8f;margin-top:2px;font-family:Outfit,sans-serif;">Loading...</div></div>'
+      +   _shCoPickerHtml()
       +   '<span style="flex:1;"></span>'
       +   '<span id="shCounter" style="font-size:11px;color:#8f8f8f;font-family:Outfit,sans-serif;"></span>'
       +   '<button onclick="shSave()" style="padding:9px 18px;background:#FF8200;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Save</button>'
@@ -40678,6 +40775,7 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       e.target.value = '';
     };
 
+    _shFillCompanies();
     var ok = await _shLoad();
     if (!ok) {
       var l = document.getElementById('shList');
@@ -41214,6 +41312,10 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       setStatus('That is the spreadsheet version. Pick the .csv file instead.', '#ef4444');
       return;
     }
+    if (/\.pdf$/i.test(file.name)) {
+      setStatus('PDF price lists are not supported yet. Export it to CSV and upload that.', '#ef4444');
+      return;
+    }
     if (!file.size) { setStatus('That file is empty.', '#ef4444'); return; }
     var fr = new FileReader();
     fr.onerror = function() { setStatus('Could not read that file.', '#ef4444'); };
@@ -41228,10 +41330,12 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
 
       // Drop a header row if the first cell looks like a label rather than a SKU.
       var first = String(rows[0][0] || '').trim().toLowerCase();
-      if (first === 'sku' || first === 'item' || first === 'part' || first === 'part number') rows = rows.slice(1);
+      if (first === 'sku' || first === 'item' || first === 'part' || first === 'part number' || first === 'code') rows = rows.slice(1);
       if (!rows.length) { setStatus('That CSV has a header but no rows.', '#ef4444'); return; }
 
-      var payload = rows.map(function(r) { return [r[0] || '', r[1] || '', r[2] || '']; });
+      // Column 4 is the company's own part number. The export writes it, so the
+      // import has to read it back or a round trip silently drops every code.
+      var payload = rows.map(function(r) { return [r[0] || '', r[1] || '', r[2] || '', r[3] || '']; });
       var priced  = payload.filter(function(r) { return String(r[0]).trim() && !isNaN(parseFloat(String(r[2]).replace(/[^0-9.\-]/g, ''))); }).length;
       if (!priced) { setStatus('No priced SKUs found — expected columns: SKU, Description, Price.', '#ef4444'); return; }
       if (!confirm('Replace the SKU price list with ' + priced + ' priced item' + (priced === 1 ? '' : 's') + ' from this file?\n\nThis replaces the whole list for your company.')) { setStatus('Cancelled.'); return; }
