@@ -40667,6 +40667,382 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     if (typeof loadInventoryPricing === 'function') loadInventoryPricing();
   };
 
+  // ══ SUPPLIER FILE IMPORT ═══════════════════════════════════════════════════
+  // Every company sends their price list in their own vocabulary. This screen
+  // lines their rows up against the catalog once, then REMEMBERS the pairing in
+  // inventory.vendor_sku. After that, an updated price file matches instantly on
+  // their own code and only the prices change - no re-matching, no review, and
+  // never a wholesale replace.
+
+  var _miRows = [];        // { theirCode, theirDesc, price, sku, score, how }
+  var _miFilter = 'all';
+
+  function _miTokens(s) {
+    return String(s || '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, ' ')
+      .trim()
+      .split(' ')
+      // Keep single characters. Dropping them collapsed "B&B Outside Corner"
+      // and "Outside Corner" into the same token set, so the two could never
+      // be told apart and the tie broke on catalog order.
+      .filter(function(t) { return !!t; });
+  }
+
+  // Colour and gauge are decisive - two rows that disagree on either are not the
+  // same item however much the rest of the wording overlaps.
+  function _miFacets(s) {
+    var u = ' ' + String(s || '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ') + ' ';
+    var color = /\bBLACK\b|\bBLK\b/.test(u) ? 'BLACK'
+              : /\bWHITE\b|\bWHT\b|\bPW\b/.test(u) ? 'WHITE'
+              : /\bGRAY\b|\bGREY\b|\bLG\b/.test(u) ? 'GRAY' : '';
+    var ga = u.match(/\b(26|29)\s*GA/) || u.match(/\b(26|29)\s*GAUGE/);
+    var ln = u.match(/\b(10|12|14|16|18|20)\s*(?:FT|FOOT|')\b/);
+    return { color: color, gauge: ga ? ga[1] : '', len: ln ? ln[1] : '' };
+  }
+
+  var _miIndex = null;
+  function _miBuildIndex() {
+    if (_miIndex) return _miIndex;
+    _miIndex = (window.SAUCE_CATALOG || []).map(function(row) {
+      return {
+        key: row[0],
+        desc: row[1],
+        cat: row[2],
+        toks: _miTokens(row[0] + ' ' + row[1]),
+        facets: _miFacets(row[0] + ' ' + row[1])
+      };
+    });
+    return _miIndex;
+  }
+
+  // 0..1. Token overlap, then facets veto or confirm.
+  function _miScore(theirToks, theirFacets, item) {
+    if (!theirToks.length) return 0;
+    var set = {}, i;
+    for (i = 0; i < item.toks.length; i++) set[item.toks[i]] = 1;
+    var seenT = {};
+    var hit = 0;
+    for (i = 0; i < theirToks.length; i++) {
+      if (seenT[theirToks[i]]) continue;
+      seenT[theirToks[i]] = 1;
+      if (set[theirToks[i]]) hit++;
+    }
+    // Jaccard, not plain overlap. A catalog item carrying words theirs does not
+    // have is penalised, which is what separates "Outside Corner" from the
+    // longer "B&B Outside Corner" when their row says neither.
+    var uniqT = Object.keys(seenT).length;
+    var uniqI = Object.keys(set).length;
+    var base = hit / Math.max(1, (uniqT + uniqI - hit));
+
+    var f = item.facets, t = theirFacets;
+    if (t.color && f.color && t.color !== f.color) return 0;   // wrong colour
+    if (t.gauge && f.gauge && t.gauge !== f.gauge) return 0;    // wrong gauge
+    if (t.len   && f.len   && t.len   !== f.len)   return 0;    // wrong length
+    if (t.color && f.color && t.color === f.color) base += 0.10;
+    if (t.gauge && f.gauge && t.gauge === f.gauge) base += 0.08;
+    if (t.len   && f.len   && t.len   === f.len)   base += 0.08;
+    return Math.min(base, 1);
+  }
+
+  function _miCandidates(theirCode, theirDesc, n) {
+    var toks = _miTokens(theirDesc + ' ' + theirCode);
+    var facets = _miFacets(theirDesc + ' ' + theirCode);
+    var out = [];
+    _miBuildIndex().forEach(function(item) {
+      var s = _miScore(toks, facets, item);
+      if (s > 0.12) out.push({ key: item.key, desc: item.desc, score: s });
+    });
+    // On a tie prefer the plainer item - a shorter key means fewer qualifiers
+    // the supplier never mentioned.
+    out.sort(function(a, b) {
+      if (Math.abs(b.score - a.score) > 0.001) return b.score - a.score;
+      return a.key.length - b.key.length;
+    });
+    return out.slice(0, n || 6);
+  }
+
+  // Where a row's match came from, worst to best: guessed < code < remembered.
+  function _miMatchAll(rows) {
+    // What this company's codes already point at. _shRows is loaded by the
+    // pricing sheet, which is where this screen is launched from.
+    var known = {};   // their code -> catalog key
+    try {
+      (_shRows || []).forEach(function(row) {
+        if (row && row.vendor) known[String(row.vendor).trim().toUpperCase()] = row.key;
+      });
+    } catch(e) {}
+
+    var catKeys = {};
+    _miBuildIndex().forEach(function(it) { catKeys[it.key.toUpperCase()] = it.key; });
+
+    return rows.map(function(r) {
+      var code = String(r.theirCode || '').trim();
+      var up = code.toUpperCase();
+      if (code && known[up]) {
+        return { theirCode: code, theirDesc: r.theirDesc, price: r.price, sku: known[up], score: 1, how: 'remembered' };
+      }
+      if (code && catKeys[up]) {
+        return { theirCode: code, theirDesc: r.theirDesc, price: r.price, sku: catKeys[up], score: 1, how: 'code' };
+      }
+      var c = _miCandidates(code, r.theirDesc, 1);
+      return {
+        theirCode: code,
+        theirDesc: r.theirDesc,
+        price: r.price,
+        sku: (c[0] && c[0].score >= 0.40) ? c[0].key : '',
+        score: c[0] ? c[0].score : 0,
+        how: (c[0] && c[0].score >= 0.40) ? 'guessed' : ''
+      };
+    });
+  }
+
+  // ── column detection ───────────────────────────────────────────────────────
+  // Their file will not have our column order. Work out which is which from the
+  // header when there is one, and from the shape of the data when there is not.
+  function _miDetectColumns(rows) {
+    var head = rows[0] || [];
+    var lower = head.map(function(c) { return String(c || '').trim().toLowerCase(); });
+    var idx = { code: -1, desc: -1, price: -1 }, hasHeader = false;
+
+    lower.forEach(function(h, i) {
+      if (idx.code < 0 && /(^|\b)(sku|code|item|part|product|number|no\.?)\b/.test(h)) idx.code = i;
+      if (idx.desc < 0 && /desc|name|material|product name/.test(h)) idx.desc = i;
+      if (idx.price < 0 && /price|cost|rate|each|amount|\$/.test(h)) idx.price = i;
+    });
+    hasHeader = (idx.code >= 0 || idx.desc >= 0 || idx.price >= 0);
+
+    var body = hasHeader ? rows.slice(1) : rows;
+    if (!body.length) return null;
+
+    // Fall back on shape: the price column is the one that parses as a number
+    // nearly every time; the description is the wordiest of the rest.
+    var cols = Math.max.apply(null, body.slice(0, 200).map(function(r) { return r.length; }));
+    function numRate(i) {
+      var n = 0, seen = 0;
+      body.slice(0, 200).forEach(function(r) {
+        var v = String(r[i] == null ? '' : r[i]).replace(/[$,\s]/g, '');
+        if (!v) return;
+        seen++;
+        if (v !== '' && !isNaN(parseFloat(v)) && /^-?[0-9.]+$/.test(v)) n++;
+      });
+      return seen ? n / seen : 0;
+    }
+    function wordiness(i) {
+      var t = 0, seen = 0;
+      body.slice(0, 200).forEach(function(r) {
+        var v = String(r[i] == null ? '' : r[i]).trim();
+        if (!v) return;
+        seen++; t += v.split(/\s+/).length;
+      });
+      return seen ? t / seen : 0;
+    }
+    if (idx.price < 0) {
+      var best = -1, bestR = 0;
+      for (var i = 0; i < cols; i++) { var r0 = numRate(i); if (r0 > bestR && r0 > 0.6) { bestR = r0; best = i; } }
+      idx.price = best;
+    }
+    if (idx.desc < 0) {
+      var bw = 0, bd = -1;
+      for (var j = 0; j < cols; j++) { if (j === idx.price) continue; var w = wordiness(j); if (w > bw) { bw = w; bd = j; } }
+      idx.desc = bd;
+    }
+    if (idx.code < 0) {
+      for (var k = 0; k < cols; k++) if (k !== idx.price && k !== idx.desc) { idx.code = k; break; }
+    }
+    return { idx: idx, body: body, cols: cols, hasHeader: hasHeader };
+  }
+
+  // ── the screen ─────────────────────────────────────────────────────────────
+  window.openSupplierImport = function(text) {
+    var parsed = parseCsv(text || '');
+    if (!parsed.length) { alert('That file came back empty.'); return; }
+    var det = _miDetectColumns(parsed);
+    if (!det) { alert('Could not find any rows in that file.'); return; }
+
+    var raw = det.body.map(function(r) {
+      var p = parseFloat(String(r[det.idx.price] == null ? '' : r[det.idx.price]).replace(/[^0-9.\-]/g, ''));
+      return {
+        theirCode: det.idx.code >= 0 ? r[det.idx.code] : '',
+        theirDesc: det.idx.desc >= 0 ? r[det.idx.desc] : '',
+        price: isNaN(p) ? '' : p
+      };
+    }).filter(function(r) {
+      return String(r.theirCode || '').trim() || String(r.theirDesc || '').trim();
+    });
+
+    _miRows = _miMatchAll(raw);
+    _miFilter = 'all';
+    _miRender(det);
+  };
+
+  function _miCounts() {
+    var c = { total: _miRows.length, remembered: 0, guessed: 0, unmatched: 0, code: 0 };
+    _miRows.forEach(function(r) {
+      if (!r.sku) c.unmatched++;
+      else if (r.how === 'remembered') c.remembered++;
+      else if (r.how === 'code') c.code++;
+      else c.guessed++;
+    });
+    return c;
+  }
+
+  function _miRender(det) {
+    var old = document.getElementById('supplierImportModal');
+    if (old) old.remove();
+    var c = _miCounts();
+    var wrap = document.createElement('div');
+    wrap.id = 'supplierImportModal';
+    wrap.style.cssText = 'position:fixed;inset:0;background:#2b2b2b;z-index:100014;display:flex;flex-direction:column;';
+    wrap.innerHTML =
+        '<div style="padding:14px 20px 10px;border-bottom:1px solid #4a4a4a;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">'
+      +   '<div><div style="font-size:16px;font-weight:800;color:#fff;font-family:Outfit,sans-serif;">Match their price list</div>'
+      +     '<div style="font-size:11px;color:#8f8f8f;margin-top:2px;font-family:Outfit,sans-serif;">'
+      +       _esc(_companyKey()) + ' &middot; ' + c.total + ' rows read'
+      +       (det && det.hasHeader ? ' &middot; header row detected' : '')
+      +     '</div></div>'
+      +   '<span style="flex:1;"></span>'
+      +   '<button onclick="miSave()" style="padding:9px 18px;background:#FF8200;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Save prices</button>'
+      +   '<button onclick="document.getElementById(\'supplierImportModal\').remove()" style="background:none;border:none;color:#8f8f8f;font-size:26px;cursor:pointer;line-height:1;">&times;</button>'
+      + '</div>'
+      + '<div style="padding:9px 20px;border-bottom:1px solid #4a4a4a;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-family:Outfit,sans-serif;">'
+      +   _miChip('all', 'All ' + c.total)
+      +   _miChip('unmatched', 'Needs you: ' + c.unmatched, c.unmatched ? '#ef4444' : '')
+      +   _miChip('guessed', 'Guessed: ' + c.guessed, c.guessed ? '#fbbf24' : '')
+      +   _miChip('remembered', 'Remembered: ' + c.remembered, '#86efac')
+      +   '<span style="flex:1;"></span>'
+      +   '<span style="font-size:10px;color:#8f8f8f;">Anything left unmatched is simply skipped.</span>'
+      + '</div>'
+      + '<div style="display:flex;gap:10px;padding:7px 20px;border-bottom:1px solid #4a4a4a;background:rgba(255,255,255,.02);font-family:Outfit,sans-serif;">'
+      +   '<div style="flex:1;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;">Their item</div>'
+      +   '<div style="width:90px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;text-align:right;">Price</div>'
+      +   '<div style="width:340px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;">Matches catalog item</div>'
+      + '</div>'
+      + '<div id="miList" style="flex:1;overflow-y:auto;"></div>'
+      + '<div style="padding:9px 20px;border-top:1px solid #4a4a4a;font-size:11px;color:#8f8f8f;font-family:Outfit,sans-serif;" id="miStatus">'
+      +   'Check the guessed rows, fix anything wrong, then Save. Your choices are remembered against their codes.'
+      + '</div>';
+    document.body.appendChild(wrap);
+    _miRenderList();
+  }
+
+  function _miChip(id, label, color) {
+    var on = (_miFilter === id);
+    return '<button onclick="miFilter(\'' + id + '\')" style="padding:6px 11px;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;'
+      + (on ? 'background:#FF8200;color:#fff;border:1px solid #FF8200;' : 'background:rgba(255,255,255,.05);color:' + (color || '#c8c8c8') + ';border:1px solid #5e5e5e;')
+      + '">' + label + '</button>';
+  }
+
+  window.miFilter = function(f) { _miFilter = f; _miRender(null); };
+
+  function _miVisible() {
+    return _miRows.map(function(r, i) { return { r: r, i: i }; }).filter(function(o) {
+      if (_miFilter === 'all') return true;
+      if (_miFilter === 'unmatched') return !o.r.sku;
+      if (_miFilter === 'guessed') return o.r.sku && o.r.how === 'guessed';
+      if (_miFilter === 'remembered') return o.r.how === 'remembered';
+      return true;
+    });
+  }
+
+  function _miRenderList() {
+    var host = document.getElementById('miList');
+    if (!host) return;
+    var vis = _miVisible();
+    if (!vis.length) { host.innerHTML = '<div style="padding:26px;text-align:center;font-size:12px;color:#8f8f8f;font-family:Outfit,sans-serif;">Nothing in this group.</div>'; return; }
+    // Cap the DOM - a supplier file can run to thousands of rows.
+    var slice = vis.slice(0, 400);
+    host.innerHTML = slice.map(function(o) { return _miRowHtml(o.r, o.i); }).join('')
+      + (vis.length > slice.length
+          ? '<div style="padding:14px;text-align:center;font-size:11px;color:#8f8f8f;font-family:Outfit,sans-serif;">Showing the first 400 of ' + vis.length + '. Use the filters to work through the rest.</div>'
+          : '');
+  }
+
+  function _miRowHtml(r, i) {
+    var cands = r.sku ? [] : _miCandidates(r.theirCode, r.theirDesc, 6);
+    var tone = !r.sku ? '#ef4444' : (r.how === 'guessed' ? '#fbbf24' : '#86efac');
+    var label = !r.sku ? 'no match' : (r.how === 'remembered' ? 'remembered' : r.how === 'code' ? 'exact code' : Math.round(r.score * 100) + '%');
+    var opts = '<option value="">- skip this row -</option>';
+    var pool = r.sku ? _miCandidates(r.theirCode, r.theirDesc, 6) : cands;
+    var have = {};
+    pool.forEach(function(c) {
+      have[c.key] = 1;
+      opts += '<option value="' + _esc(c.key) + '"' + (c.key === r.sku ? ' selected' : '') + '>'
+            + _esc(c.desc) + '  (' + Math.round(c.score * 100) + '%)</option>';
+    });
+    if (r.sku && !have[r.sku]) {
+      var it = _miBuildIndex().filter(function(x) { return x.key === r.sku; })[0];
+      opts = '<option value="' + _esc(r.sku) + '" selected>' + _esc(it ? it.desc : r.sku) + '</option>' + opts;
+    }
+    return '<div style="display:flex;gap:10px;align-items:center;padding:7px 20px;border-bottom:1px solid rgba(255,255,255,.05);font-family:Outfit,sans-serif;">'
+      + '<div style="flex:1;min-width:0;">'
+      +   '<div style="font-size:12px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + _esc(r.theirDesc || '(no description)') + '</div>'
+      +   '<div style="font-size:10px;color:#8f8f8f;">' + _esc(r.theirCode || '(no code)') + ' &middot; <span style="color:' + tone + ';">' + label + '</span></div>'
+      + '</div>'
+      + '<div style="width:90px;text-align:right;font-size:12px;font-weight:700;color:#c8c8c8;">' + (r.price === '' ? '—' : '$' + r.price) + '</div>'
+      + '<select onchange="miSet(' + i + ',this.value)" style="width:340px;padding:6px 8px;border-radius:6px;border:1px solid ' + (r.sku ? '#5e5e5e' : '#ef4444') + ';background:#3a3a3a;color:#fff;font-size:11px;font-family:Outfit,sans-serif;">' + opts + '</select>'
+      + '</div>';
+  }
+
+  window.miSet = function(i, key) {
+    if (!_miRows[i]) return;
+    _miRows[i].sku = key;
+    _miRows[i].how = key ? 'chosen' : '';
+    _miRows[i].score = key ? 1 : 0;
+    _miRender(null);
+  };
+
+  // Merge, never replace. Only the rows in this file are touched.
+  window.miSave = async function() {
+    var st = document.getElementById('miStatus');
+    function say(m, c) { if (st) { st.textContent = m; st.style.color = c || '#8f8f8f'; } }
+
+    var co = _companyKey();
+    var byKey = {};
+    var catDesc = {};
+    _miBuildIndex().forEach(function(it) { catDesc[it.key] = it.desc; });
+
+    _miRows.forEach(function(r) {
+      if (!r.sku || r.price === '' || r.price == null) return;
+      byKey[r.sku] = {
+        company_id: co,
+        sku: r.sku,
+        description: catDesc[r.sku] || r.theirDesc || '',
+        price: Number(r.price),
+        vendor_sku: r.theirCode || ''
+      };
+    });
+    var rows = Object.keys(byKey).map(function(k) { return byKey[k]; });
+    if (!rows.length) { say('Nothing to save - no row has both a match and a price.', '#ef4444'); return; }
+
+    say('Saving ' + rows.length + ' prices for ' + co + '...', '#FF8200');
+    var done = 0, note = '';
+    for (var i = 0; i < rows.length; i += 400) {
+      var res = await sbUpsertInventory(rows.slice(i, i + 400));
+      if (!res.ok) { say('Refused after ' + done + ': ' + (res.why || 'unknown reason'), '#ef4444'); return; }
+      if (res.note) note = res.note;
+      done += Math.min(400, rows.length - i);
+      say('Saved ' + done + ' of ' + rows.length + '...', '#FF8200');
+    }
+    if (typeof loadInventoryPricing === 'function') { try { await loadInventoryPricing(); } catch(e) {} }
+    say('Saved ' + done + ' prices for ' + co + '.' + (note ? ' ' + note : ''), '#86efac');
+    if (document.getElementById('pricingSheetModal')) openPricingSheet();
+  };
+
+  // Entry points from the pricing sheet.
+  window.pasteSupplierList = function() {
+    var t = prompt('Paste their price list here.\n\nAny column order - the tool works out which column is the code, the description and the price.');
+    if (t && t.trim()) openSupplierImport(t);
+  };
+  window.uploadSupplierList = function(file) {
+    if (/\.(xlsx|xls|numbers)$/i.test(file.name)) { alert('That is the spreadsheet version. Export it to CSV and pick that.'); return; }
+    if (/\.pdf$/i.test(file.name)) { alert('PDF price lists are not supported yet. Export it to CSV and upload that.'); return; }
+    var fr = new FileReader();
+    fr.onload = function() { openSupplierImport(fr.result); };
+    fr.readAsText(file);
+  };
+
+
   // ── which company am I editing? ──────────────────────────────────────────
   // Only a super sees this. It lets the owner load a customer's price list
   // without signing in as that customer. Everyone else edits their own company
@@ -40761,10 +41137,12 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       + '<div style="padding:9px 20px;border-top:1px solid #4a4a4a;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">'
       +   '<div id="shStatus" style="flex:1;font-size:11px;color:#8f8f8f;font-family:Outfit,sans-serif;min-height:15px;"></div>'
       +   '<button onclick="document.getElementById(\'skuCsvInput3\').click()" style="padding:7px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Upload CSV</button>'
-      +   '<button onclick="pasteSkuPriceList()" style="padding:7px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Paste CSV</button>'
+      +   '<button onclick="document.getElementById(\'supCsvInput\').click()" title="Their own file, any column order - the tool matches it to the catalog" style="padding:7px 12px;background:#FF8200;color:#fff;border:none;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Import their list</button>'
+      +   '<button onclick="pasteSupplierList()" style="padding:7px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Paste theirs</button>'
       +   '<button onclick="exportPricingSheet()" style="padding:7px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Download as CSV</button>'
       +   '<button onclick="clearPricingSheet()" style="padding:7px 12px;background:rgba(239,68,68,.10);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Clear List</button>'
       +   '<input id="skuCsvInput3" type="file" accept=".csv,.txt,text/csv,text/plain,*/*" style="display:none;">'
+      +   '<input id="supCsvInput" type="file" accept=".csv,.txt,text/csv,text/plain,*/*" style="display:none;">'
       + '</div>';
     document.body.appendChild(wrap);
 
@@ -40772,6 +41150,13 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
     if (inp) inp.onchange = function(e) {
       var f = e.target.files && e.target.files[0];
       if (f) uploadSkuPriceList(f);
+      e.target.value = '';
+    };
+
+    var sup = document.getElementById('supCsvInput');
+    if (sup) sup.onchange = function(e) {
+      var f = e.target.files && e.target.files[0];
+      if (f) uploadSupplierList(f);
       e.target.value = '';
     };
 
