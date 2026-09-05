@@ -3237,6 +3237,8 @@ function updateStripFromLocalCalc() {
   var stripLogo = document.querySelector('.price-strip-logo');
   if (stripLogo) {
     stripLogo.innerHTML = window._shedOnlyMode ? 'SE <span style="color:#f59e0b;">SHED ONLY</span>' : 'SE <span>Sales</span>';
+    // that just overwrote the company mark — put it back
+    try { if (typeof applyCompanyBranding === 'function') applyCompanyBranding(); } catch(e) {}
   }
 
   var p = function(id,val){ var el=document.getElementById(id); if(el){ el.textContent=val; el.classList.remove('pending'); } };
@@ -25737,6 +25739,82 @@ var _cachedCounty = '';
 var SHOP_ADDRESS = '17 East 1st Avenue, Hohenwald, TN 38462';
 window._companySettings = window._companySettings || {};
 
+// Paint this company's name, mark, accent and feature flags. Everything comes
+// from company_settings, so adding a company is a row, not a code change.
+// Safe to call more than once — it is also re-run when the shed-only badge
+// rewrites the price strip.
+function applyCompanyBranding() {
+  var s = window._companySettings || {};
+  var name = s.brandName || s.companyName || '';
+
+  // topbar
+  try {
+    var bn = document.querySelector('.brand-name-sales');
+    if (bn && name && !window._customerMode) bn.textContent = name;
+  } catch(e) {}
+
+  // the square mark: their logo if there is one, else initials
+  try {
+    var lm = document.querySelector('.logo-mark');
+    if (lm) {
+      if (s.logoData) {
+        lm.innerHTML = '';
+        lm.style.background = '#fff';
+        lm.style.padding = '2px';
+        var img = document.createElement('img');
+        img.src = s.logoData;
+        img.alt = name;
+        img.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block;';
+        lm.appendChild(img);
+      } else if (name) {
+        lm.textContent = name.replace(/[^A-Za-z0-9 &]/g, '')
+                             .split(/\s+/).filter(Boolean)
+                             .slice(0, 2).map(function(w){ return w[0]; })
+                             .join('').toUpperCase() || 'SE';
+      }
+    }
+  } catch(e) {}
+
+  // price strip
+  try {
+    var sl = document.querySelector('.price-strip-logo');
+    if (sl && name) {
+      var initials = name.split(/\s+/).filter(Boolean).slice(0, 2)
+                         .map(function(w){ return w[0]; }).join('').toUpperCase();
+      sl.innerHTML = window._shedOnlyMode
+        ? initials + ' <span style="color:#f59e0b;">SHED ONLY</span>'
+        : initials + ' <span>Sales</span>';
+    }
+  } catch(e) {}
+
+  // accent
+  try {
+    if (s.accentColor) {
+      document.documentElement.style.setProperty('--gold', s.accentColor);
+      document.title = name ? (name + ' — Sauce Estimator') : document.title;
+    }
+  } catch(e) {}
+
+  // feature flags
+  try {
+    var kb = document.getElementById('vpKitsBtn');
+    if (kb) kb.style.display = tenantAllows('kits') ? '' : 'none';
+    var gb = document.getElementById('vpGalleryBtn');
+    if (gb) gb.style.display = tenantAllows('gallery') ? '' : 'none';
+  } catch(e) {}
+}
+
+// Single source of truth for what a company gets. Checked by the buttons AND
+// inside the modals, so a hidden feature cannot be reached by a saved link,
+// a console call, or a button that some other code path un-hides.
+function tenantAllows(feature) {
+  var s = window._companySettings || {};
+  if (feature === 'kits')    return s.showKits    !== false;
+  if (feature === 'gallery') return s.showGallery !== false;
+  return true;
+}
+window.tenantAllows = tenantAllows;
+
 // Pull the signed-in user's company settings and apply anything the client needs.
 async function loadCompanySettings() {
   try {
@@ -25751,7 +25829,12 @@ async function loadCompanySettings() {
       shopLat:       r.shop_lat, shopLng: r.shop_lng,
       toolUrl:       r.tool_url || '', portalUrl: r.portal_url || '',
       replyTo:       r.reply_to || '', colorChartUrl: r.color_chart || '',
-      attachments:   r.attachments || {}
+      attachments:   r.attachments || {},
+      brandName:     r.brand_name || '',
+      logoData:      r.logo_data  || '',
+      accentColor:   r.accent_color || '',
+      showKits:      r.show_kits    !== false,
+      showGallery:   r.show_gallery !== false
     } };
     window._companySettings = j.settings || {};
     SHOP_ADDRESS = window._companySettings.shopAddress || '';
@@ -25763,6 +25846,7 @@ async function loadCompanySettings() {
       _cc.href = _url || '#';
       _cc.style.display = _url ? '' : 'none';
     }
+    applyCompanyBranding();
     console.log('[Company] settings loaded for', window._companySettings.companyId, '| origin:', SHOP_ADDRESS || '(none set)');
     return j.settings;
   } catch(e) { console.warn('[Company] settings load failed:', e); return null; }
@@ -44164,6 +44248,7 @@ window.closeKitsModal = function() {
 };
 
 window.openKitsModal = function() {
+  if (!tenantAllows('kits')) return;
   window.closeKitsModal();
   var isAdminUser = isCompanyAdminUser();
 
@@ -44465,6 +44550,7 @@ window.closeGalleryModal = function() {
 };
 
 window.openGalleryModal = function() {
+  if (!tenantAllows('gallery')) return;
   window.closeGalleryModal();
   var isAdminUser = isCompanyAdminUser();
 
