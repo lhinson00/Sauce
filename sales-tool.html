@@ -2425,6 +2425,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <button id="vpHardRefreshBtn" onclick="hardRefreshApp()" title="Force-reload the newest build (bypasses cache, same as Ctrl+Shift+R)" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(96,165,250,.55);border-radius:8px;color:#93c5fd;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Hard Refresh</button>
         <button id="vpUsersBtn" onclick="openAdminModal()" title="Users, roles and company setup" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Users</button>
         <button id="vpRatesBtn" onclick="openPricingHub()" title="Materials, labor, concrete and shipping prices — your own or the company's" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Pricing</button>
+        <button id="vpBrandBtn" onclick="openBrandingModal()" title="Logo, colours and features for a company" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Branding</button>
         <button id="vpPreviewBtn" onclick="openPreviewPicker()" title="See the tool as another company sees it" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">View As</button>
         <button id="vpPromoBtn" onclick="openPromoModal()" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(255,130,0,.5);border-radius:8px;color:#FF8200;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Promos</button>
       </div>
@@ -8407,6 +8408,8 @@ document.addEventListener('DOMContentLoaded', initMobileViewport);
 // whichever path got the user signed in.
 window.refreshAccountButtons = function() {
   try {
+    var bb = document.getElementById('vpBrandBtn');
+    if (bb) bb.style.display = isSuperUser() ? '' : 'none';
     var pv = document.getElementById('vpPreviewBtn');
     // stays visible while viewing as someone else, or there is no way back
     if (pv) pv.style.display = (isSuperUser() || window._realUser) ? '' : 'none';
@@ -25775,6 +25778,193 @@ function _pf(row, names, dflt) {
   }
   return dflt;
 }
+
+// ── BRANDING EDITOR ────────────────────────────────────────────────────────
+// Everything a company looks like, in one screen: name, logo, accent colour and
+// which features they get. Writes to company_settings, so adding a company is a
+// row rather than a code change.
+var BRAND_PRESETS = [
+  ['Orange',  '#FF8200'], ['Amber',   '#f59e0b'], ['Red',     '#dc2626'],
+  ['Green',   '#16a34a'], ['Teal',    '#0d9488'], ['Blue',    '#2563eb'],
+  ['Indigo',  '#4f46e5'], ['Violet',  '#7c3aed'], ['Pink',    '#db2777'],
+  ['Slate',   '#64748b'], ['Steel',   '#94a3b8'], ['Graphite','#3f3f46']
+];
+
+async function openBrandingModal(companyId) {
+  if (!isSuperUser()) return;
+  var rows = await sbFetch('company_settings?select=*&order=company_id.asc', { method: 'GET' });
+  if (!rows) { alert('Could not load companies.'); return; }
+  if (!rows.length) { alert('No companies found in company_settings.'); return; }
+
+  var idx = 0;
+  if (companyId) {
+    rows.forEach(function(r, i) { if (r.company_id === companyId) idx = i; });
+  }
+
+  var ov = document.getElementById('brandingModal');
+  if (ov) ov.remove();
+  ov = document.createElement('div');
+  ov.id = 'brandingModal';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(10,10,14,.82);' +
+    'display:flex;align-items:center;justify-content:center;font-family:Outfit,sans-serif;';
+  document.body.appendChild(ov);
+
+  var card = document.createElement('div');
+  card.style.cssText = 'background:#1c1c22;border:1px solid rgba(255,255,255,.12);border-radius:14px;' +
+    'width:min(560px,94vw);max-height:92vh;overflow:auto;padding:20px 22px;color:#f0f3f7;' +
+    'box-shadow:0 20px 60px rgba(0,0,0,.6);';
+  ov.appendChild(card);
+
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]; }); }
+
+  function render() {
+    var r = rows[idx];
+    var accent = r.accent_color || '#FF8200';
+    card.innerHTML =
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">' +
+        '<div style="font-size:16px;font-weight:800;">Company branding</div>' +
+        '<button id="bmClose" style="background:none;border:none;color:#888;font-size:20px;cursor:pointer;line-height:1;">\u00d7</button>' +
+      '</div>' +
+
+      '<label style="display:block;font-size:11px;color:#9aa0a6;margin-bottom:4px;">COMPANY</label>' +
+      '<select id="bmCo" style="width:100%;padding:8px;border-radius:8px;background:#2a2a32;color:#f0f3f7;' +
+        'border:1px solid rgba(255,255,255,.14);font-family:Outfit,sans-serif;font-size:13px;margin-bottom:14px;">' +
+        rows.map(function(x, i) {
+          return '<option value="' + i + '"' + (i === idx ? ' selected' : '') + '>' +
+                 esc(x.brand_name || x.company_name || x.company_id) + '  (' + esc(x.company_id) + ')</option>';
+        }).join('') +
+      '</select>' +
+
+      '<label style="display:block;font-size:11px;color:#9aa0a6;margin-bottom:4px;">DISPLAY NAME</label>' +
+      '<input id="bmName" value="' + esc(r.brand_name || r.company_name || '') + '" ' +
+        'style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;background:#2a2a32;color:#f0f3f7;' +
+        'border:1px solid rgba(255,255,255,.14);font-family:Outfit,sans-serif;font-size:13px;margin-bottom:14px;">' +
+
+      '<label style="display:block;font-size:11px;color:#9aa0a6;margin-bottom:6px;">LOGO</label>' +
+      '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">' +
+        '<div id="bmLogoBox" style="width:56px;height:56px;border-radius:10px;background:#fff;padding:3px;' +
+          'display:flex;align-items:center;justify-content:center;flex:0 0 auto;overflow:hidden;">' +
+          (r.logo_data
+            ? '<img src="' + r.logo_data + '" style="width:100%;height:100%;object-fit:contain;">'
+            : '<span style="color:#666;font-size:10px;">none</span>') +
+        '</div>' +
+        '<div style="flex:1;">' +
+          '<input type="file" id="bmLogoFile" accept="image/*" style="display:none;">' +
+          '<button id="bmLogoPick" style="padding:6px 12px;border-radius:7px;background:rgba(255,255,255,.08);' +
+            'border:1px solid rgba(255,255,255,.18);color:#f0f3f7;font-size:12px;font-weight:700;' +
+            'font-family:Outfit,sans-serif;cursor:pointer;">Choose image</button>' +
+          (r.logo_data ? '<button id="bmLogoClear" style="margin-left:6px;padding:6px 10px;border-radius:7px;' +
+            'background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);color:#ef4444;font-size:12px;' +
+            'font-weight:700;font-family:Outfit,sans-serif;cursor:pointer;">Remove</button>' : '') +
+          '<div style="font-size:10px;color:#777;margin-top:5px;">Scaled to 240px and stored with the company.</div>' +
+        '</div>' +
+      '</div>' +
+
+      '<label style="display:block;font-size:11px;color:#9aa0a6;margin-bottom:6px;">ACCENT COLOUR</label>' +
+      '<div id="bmSwatches" style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:9px;">' +
+        BRAND_PRESETS.map(function(p) {
+          var on = p[1].toLowerCase() === accent.toLowerCase();
+          return '<button data-hex="' + p[1] + '" title="' + p[0] + '" style="width:30px;height:30px;border-radius:7px;' +
+                 'background:' + p[1] + ';cursor:pointer;border:' +
+                 (on ? '3px solid #fff' : '1px solid rgba(255,255,255,.2)') + ';"></button>';
+        }).join('') +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">' +
+        '<input id="bmHex" value="' + esc(accent) + '" style="width:110px;padding:7px;border-radius:7px;' +
+          'background:#2a2a32;color:#f0f3f7;border:1px solid rgba(255,255,255,.14);font-family:Outfit,sans-serif;' +
+          'font-size:12px;">' +
+        '<input type="color" id="bmPick" value="' + esc(accent) + '" style="width:38px;height:32px;padding:0;' +
+          'border:1px solid rgba(255,255,255,.14);border-radius:7px;background:#2a2a32;cursor:pointer;">' +
+      '</div>' +
+
+      '<label style="display:block;font-size:11px;color:#9aa0a6;margin-bottom:6px;">FEATURES</label>' +
+      '<div style="display:flex;gap:18px;margin-bottom:20px;font-size:13px;">' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">' +
+          '<input type="checkbox" id="bmKits"' + (r.show_kits !== false ? ' checked' : '') + '> Kits</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">' +
+          '<input type="checkbox" id="bmGallery"' + (r.show_gallery !== false ? ' checked' : '') + '> Gallery</label>' +
+      '</div>' +
+
+      '<div id="bmStatus" style="font-size:12px;color:#9aa0a6;min-height:16px;margin-bottom:10px;"></div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+        '<button id="bmCancel" style="padding:8px 16px;border-radius:8px;background:none;' +
+          'border:1px solid rgba(255,255,255,.18);color:#aaa;font-size:13px;font-weight:700;' +
+          'font-family:Outfit,sans-serif;cursor:pointer;">Close</button>' +
+        '<button id="bmSave" style="padding:8px 18px;border-radius:8px;background:' + accent + ';' +
+          'border:none;color:#fff;font-size:13px;font-weight:800;font-family:Outfit,sans-serif;' +
+          'cursor:pointer;">Save</button>' +
+      '</div>';
+
+    var $ = function(id){ return document.getElementById(id); };
+    var status = function(m, bad) { var s = $('bmStatus'); if (s) { s.textContent = m; s.style.color = bad ? '#ef4444' : '#9aa0a6'; } };
+
+    $('bmClose').onclick = $('bmCancel').onclick = function(){ ov.remove(); };
+    ov.onclick = function(e){ if (e.target === ov) ov.remove(); };
+
+    $('bmCo').onchange = function(){ idx = parseInt(this.value, 10) || 0; render(); };
+
+    function setAccent(hex) { rows[idx].accent_color = hex; render(); }
+    Array.prototype.forEach.call($('bmSwatches').children, function(b) {
+      b.onclick = function(){ setAccent(b.getAttribute('data-hex')); };
+    });
+    $('bmPick').oninput = function(){ $('bmHex').value = this.value; };
+    $('bmHex').onchange = function(){
+      var v = this.value.trim();
+      if (/^#[0-9a-fA-F]{6}$/.test(v)) setAccent(v); else status('Colour must look like #RRGGBB', true);
+    };
+
+    $('bmLogoPick').onclick = function(){ $('bmLogoFile').click(); };
+    $('bmLogoFile').onchange = async function() {
+      var f = this.files && this.files[0];
+      if (!f) return;
+      status('Processing image\u2026');
+      try {
+        var blob = await shrinkImageFile(f, 240, 0.9);
+        var b64 = await new Promise(function(res, rej) {
+          var fr = new FileReader();
+          fr.onload = function(){ res(fr.result); };
+          fr.onerror = function(){ rej(new Error('read failed')); };
+          fr.readAsDataURL(blob);
+        });
+        rows[idx].logo_data = b64;
+        render();
+        status('Logo ready \u2014 press Save to keep it.');
+      } catch(e) { status('Could not read that image.', true); }
+    };
+    if ($('bmLogoClear')) $('bmLogoClear').onclick = function(){ rows[idx].logo_data = null; render(); };
+
+    $('bmSave').onclick = async function() {
+      var r = rows[idx];
+      var body = {
+        brand_name:   $('bmName').value.trim() || null,
+        accent_color: r.accent_color || null,
+        logo_data:    r.logo_data || null,
+        show_kits:    $('bmKits').checked,
+        show_gallery: $('bmGallery').checked
+      };
+      status('Saving\u2026');
+      var res = await sbFetch('company_settings?company_id=eq.' + encodeURIComponent(r.company_id), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        body: JSON.stringify(body)
+      });
+      if (typeof sbFailed === 'function' && sbFailed()) {
+        status('Refused: ' + (typeof sbWhyRefused === 'function' ? sbWhyRefused() : 'check the company_settings policies'), true);
+        return;
+      }
+      Object.keys(body).forEach(function(k){ rows[idx][k] = body[k]; });
+      status('Saved.');
+      // repaint immediately if this is the company currently on screen
+      if (r.company_id === _companyKey()) {
+        try { await loadCompanySettings(); } catch(e) {}
+      }
+    };
+  }
+
+  render();
+}
+window.openBrandingModal = openBrandingModal;
 
 async function openPreviewPicker() {
   if (!isSuperUser() && !window._realUser) return;
