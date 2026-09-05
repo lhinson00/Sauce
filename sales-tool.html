@@ -21821,20 +21821,33 @@ function _companyKey() {
 async function sbLoadInventory(companyId) {
   var co = companyId || _companyKey();
   var prices = {}, descs = {}, from = 0, page = 1000, total = 0;
-  while (true) {
-    var rows = await sbFetch('inventory?select=sku,description,price&company_id=eq.' +
-      encodeURIComponent(co) + '&order=sku.asc&offset=' + from + '&limit=' + page, { method: 'GET' });
-    if (rows === null) return null;                 // couldn't reach the table
-    rows.forEach(function(r) {
-      var sku = String(r.sku || '').trim().toUpperCase();
-      if (!sku) return;
-      var pr = parseFloat(r.price);
-      if (!isNaN(pr)) { prices[sku] = pr; total++; }
-      if (r.description) descs[sku] = r.description;
-    });
-    if (rows.length < page) break;
-    from += page;
-    if (from > 60000) break;                        // sanity stop
+  var WAVE = 6;                                     // pages fetched in parallel
+  var done = false;
+
+  function _get(offset) {
+    return sbFetch('inventory?select=sku,description,price&company_id=eq.' +
+      encodeURIComponent(co) + '&order=sku.asc&offset=' + offset + '&limit=' + page,
+      { method: 'GET' });
+  }
+
+  while (!done) {
+    var reqs = [];
+    for (var w = 0; w < WAVE; w++) reqs.push(_get(from + w * page));
+    var results = await Promise.all(reqs);
+    for (var i = 0; i < results.length; i++) {
+      var rows = results[i];
+      if (rows === null) { if (!total) return null; done = true; break; }
+      rows.forEach(function(r) {
+        var sku = String(r.sku || '').trim().toUpperCase();
+        if (!sku) return;
+        var pr = parseFloat(r.price);
+        if (!isNaN(pr)) { prices[sku] = pr; total++; }
+        if (r.description) descs[sku] = r.description;
+      });
+      if (rows.length < page) { done = true; break; }
+    }
+    from += WAVE * page;
+    if (from > 120000) break;                       // sanity stop
   }
   return { prices: prices, descriptions: descs, count: total, companyId: co };
 }
@@ -38614,6 +38627,23 @@ window.SauceMaterials.calculate = function(forcedType) {
 
 
 // Load inventory pricing from the sheet — called on login
+// Repaint everything that shows a price. The strip was already handled; the
+// colour dropdowns and an open material list were not, so both kept showing
+// the $0.00 they were built with before the list arrived.
+function _refreshAfterPrices() {
+  setTimeout(function() {
+    try { updateStripFromLocalCalc(); } catch(e) {}
+    try { if (typeof populateColorDropdowns === 'function') populateColorDropdowns(); } catch(e) {}
+    try {
+      var m = document.getElementById('materialsModal');
+      if (m && m.style.display && m.style.display !== 'none' &&
+          typeof window.openMaterialsModal === 'function') {
+        window.openMaterialsModal();
+      }
+    } catch(e) {}
+  }, 60);
+}
+
 async function loadInventoryPricing() {
   // Waits for a session only so we know which company to load — the price list
   // itself comes from Supabase, not from Apps Script.
@@ -38621,6 +38651,20 @@ async function loadInventoryPricing() {
     await new Promise(function(r) { setTimeout(r, 1000); });
   }
   var co = _companyKey();
+
+  // Paint the cached list for THIS company first so a reload prices instantly
+  // instead of waiting on the network. Refreshed from Supabase below.
+  try {
+    var cached = JSON.parse(localStorage.getItem('saucePriceTable::' + co) || '{}');
+    if (Object.keys(cached).length) {
+      window.SauceMaterials._priceTable = cached;
+      try { window.SauceMaterials._descTable =
+        JSON.parse(localStorage.getItem('sauceDescTable::' + co) || '{}'); } catch(e) {}
+      _refreshAfterPrices();
+      console.log('[Inventory]', Object.keys(cached).length, 'SKUs from cache for', co);
+    }
+  } catch(e) {}
+
   try {
     var d = await sbLoadInventory(co);
     if (!d) {
@@ -38641,7 +38685,7 @@ async function loadInventoryPricing() {
 
     window._priceListInfo = { count: d.count, source: d.count ? ('Supabase · ' + co) : 'empty', companyId: co };
     console.log('[Inventory]', d.count, 'SKUs for', co, d.count ? '' : '— no price list loaded for this company');
-    setTimeout(function() { try { updateStripFromLocalCalc(); } catch(e) {} }, 100);
+    _refreshAfterPrices();
   } catch(e) {
     console.warn('[Inventory] load failed:', e);
   }
