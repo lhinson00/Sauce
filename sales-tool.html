@@ -9392,7 +9392,47 @@ function renderInteriorWalls() {
     // CR- IDs are customer-submitted designs in Configurator Quotes — no token needed.
     // QS- IDs are salesman snapshots — require a valid session token.
     var isCustDesign = quoteId.indexOf('CR-') === 0 || quoteId.indexOf('CC-') === 0;
-    if (new URLSearchParams(window.location.search).get('view') === '1' && !isCustDesign) return;
+    if (new URLSearchParams(window.location.search).get('view') === '1' && !isCustDesign) {
+      // A customer opening a shared 3-D link has no session — view mode skips
+      // sign-in by design. It used to read the quotes table anonymously, which
+      // only worked while that table had no row level security. It has now, so
+      // this reads the public quote_view instead: the building and the price
+      // for one id, and nothing else about the customer.
+      (function loadSharedQuote() {
+        var url = window.SAUCE_ENDPOINTS.supabaseUrl
+                + '/rest/v1/quote_view?id=eq.' + encodeURIComponent(quoteId)
+                + '&select=config_encoded,display_summary,pricing_results&limit=1';
+        fetch(url, { headers: { 'apikey': window.SAUCE_ENDPOINTS.supabaseKey } })
+          .then(function(r){ return r.ok ? r.json() : null; })
+          .then(function(rows){
+            var row = rows && rows[0];
+            if (!row || !row.config_encoded) {
+              console.warn('[QuoteLoad] shared link found no quote for', quoteId);
+              try { triggerBuild(); } catch(e) {}
+              return;
+            }
+            console.log('[QuoteLoad] shared quote loaded, length:', row.config_encoded.length);
+            var snap = row.display_summary || {};
+            snap.pricingResults = row.pricing_results || snap.pricingResults || {};
+            snap._inferType = true;
+            safeDecodeAsync(row.config_encoded)
+              .catch(function(){ return safeDecode(row.config_encoded); })
+              .then(function(cfg){
+                if (!cfg) { console.warn('[QuoteLoad] shared decode failed'); try { triggerBuild(); } catch(e) {} return; }
+                restoreConfig(cfg);
+                setTimeout(function(){
+                  try { populateViewCard(snap); } catch(e) {}
+                  try { triggerBuild(); } catch(e) {}
+                }, 300);
+              });
+          })
+          .catch(function(err){
+            console.warn('[QuoteLoad] shared link failed:', err);
+            try { triggerBuild(); } catch(e) {}
+          });
+      })();
+      return;
+    }
     var _earlyToken = '';
     try { _earlyToken = isCustDesign ? '' : getToken(); } catch(e) { return; } // not ready yet — CRM loader handles it
     fetch(window.SAUCE_ENDPOINTS.gas, {
@@ -19916,8 +19956,8 @@ function buildModernQuoteDoc(ctx) {
              ? brand.accentColor
              : (window._brandHex ? window._brandHex() : '#FF8200');
   var C = { ink:'#1a1d23', body:'#3d434d', muted:'#858c97', hair:'#e3e7ec',
-            band:'#eef1f5', zebra:'#f7f9fb', accent:accent, white:'#ffffff',
-            paper:'#3a3f45' };
+            band:'#ffffff', zebra:'#f2f4f7', accent:accent, white:'#ffffff',
+            paper:'#e9ecf0' };
 
   function rgb(h){ h=String(h).replace('#','');
     return [parseInt(h.substr(0,2),16), parseInt(h.substr(2,2),16), parseInt(h.substr(4,2),16)]; }
@@ -19935,12 +19975,12 @@ function buildModernQuoteDoc(ctx) {
   // document laid on a desk rather than text floating on nothing.
   function sheet(){
     fill(C.paper); doc.rect(0, 0, PW, PH, 'F');
-    fill(C.white); doc.roundedRect(MG-20, 24, PW-(MG-20)*2, PH-62, 9, 9, 'F');
   }
   sheet();
   function footer(){
-    T(ctx.company, MG, PH-14, 8, 'bold', '#e8ebf0');
-    T('Quote ' + ctx.quoteId + '   \u00B7   Page ' + page, PW-MG, PH-14, 8, 'normal', '#9aa3ae', 'right'); }
+    fill(C.accent); doc.rect(0, PH-30, PW, 2.5, 'F');
+    T(ctx.company, MG, PH-14, 8, 'bold', C.ink);
+    T('Quote ' + ctx.quoteId + '   \u00B7   Page ' + page, PW-MG, PH-14, 8, 'normal', C.muted, 'right'); }
   function newPage(){ footer(); doc.addPage(); page++; sheet();
     T(ctx.company, MG, 40, 9, 'bold', C.ink);
     T('Quote ' + ctx.quoteId, PW-MG, 40, 8.5, 'normal', C.muted, 'right');
@@ -19948,6 +19988,8 @@ function buildModernQuoteDoc(ctx) {
   function room(need,y){ return (y + need <= BOTTOM) ? y : newPage(); }
 
   // ── identity ───────────────────────────────────────────────────────────
+  // The letterhead sits on white, the rest of the page on grey.
+  fill(C.white); doc.rect(0, 0, PW, 118, 'F');
   var y = 52, lb = y;
   if (brand.logoData) {
     try {
@@ -20223,11 +20265,10 @@ async function generateQuotePDF() {
     // config blob that email safe-link scanners choke on. Fall back to the self-contained
     // config blob only when there is no saved quote ID.
     if (window._savedQuoteId) {
-      configLink3d = toolBaseUrl() + '?view=1&loadQuote=' + encodeURIComponent(window._savedQuoteId)
-                   + _viewCoParam();
+      configLink3d = toolBaseUrl() + '?view=1&loadQuote=' + encodeURIComponent(window._savedQuoteId);
     } else {
       var _enc3d = await safeEncodeCompressed(_cfg3d);
-      configLink3d = toolBaseUrl() + '?view=1&config=' + _enc3d + _viewCoParam();
+      configLink3d = toolBaseUrl() + '?view=1&config=' + _enc3d;
     }
   } catch(e3d) {}
 
@@ -22254,7 +22295,10 @@ window.backfillPreviews = async function (limit) {
   var host = document.getElementById('bfNote') || document.getElementById('pmStatus') || document.getElementById('pmResults');
   function say(t) { console.log('[Backfill]', t); if (host) host.textContent = t; }
 
-  var rows = await sbFetch('quotes?select=id,name,config_encoded,snapshots&order=updated_at.desc&limit=' + (limit || 200), { method: 'GET' });
+  var _coA = String((window.currentUser || {}).companyId || '').toLowerCase().trim();
+  var rows = await sbFetch('quotes?select=id,name,config_encoded,snapshots'
+    + (_coA ? '&company_id=eq.' + encodeURIComponent(_coA) : '')
+    + '&order=updated_at.desc&limit=' + (limit || 200), { method: 'GET' });
   if (rows === null) { say('Could not reach the quote database.'); return; }
   if (!Array.isArray(rows)) rows = [];
   var todo = rows.filter(function (r) { return r.config_encoded && !r.snapshots; });
@@ -22427,7 +22471,10 @@ window.runPromoSearch = async function() {
   if (!box) return;
   box.innerHTML = '<div style="color:#888;padding:16px;">Loading previous quotes...</div>';
   var term = (((document.getElementById('pmSearch') || {}).value) || '').trim().toLowerCase();
-  var rows = await sbFetch('quotes?select=id,name,email,phone,city,specs,status,form_fields,updated_at&order=updated_at.desc&limit=1000', { method: 'GET' });
+  var _coL = String((window.currentUser || {}).companyId || '').toLowerCase().trim();
+  var rows = await sbFetch('quotes?select=id,name,email,phone,city,specs,status,form_fields,updated_at'
+    + (_coL ? '&company_id=eq.' + encodeURIComponent(_coL) : '')
+    + '&order=updated_at.desc&limit=1000', { method: 'GET' });
   if (rows === null) {
     box.innerHTML = '<div style="color:#c00;padding:16px;font-weight:700;">Could not reach the quote database.<div style="font-weight:400;color:#666;margin-top:4px;">Check the console for an [SB] error.</div></div>';
     var pcE = document.getElementById('pmCount'); if (pcE) pcE.textContent = ''; return;
@@ -22943,6 +22990,11 @@ async function sbSaveQuote(snap) {
     pricing_results: snap.pricingResults || {},
     config_encoded:  snap.configEncoded || '',
     snapshot:        snap,
+    // Without this a quote belongs to nobody, and every company's list showed
+    // every other company's quotes.
+    company_id:      String((window.currentUser || {}).companyId
+                         || (window._companySettings || {}).companyId || 'sauce')
+                       .toLowerCase().trim(),
     updated_at:      new Date().toISOString()
   };
   if (!row.id) { console.warn('[SB] sbSaveQuote: no quoteId'); return null; }
@@ -23004,7 +23056,11 @@ async function sbSaveQuote(snap) {
 
 // Load quote list from Supabase
 async function sbGetQuotes(salesman) {
+  var _co = String((window.currentUser || {}).companyId || '').toLowerCase().trim();
   var q = 'quotes?select=id,date,name,salesman,phone,email,city,total,specs,status,source,form_fields,display_summary,pricing_results,config_encoded,snapshot,updated_at&order=updated_at.desc&limit=200';
+  // Belt as well as braces: the policy stops another company's rows coming
+  // back, and asking for only this company's keeps the query honest too.
+  if (_co) q += '&company_id=eq.' + encodeURIComponent(_co);
   if (salesman) q += '&salesman=eq.' + encodeURIComponent(salesman);
   var rows = await sbFetch(q, { method: 'GET' });
   if (!rows || !rows.length) return null;
