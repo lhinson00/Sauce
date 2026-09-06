@@ -9931,159 +9931,6 @@ function localVoiceParse(rawText) {
     if (Object.keys(enc).length) { p.enclosure = enc; mark('Enclosure'); }
   }
 
-  // ── CONCRETE ─────────────────────────────────────────────────────────────
-  // One rate per pour type, the way a concrete man quotes it. Anything a
-  // company always includes — fibre, a PSI grade, a rebar grid — belongs in
-  // that rate, not as an add-on, so the add-ons below are only for what gets
-  // charged some of the time.
-  var CONC_POURS = [
-    ['zones.z1.slab4',   '4" Slab',            'No footers'],
-    ['zones.z1.slab6',   '6" Slab',            'No footers'],
-    ['zones.z1.footer4', '4" Slab w/ Footers', 'Monolithic pour'],
-    ['zones.z1.footer6', '6" Slab w/ Footers', 'Monolithic pour']
-  ];
-  var CONC_MINS = [
-    ['minSlab', 'Slab minimum',       'Smallest charge for a slab'],
-    ['minMono', 'Monolithic minimum', 'Smallest charge with footers']
-  ];
-  var CONC_ADDS = [
-    ['psi5000',    '5,000 PSI',   'Per sq ft, on top of the base rate'],
-    ['metalLedge', 'Metal Ledge', 'Per sq ft, post frame mono pour'],
-    ['wireMesh',   'Wire Mesh',   'Per sq ft'],
-    ['rebar',      'Rebar',       'Per sq ft, when not already in the base rate'],
-    ['stamped',    'Stamped',     'Per sq ft']
-  ];
-
-  function _cRate(path) {
-    if (_cDirty[path] !== undefined) return _cDirty[path];
-    try {
-      var v = window.SauceRates.raw('concrete.' + path);
-      return (v === 0 || v) ? v : null;
-    } catch (e) { return null; }
-  }
-  var _cDirty = {};
-
-  function _cRow(path, label, note, unit) {
-    var v = _cRate(path);
-    return '<div class="cn-row">'
-      + '<div class="cn-lbl">' + label + '<span>' + note + '</span></div>'
-      + '<div class="cn-in"><span class="cn-cur">$</span>'
-      +   '<input data-cn="' + path + '" type="number" step="0.01" inputmode="decimal" '
-      +   'value="' + (v == null || v === 0 ? '' : v) + '" placeholder="—" '
-      +   'class="cn-inp' + (v ? '' : ' cn-empty') + '">'
-      +   '<span class="cn-unit">' + (unit || '/ sq ft') + '</span></div>'
-      + '</div>';
-  }
-
-  function _cSection(title, rows, unit) {
-    return '<div class="cn-sec">' + title + '</div>'
-      + rows.map(function(r) { return _cRow(r[0], r[1], r[2], unit); }).join('');
-  }
-
-  function concreteHtml() {
-    var sq = 1200, out = [];
-    ['zones.z1.slab4', 'zones.z1.footer6'].forEach(function(p) {
-      var r = _cRate(p);
-      if (r) out.push([p === 'zones.z1.slab4' ? '4" slab' : '6" w/ footers', r * sq]);
-    });
-    var minS = _cRate('minSlab') || 0;
-    var preview = out.length
-      ? out.map(function(o) {
-          var amt = Math.max(o[1], minS);
-          return '<span>' + o[0] + ' &middot; <b>$' + Math.round(amt).toLocaleString() + '</b>'
-               + (amt > o[1] ? ' <i>minimum applies</i>' : '') + '</span>';
-        }).join('')
-      : '<span>Enter a rate to see what a 1,200 sq ft pour comes to.</span>';
-
-    return _cSection('Pour rates', CONC_POURS)
-      + _cSection('Minimums', CONC_MINS, 'per job')
-      + _cSection('Charged sometimes', CONC_ADDS)
-      + '<div class="cn-note">Anything you always include \u2014 fibre, a PSI grade, a rebar '
-      +   'grid \u2014 belongs in the pour rate above. Leave its add-on blank so it is not '
-      +   'charged twice.</div>'
-      + '<div class="cn-prev"><div class="cn-prev-h">1,200 sq ft</div>' + preview + '</div>';
-  }
-
-  window.openConcretePricing = function() {
-    var old = document.getElementById('cnOverlay'); if (old) old.remove();
-    _cDirty = {};
-    var co = (window.currentUser || {}).companyName || (window.currentUser || {}).companyId || 'this company';
-
-    var ov = document.createElement('div');
-    ov.id = 'cnOverlay';
-    ov.className = 'pb-overlay';
-    ov.addEventListener('mousedown', function(e) { if (e.target === ov) ov.remove(); });
-    ov.innerHTML = '<div class="pb-shell cn-shell">'
-      + '<div class="pb-top">'
-      +   '<div><div class="pb-title">Concrete</div>'
-      +   '<div class="pb-sub">What a pour costs per square foot. Saves for <b>'
-      +     String(co).replace(/</g,'&lt;') + '</b>.</div></div>'
-      +   '<button id="cnClose" class="pb-x">&times;</button>'
-      + '</div>'
-      + '<div id="cnBody" class="pb-body cn-body"></div>'
-      + '<div class="pb-foot">'
-      +   '<div class="pb-footline"><div id="cnCount"></div><div id="cnStatus"></div></div>'
-      +   '<div class="pb-btns">'
-      +     '<button id="cnSave" class="pb-save">Save Concrete Rates</button>'
-      +     '<button id="cnZero" class="pb-alt">Clear All</button>'
-      +   '</div>'
-      + '</div></div>';
-    document.body.appendChild(ov);
-
-    function paint() {
-      document.getElementById('cnBody').innerHTML = concreteHtml();
-      var set = CONC_POURS.filter(function(p) { return _cRate(p[0]); }).length;
-      var c = document.getElementById('cnCount');
-      if (c) c.innerHTML = set + ' of ' + CONC_POURS.length + ' pour rates set'
-        + (Object.keys(_cDirty).length ? ' &middot; <b style="color:var(--gold);">'
-            + Object.keys(_cDirty).length + ' edited</b>' : '');
-    }
-    window._cnPaint = paint;
-
-    document.getElementById('cnClose').onclick = function() { ov.remove(); };
-    document.getElementById('cnBody').addEventListener('input', function(e) {
-      var el = e.target;
-      if (!el.hasAttribute || !el.hasAttribute('data-cn')) return;
-      var v = parseFloat(el.value);
-      _cDirty[el.getAttribute('data-cn')] = (el.value === '' || !isFinite(v)) ? 0 : v;
-      el.classList.remove('cn-empty');
-      clearTimeout(paint._t);
-      paint._t = setTimeout(paint, 500);
-    });
-
-    document.getElementById('cnZero').onclick = function() {
-      if (!confirm('Clear every concrete rate for this company?')) return;
-      CONC_POURS.concat(CONC_MINS, CONC_ADDS).forEach(function(r) { _cDirty[r[0]] = 0; });
-      paint();
-    };
-
-    document.getElementById('cnSave').onclick = async function() {
-      var keys = Object.keys(_cDirty);
-      var st = document.getElementById('cnStatus');
-      function say(m, c) { if (st) { st.textContent = m; st.style.color = c || '#8f98a6'; } }
-      if (!keys.length) { say('No changes to save.'); return; }
-      say('Saving\u2026', 'var(--gold)');
-      var rates = window.SauceRates.all();
-      rates.concrete = rates.concrete || {};
-      rates.concrete.mode = rates.concrete.mode || 'flat';
-      keys.forEach(function(path) {
-        var parts = path.split('.'), node = rates.concrete;
-        for (var i = 0; i < parts.length - 1; i++) {
-          if (!node[parts[i]] || typeof node[parts[i]] !== 'object') node[parts[i]] = {};
-          node = node[parts[i]];
-        }
-        node[parts[parts.length - 1]] = _cDirty[path];
-      });
-      window.SauceRates.save(rates);
-      var res = await _persistRatesForCompany(rates, 'Company Rates');
-      if (res && res.ok) { _cDirty = {}; paint(); say('Saved.', '#86efac'); }
-      else say('Applied on this device only \u2014 ' + ((res && res.why) || 'not saved'), '#fbbf24');
-      try { schedulePrice(); } catch (e) {}
-    };
-
-    paint();
-  };
-
   // ── GARAGE DOORS ──────────────────────────────────────────────────────────
   var gdRe = /(\d+)\s*[x×by]\s*(\d+)\s*(?:foot|ft|')?\s*(insulated|non-?insulated|standard)?\s*(?:insulated\s+)?garage\s+door/g;
   // Also: "garage door NxN" pattern
@@ -43126,6 +42973,159 @@ window.openPriceBook = function() { window.SaucePriceBook.open(); };
     var el = document.getElementById('pbStatus');
     if (el) { el.innerHTML = msg || ''; el.style.color = color || '#8f98a6'; }
   }
+
+  // ── CONCRETE ─────────────────────────────────────────────────────────────
+  // One rate per pour type, the way a concrete man quotes it. Anything a
+  // company always includes — fibre, a PSI grade, a rebar grid — belongs in
+  // that rate, not as an add-on, so the add-ons below are only for what gets
+  // charged some of the time.
+  var CONC_POURS = [
+    ['zones.z1.slab4',   '4" Slab',            'No footers'],
+    ['zones.z1.slab6',   '6" Slab',            'No footers'],
+    ['zones.z1.footer4', '4" Slab w/ Footers', 'Monolithic pour'],
+    ['zones.z1.footer6', '6" Slab w/ Footers', 'Monolithic pour']
+  ];
+  var CONC_MINS = [
+    ['minSlab', 'Slab minimum',       'Smallest charge for a slab'],
+    ['minMono', 'Monolithic minimum', 'Smallest charge with footers']
+  ];
+  var CONC_ADDS = [
+    ['psi5000',    '5,000 PSI',   'Per sq ft, on top of the base rate'],
+    ['metalLedge', 'Metal Ledge', 'Per sq ft, post frame mono pour'],
+    ['wireMesh',   'Wire Mesh',   'Per sq ft'],
+    ['rebar',      'Rebar',       'Per sq ft, when not already in the base rate'],
+    ['stamped',    'Stamped',     'Per sq ft']
+  ];
+
+  function _cRate(path) {
+    if (_cDirty[path] !== undefined) return _cDirty[path];
+    try {
+      var v = window.SauceRates.raw('concrete.' + path);
+      return (v === 0 || v) ? v : null;
+    } catch (e) { return null; }
+  }
+  var _cDirty = {};
+
+  function _cRow(path, label, note, unit) {
+    var v = _cRate(path);
+    return '<div class="cn-row">'
+      + '<div class="cn-lbl">' + label + '<span>' + note + '</span></div>'
+      + '<div class="cn-in"><span class="cn-cur">$</span>'
+      +   '<input data-cn="' + path + '" type="number" step="0.01" inputmode="decimal" '
+      +   'value="' + (v == null || v === 0 ? '' : v) + '" placeholder="—" '
+      +   'class="cn-inp' + (v ? '' : ' cn-empty') + '">'
+      +   '<span class="cn-unit">' + (unit || '/ sq ft') + '</span></div>'
+      + '</div>';
+  }
+
+  function _cSection(title, rows, unit) {
+    return '<div class="cn-sec">' + title + '</div>'
+      + rows.map(function(r) { return _cRow(r[0], r[1], r[2], unit); }).join('');
+  }
+
+  function concreteHtml() {
+    var sq = 1200, out = [];
+    ['zones.z1.slab4', 'zones.z1.footer6'].forEach(function(p) {
+      var r = _cRate(p);
+      if (r) out.push([p === 'zones.z1.slab4' ? '4" slab' : '6" w/ footers', r * sq]);
+    });
+    var minS = _cRate('minSlab') || 0;
+    var preview = out.length
+      ? out.map(function(o) {
+          var amt = Math.max(o[1], minS);
+          return '<span>' + o[0] + ' &middot; <b>$' + Math.round(amt).toLocaleString() + '</b>'
+               + (amt > o[1] ? ' <i>minimum applies</i>' : '') + '</span>';
+        }).join('')
+      : '<span>Enter a rate to see what a 1,200 sq ft pour comes to.</span>';
+
+    return _cSection('Pour rates', CONC_POURS)
+      + _cSection('Minimums', CONC_MINS, 'per job')
+      + _cSection('Charged sometimes', CONC_ADDS)
+      + '<div class="cn-note">Anything you always include \u2014 fibre, a PSI grade, a rebar '
+      +   'grid \u2014 belongs in the pour rate above. Leave its add-on blank so it is not '
+      +   'charged twice.</div>'
+      + '<div class="cn-prev"><div class="cn-prev-h">1,200 sq ft</div>' + preview + '</div>';
+  }
+
+  window.openConcretePricing = function() {
+    var old = document.getElementById('cnOverlay'); if (old) old.remove();
+    _cDirty = {};
+    var co = (window.currentUser || {}).companyName || (window.currentUser || {}).companyId || 'this company';
+
+    var ov = document.createElement('div');
+    ov.id = 'cnOverlay';
+    ov.className = 'pb-overlay';
+    ov.addEventListener('mousedown', function(e) { if (e.target === ov) ov.remove(); });
+    ov.innerHTML = '<div class="pb-shell cn-shell">'
+      + '<div class="pb-top">'
+      +   '<div><div class="pb-title">Concrete</div>'
+      +   '<div class="pb-sub">What a pour costs per square foot. Saves for <b>'
+      +     String(co).replace(/</g,'&lt;') + '</b>.</div></div>'
+      +   '<button id="cnClose" class="pb-x">&times;</button>'
+      + '</div>'
+      + '<div id="cnBody" class="pb-body cn-body"></div>'
+      + '<div class="pb-foot">'
+      +   '<div class="pb-footline"><div id="cnCount"></div><div id="cnStatus"></div></div>'
+      +   '<div class="pb-btns">'
+      +     '<button id="cnSave" class="pb-save">Save Concrete Rates</button>'
+      +     '<button id="cnZero" class="pb-alt">Clear All</button>'
+      +   '</div>'
+      + '</div></div>';
+    document.body.appendChild(ov);
+
+    function paint() {
+      document.getElementById('cnBody').innerHTML = concreteHtml();
+      var set = CONC_POURS.filter(function(p) { return _cRate(p[0]); }).length;
+      var c = document.getElementById('cnCount');
+      if (c) c.innerHTML = set + ' of ' + CONC_POURS.length + ' pour rates set'
+        + (Object.keys(_cDirty).length ? ' &middot; <b style="color:var(--gold);">'
+            + Object.keys(_cDirty).length + ' edited</b>' : '');
+    }
+    window._cnPaint = paint;
+
+    document.getElementById('cnClose').onclick = function() { ov.remove(); };
+    document.getElementById('cnBody').addEventListener('input', function(e) {
+      var el = e.target;
+      if (!el.hasAttribute || !el.hasAttribute('data-cn')) return;
+      var v = parseFloat(el.value);
+      _cDirty[el.getAttribute('data-cn')] = (el.value === '' || !isFinite(v)) ? 0 : v;
+      el.classList.remove('cn-empty');
+      clearTimeout(paint._t);
+      paint._t = setTimeout(paint, 500);
+    });
+
+    document.getElementById('cnZero').onclick = function() {
+      if (!confirm('Clear every concrete rate for this company?')) return;
+      CONC_POURS.concat(CONC_MINS, CONC_ADDS).forEach(function(r) { _cDirty[r[0]] = 0; });
+      paint();
+    };
+
+    document.getElementById('cnSave').onclick = async function() {
+      var keys = Object.keys(_cDirty);
+      var st = document.getElementById('cnStatus');
+      function say(m, c) { if (st) { st.textContent = m; st.style.color = c || '#8f98a6'; } }
+      if (!keys.length) { say('No changes to save.'); return; }
+      say('Saving\u2026', 'var(--gold)');
+      var rates = window.SauceRates.all();
+      rates.concrete = rates.concrete || {};
+      rates.concrete.mode = rates.concrete.mode || 'flat';
+      keys.forEach(function(path) {
+        var parts = path.split('.'), node = rates.concrete;
+        for (var i = 0; i < parts.length - 1; i++) {
+          if (!node[parts[i]] || typeof node[parts[i]] !== 'object') node[parts[i]] = {};
+          node = node[parts[i]];
+        }
+        node[parts[parts.length - 1]] = _cDirty[path];
+      });
+      window.SauceRates.save(rates);
+      var res = await _persistRatesForCompany(rates, 'Company Rates');
+      if (res && res.ok) { _cDirty = {}; paint(); say('Saved.', '#86efac'); }
+      else say('Applied on this device only \u2014 ' + ((res && res.why) || 'not saved'), '#fbbf24');
+      try { schedulePrice(); } catch (e) {}
+    };
+
+    paint();
+  };
 
   window.openPriceBook = function() {
     var old = document.getElementById('pbOverlay'); if (old) old.remove();
