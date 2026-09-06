@@ -224,8 +224,17 @@ body.matlist-docked #inputsBar{right:var(--matdock-w);}
   /* No toolbar button paints until the signed-in user's rates have landed
      and refreshAccountButtons has run. Without this the markup's own
      visibility shows every button for a moment on load. */
-  body:not(.auth-ready) #vpUtilityCol > button,
-  body:not(.auth-ready) #vpBtnRow > button{display:none!important;}
+  /* Nothing that differs between companies paints until the signed-in user's
+     own settings and rates have landed: not the toolbar, not the logo, not the
+     brand name or footer. Otherwise the last tenant's version shows first. */
+  body:not(.auth-ready) #vpUtilityCol,
+  body:not(.auth-ready) #vpBtnRow{visibility:hidden!important;}
+  body:not(.auth-ready) #vpUtilityCol *,
+  body:not(.auth-ready) #vpBtnRow *{visibility:hidden!important;}
+  body:not(.auth-ready) .logo-mark,
+  body:not(.auth-ready) .brand-name-sales,
+  body:not(.auth-ready) .brand-sub-sales,
+  body:not(.auth-ready) #brandFooter{visibility:hidden!important;}
   /* Utility col hidden on mobile */
   #vpUtilityCol{display:none!important;}
   /* Override for customer view mode */
@@ -7632,7 +7641,9 @@ function restoreConfig(cfg) {
       _sv('st_manualNotes',sf.manualNotes);
       _sv('st_materialKit',sf.materialKit);
       _sv('st_farmTax',   sf.farmTax);
-      _sv('st_mftRate',   sf.mftRate || '8');
+      // A saved quote keeps the markup it was quoted at, including 0.
+      // `|| '8'` turned a saved zero back into eight on reload.
+      _sv('st_mftRate',   (sf.mftRate == null || sf.mftRate === '') ? '' : sf.mftRate);
       // Restore Material Pack selection (all / metal / lumber)
       window._matPackFilter = sf.matPack || 'all';
       _sv('st_matPack', window._matPackFilter);
@@ -8490,6 +8501,36 @@ window.applyBasicMode = function() {
 // Signing out leaves the page loaded, so the next person inherits whatever
 // the last one could see. Put every account-gated button back to hidden and
 // drop the cached rates, so nothing carries across a user switch.
+// Everything in this browser that belongs to a company rather than to the
+// browser itself. Cleared whenever the signed-in user changes, so no part of
+// one tenant can be seen, even briefly, inside another.
+window.wipeTenantState = function() {
+  try {
+    var kill = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (!k) continue;
+      if (k === 'sauce_rates' || k === 'sauce_rate_profile'
+          || k === 'sauceBrandLast' || k === 'sauce_user'
+          || k.indexOf('sauceBrand::') === 0
+          || k.indexOf('sauceDescTable') === 0) kill.push(k);
+    }
+    kill.forEach(function(k) { localStorage.removeItem(k); });
+  } catch(e) {}
+  try { sessionStorage.removeItem('sauce_user'); } catch(e) {}
+  try { sessionStorage.removeItem('sauce_demo_seed'); } catch(e) {}
+  // In-memory copies of the same things.
+  try { window.SauceRates.forget(); } catch(e) {}
+  window._companySettings = {};
+  window._priceTable = null;
+  window._previewCompany = null;
+  // Back to the built-in accent until the new company's is known.
+  try {
+    var rs = document.documentElement.style;
+    rs.removeProperty('--gold'); rs.removeProperty('--gold-rgb'); rs.removeProperty('--gold2');
+  } catch(e) {}
+};
+
 window.resetToolbarForSignedOut = function() {
   var ids = (window.SAUCE_BASIC_HIDE || []).concat(['vpHardRefreshBtn','vpBackfillBtn','vpFollowUpsBtn']);
   ids.forEach(function(id) {
@@ -8503,6 +8544,8 @@ window.resetToolbarForSignedOut = function() {
     clearTimeout(window._authReadyTimer); window._authReadyTimer = null;
     document.body.classList.remove('auth-ready');
   } catch(e) {}
+  try { window.wipeTenantState(); } catch(e) {}
+  window._companyLoaded = false;
 };
 
 window.refreshAccountButtons = function() {
@@ -8542,8 +8585,11 @@ window.refreshAccountButtons = function() {
   // backstop so a failed sync leaves a salesman with buttons rather than
   // an empty toolbar.
   try {
+    // Rates decide the buttons; company settings decide the logo, name and
+    // colour. Revealing on the first of the two to land shows the other in its
+    // default state for a moment, which is the flash.
     var synced = window.SauceRates && window.SauceRates.synced && window.SauceRates.synced();
-    if (synced) {
+    if (synced && window._companyLoaded) {
       clearTimeout(window._authReadyTimer);
       document.body.classList.add('auth-ready');
     } else if (!window._authReadyTimer) {
@@ -9196,10 +9242,15 @@ function renderInteriorWalls() {
     panel.addEventListener('input', handler);
   })();
 
-  // Always ensure MFT rate has a valid numeric value — never leave it blank
+  // The markup box is filled from the signed-in company's rate profile by
+  // applyMarkupDefault(), which runs when that profile lands. It used to be
+  // forced to 8 here whenever the value was not greater than zero — which is
+  // true of 0 itself, so a company on zero markup got 8 back on every load.
   (function() {
     var mftEl = document.getElementById('st_mftRate');
-    if (mftEl && !(parseFloat(mftEl.value) > 0)) mftEl.value = '8';
+    if (mftEl && String(mftEl.value).trim() === '' && typeof window.applyMarkupDefault === 'function') {
+      window.applyMarkupDefault();
+    }
   })();
 
   setTimeout(triggerBuild, 400);
@@ -25741,7 +25792,9 @@ async function doSalesLogin() {
     // session exactly as a hard refresh does. There is no in-progress design
     // to protect any more, so a reload costs nothing.
     btn.textContent = 'Signing in\u2026';
-    try { window.SauceRates.forget(); } catch(e) {}
+    // Whoever was signed in before may have been a different company. Nothing
+    // of theirs survives into this session, not even for a frame.
+    try { window.wipeTenantState(); } catch(e) {}
     location.reload();
     return;
   } catch(e) {
@@ -26389,10 +26442,18 @@ async function loadCompanySettings() {
       _cc.href = _url || '#';
       _cc.style.display = _url ? '' : 'none';
     }
+    window._companyLoaded = true;
     applyCompanyBranding();
+    try { window.refreshAccountButtons(); } catch(e) {}
     console.log('[Company] settings loaded for', window._companySettings.companyId, '| origin:', SHOP_ADDRESS || '(none set)');
     return j.settings;
-  } catch(e) { console.warn('[Company] settings load failed:', e); return null; }
+  } catch(e) {
+    console.warn('[Company] settings load failed:', e);
+    // Do not leave the tool blank on a failed load — reveal what we have.
+    window._companyLoaded = true;
+    try { window.refreshAccountButtons(); } catch(e2) {}
+    return null;
+  }
 }
 
 // ── LOCAL ZIP MILEAGE TABLE ───────────────────────────────────────────────────
@@ -26937,6 +26998,7 @@ async function doLogout() {
   try { sessionStorage.removeItem('sauce_user'); } catch(e) {}
   try { localStorage.removeItem('sauce_user'); } catch(e) {}
   window.currentUser = null;
+  try { window.resetToolbarForSignedOut(); } catch(e) {}
   try { await window.SauceAuth.signOut(); } catch(e) {}
   try { window.SauceRates.forget(); } catch(e) {}
   try { window.SauceSession && window.SauceSession.stop && window.SauceSession.stop(); } catch(e) {}
