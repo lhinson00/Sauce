@@ -26110,24 +26110,61 @@ window._previewCompany = null;
 
 // Paint the login screen from the last brand this browser saw, or from a ?co=
 // parameter, so a company can be handed a link that is theirs from first sight.
+// ── The login screen wears the company's brand ─────────────────────────────
+// Which company are we? In order: an explicit ?co=, the hostname the tool is
+// served on, then whatever this browser saw last. The first two work on a
+// first visit; the third only makes the second visit faster.
+//
+// Branding is read from the public company_brand view, which exposes nothing
+// but the name, logo and accent — no addresses, no settings, no flags.
 (function _brandBeforeLogin() {
-  function go() {
-    try {
-      var q = new URLSearchParams(location.search).get('co');
-      var id = (q || localStorage.getItem('sauceBrandLast') || '').toLowerCase().trim();
-      if (!id) return;
-      var raw = localStorage.getItem('sauceBrand::' + id);
-      if (!raw) return;
-      var b = JSON.parse(raw);
-      var cur = window._companySettings || {};
-      Object.keys(b).forEach(function(k){ cur[k] = b[k]; });
-      window._companySettings = cur;
-      if (typeof applyCompanyBranding === 'function') applyCompanyBranding();
-    } catch(e) {}
+  function paint(b) {
+    if (!b) return;
+    var cur = window._companySettings || {};
+    if (b.brand_name)   cur.brandName   = b.brand_name;
+    if (b.logo_data)    cur.logoData    = b.logo_data;
+    if (b.accent_color) cur.accentColor = b.accent_color;
+    if (b.company_id)   cur.companyId   = b.company_id;
+    window._companySettings = cur;
+    try { if (b.company_id) localStorage.setItem('sauceBrand::' + b.company_id, JSON.stringify(b)); } catch(e) {}
+    if (typeof applyCompanyBranding === 'function') applyCompanyBranding();
   }
+
+  async function fromServer(where) {
+    try {
+      var url = window.SAUCE_ENDPOINTS.supabaseUrl + '/rest/v1/company_brand?select=*&' + where + '&limit=1';
+      var res = await fetch(url, { headers: { 'apikey': window.SAUCE_ENDPOINTS.supabaseKey } });
+      if (!res.ok) return null;
+      var rows = await res.json();
+      return (rows && rows[0]) || null;
+    } catch(e) { return null; }
+  }
+
+  async function go() {
+    var co = '';
+    try { co = (new URLSearchParams(location.search).get('co') || '').toLowerCase().trim(); } catch(e) {}
+    var host = (location.hostname || '').toLowerCase().trim();
+
+    // Show a cached brand straight away so there is no flash of the default,
+    // then confirm it against the server.
+    try {
+      var last = co || localStorage.getItem('sauceBrandLast') || '';
+      var raw = last && localStorage.getItem('sauceBrand::' + last.toLowerCase().trim());
+      if (raw) paint(JSON.parse(raw));
+    } catch(e) {}
+
+    var b = null;
+    if (co)   b = await fromServer('company_id=eq.' + encodeURIComponent(co));
+    if (!b && host && host.indexOf('localhost') < 0) {
+      b = await fromServer('brand_host=eq.' + encodeURIComponent(host));
+    }
+    if (b) paint(b);
+  }
+
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go);
   else go();
 })();
+
 
 // Super-user only: view the tool as another company, without signing in as one
 // of their people. Changes branding, feature flags and the price list. Writes
