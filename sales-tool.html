@@ -2843,7 +2843,8 @@ var _WD_LABELS = {
 function openingGarageLabel(d){
   var s = (d.w||'?') + 'x' + (d.h||'?') + ' Garage Door';
   if (d.framedOpening) return s + ' \u2014 Framed Opening (No Door Installed)';
-  if (d.insulated) s += ' \u2014 Insulated';
+  if (d.steelBack) s += ' \u2014 Insulated, Steel Back';
+  else if (d.insulated) s += ' \u2014 Insulated';
   if (d.fullView)  s += ' \u2014 Full View Glass';
   try { if ((document.getElementById('sf_gdWindows')||{}).checked) s += ' \u2014 Window Inserts'; } catch(e){}
   return s;
@@ -4870,8 +4871,9 @@ function setGarageProp(id,prop,val){
     var wall=WALLS.find(function(w){return w.id===val;})||{len:Q.l};
     d.offset=Math.round((wall.len-d.w)/2*12)/12;
   }
-  else if(prop==='insulated'){ d.insulated = val; d.fullView = false; }
-  else if(prop==='fullView'){ d.fullView = val; d.insulated = false; }
+  else if(prop==='insulated'){ d.insulated = val; d.fullView = false; if(!val) d.steelBack = false; }
+  else if(prop==='steelBack'){ d.steelBack = val; if(val){ d.insulated = true; d.fullView = false; } }
+  else if(prop==='fullView'){ d.fullView = val; d.insulated = false; d.steelBack = false; }
   else if(prop==='framedOpening'){ d.framedOpening = val; }
   else if(prop==='highLift'){ d.highLift = !!val; }
   else if(prop==='vertTrack'){ d.vertTrack = !!val; }
@@ -4916,7 +4918,8 @@ function renderGarageDoors(){
       +(d.framedOpening ? '<span style="font-size:10px;color:var(--gold);font-weight:600;">Framed opening — no door hardware</span>'
         : '<span style="font-size:10px;color:var(--muted);font-weight:600;">Insulation:</span>'
           +'<button onclick="setGarageProp('+d.id+',\'insulated\',false)" style="padding:3px 10px;border-radius:5px;border:'+(!d.insulated&&!d.fullView?'1px solid var(--gold)':'1px solid #5e5e5e')+';background:'+(!d.insulated&&!d.fullView?'rgba(var(--gold-rgb),.15)':'transparent')+';color:'+(!d.insulated&&!d.fullView?'var(--gold)':'#888888')+';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Standard</button>'
-          +'<button onclick="setGarageProp('+d.id+',\'insulated\',true)" style="padding:3px 10px;border-radius:5px;border:'+(d.insulated?'1px solid var(--gold)':'1px solid #5e5e5e')+';background:'+(d.insulated?'rgba(var(--gold-rgb),.15)':'transparent')+';color:'+(d.insulated?'var(--gold)':'#888888')+';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Insulated</button>'
+          +'<button onclick="setGarageProp('+d.id+',\'insulated\',true)" style="padding:3px 10px;border-radius:5px;border:'+(d.insulated&&!d.steelBack?'1px solid var(--gold)':'1px solid #5e5e5e')+';background:'+(d.insulated&&!d.steelBack?'rgba(var(--gold-rgb),.15)':'transparent')+';color:'+(d.insulated&&!d.steelBack?'var(--gold)':'#888888')+';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Insulated</button>'
+          +'<button onclick="setGarageProp('+d.id+',\'steelBack\',!d.steelBack)" title="Steel-backed insulated door" style="padding:3px 10px;border-radius:5px;border:'+(d.steelBack?'1px solid var(--gold)':'1px solid #5e5e5e')+';background:'+(d.steelBack?'rgba(var(--gold-rgb),.15)':'transparent')+';color:'+(d.steelBack?'var(--gold)':'#888888')+';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Steel Back</button>'
           +(['10x10','10x12','12x12'].indexOf(d.sizeKey)>-1?'<button onclick="setGarageProp('+d.id+',\'fullView\',true)" style="padding:3px 10px;border-radius:5px;border:'+(d.fullView?'1px solid var(--gold)':'1px solid #5e5e5e')+';background:'+(d.fullView?'rgba(var(--gold-rgb),.15)':'transparent')+';color:'+(d.fullView?'var(--gold)':'#888888')+';font-size:10px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Full View Glass</button>':'')
       )
       +'</div>'
@@ -32173,6 +32176,26 @@ window.SauceMaterials.calcDoorJacks = function(allDoors, sf) {
 // SKU lookup by width × height × insulated flag.
 // Standard: GD{w}{h}W  |  Insulated: GD{w}{h}INW or GD{w}{h}INSW
 
+// The company's door table, or an empty object when none is entered. Read raw so
+// demo jitter can never be written back as a real price.
+window.SauceMaterials.gdTable = function() {
+  try {
+    var t = (window.SauceRates.all().materials || {}).garageDoors;
+    return (t && typeof t === 'object') ? t : {};
+  } catch(e) { return {}; }
+};
+// Which column of the table a door reads: steel back, vinyl back (what the
+// Insulated option means), or neither — a standard door still prices off its SKU.
+window.SauceMaterials.gdBacking = function(d) {
+  return d.steelBack ? 'steel' : (d.insulated ? 'vinyl' : '');
+};
+window.SauceMaterials.gdPrice = function(d) {
+  var row = window.SauceMaterials.gdTable()[(d.w||0) + 'x' + (d.h||0)];
+  var col = window.SauceMaterials.gdBacking(d);
+  if (!row || !col) return 0;
+  return parseFloat(row[col]) || 0;
+};
+
 window.SauceMaterials.calcGarageDoors = function(allDoors) {
   var garageDoors = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
   if (!garageDoors.length) return [];
@@ -32228,14 +32251,38 @@ window.SauceMaterials.calcGarageDoors = function(allDoors) {
     '10x10:FV':'GDC1010FVG', '10x12:FV':'GDC1012FVG', '12x12:FV':'GDC1212FVG'
   };
 
+  // Doors whose size and backing carry a table price are billed from the table.
+  // Everything else — standard doors, and any size the company has not entered —
+  // falls through to the SKU grouping below, so this can never blank out a quote.
+  var tableGroups = {};
   var groups = {};
   garageDoors.forEach(function(d) {
     if (d.framedOpening) return; // framed opening — no door SKU
     if (d.fullView) return; // handled separately above
+    var tPrice = window.SauceMaterials.gdPrice(d);
+    if (tPrice > 0) {
+      var tKey = (d.w + 'x' + d.h) + '|' + window.SauceMaterials.gdBacking(d);
+      if (!tableGroups[tKey]) tableGroups[tKey] = { price: tPrice, qty: 0, w: d.w, h: d.h,
+                                                   back: window.SauceMaterials.gdBacking(d) };
+      tableGroups[tKey].qty++;
+      return;
+    }
     var key = d.fullView ? (d.w + 'x' + d.h + ':FV') : (d.w + 'x' + d.h + ':' + (d.insulated ? '1' : '0'));
     var sku = skuMap[key];
     if (!sku) sku = d.fullView ? ('GDC' + d.w + d.h + 'FVG') : ('GD' + d.w + d.h + (d.insulated ? 'INW' : 'W')); // fallback
     groups[sku] = (groups[sku] || 0) + 1;
+  });
+
+  var tableItems = Object.keys(tableGroups).sort().map(function(k) {
+    var g = tableGroups[k], backLabel = g.back === 'steel' ? 'Steel Back' : 'Vinyl Back';
+    return {
+      category:    'Garage Doors',
+      description: g.w + 'x' + g.h + ' Garage Door — ' + backLabel,
+      sku:         'GD' + g.w + g.h + (g.back === 'steel' ? 'SB' : 'VB'),
+      quantity:    g.qty,
+      fixedCost:   g.price * g.qty,
+      detail:      backLabel + '  |  ' + g.qty + ' @ $' + g.price.toLocaleString('en-US')
+    };
   });
 
   var standardItems = Object.keys(groups).sort().map(function(sku) {
@@ -32303,7 +32350,7 @@ window.SauceMaterials.calcGarageDoors = function(allDoors) {
     // ODT trim handled by calcOverheadDoorTrim
   });
 
-  return fullGlassItems.concat(standardItems).concat(framedItems);
+  return fullGlassItems.concat(tableItems).concat(standardItems).concat(framedItems);
 };
 
 // ── GARAGE DOOR INSTALL FEE ───────────────────────────────────────────────────
@@ -32530,15 +32577,43 @@ window.SauceMaterials.calcGarageDoorOpeners = function(allDoors) {
 window.SauceMaterials.calcGarageDoorWindows = function(allDoors) {
   var hasWin = !!(document.getElementById('sf_gdWindows')||{}).checked;
   if (!hasWin) return [];
-  var gdCount = (allDoors||[]).filter(function(d){ return d.type === 'garage'; }).length;
+  var gds = (allDoors||[]).filter(function(d){ return d.type === 'garage'; });
+  var gdCount = gds.length;
   if (!gdCount) return [];
-  return [{
+
+  // A window panel costs more on a wider door, so when the company's table has a
+  // window figure for a size, bill that size at its own rate. Sizes with no figure
+  // fall back to the single GDW line below, same as before.
+  var tbl = window.SauceMaterials.gdTable(), winGroups = {}, leftover = 0;
+  gds.forEach(function(d) {
+    var row = tbl[(d.w||0) + 'x' + (d.h||0)];
+    var w   = row ? (parseFloat(row.window) || 0) : 0;
+    if (w > 0) {
+      var k = d.w + 'x' + d.h;
+      if (!winGroups[k]) winGroups[k] = { price: w, qty: 0 };
+      winGroups[k].qty++;
+    } else { leftover++; }
+  });
+  var winItems = Object.keys(winGroups).sort().map(function(k) {
+    var g = winGroups[k];
+    return {
+      category:    'Garage Doors',
+      description: 'Garage Door Window Panel — ' + k,
+      sku:         'GDW' + k.replace('x',''),
+      quantity:    g.qty,
+      fixedCost:   g.price * g.qty,
+      detail:      g.qty + ' @ $' + g.price.toLocaleString('en-US') + ' per door'
+    };
+  });
+  if (!leftover) return winItems;
+  gdCount = leftover;
+  return winItems.concat([{
     category:    'Garage Doors',
     description: 'Garage Door Window Inserts',
     sku:         'GDW',
     quantity:    gdCount,
     detail:      '1 per garage door  |  ' + gdCount + ' door(s)'
-  }];
+  }]);
 };
 
 // ── EAVE BEAM HEADERS (LVL) ──────────────────────────────────────────────────
@@ -39451,7 +39526,13 @@ window.SauceRates = (function() {
       highLiftPerDoor: 0,   // garage door high lift track, each
       verticalTrackPerDoor: 0,   // garage door vertical track, each
       scissorTrussEach: 0,   // scissor truss upgrade, per truss
-      atticTrussEach: 0    // attic truss upgrade, per truss
+      atticTrussEach: 0,   // attic truss upgrade, per truss
+      // Garage doors priced from a per-size table rather than a SKU, because a
+      // company's door sheet quotes a price per size per backing plus a window
+      // panel adder. Keyed "WxH" -> { vinyl, steel, window }. Ships EMPTY, so no
+      // company inherits another's doors; edited in Pricing -> Garage Doors.
+      // Any size left out falls back to the GD SKU lookup exactly as before.
+      garageDoors: {}
     },
     // Everything to do with getting it there.
     shipping: {
@@ -39853,7 +39934,7 @@ window.SauceRates = (function() {
     Object.keys(obj).forEach(function(k) {
       var val = obj[k], childPath = path ? (path + '.' + k) : k;
       // These two are lists, not single figures — they get their own editor.
-      if (k === 'zoneMap' || k === 'esdCounties') return;
+      if (k === 'zoneMap' || k === 'esdCounties' || k === 'garageDoors') return;
       // Concrete has a structure (flat vs zones) that a flat list of numbers
       // can't express, so it gets a screen of its own.
       if (depth === 0 && k === 'concrete') {
@@ -41407,6 +41488,9 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       +   _pcTile('Concrete', 'One flat rate, or different rates by county.',
                  (window.SauceConcrete.mode() === 'zones' ? 'by county' : 'flat'), 'openConcreteModal()', '#fbbf24')
       +   _pcTile('Shipping', 'Per mile, minimums and surcharges.', mark(anySet('shipping')), 'openShippingPricing()', '#86efac')
+      +   _pcTile('Garage Doors', 'A price per size for vinyl back, steel back and window panels.',
+                 (function(){ var n = Object.keys(window.SauceMaterials.gdTable()).length;
+                              return n ? n + ' sizes' : 'not set'; })(), 'openGarageDoorPricing()', '#c4b5fd')
       +   '<div style="margin-top:14px;padding-top:12px;border-top:1px solid #4a4a4a;">'
       +     '<div id="pricingHubStatus" style="font-size:11px;color:#8f8f8f;min-height:15px;margin-bottom:8px;font-family:Outfit,sans-serif;"></div>'
       +     '<div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">'
@@ -41420,6 +41504,157 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       + '</div>'
       + '</div>';
     document.body.appendChild(wrap);
+  };
+
+  // ── GARAGE DOOR PRICE TABLE ──────────────────────────────────────────────
+  // A door sheet quotes a price per size per backing plus a window panel, which
+  // no single SKU can carry, so this table lives in the company's rate profile.
+  // Sizes come from the calculator's own size list, so anything a salesman can
+  // put on a building has a row here.
+  window.SAUCE_GD_SIZES = ['8x8','9x7','9x8','9x9','9x10','10x8','10x10','10x12','10x14',
+                           '12x8','12x10','12x12','12x14','14x10','14x12','14x14',
+                           '16x8','16x10','16x12','16x14','18x8','18x10','18x12','18x14',
+                           '20x10','20x12','20x14'];
+
+  function _gdRows() {
+    var t = window.SauceMaterials.gdTable();
+    var seen = {}, out = [];
+    window.SAUCE_GD_SIZES.forEach(function(k){ seen[k] = 1; out.push(k); });
+    Object.keys(t).forEach(function(k){ if (!seen[k]) out.push(k); });
+    return out;
+  }
+
+  function _gdCell(size, col, val) {
+    return '<input data-gd-size="' + size + '" data-gd-col="' + col + '" type="number" step="any" '
+      + 'value="' + (val || '') + '" placeholder="0" '
+      + 'style="width:100%;padding:5px 6px;border-radius:6px;border:1px solid #5e5e5e;background:#2b2b2b;'
+      + 'color:#fff;font-size:12px;font-weight:700;text-align:right;font-family:Outfit,sans-serif;">';
+  }
+
+  window.openGarageDoorPricing = function() {
+    var old = document.getElementById('gdPriceModal');
+    if (old) old.remove();
+    var t = window.SauceMaterials.gdTable();
+
+    var body = _gdRows().map(function(size) {
+      var row = t[size] || {};
+      return '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05);">'
+        + '<div style="width:62px;font-size:11px;font-weight:800;color:#c8c8c8;font-family:Outfit,sans-serif;">' + size + '</div>'
+        + '<div style="flex:1;">' + _gdCell(size, 'vinyl',  row.vinyl)  + '</div>'
+        + '<div style="flex:1;">' + _gdCell(size, 'steel',  row.steel)  + '</div>'
+        + '<div style="flex:1;">' + _gdCell(size, 'window', row.window) + '</div>'
+        + '</div>';
+    }).join('');
+
+    var wrap = document.createElement('div');
+    wrap.id = 'gdPriceModal';
+    wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:100005;display:flex;align-items:center;justify-content:center;padding:20px;';
+    wrap.onclick = function(e) { if (e.target === wrap) wrap.remove(); };
+    wrap.innerHTML =
+      '<div style="background:#3a3a3a;border:1px solid #5e5e5e;border-radius:14px;width:100%;max-width:560px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6);">'
+      + '<div style="padding:16px 20px 12px;border-bottom:1px solid #5e5e5e;display:flex;align-items:center;gap:10px;">'
+      +   '<div style="flex:1;">'
+      +     '<div style="font-size:15px;font-weight:800;color:#fff;font-family:Outfit,sans-serif;">Garage Doors</div>'
+      +     '<div style="font-size:11px;color:#8f8f8f;margin-top:2px;font-family:Outfit,sans-serif;">'
+      +       'A price per size. Leave a size blank and it prices off its SKU instead.</div>'
+      +   '</div>'
+      +   '<button onclick="document.getElementById(\'gdPriceModal\').remove()" style="background:none;border:none;color:#8f8f8f;font-size:22px;cursor:pointer;line-height:1;">&times;</button>'
+      + '</div>'
+      + '<div style="display:flex;gap:6px;padding:8px 20px 4px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;font-family:Outfit,sans-serif;">'
+      +   '<div style="width:62px;">Size</div>'
+      +   '<div style="flex:1;text-align:right;">Vinyl back</div>'
+      +   '<div style="flex:1;text-align:right;">Steel back</div>'
+      +   '<div style="flex:1;text-align:right;">Window panel</div>'
+      + '</div>'
+      + '<div style="flex:1;overflow-y:auto;padding:0 20px 8px;">' + body + '</div>'
+      + '<div style="padding:12px 20px 16px;border-top:1px solid #5e5e5e;">'
+      +   '<div id="gdPriceStatus" style="font-size:11px;color:#8f8f8f;min-height:15px;margin-bottom:8px;font-family:Outfit,sans-serif;"></div>'
+      +   '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+      +     '<button onclick="saveGarageDoorPricing()" style="flex:1;min-width:110px;padding:9px 14px;background:var(--gold);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Save</button>'
+      +     '<button onclick="pasteGarageDoorPricing()" title="Size, vinyl, steel, window - one row per line" style="padding:9px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Paste CSV</button>'
+      +     '<button onclick="downloadGarageDoorPricing()" style="padding:9px 12px;background:rgba(255,255,255,.06);color:#c8c8c8;border:1px solid #5e5e5e;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Download CSV</button>'
+      +     '<button onclick="clearGarageDoorPricing()" style="padding:9px 12px;background:rgba(239,68,68,.10);color:#ef4444;border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Clear All</button>'
+      +   '</div>'
+      + '</div>'
+      + '</div>';
+    document.body.appendChild(wrap);
+  };
+
+  function _gdStatus(msg, color) {
+    var el = document.getElementById('gdPriceStatus');
+    if (el) { el.textContent = msg || ''; el.style.color = color || '#8f8f8f'; }
+  }
+
+  // Read the grid back. A size with nothing in any column is left out entirely
+  // rather than stored as three zeros, so "blank means fall back to the SKU"
+  // stays true after a save.
+  function _gdFromInputs() {
+    var out = {};
+    Array.prototype.forEach.call(document.querySelectorAll('[data-gd-size]'), function(el) {
+      var size = el.getAttribute('data-gd-size'), col = el.getAttribute('data-gd-col');
+      var v = parseFloat(String(el.value).replace(/[^0-9.\-]/g, ''));
+      if (!isFinite(v) || v <= 0) return;
+      if (!out[size]) out[size] = {};
+      out[size][col] = v;
+    });
+    return out;
+  }
+
+  window.saveGarageDoorPricing = async function() {
+    var rates = window.SauceRates.all();
+    rates.materials = rates.materials || {};
+    rates.materials.garageDoors = _gdFromInputs();
+    window.SauceRates.save(rates);
+    _gdStatus('Saving...', 'var(--gold)');
+    var res = await _persistRatesForCompany(rates, 'Company Rates');
+    var n = Object.keys(rates.materials.garageDoors).length;
+    _gdStatus(res && res.success
+      ? n + ' size' + (n === 1 ? '' : 's') + ' saved for this company.'
+      : 'Applied on this device only - ' + ((res && res.reason) || 'could not reach the server') + '.',
+      (res && res.success) ? '#86efac' : '#fbbf24');
+    if (typeof schedulePrice === 'function') schedulePrice();
+  };
+
+  window.clearGarageDoorPricing = function() {
+    if (!confirm('Clear every garage door price for this company?\n\nDoors go back to pricing off their SKU.')) return;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-gd-size]'), function(el) { el.value = ''; });
+    _gdStatus('Cleared on screen - press Save to store it.', '#fbbf24');
+  };
+
+  window.pasteGarageDoorPricing = function() {
+    var txt = prompt('Paste rows as:  size, vinyl, steel, window\n\ne.g.  10x10, 2014, 2406, 380');
+    if (!txt) return;
+    var n = 0;
+    txt.split(/\r?\n/).forEach(function(line) {
+      var c = line.split(',');
+      if (c.length < 2) return;
+      var size = String(c[0]).trim().toLowerCase().replace(/\s+/g, '').replace('\u00d7', 'x');
+      if (!/^\d+x\d+$/.test(size)) return;
+      ['vinyl','steel','window'].forEach(function(col, i) {
+        var v = parseFloat(String(c[i+1] || '').replace(/[^0-9.\-]/g, ''));
+        if (!isFinite(v) || v <= 0) return;
+        var el = document.querySelector('[data-gd-size="' + size + '"][data-gd-col="' + col + '"]');
+        if (el) { el.value = v; n++; }
+      });
+    });
+    _gdStatus(n ? n + ' price' + (n === 1 ? '' : 's') + ' filled in - press Save to store them.' : 'Nothing matched a size on screen.',
+              n ? '#86efac' : '#ef4444');
+  };
+
+  window.downloadGarageDoorPricing = function() {
+    var t = _gdFromInputs();
+    var csv = 'Size,Vinyl Back,Steel Back,Window Panel\n' + _gdRows().map(function(size) {
+      var r = t[size] || {};
+      return [size, r.vinyl || '', r.steel || '', r.window || ''].join(',');
+    }).join('\n');
+    try {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+      a.download = 'garage-door-pricing.csv';
+      a.click();
+      setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000);
+      _gdStatus('Downloaded.', '#86efac');
+    } catch(e) { _gdStatus('Could not download: ' + e.message, '#ef4444'); }
   };
 
   // ── one shared screen builder for the simple rate panels ─────────────────
