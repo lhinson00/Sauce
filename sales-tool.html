@@ -8416,8 +8416,19 @@ document.addEventListener('DOMContentLoaded', initMobileViewport);
 window.SAUCE_BASIC_KEEP = ['vpLoadBtn','vpNewQuoteBtn','vpHardRefreshBtn','vpDimToggle'];
 window.SAUCE_BASIC_HIDE = ['vpLeadsBtn','vpKitsBtn','vpGalleryBtn','vpImportBtn','vpActivityBtn',
                            'vpUsersBtn','vpRatesBtn','vpBrandBtn','vpPreviewBtn','vpPromoBtn'];
+window.isBasicUser = function(name) {
+  var u = String(name || (window.currentUser || {}).username || '').toLowerCase().trim();
+  if (!u) return false;
+  try {
+    var list = ((window.SauceRates.all().access || {}).basicUsers) || [];
+    for (var i = 0; i < list.length; i++) {
+      if (String(list[i]).toLowerCase().trim() === u) return true;
+    }
+  } catch(e) {}
+  return false;
+};
 window.applyBasicMode = function() {
-  if (!(window.currentUser && window.currentUser.basicMode)) return false;
+  if (!window.isBasicUser()) return false;
   window.SAUCE_BASIC_HIDE.forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.style.display = 'none';
@@ -25614,7 +25625,6 @@ window.SauceAuth = (function() {
         sendEmail:         me.send_email !== false,
         materialList:      me.material_list !== false,
         singleTotalPdf:    !!me.single_total_pdf,
-        basicMode:         !!me.basic_mode,
         isDemo:            !!me.is_demo,
         depositPctOfTotal: me.deposit_pct || 0
       };
@@ -25709,7 +25719,6 @@ async function doSalesLogin() {
         materialList: data.materialList|| false,
         isDemo:       data.isDemo      || false,
         singleTotalPdf: data.singleTotalPdf || false,
-        basicMode:      data.basicMode || false,
         depositPctOfTotal: data.depositPctOfTotal || 0
       };
 
@@ -26106,7 +26115,6 @@ async function openPreviewPicker() {
     sendEmail:         _pf(u, ['send_email','sendEmail'], true),
     materialList:      _pf(u, ['material_list','materialList'], true),
     singleTotalPdf:    _pf(u, ['single_total_pdf','singleTotalPdf'], false),
-    basicMode:         _pf(u, ['basic_mode','basicMode'], false),
     depositPctOfTotal: _pf(u, ['deposit_pct','depositPctOfTotal','deposit_pct_of_total'], 0),
     // the session stays ours — it is what the database trusts
     token:             real.token,
@@ -39607,6 +39615,11 @@ window.SauceRates = (function() {
     // Demo pricing. On until a registered company turns it off in Rates; the
     // setting travels with the rate profile, not with one browser.
     demo: { enabled: false, jitterPct: 9 },
+  // Usernames put in basic mode. This lives here rather than on the profile row
+  // because the rate profile already syncs to every browser at login, so a
+  // stripped-down toolbar needs no column on public.profiles and no redeploy of
+  // the admin-users function. Company-scoped, like the rest of the profile.
+  access: { basicUsers: [] },
     labor: {
       base: {
         rg:       { rate: 0, min: 0 },
@@ -39972,7 +39985,7 @@ window.SauceRates = (function() {
     Object.keys(obj).forEach(function(k) {
       var val = obj[k], childPath = path ? (path + '.' + k) : k;
       // These two are lists, not single figures — they get their own editor.
-      if (k === 'zoneMap' || k === 'esdCounties' || k === 'garageDoors') return;
+      if (k === 'zoneMap' || k === 'esdCounties' || k === 'garageDoors' || k === 'basicUsers') return;
       // Concrete has a structure (flat vs zones) that a flat list of numbers
       // can't express, so it gets a screen of its own.
       if (depth === 0 && k === 'concrete') {
@@ -40198,7 +40211,6 @@ window.SauceRates = (function() {
           role: r.role || 'user', active: r.active !== false,
           savedQuote: r.saved_quote !== false, sendEmail: r.send_email !== false,
           materialList: r.material_list !== false, singleTotalPdf: !!r.single_total_pdf,
-          basicMode: !!r.basic_mode,
           isDemo: !!r.is_demo, depositPct: r.deposit_pct || ''
         };
       });
@@ -40280,7 +40292,8 @@ window.SauceRates = (function() {
       + _check('au_materialList',  'Can see the material list', u.materialList)
       + _check('au_singleTotalPdf','Customer PDF shows one total, no breakout', u.singleTotalPdf)
       + _check('au_isDemo',        'Demo account (skewed pricing)', u.isDemo)
-      + _check('au_basicMode',     'Basic mode \u2014 only New Quote, Load Quote and Hard Refresh', u.basicMode)
+      + _check('au_basicMode',     'Basic mode \u2014 only New Quote, Load Quote and Hard Refresh',
+               window.isBasicUser(u.username))
       + _field('au_depositPct', 'Deposit % of total', u.depositPct || '', 'number', 'blank = house rule')
       + '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">'
       +   '<button onclick="adminSaveUser()" style="flex:1;min-width:100px;padding:9px 14px;background:var(--gold);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Save User</button>'
@@ -40312,13 +40325,32 @@ window.SauceRates = (function() {
       role: val('au_role'),
       active: chk('au_active'), savedQuote: chk('au_savedQuote'), sendEmail: chk('au_sendEmail'),
       materialList: chk('au_materialList'), singleTotalPdf: chk('au_singleTotalPdf'), isDemo: chk('au_isDemo'),
-      basicMode: chk('au_basicMode'),
       depositPct: val('au_depositPct')
     };
     if (!u.username) { _aStatus('A username is required.', '#ef4444'); return; }
     _aStatus('Saving ' + u.username + '...', 'var(--gold)');
     var j = await _gas('saveUser', { user: u });
     if (j && j.success) {
+      // Basic mode is not a profile column — it is a list on the company rate
+      // profile, so it is saved separately and only when it actually changed.
+      try {
+        var wantBasic = chk('au_basicMode');
+        if (wantBasic !== window.isBasicUser(u.username)) {
+          var rates = window.SauceRates.all();
+          rates.access = rates.access || {};
+          var list = (rates.access.basicUsers || []).filter(function(n) {
+            return String(n).toLowerCase().trim() !== u.username.toLowerCase().trim();
+          });
+          if (wantBasic) list.push(u.username.toLowerCase().trim());
+          rates.access.basicUsers = list;
+          window.SauceRates.save(rates);
+          var pr = await _persistRatesForCompany(rates, 'Company Rates');
+          if (!pr || !pr.ok) {
+            _aStatus('Saved the user, but basic mode did not store: ' + ((pr && pr.why) || 'unknown'), '#fbbf24');
+            _adminEditing = null; await _loadAdmin(); return;
+          }
+        }
+      } catch(e) {}
       _aStatus((j.created ? 'Created ' : 'Saved ') + j.username + ' in ' + j.companyId + '.', '#86efac');
       _adminEditing = null;
       await _loadAdmin();
