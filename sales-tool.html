@@ -26009,14 +26009,32 @@ async function openBrandingModal(companyId) {
         show_gallery: $('bmGallery').checked
       };
       status('Saving\u2026');
+      // return=representation so we can tell "updated nothing" apart from
+      // "updated a row" — with return=minimal both answer 204 and a company
+      // that has no settings row yet silently saved nothing.
       var res = await sbFetch('company_settings?company_id=eq.' + encodeURIComponent(r.company_id), {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        headers: { 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
         body: JSON.stringify(body)
       });
       if (typeof sbFailed === 'function' && sbFailed()) {
         status('Refused: ' + (typeof sbWhyRefused === 'function' ? sbWhyRefused() : 'check the company_settings policies'), true);
         return;
+      }
+      if (!(res && res.length)) {
+        // No row for this company yet — create one carrying the same values.
+        var insert = Object.assign({ company_id: r.company_id,
+                                     company_name: r.company_name || null }, body);
+        var res2 = await sbFetch('company_settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+          body: JSON.stringify([insert])
+        });
+        if ((typeof sbFailed === 'function' && sbFailed()) || !(res2 && res2.length)) {
+          status('Could not create settings for ' + r.company_id + ': '
+                 + (typeof sbWhyRefused === 'function' ? sbWhyRefused() : 'the write was refused'), true);
+          return;
+        }
       }
       Object.keys(body).forEach(function(k){ rows[idx][k] = body[k]; });
       status('Saved.');
@@ -39792,7 +39810,7 @@ window.SauceRates = (function() {
         // is why it took a hard refresh (which reads the cached profile
         // synchronously) to strip the buttons.
         try { window.refreshAccountButtons(); } catch(e) {}
-        try { window.applyBrandingButtons && window.applyBrandingButtons(); } catch(e) {}
+        try { applyCompanyBranding(); } catch(e) {}
       } catch(e) { console.warn('[Rates] sync failed, using cached rates:', e); }
       return _profiles;
     },
