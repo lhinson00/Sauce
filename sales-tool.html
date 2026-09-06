@@ -11959,14 +11959,21 @@ function applyVoiceQuote(parsed, overlay) {
         var _sfConc   = (document.getElementById('sf_mbConcrete')||{}).value  || 'None';
         const concreteOn = true; // always check areas individually
         var _ssConcArr = [_ss1Conc, _ss2Conc, _ss3Conc, _ss4Conc];
+        // These selects are on the sales panel, which a customer viewing a
+        // shared link never sees — so in view mode they are all 'None' and the
+        // slab vanished from a building that was quoted with concrete. The
+        // restored quote knows the truth, so fall back to it.
+        var _cOpts = window._lastConcreteOpts || {};
+        var _cMain = !!(_cOpts.main && _cOpts.main.included);
         const conAreas = {
-          main: (_mainConc !== 'None' || _sfConc !== 'None'),
+          main: (_mainConc !== 'None' || _sfConc !== 'None' || _cMain),
           shed_1: (_ss1Conc !== 'None'),
           shed_2: (_ss2Conc !== 'None')
         };
         // Also populate shed IDs dynamically
         (window._shedConfigs || []).forEach(function(sc, sidx) {
-          conAreas['shed_'+sc.id] = (_ssConcArr[sidx] !== 'None');
+          var _cShed = !!((_cOpts.sheds || [])[sidx] && _cOpts.sheds[sidx].included);
+          conAreas['shed_'+sc.id] = (_ssConcArr[sidx] !== 'None') || _cShed;
         });
         const mCslab = new THREE.MeshBasicMaterial({ color: 0x94a3b8 }); // concrete grey
 
@@ -19909,7 +19916,8 @@ function buildModernQuoteDoc(ctx) {
              ? brand.accentColor
              : (window._brandHex ? window._brandHex() : '#FF8200');
   var C = { ink:'#1a1d23', body:'#3d434d', muted:'#858c97', hair:'#e3e7ec',
-            band:'#f5f7f9', zebra:'#fafbfc', accent:accent, white:'#ffffff' };
+            band:'#eef1f5', zebra:'#f7f9fb', accent:accent, white:'#ffffff',
+            paper:'#3a3f45' };
 
   function rgb(h){ h=String(h).replace('#','');
     return [parseInt(h.substr(0,2),16), parseInt(h.substr(2,2),16), parseInt(h.substr(4,2),16)]; }
@@ -19923,10 +19931,17 @@ function buildModernQuoteDoc(ctx) {
   function rule(y,c,w){ draw(c||C.hair); doc.setLineWidth(w||0.7); doc.line(MG,y,PW-MG,y); }
 
   var page = 1, BOTTOM = PH - 52;
-  function footer(){ fill(C.accent); doc.rect(0,PH-26,PW,3,'F');
-    T(ctx.company, MG, PH-12, 8, 'bold', C.ink);
-    T('Quote ' + ctx.quoteId + '   \u00B7   Page ' + page, PW-MG, PH-12, 8, 'normal', C.muted, 'right'); }
-  function newPage(){ footer(); doc.addPage(); page++;
+  // The sheet is grey and the quote sits on white, so the page reads as a
+  // document laid on a desk rather than text floating on nothing.
+  function sheet(){
+    fill(C.paper); doc.rect(0, 0, PW, PH, 'F');
+    fill(C.white); doc.roundedRect(MG-20, 24, PW-(MG-20)*2, PH-62, 9, 9, 'F');
+  }
+  sheet();
+  function footer(){
+    T(ctx.company, MG, PH-14, 8, 'bold', '#e8ebf0');
+    T('Quote ' + ctx.quoteId + '   \u00B7   Page ' + page, PW-MG, PH-14, 8, 'normal', '#9aa3ae', 'right'); }
+  function newPage(){ footer(); doc.addPage(); page++; sheet();
     T(ctx.company, MG, 40, 9, 'bold', C.ink);
     T('Quote ' + ctx.quoteId, PW-MG, 40, 8.5, 'normal', C.muted, 'right');
     rule(50); return 78; }
@@ -20063,8 +20078,10 @@ function modernQuoteContext(a) {
   if (a.roofCol) metal.push(['Roof',  ga(roofMt) + ' ' + prof(roofMt) + ' \u2014 ' + a.roofCol]);
   if (a.wallCol) metal.push(['Walls', ga(wallMt) + ' ' + prof(wallMt) + ' \u2014 ' + a.wallCol]);
   if (a.trimCol) metal.push(['Trim',  ga(wallMt) + ' ' + prof(wallMt) + ' \u2014 ' + a.trimCol]);
-  if (a.wainCol && a.wainHt && a.wainHt !== 'None')
-    metal.push(['Wainscot', ga(wallMt) + ' ' + prof(wallMt) + " \u2014 " + a.wainHt + "' " + a.wainCol]);
+  // A quote that simply omits wainscot leaves the customer wondering. Say none.
+  metal.push(['Wainscot', (a.wainCol && a.wainHt && a.wainHt !== 'None')
+    ? (ga(wallMt) + ' ' + prof(wallMt) + " \u2014 " + a.wainHt + "' " + a.wainCol)
+    : 'None']);
   var soffitCol = el('qgSoffitColor');
   if (soffitCol) metal.push(['Soffit', ga(wallMt) + ' \u2014 ' + soffitCol]);
 
@@ -20206,10 +20223,11 @@ async function generateQuotePDF() {
     // config blob that email safe-link scanners choke on. Fall back to the self-contained
     // config blob only when there is no saved quote ID.
     if (window._savedQuoteId) {
-      configLink3d = toolBaseUrl() + '?view=1&loadQuote=' + encodeURIComponent(window._savedQuoteId);
+      configLink3d = toolBaseUrl() + '?view=1&loadQuote=' + encodeURIComponent(window._savedQuoteId)
+                   + _viewCoParam();
     } else {
       var _enc3d = await safeEncodeCompressed(_cfg3d);
-      configLink3d = toolBaseUrl() + '?view=1&config=' + _enc3d;
+      configLink3d = toolBaseUrl() + '?view=1&config=' + _enc3d + _viewCoParam();
     }
   } catch(e3d) {}
 
@@ -22041,6 +22059,16 @@ var API_URL = window.SAUCE_ENDPOINTS.gas;
 // Where this file is being served from — the honest answer for any link we hand
 // a customer, and it means share links keep working wherever the tool is hosted.
 // A company can override it with ToolUrl in Company Settings.
+// A shared view link says which company it belongs to, so the page a customer
+// opens wears that company's brand instead of the default.
+window._viewCoParam = function() {
+  try {
+    var id = String((window._companySettings || {}).companyId
+                 || (window.currentUser || {}).companyId || '').toLowerCase().trim();
+    return id ? ('&co=' + encodeURIComponent(id)) : '';
+  } catch (e) { return ''; }
+};
+
 window.toolBaseUrl = function() {
   var st = window._companySettings || {};
   if (st.toolUrl) return st.toolUrl;
