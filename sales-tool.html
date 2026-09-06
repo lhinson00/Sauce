@@ -8421,11 +8421,38 @@ document.addEventListener('DOMContentLoaded', initMobileViewport);
 window.SAUCE_BASIC_KEEP = ['vpLoadBtn','vpNewQuoteBtn','vpHardRefreshBtn','vpDimToggle'];
 window.SAUCE_BASIC_HIDE = ['vpLeadsBtn','vpKitsBtn','vpGalleryBtn','vpImportBtn','vpActivityBtn',
                            'vpUsersBtn','vpRatesBtn','vpBrandBtn','vpPreviewBtn','vpPromoBtn'];
-window.isBasicUser = function(name) {
+// The company-scoped rate profile for a company id, out of the synced list.
+// A super has every company's profile after a sync, so basic mode can be set
+// for a company without signing in as one of its people.
+window.companyRateProfile = function(companyId) {
+  var co = String(companyId || '').toLowerCase().trim();
+  if (!co) return null;
+  try {
+    var list = window.SauceRates.profiles();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].scope === 'company'
+          && String(list[i].companyId || '').toLowerCase().trim() === co) return list[i];
+    }
+  } catch(e) {}
+  return null;
+};
+// The basic list for a company: theirs if we can see it, else whatever is
+// loaded (which is our own company's, and the right answer when it is us).
+window.basicListFor = function(companyId) {
+  var myCo = String(((window.currentUser||{}).companyId) || '').toLowerCase().trim();
+  var co   = String(companyId || myCo).toLowerCase().trim();
+  if (co && co !== myCo) {
+    var prof = window.companyRateProfile(co);
+    if (prof && prof.rates) return ((prof.rates.access || {}).basicUsers) || [];
+    return [];
+  }
+  try { return ((window.SauceRates.all().access || {}).basicUsers) || []; } catch(e) { return []; }
+};
+window.isBasicUser = function(name, companyId) {
   var u = String(name || (window.currentUser || {}).username || '').toLowerCase().trim();
   if (!u) return false;
   try {
-    var list = ((window.SauceRates.all().access || {}).basicUsers) || [];
+    var list = window.basicListFor(companyId);
     for (var i = 0; i < list.length; i++) {
       if (String(list[i]).toLowerCase().trim() === u) return true;
     }
@@ -39891,7 +39918,11 @@ window.SauceRates = (function() {
         name: opts.name || 'Unnamed',
         scope: scope,
         owner: scope === 'user' ? (opts.owner || me) : '',
-        company_id: myCo,
+        // A super admin sets things up for companies they are not signed in
+        // to. Anyone else is pinned to their own, and the row policies are
+        // the real guard — this only decides what we ask for.
+        company_id: (opts.companyId && _isSuperUser)
+                      ? String(opts.companyId).toLowerCase().trim() : myCo,
         rates: opts.rates || _load(),
         updated_at: new Date().toISOString()
       };
@@ -39907,7 +39938,12 @@ window.SauceRates = (function() {
                    'Prefer': 'resolution=merge-duplicates,return=minimal' }
       });
       var j = { success: !sbFailed(), profileId: id, error: sbFailed() ? sbWhyRefused() : '' };
-      if (j.success) { _synced = false; await this.syncFromServer(true); this.useProfile(id); }
+      if (j.success) {
+        _synced = false;
+        await this.syncFromServer(true);
+        // Only adopt the profile when it is our own company's.
+        if (!opts.stayPut) this.useProfile(id);
+      }
       return j;
     },
 
@@ -40322,11 +40358,17 @@ window.SauceRates = (function() {
           var theirCo = String(u.companyId || myCo).toLowerCase().trim();
           var box = _check('au_basicMode',
                     'Basic mode \u2014 only New Quote, Load Quote and Hard Refresh',
-                    window.isBasicUser(u.username));
-          if (theirCo && myCo && theirCo !== myCo) {
+                    window.isBasicUser(u.username, theirCo));
+          // A super writes straight to the target company's profile. Anyone
+          // else can only reach their own, so say so rather than fail quietly.
+          if (theirCo && myCo && theirCo !== myCo && !isSuperUser()) {
             box += '<div style="font-size:10px;color:#fbbf24;margin:-4px 0 6px 22px;'
                  + 'font-family:Outfit,sans-serif;">Sign in to ' + theirCo
-                 + ' to set this \u2014 it is stored on that company rate profile.</div>';
+                 + ' to set this.</div>';
+          } else if (theirCo && myCo && theirCo !== myCo && !window.companyRateProfile(theirCo)) {
+            box += '<div style="font-size:10px;color:#fbbf24;margin:-4px 0 6px 22px;'
+                 + 'font-family:Outfit,sans-serif;">' + theirCo + ' has no rate profile yet '
+                 + '\u2014 set their pricing once and this can be saved.</div>';
           }
           return box;
         })()
@@ -40373,23 +40415,45 @@ window.SauceRates = (function() {
         var wantBasic = chk('au_basicMode');
         var myCo2 = String(((window.currentUser||{}).companyId) || '').toLowerCase().trim();
         var theirCo2 = String(u.companyId || myCo2).toLowerCase().trim();
-        if (wantBasic !== window.isBasicUser(u.username) && theirCo2 && myCo2 && theirCo2 !== myCo2) {
-          _aStatus('Saved the user. Basic mode was NOT changed \u2014 sign in to '
-                   + theirCo2 + ' to set it.', '#fbbf24');
-          _adminEditing = null; await _loadAdmin(); return;
-        }
-        if (wantBasic !== window.isBasicUser(u.username)) {
-          var rates = window.SauceRates.all();
+        var isMine = (theirCo2 === myCo2);
+
+        if (wantBasic !== window.isBasicUser(u.username, theirCo2)) {
+          if (!isMine && !isSuperUser()) {
+            _aStatus('Saved the user. Basic mode was NOT changed \u2014 sign in to '
+                     + theirCo2 + ' to set it.', '#fbbf24');
+            _adminEditing = null; await _loadAdmin(); return;
+          }
+
+          // Their own company edits the loaded rates; another company's are
+          // edited on that company's profile so nothing of ours is touched.
+          var prof  = isMine ? null : window.companyRateProfile(theirCo2);
+          if (!isMine && !prof) {
+            _aStatus('Saved the user. ' + theirCo2 + ' has no rate profile yet \u2014 set their '
+                     + 'pricing once, then basic mode can be stored.', '#fbbf24');
+            _adminEditing = null; await _loadAdmin(); return;
+          }
+          var rates = isMine ? window.SauceRates.all()
+                             : JSON.parse(JSON.stringify(prof.rates || {}));
           rates.access = rates.access || {};
           var list = (rates.access.basicUsers || []).filter(function(n) {
             return String(n).toLowerCase().trim() !== u.username.toLowerCase().trim();
           });
           if (wantBasic) list.push(u.username.toLowerCase().trim());
           rates.access.basicUsers = list;
-          window.SauceRates.save(rates);
-          var pr = await _persistRatesForCompany(rates, 'Company Rates');
+
+          var pr;
+          if (isMine) {
+            window.SauceRates.save(rates);
+            pr = await _persistRatesForCompany(rates, 'Company Rates');
+          } else {
+            var j2 = await window.SauceRates.saveProfile({
+              id: prof.id, scope: 'company', name: prof.name,
+              companyId: theirCo2, rates: rates, stayPut: true
+            });
+            pr = { ok: !!(j2 && j2.success), why: (j2 && j2.error) || '' };
+          }
           if (!pr || !pr.ok) {
-            _aStatus('Saved the user, but basic mode did not store: ' + ((pr && pr.why) || 'unknown'), '#fbbf24');
+            _aStatus('Saved the user, but basic mode did not store: ' + (pr.why || 'unknown'), '#fbbf24');
             _adminEditing = null; await _loadAdmin(); return;
           }
         }
