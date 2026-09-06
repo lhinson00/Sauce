@@ -221,6 +221,11 @@ body.matlist-docked #inputsBar{right:var(--matdock-w);}
   .vp-static-toggle-bar{display:flex!important;flex-shrink:0;gap:4px;padding:6px 8px;background:rgba(20,28,48,.95);border-top:1px solid rgba(var(--gold-rgb),.2);justify-content:stretch;}
   .vst-btn{flex:1;padding:8px 2px;background:rgba(40,40,55,.95);border:1px solid rgba(255,255,255,.15);border-radius:7px;color:#888;font-size:10px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;}
   .vst-btn.active{border-color:rgba(var(--gold-rgb),.5);color:var(--gold);}
+  /* No toolbar button paints until the signed-in user's rates have landed
+     and refreshAccountButtons has run. Without this the markup's own
+     visibility shows every button for a moment on load. */
+  body:not(.auth-ready) #vpUtilityCol > button,
+  body:not(.auth-ready) #vpBtnRow > button{display:none!important;}
   /* Utility col hidden on mobile */
   #vpUtilityCol{display:none!important;}
   /* Override for customer view mode */
@@ -8467,6 +8472,10 @@ window.resetToolbarForSignedOut = function() {
   // The basic-user list and every rate came from the last company.
   try { window.SauceRates.forget(); } catch(e) {}
   window._companySettings = {};
+  try {
+    clearTimeout(window._authReadyTimer); window._authReadyTimer = null;
+    document.body.classList.remove('auth-ready');
+  } catch(e) {}
 };
 
 window.refreshAccountButtons = function() {
@@ -8500,6 +8509,22 @@ window.refreshAccountButtons = function() {
     }
   });
   try { window.applyBasicMode(); } catch(e) {}
+  // Only reveal once the rate profile is in, because the basic-user list
+  // rides on it — revealing earlier is exactly the flash. The timeout is a
+  // backstop so a failed sync leaves a salesman with buttons rather than
+  // an empty toolbar.
+  try {
+    var synced = window.SauceRates && window.SauceRates.synced && window.SauceRates.synced();
+    if (synced) {
+      clearTimeout(window._authReadyTimer);
+      document.body.classList.add('auth-ready');
+    } else if (!window._authReadyTimer) {
+      window._authReadyTimer = setTimeout(function() {
+        window._authReadyTimer = null;
+        document.body.classList.add('auth-ready');
+      }, 4000);
+    }
+  } catch(e) { document.body.classList.add('auth-ready'); }
 };
 window.addEventListener('crm:authready', function() { try { refreshAccountButtons(); } catch(e) {} try { updateDemoBadge(); } catch(e) {} });
 
@@ -26274,6 +26299,21 @@ async function loadCompanySettings() {
     if (!window.currentUser) return null;
     var co = _companyKey();
     var rows = await sbFetch('company_settings?select=*&company_id=eq.' + encodeURIComponent(co), { method: 'GET' });
+    if (!rows || !rows.length) {
+      console.warn('[Company] NO settings row came back for "' + co + '". Either the row '
+                 + 'does not exist or the read policy is hiding it — branding, logo and the '
+                 + 'Kits/Gallery switches will all fall back to defaults.');
+      // Fall back to the last branding this browser saw for this company so
+      // the tool still looks like theirs rather than reverting to Sauce.
+      try {
+        var cached = JSON.parse(localStorage.getItem('sauceBrand::' + co) || 'null');
+        if (cached) {
+          window._companySettings = Object.assign({ companyId: co }, cached);
+          applyCompanyBranding();
+          console.warn('[Company] using this browser\u2019s cached branding for ' + co);
+        }
+      } catch(e) {}
+    }
     var r = (rows && rows[0]) || {};
     var j = { success: true, settings: {
       companyId:     r.company_id || co,
