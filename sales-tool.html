@@ -8689,7 +8689,9 @@ document.addEventListener('DOMContentLoaded', initMobileViewport);
 // buttons by role — anything hiding them has to have the last word.
 window.SAUCE_BASIC_KEEP = ['vpLoadBtn','vpNewQuoteBtn','vpHardRefreshBtn','vpDimToggle'];
 window.SAUCE_BASIC_HIDE = ['vpLeadsBtn','vpKitsBtn','vpGalleryBtn','vpImportBtn','vpActivityBtn',
-                           'vpUsersBtn','vpRatesBtn','vpBrandBtn','vpPreviewBtn','vpPromoBtn'];
+                           'vpUsersBtn','vpRatesBtn','vpBrandBtn','vpPreviewBtn','vpPromoBtn',
+                           // texting a quote is not part of a basic salesman's job
+                           'textQuoteBtn','textQuoteBtnMobile'];
 // The company-scoped rate profile for a company id, out of the synced list.
 // A super has every company's profile after a sync, so basic mode can be set
 // for a company without signing in as one of its people.
@@ -20349,7 +20351,36 @@ async function generateQuotePDF() {
         frameType: _mFrame, salesCo: salesCo,
         priceEntries: priceEntries, depositPct: _mDep, link3d: configLink3d
       });
-      return buildModernQuoteDoc(_mCtx).output('blob');
+      var _mDoc  = buildModernQuoteDoc(_mCtx);
+      var _mBlob = _mDoc.output('blob');
+      var _mName = (custName.replace(/\s+/g,'_') + '_' + fileDimsToken + '_quote.pdf');
+
+      // Same hand-off the classic document uses: the caller reads the blob off
+      // window, it is not returned. Returning it is why nothing happened.
+      if (window._pdfBlobCapture) { window._pdfBlobCaptured = _mBlob; return; }
+
+      var _mMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+      if (_mMobile && navigator.share) {
+        try {
+          var _mFile = new File([_mBlob], _mName, { type: 'application/pdf' });
+          if (navigator.canShare && navigator.canShare({ files: [_mFile] })) {
+            await navigator.share({ title: quoteKind + ' \u2014 ' + dimsDisplay,
+                                    text: 'Quote from ' + salesName, files: [_mFile] });
+            return;
+          }
+        } catch(_mShareErr) {
+          if (_mShareErr.name === 'AbortError') return;
+        }
+        try { window.location.href = _mDoc.output('datauristring'); return; } catch(e) {}
+      }
+      var _mUrl = URL.createObjectURL(_mBlob);
+      var _mTab = window.open(_mUrl, '_blank');
+      if (!_mTab || _mTab.closed || typeof _mTab.closed === 'undefined') {
+        var _mA = document.createElement('a');
+        _mA.href = _mUrl; _mA.download = _mName; _mA.click();
+      }
+      setTimeout(function(){ URL.revokeObjectURL(_mUrl); }, 60000);
+      return;
     } catch (mErr) {
       // Never fail to produce a quote: fall through to the classic document.
       console.warn('[PDF] modern layout failed, using the classic one:', mErr);
