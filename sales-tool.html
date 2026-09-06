@@ -19888,6 +19888,258 @@ function buildQuotePDFModal() {
 }
 
 // Returns the quote PDF as a Blob for attachment — same content as the download PDF
+// ═══════════════════════════════════════════════════════════════════════════
+//  MODERN QUOTE LAYOUT
+//
+//  A company on quote_layout = 'modern' gets this document instead of the
+//  classic one: page one is the building, page two is the price. No breakout —
+//  a total per option with the deposit under it — and no terms.
+//
+//  It reads the same values the classic generator has already worked out, so
+//  the two can never disagree about what is being quoted.
+// ═══════════════════════════════════════════════════════════════════════════
+function buildModernQuoteDoc(ctx) {
+  var J = window.jspdf ? window.jspdf.jsPDF : window.jsPDF;
+  var doc = new J({ orientation: 'portrait', unit: 'pt', format: 'letter' });
+  var PW = 612, PH = 792, MG = 48, W = PW - MG * 2;
+  var brand = window._companySettings || {};
+  var accent = /^#[0-9a-fA-F]{6}$/.test(String(brand.accentColor || ''))
+             ? brand.accentColor
+             : (window._brandHex ? window._brandHex() : '#FF8200');
+  var C = { ink:'#1a1d23', body:'#3d434d', muted:'#858c97', hair:'#e3e7ec',
+            band:'#f5f7f9', zebra:'#fafbfc', accent:accent, white:'#ffffff' };
+
+  function rgb(h){ h=String(h).replace('#','');
+    return [parseInt(h.substr(0,2),16), parseInt(h.substr(2,2),16), parseInt(h.substr(4,2),16)]; }
+  function fill(h){ var c=rgb(h); doc.setFillColor(c[0],c[1],c[2]); }
+  function draw(h){ var c=rgb(h); doc.setDrawColor(c[0],c[1],c[2]); }
+  function tc(h){ var c=rgb(h); doc.setTextColor(c[0],c[1],c[2]); }
+  function T(s,x,y,sz,w,col,al,sp){ doc.setFont('helvetica',w||'normal'); doc.setFontSize(sz);
+    tc(col||C.body); doc.text(String(s==null?'':s),x,y,{align:al||'left',charSpace:sp||0}); }
+  function money(n){ return '$' + Number(n||0).toLocaleString('en-US',
+    {minimumFractionDigits:2, maximumFractionDigits:2}); }
+  function rule(y,c,w){ draw(c||C.hair); doc.setLineWidth(w||0.7); doc.line(MG,y,PW-MG,y); }
+
+  var page = 1, BOTTOM = PH - 52;
+  function footer(){ fill(C.accent); doc.rect(0,PH-26,PW,3,'F');
+    T(ctx.company, MG, PH-12, 8, 'bold', C.ink);
+    T('Quote ' + ctx.quoteId + '   \u00B7   Page ' + page, PW-MG, PH-12, 8, 'normal', C.muted, 'right'); }
+  function newPage(){ footer(); doc.addPage(); page++;
+    T(ctx.company, MG, 40, 9, 'bold', C.ink);
+    T('Quote ' + ctx.quoteId, PW-MG, 40, 8.5, 'normal', C.muted, 'right');
+    rule(50); return 78; }
+  function room(need,y){ return (y + need <= BOTTOM) ? y : newPage(); }
+
+  // ── identity ───────────────────────────────────────────────────────────
+  var y = 52, lb = y;
+  if (brand.logoData) {
+    try {
+      var p = doc.getImageProperties(brand.logoData);
+      var s = Math.min(190/p.width, 58/p.height);
+      doc.addImage(brand.logoData, MG, y-14, p.width*s, p.height*s);
+      lb = y - 14 + p.height*s;
+    } catch(e) { lb = y + 12; }
+  }
+  if (lb === y) { T(String(ctx.company).toUpperCase(), MG, y+8, 16, 'bold', C.ink, 'left', 1.2); lb = y+12; }
+  var ry = y - 6;
+  T(ctx.company, PW-MG, ry, 10.5, 'bold', C.ink, 'right'); ry += 13;
+  (ctx.contact || []).forEach(function(l){ T(l, PW-MG, ry, 8.5, 'normal', C.muted, 'right'); ry += 11; });
+  y = Math.max(lb, ry) + 20;
+  fill(C.accent); doc.rect(MG, y, W, 2.5, 'F'); y += 28;
+
+  // ── quote meta ─────────────────────────────────────────────────────────
+  T(ctx.quoteKind.toUpperCase(), MG, y+4, 26, 'bold', C.ink, 'left', 2.2);
+  var mx = PW-MG, lx = mx-96, my = y-8;
+  [['Quote No.', ctx.quoteId], ['Date', ctx.date], ['Valid Until', ctx.validUntil]]
+    .forEach(function(m){ T(m[0],lx,my,8,'normal',C.muted,'right');
+                          T(m[1],mx,my,9.5,'bold',C.ink,'right'); my += 14; });
+  y = Math.max(y+22, my+8);
+
+  // ── prepared for / project ─────────────────────────────────────────────
+  fill(C.band); doc.rect(MG, y, W, 66, 'F');
+  var c1 = MG+18, c2 = MG + W/2 + 10;
+  T('PREPARED FOR', c1, y+17, 7.5, 'bold', C.muted, 'left', 1.1);
+  T(ctx.customer.name, c1, y+33, 11.5, 'bold', C.ink);
+  T((ctx.customer.lines||[]).filter(Boolean).join('   \u00B7   '), c1, y+47, 8.5, 'normal', C.body);
+  T('PROJECT', c2, y+17, 7.5, 'bold', C.muted, 'left', 1.1);
+  T(ctx.project.title, c2, y+33, 11.5, 'bold', C.ink);
+  T(ctx.project.sub, c2, y+47, 8.5, 'normal', C.body);
+  y += 66 + 24;
+
+  // ── specification, two columns, said once ──────────────────────────────
+  T('SPECIFICATION', MG, y, 8, 'bold', C.muted, 'left', 1.2); y += 8; rule(y); y += 16;
+  var colW = W/2 - 12, LX = MG, RX = MG + W/2 + 12, ly = y, ryy = y;
+  ctx.spec.forEach(function(g, gi){
+    if (!g.rows.length) return;
+    var left = gi % 2 === 0, x = left ? LX : RX, cy = left ? ly : ryy;
+    T(g.title.toUpperCase(), x, cy, 7.5, 'bold', C.accent, 'left', 1.1); cy += 13;
+    g.rows.forEach(function(r, i){
+      if (i%2===0){ fill(C.zebra); doc.rect(x-4, cy-9, colW+8, 14, 'F'); }
+      T(r[0], x, cy, 8.5, 'normal', C.muted);
+      T(r[1], x+96, cy, 8.5, 'bold', C.ink);
+      cy += 14;
+    });
+    cy += 10;
+    if (left) ly = cy; else ryy = cy;
+  });
+  y = Math.max(ly, ryy);
+
+  // ── page two: the price ────────────────────────────────────────────────
+  y = newPage() + 18;
+  T('YOUR INVESTMENT', MG, y, 8, 'bold', C.muted, 'left', 1.2); y += 8; rule(y); y += 26;
+  ctx.options.forEach(function(opt, i){
+    y = room(74, y);
+    var lead = (i === 0);
+    fill(lead ? C.accent : C.band); doc.rect(MG, y, W, 52, 'F');
+    T(opt.label, MG+18, y+22, 10, 'bold', lead ? '#dbe6ff' : C.muted, 'left', 1.2);
+    T(opt.sub || '', MG+18, y+38, 8.5, 'normal', lead ? '#c9dcff' : C.body);
+    T(money(opt.total), PW-MG-18, y+35, 21, 'bold', lead ? C.white : C.ink, 'right');
+    y += 52;
+    if (ctx.depositPct > 0) {
+      T(ctx.depositPct + '% deposit to start', MG+18, y+14, 8.5, 'normal', C.muted);
+      T(money(opt.total * ctx.depositPct / 100) + ' due on order',
+        PW-MG-18, y+14, 9, 'bold', C.ink, 'right');
+      y += 22;
+    }
+    y += 14;
+  });
+  y += 6;
+
+  // ── the 3-D model, as something to click ───────────────────────────────
+  if (ctx.link3d) {
+    y = room(96, y) + 10;
+    fill(C.accent); doc.rect(MG, y, W, 4, 'F');
+    fill(C.band);   doc.rect(MG, y+4, W, 76, 'F');
+    T('SEE IT IN 3-D', MG+22, y+30, 11, 'bold', C.ink, 'left', 1.6);
+    T('Rotate, walk around and check every detail of this exact building',
+      MG+22, y+46, 9, 'normal', C.body);
+    var shown = String(ctx.link3d).replace(/^https?:\/\//, '');
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+    var lw = doc.getTextWidth(shown) + 26;
+    fill(C.white); draw(C.accent); doc.setLineWidth(1);
+    doc.roundedRect(MG+22, y+54, Math.min(lw, W-44), 20, 4, 4, 'FD');
+    tc(C.accent);
+    doc.textWithLink(shown, MG+35, y+68, { url: ctx.link3d });
+    y += 80;
+  }
+
+  footer();
+  return doc;
+}
+
+// Gathers what the modern layout needs from the quote that is already on
+// screen. Everything here is read from the same places the classic document
+// reads, so the two can never describe the building differently.
+function modernQuoteContext(a) {
+  var brand = window._companySettings || {};
+  var Q = window._Q || {}, WALLS = window._WALLS || [];
+  var allDoors = window._allDoors || [];
+
+  function el(id){ return (document.getElementById(id) || {}).value || ''; }
+  function chk(id){ return !!(document.getElementById(id) || {}).checked; }
+
+  // openings, counted the way the customer thinks of them
+  var gd = {}, walk = 0, win = 0, barn = 0;
+  allDoors.forEach(function(d){
+    if (d.type === 'garage') { var k = d.w + "'x" + d.h + "'"; gd[k] = (gd[k]||0)+1; }
+    else if (d.type === 'walk')   walk++;
+    else if (d.type === 'window') win++;
+    else if (d.type === 'barn')   barn++;
+  });
+  var openings = [];
+  Object.keys(gd).forEach(function(k){ openings.push(['Overhead', k + '  x ' + gd[k]]); });
+  if (barn) openings.push(['Barn Door', barn + (barn>1?' doors':' door')]);
+  if (walk) openings.push(['Walk Door', walk + (walk>1?' doors':' door')]);
+  if (win)  openings.push(['Windows',   win + (win>1?' windows':' window')]);
+
+  // metal: gauge and profile named on every line, with its colour
+  var roofMt = el('st_roofMetal') || 'Tuff-Rib 29ga';
+  var wallMt = el('st_wallMetal') || roofMt;
+  function ga(m){ var x = String(m).match(/(\d\d)\s*ga/i); return x ? x[1] + 'ga' : '29ga'; }
+  function prof(m){ return String(m).replace(/\s*\d\d\s*ga/i,'').replace(/-/g,' ').trim() || 'Tuff Rib'; }
+  var metal = [];
+  if (a.roofCol) metal.push(['Roof',  ga(roofMt) + ' ' + prof(roofMt) + ' \u2014 ' + a.roofCol]);
+  if (a.wallCol) metal.push(['Walls', ga(wallMt) + ' ' + prof(wallMt) + ' \u2014 ' + a.wallCol]);
+  if (a.trimCol) metal.push(['Trim',  ga(wallMt) + ' ' + prof(wallMt) + ' \u2014 ' + a.trimCol]);
+  if (a.wainCol && a.wainHt && a.wainHt !== 'None')
+    metal.push(['Wainscot', ga(wallMt) + ' ' + prof(wallMt) + " \u2014 " + a.wainHt + "' " + a.wainCol]);
+  var soffitCol = el('qgSoffitColor');
+  if (soffitCol) metal.push(['Soffit', ga(wallMt) + ' \u2014 ' + soffitCol]);
+
+  // structure
+  var enclosed = WALLS.filter(function(w){ return w.encl === 'enclosed'; }).length;
+  var structure = [
+    ['Dimensions', a.dimsDisplay],
+    ['Roof Pitch', (Q.pitch||4) + '/12 ' + (Q.roofStyle === 'single' ? 'single slope' : 'gable')],
+    ['Framing', (a.frameType === 'stud' ? 'Stud frame' : 'Post frame') + ', ' + (el('st_mbPostSize') || '6x6')],
+    ['Trusses', (Q.truss || 'Wood') + ' truss' + (Q.oh > 0 ? ', ' + Q.oh + '" overhang' : ', no overhang')],
+    ['Walls', enclosed === 4 ? 'Fully enclosed' : (enclosed ? enclosed + ' of 4 enclosed' : 'Open')]
+  ];
+
+  // concrete, including whatever the company folds into its rate
+  var concrete = [], co = window._lastConcreteOpts || {};
+  if (co.main && co.main.included) {
+    concrete.push(['Slab', (co.main.thickness || '4') + '"' + (co.main.footers ? ' with footers' : '')]);
+    var sq = (Q.w||0) * (Q.l||0);
+    if (sq) concrete.push(['Area', sq.toLocaleString() + ' sq ft']);
+    var inc = '';
+    try { inc = (window.concreteIncludes && window.concreteIncludes()) || ''; } catch(e) {}
+    if (inc) concrete.push(['Included', inc]);
+  }
+
+  // insulation
+  var insul = [], ins = el('st_insulation');
+  if (ins && ins !== 'None') {
+    insul.push(['Roof',  chk('st_insulRoof')  ? ins : 'Not included']);
+    insul.push(['Walls', chk('st_insulWalls') ? ins : 'Not included']);
+  }
+
+  // options worth naming on a quote
+  var opts = [];
+  if (el('st_gutters') === 'Yes' || chk('st_gutters')) opts.push(['Gutters', 'Included']);
+  if (chk('st_gutterGuard'))  opts.push(['Gutter Guard', 'Included']);
+  if (chk('sf_osbRoof'))      opts.push(['OSB Roof Sheathing', 'Included']);
+  if (chk('st_standingSeam')) opts.push(['Roof System', 'Standing Seam']);
+  if (chk('st_postWraps'))    opts.push(['Post Wraps', 'Included']);
+  if (chk('st_craneFee'))     opts.push(['Crane', 'Included']);
+
+  var spec = [
+    { title:'Structure',      rows: structure },
+    { title:'Metal & Colors', rows: metal },
+    { title:'Openings',       rows: openings },
+    { title:'Concrete',       rows: concrete },
+    { title:'Insulation',     rows: insul },
+    { title:'Options',        rows: opts }
+  ].filter(function(g){ return g.rows.length; });
+
+  // a valid-until date a month out, in the same style as the quote date
+  var valid = new Date(); valid.setDate(valid.getDate() + 30);
+
+  var addr = [brand.shopAddress, brand.replyTo].filter(Boolean);
+
+  return {
+    company: brand.brandName || brand.companyName || a.salesCo || '',
+    contact: addr,
+    quoteKind: a.quoteKind,
+    quoteId: a.quoteId,
+    date: a.dateStr,
+    validUntil: valid.toLocaleDateString('en-US', { month:'long', day:'numeric', year:'numeric' }),
+    customer: { name: a.custName, lines: [a.custPhone, a.custCity] },
+    project: { title: a.dimsDisplay,
+               sub: [enclosed === 4 ? 'Enclosed' : 'Open',
+                     (Q.pitch||4) + '/12',
+                     a.custCity].filter(Boolean).join('  \u00B7  ') },
+    spec: spec,
+    options: a.priceEntries.map(function(e){
+      return { label: e.label,
+               sub: 'Materials, labor, concrete, delivery and tax',
+               total: parseFloat(String(e.r && e.r.total || 0).replace(/[^0-9.]/g,'')) || 0 };
+    }),
+    depositPct: a.depositPct || 0,
+    link3d: a.link3d || ''
+  };
+}
+
 async function generateQuotePdfBlob(forcedPriceEntries) {
   var Q = window._Q || {};
   var J = window.jspdf && window.jspdf.jsPDF;
@@ -20074,6 +20326,36 @@ async function generateQuotePDF() {
   var salesEmail = cu.email    || '';
   var salesCo    = cu.company  || cu.companyName || '';
 
+  // ── Which document does this company send? ────────────────────────────
+  // Everything above worked out WHAT is being quoted. A company set to the
+  // modern layout gets that data drawn a different way; everyone else falls
+  // through to the classic document below, unchanged.
+  if (typeof window.quoteLayout === 'function' && window.quoteLayout() === 'modern') {
+    try {
+      var _mDep = (function(){
+        var u = parseFloat((window.currentUser || {}).depositPctOfTotal);
+        if (u > 0 && u <= 100) return u;
+        var c = parseFloat((window._companySettings || {}).depositPct);
+        return (c > 0 && c <= 100) ? c : 0;
+      })();
+      var _mFrame = (document.getElementById('psd_stud') &&
+                     document.getElementById('psd_stud').classList.contains('active'))
+                    ? 'stud' : (Q.frameType || 'post');
+      var _mCtx = modernQuoteContext({
+        quoteKind: quoteKind, quoteId: quoteId, dateStr: dateStr,
+        custName: custName, custPhone: custPhone, custCity: custCity,
+        dimsDisplay: dimsDisplay, roofCol: roofCol, wallCol: wallCol,
+        trimCol: trimCol, wainCol: wainCol, wainHt: wainHt,
+        frameType: _mFrame, salesCo: salesCo,
+        priceEntries: priceEntries, depositPct: _mDep, link3d: configLink3d
+      });
+      return buildModernQuoteDoc(_mCtx).output('blob');
+    } catch (mErr) {
+      // Never fail to produce a quote: fall through to the classic document.
+      console.warn('[PDF] modern layout failed, using the classic one:', mErr);
+    }
+  }
+
   // ── jsPDF setup (portrait, letter) ──
   var doc = new J({ orientation: 'portrait', unit: 'pt', format: 'letter' });
   var PW = 612, PH = 792, MG = 36;
@@ -20094,87 +20376,98 @@ async function generateQuotePDF() {
   var quoteId = window._savedQuoteId || ('QS-' + Date.now());
   var dateStr = new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
 
-  // ── HEADER block ──
-  setFill(col.navy); doc.rect(0, 0, PW, 110, 'F');
-  // A band in the company's accent along the top, so the page is theirs at a
-  // glance rather than a generic form with their name typed on it.
-  setFill(col.gold); doc.rect(0, 0, PW, 5, 'F');
-
+  // ── LETTERHEAD ────────────────────────────────────────────────────────
+  // A quote is a business document, so it opens like one: the company's mark
+  // on clean paper, a rule in their colour, then the quote itself. The logo is
+  // the first thing on the page rather than a sticker in the corner.
   var _brand = window._companySettings || {};
-  var _logoH = 0;
+  var _brandName = String(_brand.brandName || _brand.companyName || '').trim();
+  var LH = 0;                                  // letterhead height, 0 when unbranded
+
   if (_brand.logoData) {
     try {
-      // Fit the logo into a fixed box on the left, keeping its proportions.
-      var _props = doc.getImageProperties(_brand.logoData);
-      var _boxW = 132, _boxH = 46;
-      var _scale = Math.min(_boxW / _props.width, _boxH / _props.height);
-      var _lw = _props.width * _scale, _lh = _props.height * _scale;
-      doc.addImage(_brand.logoData, MG, 22 + (_boxH - _lh) / 2, _lw, _lh);
-      _logoH = _lh;
-    } catch(e) { _logoH = 0; }
+      var _p = doc.getImageProperties(_brand.logoData);
+      var _boxW = 320, _boxH = 84;             // generous, centred, never stretched
+      var _sc = Math.min(_boxW / _p.width, _boxH / _p.height);
+      var _lw = _p.width * _sc, _lh = _p.height * _sc;
+      LH = 34 + _lh + 30;
+      setFill(col.white); doc.rect(0, 0, PW, LH, 'F');
+      doc.addImage(_brand.logoData, (PW - _lw) / 2, 34, _lw, _lh);
+    } catch (e) { LH = 0; }
   }
-  if (!_logoH && (_brand.brandName || _brand.companyName)) {
-    // No logo — set the name in the accent instead so the header is not bare.
-    doc.setFont('helvetica','bold'); doc.setFontSize(13);
-    setTxt(col.gold);
-    doc.text(String(_brand.brandName || _brand.companyName), MG, 45);
+  if (!LH && _brandName) {
+    LH = 96;
+    setFill(col.white); doc.rect(0, 0, PW, LH, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(23);
+    setTxt(col.navy);
+    doc.text(_brandName.toUpperCase(), PW / 2, 54, { align: 'center', charSpace: 1.8 });
+  }
+  if (LH) {
+    // A hairline in the company's colour across the very top, and a short rule
+    // centred under the mark — the details that make a page read as stationery
+    // rather than a form with a logo pasted on it.
+    setFill(col.gold); doc.rect(0, 0, PW, 4, 'F');
+    setFill(col.gold); doc.rect(PW / 2 - 40, LH - 17, 80, 2, 'F');
   }
 
-  // Title
+  // ── QUOTE BAND ────────────────────────────────────────────────────────
+  var HB = LH + 110;                           // where the dark band ends
+  setFill(col.navy); doc.rect(0, LH, PW, 110, 'F');
+
   doc.setFont('helvetica','bold'); doc.setFontSize(22);
-  setTxt(col.white); doc.text(quoteKind, PW/2, 38, {align:'center'});
+  setTxt(col.white); doc.text(quoteKind, PW/2, LH + 38, {align:'center'});
 
-  // Quote ID + date
+  // Light grey, not the accent: on a dark band the accent was barely readable.
   doc.setFont('helvetica','normal'); doc.setFontSize(9);
-  setTxt(col.gold);
-  doc.text(quoteId + '  \u00B7  ' + dateStr, PW/2, 52, {align:'center'});
+  setTxt('#d8dce2');
+  doc.text(quoteId + '   \u00B7   ' + dateStr, PW/2, LH + 53, {align:'center', charSpace:0.6});
 
   // Dimension pills — show shed dims if shed-only single shed, else main building
   var pillW_ft = bw, pillL_ft = bl, pillH_ft = bh;
   if (isShedOnly && quotedSheds.length === 1) {
-    var _sc = quotedSheds[0];
-    pillW_ft = _sc.w;
-    pillL_ft = _sc.l;
-    pillH_ft = Math.max(0, (Q.h||0) - (_sc.dropFt||0));
+    var _sc2 = quotedSheds[0];
+    pillW_ft = _sc2.w;
+    pillL_ft = _sc2.l;
+    pillH_ft = Math.max(0, (Q.h||0) - (_sc2.dropFt||0));
   }
   var dimLabels = [["WIDTH", pillW_ft+"'"], ["LENGTH", pillL_ft+"'"], ["HEIGHT", pillH_ft+"'"]];
   var pillW = 90, pillGap = 14, pillStartX = PW/2 - (pillW*3 + pillGap*2)/2;
   for (var di=0; di<3; di++) {
     var px = pillStartX + di*(pillW+pillGap);
     setTxt(col.gold); doc.setFont('helvetica','bold'); doc.setFontSize(18);
-    doc.text(dimLabels[di][1], px + pillW/2, 84, {align:'center'});
+    doc.text(dimLabels[di][1], px + pillW/2, LH + 84, {align:'center'});
     setTxt('#888888'); doc.setFont('helvetica','normal'); doc.setFontSize(7);
-    doc.text(dimLabels[di][0], px + pillW/2, 96, {align:'center'});
+    doc.text(dimLabels[di][0], px + pillW/2, LH + 96, {align:'center'});
   }
 
-  // Shed-only badge in header corner
   if (isShedOnly) {
     doc.setFont('helvetica','bold'); doc.setFontSize(8);
     var _badge = 'SIDE SHED ONLY';
-    var _bw = doc.getTextWidth(_badge) + 14;
+    var _bw2 = doc.getTextWidth(_badge) + 14;
     setFill(col.gold);
-    doc.roundedRect(PW - MG - _bw, 14, _bw, 14, 4, 4, 'F');
+    doc.roundedRect(PW - MG - _bw2, LH + 14, _bw2, 14, 4, 4, 'F');
     setTxt(col.navy);
-    doc.text(_badge, PW - MG - _bw/2, 24, {align:'center'});
+    doc.text(_badge, PW - MG - _bw2/2, LH + 24, {align:'center'});
   }
 
   // ── CUSTOMER strip ──
-  setFill('#f0ede6'); doc.rect(0, 110, PW, 32, 'F');
-  setDraw('#e0d9cc'); doc.setLineWidth(0.5); doc.line(0, 142, PW, 142);
+  setFill('#f0ede6'); doc.rect(0, HB, PW, 32, 'F');
+  setDraw('#e0d9cc'); doc.setLineWidth(0.5); doc.line(0, HB + 32, PW, HB + 32);
   doc.setFont('helvetica','bold'); doc.setFontSize(12); setTxt(col.navy);
-  doc.text(custName, MG, 131);
+  doc.text(custName, MG, HB + 21);
   if (custPhone || custCity) {
     doc.setFont('helvetica','normal'); doc.setFontSize(9); setTxt(col.muted);
-    doc.text([custPhone, custCity].filter(Boolean).join('   \u00B7   '), MG, 141);
+    doc.text([custPhone, custCity].filter(Boolean).join('   \u00B7   '), MG, HB + 31);
   }
   doc.setFont('helvetica','bold'); doc.setFontSize(8);
   setFill(col.navy);
   var badgeW = doc.getTextWidth(quoteId) + 16;
-  doc.roundedRect(PW - MG - badgeW, 118, badgeW, 16, 4, 4, 'F');
-  setTxt(col.gold); doc.text(quoteId, PW - MG - badgeW/2, 129, {align:'center'});
+  doc.roundedRect(PW - MG - badgeW, HB + 8, badgeW, 16, 4, 4, 'F');
+  setTxt(col.white);
+  doc.text(quoteId, PW - MG - badgeW/2, HB + 19, {align:'center'});
 
   // ── BODY ──
-  var y = 158;
+  var y = HB + 48;
   var bodyW = PW - MG*2;
 
   // Greeting
@@ -20272,9 +20565,15 @@ async function generateQuotePDF() {
   // Per-account deposit rule from column M of the Users sheet. When set, the deposit is
   // that percent of the FULL TOTAL; when 0/blank the house rule applies (35% of
   // materials + tax + delivery). Clamped so a bad cell can't produce a silly figure.
+  // The company sets a deposit for everyone; a salesman's own figure overrides
+  // it; with neither, the house rule applies. Company first means adding a
+  // salesman does not mean remembering to set his deposit.
   var _depPctOfTotal = (function(){
-    var v = parseFloat((window.currentUser || {}).depositPctOfTotal);
-    return (v > 0 && v <= 100) ? v : 0;
+    var u = parseFloat((window.currentUser || {}).depositPctOfTotal);
+    if (u > 0 && u <= 100) return u;
+    var c = parseFloat((window._companySettings || {}).depositPct);
+    if (c > 0 && c <= 100) return c;
+    return 0;
   })();
 
   function priceBlockHeight(entry) {
@@ -20775,7 +21074,17 @@ async function generateQuotePDF() {
       doc.text([salesPhone,salesEmail].filter(Boolean).join('   ·   '), MG+14, sy+38);
     }
     doc.setFont('helvetica','italic'); doc.setFontSize(7); setTxt('#bbbbbb');
-    doc.text('Quote ID: '+(window._savedQuoteId||'—')+'   |   '+custName, PW/2, PH-12, {align:'center'});
+    // Every page signs off with the company, the way a letterhead does.
+    var _fBrand = (window._companySettings || {});
+    var _fName = String(_fBrand.brandName || _fBrand.companyName || '').trim();
+    setDraw(col.gold); doc.setLineWidth(1.2);
+    doc.line(PW/2 - 26, PH - 30, PW/2 + 26, PH - 30);
+    if (_fName) {
+      doc.setFont('helvetica','bold'); doc.setFontSize(8); setTxt(col.navy);
+      doc.text(_fName.toUpperCase(), PW/2, PH - 20, {align:'center', charSpace:0.8});
+    }
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); setTxt(col.muted);
+    doc.text('Quote ID: '+(window._savedQuoteId||'—')+'   |   '+custName, PW/2, PH-10, {align:'center'});
   })();
 
   // ── OUTPUT — mobile-aware ──
@@ -26840,7 +27149,9 @@ async function loadCompanySettings() {
       logoData:      r.logo_data  || '',
       accentColor:   r.accent_color || '',
       showKits:      r.show_kits    !== false,
-      showGallery:   r.show_gallery !== false
+      showGallery:   r.show_gallery !== false,
+      depositPct:    (r.deposit_pct === null || r.deposit_pct === undefined) ? null : parseFloat(r.deposit_pct),
+      quoteLayout:   r.quote_layout || 'classic'
     } };
     window._companySettings = j.settings || {};
     SHOP_ADDRESS = window._companySettings.shopAddress || '';
@@ -43148,7 +43459,14 @@ window.openPriceBook = function() { window.SaucePriceBook.open(); };
     rebar: 'Rebar Grid', metalLedge: 'Metal Ledge', stamped: 'Stamped'
   };
   // Everything this company folds into the pour rate, named for the quote.
-  window.concreteIncludes = function() {
+  // Which quote PDF this company uses. Changing a layout is opt-in: a company
+// keeps the document it already sends unless it is set to something else.
+window.quoteLayout = function() {
+  try { return String((window._companySettings || {}).quoteLayout || 'classic').toLowerCase(); }
+  catch (e) { return 'classic'; }
+};
+
+window.concreteIncludes = function() {
     try {
       var incl = (window.SauceRates.all().concrete || {}).incl || {};
       var L = window.CONCRETE_OPTION_LABELS;
