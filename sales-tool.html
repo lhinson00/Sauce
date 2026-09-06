@@ -25678,61 +25678,19 @@ async function doSalesLogin() {
       btn.textContent = 'Log In'; btn.disabled = false;
       return;
     }
-    var data = Object.assign({ success: true, token: signed.session.access_token,
-                               tokenExpires: (signed.session.expires_at || 0) * 1000 }, profile);
-    if (data.success) {
-      window.currentUser = data.user || {
-        username:     u,
-        fullName:     data.fullName    || u,
-        email:        data.email       || '',
-        phone:        data.phone       || '',
-        company:      data.company     || '',
-        savedQuote:   data.savedQuote  || false,
-        sendEmail:    data.sendEmail   || false,
-        materialList: data.materialList|| false,
-        isDemo:       data.isDemo      || false,
-        singleTotalPdf: data.singleTotalPdf || false,
-        depositPctOfTotal: data.depositPctOfTotal || 0
-      };
-
-      try { logToolEvent('page_load', { referrer: document.referrer || 'direct' }); } catch(e) {}      window.currentUser.token = data.token || '';
-      // Session length is now the timeout module's job, not a fixed wall-clock
-      // hour. loginExpiry follows the Supabase token so anything still checking
-      // it keeps working.
-      window.currentUser.loginExpiry = (signed.session.expires_at || 0) * 1000;
-      window.SauceSession.start(Date.now());
-      // The Supabase session is already stored; this cache is only so the UI can
-      // paint a name before the profile round-trip finishes.
-      try {
-        sessionStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
-        localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
-      } catch(e) {}
-      hideSalesLoginModal();
-      // The session-restore path fires this; signing in through the modal did
-      // not, which is why a user switch kept the previous person's buttons
-      // until a hard refresh went back through restore.
-      try { window.resetToolbarForSignedOut(); } catch(e) {}
-      try { window.dispatchEvent(new Event('crm:authready')); } catch(e) {}
-      if (window.SauceRates) { try { window.SauceRates.syncFromServer(true); } catch(e) {} }
-      if (typeof loadCompanySettings === 'function') { try { loadCompanySettings(); } catch(e) {} }
-      setTimeout(warmPing, 500);
-      try { window._startSessionKeepAlive(); } catch(e) {}
-      loadInventoryPricing();
-      initLainFeatures(); // unlock save/email/pdf for this user
-      // Demo badge
-      var smTxt = document.querySelector('.salesman-txt');
-      var smDot = document.querySelector('.salesman-dot');
-      if (window.currentUser.isDemo) {
-        if (smTxt) { smTxt.textContent = 'DEMO MODE'; smTxt.style.color = '#f97316'; }
-        if (smDot) { smDot.style.background = '#f97316'; }
-      } else {
-        if (smTxt) smTxt.textContent = window.currentUser.fullName || window.currentUser.username || 'Salesman';
-        if (smDot) smDot.style.background = '';
-      }
-    } else {
-      if(err) err.textContent = data.error || 'Invalid credentials.';
-      btn.textContent = 'Log In'; btn.disabled = false;
-    }
+    // ── Sign-in reloads the page ────────────────────────────────────────
+    // Building currentUser here duplicated what initSalesAuth already does on
+    // a page load, and did it worse: this path had no role, companyId or
+    // isCompanyAdmin, so an owner signing in without a refresh looked like a
+    // plain salesman, and a salesman signing in after an owner inherited the
+    // owner's toolbar. Rather than keep the two paths in step, the session is
+    // saved and the page reloaded — initSalesAuth then restores from that
+    // session exactly as a hard refresh does. There is no in-progress design
+    // to protect any more, so a reload costs nothing.
+    btn.textContent = 'Signing in\u2026';
+    try { window.SauceRates.forget(); } catch(e) {}
+    location.reload();
+    return;
   } catch(e) {
     if(err) err.textContent = 'Network error. Try again.';
   } finally {
@@ -26880,24 +26838,19 @@ function updateMftRateHint() {
   if (inp)  inp.placeholder  = def + '%';
 }
 
-function doLogout() {
+// Signing out ends the Supabase session and reloads. Before this it only
+// cleared the local user object and showed the login modal, so the session
+// token stayed in localStorage — a refresh after "logging out" signed you
+// straight back in as the same person. Reloading also means the next sign-in
+// starts from a clean page instead of inheriting this user's toolbar.
+async function doLogout() {
   try { sessionStorage.removeItem('sauce_user'); } catch(e) {}
   try { localStorage.removeItem('sauce_user'); } catch(e) {}
   window.currentUser = null;
-  // Reset salesman badge
-  var smTxt = document.querySelector('.salesman-txt');
-  var smDot = document.querySelector('.salesman-dot');
-  if (smTxt) { smTxt.textContent = 'Salesman'; smTxt.style.color = ''; }
-  if (smDot) { smDot.style.background = ''; }
-  // Clear price strip
-  _lastPayloadKey = null; _lastPayloadTime = 0;
-  window._lastPriceOH = null; window._lastPriceNoOH = null; window._lastPriceSteel = null; window._lastPriceStud = null;
-  ['ps_total','ps2_total','ps3_total','ps4_total'].forEach(function(id){
-    var el = document.getElementById(id);
-    if (el) { el.textContent = '—'; el.classList.add('pending'); el.classList.remove('highlight'); }
-  });
-  setCalcBadge('calculating', 'Logged out');
-  showSalesLoginModal();
+  try { await window.SauceAuth.signOut(); } catch(e) {}
+  try { window.SauceRates.forget(); } catch(e) {}
+  try { window.SauceSession && window.SauceSession.stop && window.SauceSession.stop(); } catch(e) {}
+  location.reload();
 }
 
 function markQuoteDirty() {
