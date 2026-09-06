@@ -22030,8 +22030,35 @@ window._previewBlocked = _previewBlocked;
 
 // Pull this company's price list. Paged, because a full catalogue runs to
 // thousands of rows and PostgREST caps a single response.
+// The shared material list every company falls back to. A company only needs
+// its own rows for the SKUs it prices differently; everything else comes from
+// here. Without this a new company starts with no material prices at all.
+window.SAUCE_SHARED_INVENTORY = 'default';
+
 async function sbLoadInventory(companyId) {
   var co = companyId || _companyKey();
+  var shared = String(window.SAUCE_SHARED_INVENTORY || '').toLowerCase().trim();
+
+  // Shared list first, then the company's own on top, so a company price always
+  // wins and anything they have not priced still has a figure.
+  if (shared && shared !== co) {
+    var base = await _sbInventoryFor(shared);
+    var own  = await _sbInventoryFor(co);
+    if (base === null && own === null) return null;
+    base = base || { prices: {}, descriptions: {}, count: 0 };
+    own  = own  || { prices: {}, descriptions: {}, count: 0 };
+    var prices2 = Object.assign({}, base.prices, own.prices);
+    var descs2  = Object.assign({}, base.descriptions, own.descriptions);
+    console.log('[Inventory] shared', base.count, '+ own', own.count,
+                '=', Object.keys(prices2).length, 'priced SKUs for', co);
+    return { prices: prices2, descriptions: descs2,
+             count: Object.keys(prices2).length, companyId: co,
+             sharedCount: base.count, ownCount: own.count };
+  }
+  return await _sbInventoryFor(co);
+}
+
+async function _sbInventoryFor(co) {
   var prices = {}, descs = {}, from = 0, page = 1000, total = 0;
   var WAVE = 6;                                     // pages fetched in parallel
   var done = false;
@@ -36504,12 +36531,31 @@ window.SauceMaterials.calcWindows = function() {
 
   var groups = {};
   var actualWins = 0;
+  // The dropdown shows friendly names; the price list is keyed by vendor code.
+  // Without this mapping those windows find no price and quote as unpriced.
   var windowSkuMap = {
     '4x2': 'VW42',
     'VWC35': 'VWC',              // 3x5 clay shows as VWC35, exports as custom SKU VWC
     '3x4 Casement White': 'VWC', // 3x4 casement — exports as VWC, priced by color below
-    '3x4 Casement Black': 'VWC'
+    '3x4 Casement Black': 'VWC',
+    '3056.0':             'VWHBDH3056',
+    '3056 DH BL':         'VWHBDH3056',
+    'VW35 - Double Hung': 'VWHBDH3056',
+    'VW34 - Double Hung': 'VWHBDH3040',
+    '3056 TWIN':          'VWHBDHTW3056',
+    '3030 TEMPERED':      'VWHBDHTP3030',
+    '3060 DH BL':         'VWHBDH3060',
+    '3036 DH BL':         'VWHBDH3030',
+    '2850 DH BL':         'VWHBDH2640',
+    '4x2 Picture BL':     'VWHBPC4020'
   };
+  // No vendor code found for these — they quote as unpriced and are flagged in
+  // the Price Book so they can be matched or removed.
+  window.SAUCE_WIN_MAP = windowSkuMap;
+  window.SAUCE_WIN_TYPES = (typeof WINDOW_TYPES !== 'undefined') ? WINDOW_TYPES : [];
+  window.SAUCE_UNMATCHED_WINDOWS = ['6036 Slider', '5x5 slider', '5x5 Picture',
+                                    '3036 Fixed Trapezoid', '2/8 x 6/10 Fixed Trapezoid',
+                                    '3x4 Casement White', '3x4 Casement Black'];
   // 3x4 casement price is set by color selection (not SKU): white $535, black $720.
   // Keep the two colors as separate priced groups even though both export SKU VWC.
   var _CASEMENT_PRICE = { '3x4 Casement White': 535, '3x4 Casement Black': 720 };
@@ -36576,6 +36622,7 @@ window.SauceMaterials.calcShedOpenings = function() {
   var results = [];
 
   // ── Same SKU maps as main building ──
+  window.SAUCE_WD_MAP = window.SAUCE_WD_MAP || {};
   var walkDoorSkuMap = {
     'WHITE 3/0 PLYCO ALUMINUM FRAME':                     'PLY9930W',
     'BLACK 3/0 PLYCO ALUMINUM FRAME':                     'PLY9930B',
@@ -36594,7 +36641,12 @@ window.SauceMaterials.calcShedOpenings = function() {
     'CENTRAL WOODWORKS 3/0 MAHOGANY 3/4 GLASS 4-LITE LH':'EXD30LH3/4G-CW',
     'TEXTURED FIBERGLASS 4-LITE SDL RH BRONZE':           'EXDTF10300104LTR'
   };
+  Object.keys(walkDoorSkuMap).forEach(function(k){ window.SAUCE_WD_MAP[walkDoorSkuMap[k]] = k; });
 
+
+  // Exposed for the Price Book, by reference, so the list it shows can never
+  // disagree with what the calculators actually emit.
+  window.SAUCE_GD_MAP = window.SAUCE_GD_MAP || {};
   var garageDoorSkuMap = {
     '8x8:0':'GD88W',     '8x8:1':'GD88INW',
     '9x7:0':'GD97W',     '9x7:1':'GD97INW',
@@ -36616,6 +36668,10 @@ window.SauceMaterials.calcShedOpenings = function() {
     '16x12:0':'GD1612W', '16x12:1':'GD1612INW',
     '16x14:0':'GD1614W', '16x14:1':'GD1614INW'
   };
+  Object.keys(garageDoorSkuMap).forEach(function(k){
+    var p = k.split(':');
+    window.SAUCE_GD_MAP[garageDoorSkuMap[k]] = p[0] + (p[1] === '1' ? ' insulated' : ' non-insulated');
+  });
 
   var totalWalkDoors = 0;
   var totalWindows   = 0;
@@ -39632,11 +39688,59 @@ function _showSkuCodes() {
   return window.SauceDemo ? !window.SauceDemo.active() : true;
 }
 
+// A trim SKU is family + gauge + colour + length, and the colour never changes
+// the price. RG9BK10 and RG9CC10 both collapse to RG9*10, so ONE priced row
+// covers every colour of that trim in that length. Returns null when the SKU
+// is not shaped like a trim code.
+window.collapseSkuColor = function(sku) {
+  var m = /^([A-Z0-9]+?)(\d)([A-Z0-9]+)(\d{1,2})$/.exec(String(sku || '').toUpperCase());
+  if (!m) return null;
+  if (!window._SKU_COLOR_CODES) {
+    // Every colour segment that actually appears in a trim SKU, taken from the
+    // map itself. The display colour list is NOT enough — codes like FGR and
+    // the whole L-prefixed set appear in SKUs without being keys in it.
+    var seen = {};
+    var C = (window._SKU_MAP && window._SKU_MAP.colors) || {};
+    Object.keys(C).forEach(function(c){ seen[c] = 1; });
+    (function walk(o, path) {
+      for (var k in o) {
+        var v = o[k];
+        if (v && typeof v === 'object') { walk(v, path.concat(k)); continue; }
+        var p = path.concat(k);
+        if (p.length >= 3) seen[p[1]] = 1;
+      }
+    })((window._SKU_MAP && window._SKU_MAP.trim) || {}, []);
+    window._SKU_COLOR_CODES = seen;
+  }
+  // The regex is greedy, so RG9BK10 first splits as colour "BK1" + length "0"
+  // and the colour check fails. Try the other split before giving up, or no
+  // two-digit length ever collapses — which is most of the trim catalogue.
+  var cand = [[m[3], m[4]]];
+  var joined = m[3] + m[4];
+  for (var cut = 1; cut <= 2 && cut < joined.length; cut++) {
+    cand.push([joined.slice(0, joined.length - cut), joined.slice(joined.length - cut)]);
+  }
+  for (var i = 0; i < cand.length; i++) {
+    var col = cand[i][0], len = cand[i][1];
+    if (!/^\d{1,2}$/.test(len)) continue;
+    if (window._SKU_COLOR_CODES[col]) return m[1] + m[2] + '*' + len;
+  }
+  return null;                                       // no split yields a colour
+};
+
 function getPrice(sku) {
   if (!sku) return null;
   var pt = window.SauceMaterials._priceTable;
   var key = sku.trim().toUpperCase();
   var raw = pt[key] != null ? pt[key] : (pt[sku] != null ? pt[sku] : null);
+  if (raw == null) {
+    // Fall back to the colour-free price book row. priceBookKeyFor() reads the
+    // SKU map itself, so families whose own name ends in a digit (ODT7, PC12)
+    // resolve correctly where splitting the string with a regex cannot.
+    var ck = (typeof window.priceBookKeyFor === 'function') ? window.priceBookKeyFor(key) : null;
+    if (!ck) ck = window.collapseSkuColor(key);
+    if (ck && pt[ck] != null) raw = pt[ck];
+  }
   if (raw == null) {
     // In demo mode an unpriced item is priced on the spot rather than showing
     // $0. The figure is derived from the item's own name, so it is the same
@@ -41753,6 +41857,12 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       +   _pcTile('Concrete', 'One flat rate, or different rates by county.',
                  (window.SauceConcrete.mode() === 'zones' ? 'by county' : 'flat'), 'openConcreteModal()', '#fbbf24')
       +   _pcTile('Shipping', 'Per mile, minimums and surcharges.', mark(anySet('shipping')), 'openShippingPricing()', '#86efac')
+      +   _pcTile('Price Book', 'Every item your buildings call for \u2014 materials, doors and windows.',
+                 (function(){ try { return window.SaucePriceBook ? 'open' : 'not ready'; } catch(e){ return ''; } })(),
+                 'openPriceBook()', '#93c5fd')
+      +   _pcTile('Price Book', 'Every item a building can call for — materials, doors and windows.',
+                 (function(){ try { return (window.SAUCE_PRICE_BOOK||[]).length + ' items'; }
+                             catch(e){ return ''; } })(), 'openPriceBook()', '#7dd3fc')
       +   _pcTile('Garage Doors', 'A price per size for vinyl back, steel back and window panels.',
                  (function(){ var n = Object.keys(window.SauceMaterials.gdTable()).length;
                               return n ? n + ' sizes' : 'not set'; })(), 'openGarageDoorPricing()', '#c4b5fd')
@@ -41770,6 +41880,937 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       + '</div>';
     document.body.appendChild(wrap);
   };
+
+// Fixed SKUs the calculators emit directly — lumber, trusses, hardware,
+// screws, closures. Harvested from the calculators themselves.
+window.SAUCE_FIXED_SKUS = [
+  ['ATTIC-UPGRADE',''],
+  ['BR10',''],
+  ['BR12',''],
+  ['BR14',''],
+  ['BR16',''],
+  ['CB18',''],
+  ['CCA4',''],
+  ['CIJ1178',''],
+  ['CIJ14',''],
+  ['CIJ162.5',''],
+  ['CIJ163.5',''],
+  ['CL',''],
+  ['CLOOSC',''],
+  ['CLVL1178',''],
+  ['COM',''],
+  ['CRANE',''],
+  ['CUPOLA',''],
+  ['DEMO-',''],
+  ['DJT9',''],
+  ['DJT9PW10',''],
+  ['DJT9PW12',''],
+  ['DJT9PW14',''],
+  ['DJT9PW16',''],
+  ['DP',''],
+  ['DPBAPB88R',''],
+  ['DPBAPGP1212',''],
+  ['DPBAPL6',''],
+  ['DPBKTAPGP1212',''],
+  ['DSTP',''],
+  ['DTR10',''],
+  ['DTR12',''],
+  ['DTR8',''],
+  ['FJ9',''],
+  ['GR',''],
+  ['HB2S',''],
+  ['HBBA',''],
+  ['HDGRS10D30',''],
+  ['HDGRS12D30',''],
+  ['HDGRS8D30',''],
+  ['HL10',''],
+  ['HL8',''],
+  ['INAA6125',''],
+  ['INHWTY10100',''],
+  ['JC9',''],
+  ['JC9BK10',''],
+  ['JC9PW10',''],
+  ['JC9PW12',''],
+  ['JH2',''],
+  ['JH212',''],
+  ['JHNS1.255LB',''],
+  ['JHRH46R',''],
+  ['JL',''],
+  ['KLSDB',''],
+  ['LAG5',''],
+  ['LVL117/816',''],
+  ['LVL117/818',''],
+  ['LVL117/820',''],
+  ['LVL117/822',''],
+  ['MARKUP',''],
+  ['MRSPAGAL',''],
+  ['MRSPOPPW',''],
+  ['MRSWB1.5',''],
+  ['OSB5.8',''],
+  ['PAL',''],
+  ['PBFP16',''],
+  ['PBKT4.4',''],
+  ['PC19PW10',''],
+  ['PC19PW12',''],
+  ['PC39',''],
+  ['PP6660',''],
+  ['PP8860',''],
+  ['PT2616',''],
+  ['PT268',''],
+  ['PT4610',''],
+  ['PT4612',''],
+  ['PW669',''],
+  ['QCR',''],
+  ['QFBG11',''],
+  ['QFBG13',''],
+  ['QFBG15',''],
+  ['QFBG9',''],
+  ['QFF10W',''],
+  ['QFF12W',''],
+  ['QFF14W',''],
+  ['QFF16W',''],
+  ['QFM10W',''],
+  ['QFM12W',''],
+  ['QFM14W',''],
+  ['QFM16W',''],
+  ['QFM8W',''],
+  ['RCC1610',''],
+  ['RCC18',''],
+  ['RCC1814',''],
+  ['RCC28',''],
+  ['RCC48',''],
+  ['RCC6610',''],
+  ['RCC88',''],
+  ['RCCBATT',''],
+  ['ROCKWAINSCOT',''],
+  ['RS00',''],
+  ['SC',''],
+  ['SCISSOR-UPGRADE',''],
+  ['SDPC1',''],
+  ['SFG',''],
+  ['SGSGG',''],
+  ['SGSM',''],
+  ['SILL5.5',''],
+  ['SPF2410',''],
+  ['SPF2412',''],
+  ['SPF2414',''],
+  ['SPF2416',''],
+  ['SPF2420',''],
+  ['SPF2610',''],
+  ['SPF2612',''],
+  ['SPF2614',''],
+  ['SPF2616',''],
+  ['SPF2620',''],
+  ['SS6NFS',''],
+  ['STP38A11',''],
+  ['SYP210',''],
+  ['SYP21012',''],
+  ['SYP21016',''],
+  ['SYP212',''],
+  ['SYP21210',''],
+  ['SYP21212',''],
+  ['SYP21214',''],
+  ['SYP21224',''],
+  ['SYP24',''],
+  ['SYP2412',''],
+  ['SYP2416',''],
+  ['SYP2420',''],
+  ['SYP2612TG',''],
+  ['SYP2616',''],
+  ['SYP2620',''],
+  ['T111S',''],
+  ['T9',''],
+  ['TAPBT3.4',''],
+  ['TAPWT',''],
+  ['TBFG',''],
+  ['TC9PW10',''],
+  ['TC9PW12',''],
+  ['TC9PW14',''],
+  ['TC9PW16',''],
+  ['TRBALLB',''],
+  ['TSBJ2066C',''],
+  ['VP9','']
+];
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PRICE BOOK
+//
+//  The list you maintain. Not the vendor's 28,800 SKUs — only what a building
+//  can actually call for, with colour collapsed out of the trim so one row
+//  covers every colour of that piece in that length.
+//
+//  Four groups, each its own screen: Materials, Garage Doors, Walk Doors,
+//  Windows. Search spans ALL of them from anywhere, because a narrowed scope
+//  that hides a match is the thing that makes a tool feel cheap.
+//
+//  Prices write to `inventory`: the shared base for everyone, or this company's
+//  own row when a company prices something differently.
+// ═══════════════════════════════════════════════════════════════════════════
+window.SaucePriceBook = (function() {
+
+  var PB = {};
+  var _rows = null;         // the baseline, built once per session
+  var _tab  = 'Materials';
+  var _q    = '';
+  var _dirty = {};          // sku -> new price, not yet saved
+  var _scope = 'company';   // 'company' = this company only | 'base' = everyone
+
+  var GROUPS = ['Materials', 'Garage Doors', 'Walk Doors', 'Windows'];
+
+  // ── Building the baseline ────────────────────────────────────────────────
+  // Everything here is derived from the tool's own maps, so it can never drift
+  // from what the calculators emit.
+  function build() {
+    if (_rows) return _rows;
+    var out = [], seen = {};
+    var M = window._SKU_MAP || {};
+    var colors = Object.keys(M.colors || {});
+
+    function add(group, sku, desc, meta) {
+      var k = group + '|' + sku;
+      if (seen[k]) return;
+      seen[k] = 1;
+      out.push({ group: group, sku: sku, desc: desc || '', meta: meta || '' });
+    }
+
+    // TRIM — one row per family + length. The SKU carries a * where the colour
+    // code goes, and getPrice() collapses a real SKU down to this key.
+    (function() {
+      var fams = {};
+      (function walk(o, path) {
+        for (var k in o) {
+          var v = o[k];
+          if (v && typeof v === 'object') { walk(v, path.concat(k)); continue; }
+          var p = path.concat(k);
+          var fam = p[0], len = p[p.length - 1];
+          var key = fam + '*' + len;
+          if (!fams[key]) fams[key] = { n: 0, sample: v, fam: fam, len: len };
+          fams[key].n++;
+        }
+      })(M.trim || {}, []);
+      Object.keys(fams).sort().forEach(function(k) {
+        var f = fams[k];
+        add('Materials', k, f.fam + ' trim — ' + f.len + " ft",
+            f.n + ' colours · e.g. ' + f.sample);
+      });
+    })();
+
+    // PANELS — one row per profile; colour never changes a panel price.
+    Object.keys(M.panels || {}).forEach(function(f) {
+      var arr = M.panels[f] || [];
+      add('Materials', 'PANEL-' + f.toUpperCase(), 'Metal panel — ' + f,
+          arr.length + ' colours · e.g. ' + ((arr[0] || {}).s || ''));
+    });
+
+    // FIXED ITEMS — lumber, trusses, hardware, screws, closures.
+    (window.SAUCE_FIXED_SKUS || []).forEach(function(r) {
+      add('Materials', r[0], r[1] || '', '');
+    });
+
+    // DOORS AND WINDOWS — from the maps the calculators key off.
+    Object.keys(window.SAUCE_GD_MAP || {}).forEach(function(sku) {
+      add('Garage Doors', sku, window.SAUCE_GD_MAP[sku], '');
+    });
+    Object.keys(window.SAUCE_WD_MAP || {}).forEach(function(sku) {
+      add('Walk Doors', sku, window.SAUCE_WD_MAP[sku], '');
+    });
+    (window.SAUCE_WIN_TYPES || []).forEach(function(t) {
+      var sku = (window.SAUCE_WIN_MAP || {})[t] || t;
+      var unmatched = (window.SAUCE_UNMATCHED_WINDOWS || []).indexOf(t) >= 0;
+      add('Windows', sku, t, unmatched ? 'no vendor code' : '');
+    });
+
+    _rows = out;
+    return _rows;
+  }
+
+  // ── Prices ───────────────────────────────────────────────────────────────
+  function priceOf(sku) {
+    if (_dirty[sku] !== undefined) return _dirty[sku];
+    var pt = (window.SauceMaterials && window.SauceMaterials._priceTable) || {};
+    var v = pt[sku];
+    return (v == null) ? null : v;
+  }
+  function isOverride(sku) {
+    return !!(window.SAUCE_OWN_PRICES && window.SAUCE_OWN_PRICES[sku] != null);
+  }
+
+  function matches(r, q) {
+    if (!q) return true;
+    return (r.sku + ' ' + r.desc + ' ' + r.meta).toLowerCase().indexOf(q) >= 0;
+  }
+
+  // ── Rendering ────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function counts(q) {
+    var c = {};
+    GROUPS.forEach(function(g){ c[g] = 0; });
+    build().forEach(function(r){ if (matches(r, q)) c[r.group]++; });
+    return c;
+  }
+
+  function rowHtml(r) {
+    var p = priceOf(r.sku);
+    var unpriced = (p == null || p === '' || +p === 0);
+    var over = isOverride(r.sku);
+    var flag = r.meta === 'no vendor code';
+    return ''
+      + '<tr data-pb-row="' + esc(r.sku) + '" style="border-bottom:1px solid rgba(255,255,255,.05);'
+      +   (flag ? 'background:rgba(251,191,36,.05);' : '') + '">'
+      + '<td style="padding:9px 10px;font-size:12px;font-weight:700;color:#e8ebf0;white-space:nowrap;">'
+      +   esc(r.sku)
+      +   (over ? '<span title="This company prices this differently" style="margin-left:7px;padding:1px 6px;border-radius:4px;background:rgba(var(--gold-rgb),.16);color:var(--gold);font-size:9px;font-weight:800;letter-spacing:.5px;">YOURS</span>' : '')
+      +   (flag ? '<span title="No vendor code — match it or remove it" style="margin-left:7px;padding:1px 6px;border-radius:4px;background:rgba(251,191,36,.16);color:#fbbf24;font-size:9px;font-weight:800;letter-spacing:.5px;">NO CODE</span>' : '')
+      + '</td>'
+      + '<td style="padding:9px 10px;font-size:12px;color:#aab2be;">' + esc(r.desc) + '</td>'
+      + '<td style="padding:9px 10px;font-size:10px;color:#6f7885;white-space:nowrap;">' + esc(r.meta === 'no vendor code' ? '' : r.meta) + '</td>'
+      + '<td style="padding:6px 10px;text-align:right;white-space:nowrap;">'
+      +   '<span style="color:#6f7885;font-size:12px;margin-right:2px;">$</span>'
+      +   '<input data-pb-price="' + esc(r.sku) + '" type="number" step="0.01" min="0" '
+      +     'value="' + (p == null ? '' : esc(p)) + '" placeholder="0.00" '
+      +     'style="width:96px;padding:6px 8px;border-radius:7px;text-align:right;font-family:Outfit,sans-serif;'
+      +     'font-size:12px;font-weight:700;background:#2e3238;color:' + (unpriced ? '#fbbf24' : '#e8ebf0') + ';'
+      +     'border:1px solid ' + (unpriced ? 'rgba(251,191,36,.45)' : 'rgba(var(--gold-rgb),.22)') + ';">'
+      + '</td>'
+      + '<td style="padding:6px 8px;text-align:center;width:34px;">'
+      +   '<button data-pb-del="' + esc(r.sku) + '" title="Remove this item from the price book" '
+      +     'style="background:none;border:none;color:#5a616b;font-size:15px;line-height:1;cursor:pointer;padding:4px 6px;">&times;</button>'
+      + '</td>'
+      + '</tr>';
+  }
+
+  function tableFor(group, q) {
+    var rows = build().filter(function(r){ return r.group === group && matches(r, q); });
+    if (!rows.length) {
+      return '<div style="padding:34px 16px;text-align:center;color:#6f7885;font-size:12px;">'
+           + (q ? 'Nothing in ' + esc(group) + ' matches &ldquo;' + esc(q) + '&rdquo;.' : 'Nothing here yet.')
+           + '</div>';
+    }
+    return '<table style="width:100%;border-collapse:collapse;">'
+      + '<thead><tr style="background:#262a30;position:sticky;top:0;z-index:1;">'
+      +   th('SKU','left') + th('Description','left') + th('Covers','left')
+      +   th('Price','right') + '<th style="width:34px;"></th>'
+      + '</tr></thead><tbody>'
+      + rows.map(rowHtml).join('')
+      + '</tbody></table>';
+  }
+  function th(label, align) {
+    return '<th style="padding:9px 10px;font-size:9px;font-weight:700;text-transform:uppercase;'
+         + 'letter-spacing:1px;color:#6f7885;text-align:' + align + ';">' + label + '</th>';
+  }
+
+  // Matches outside the tab you are looking at. A search that hides a result
+  // it found is worse than no search.
+  function elsewhereHtml(q) {
+    if (!q) return '';
+    var c = counts(q);
+    var other = GROUPS.filter(function(g){ return g !== _tab && c[g] > 0; });
+    if (!other.length) return '';
+    return '<div style="padding:10px 14px;border-top:1px solid rgba(255,255,255,.07);'
+      + 'background:rgba(var(--gold-rgb),.05);font-size:11px;color:#aab2be;font-family:Outfit,sans-serif;">'
+      + 'Also found in '
+      + other.map(function(g) {
+          return '<button data-pb-goto="' + esc(g) + '" style="margin:0 3px;padding:3px 9px;border-radius:6px;'
+               + 'border:1px solid rgba(var(--gold-rgb),.35);background:rgba(var(--gold-rgb),.10);'
+               + 'color:var(--gold);font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">'
+               + esc(g) + ' (' + c[g] + ')</button>';
+        }).join('')
+      + '</div>';
+  }
+
+  function render() {
+    var host = document.getElementById('pbBody');
+    if (!host) return;
+    host.innerHTML = tableFor(_tab, _q);
+    var el = document.getElementById('pbElsewhere');
+    if (el) el.innerHTML = elsewhereHtml(_q);
+    var c = counts(_q);
+    GROUPS.forEach(function(g) {
+      var t = document.querySelector('[data-pb-tab="' + g + '"]');
+      if (!t) return;
+      var on = (g === _tab);
+      t.style.background = on ? 'rgba(var(--gold-rgb),.14)' : 'transparent';
+      t.style.color      = on ? 'var(--gold)' : '#8f98a6';
+      t.style.borderColor= on ? 'rgba(var(--gold-rgb),.45)' : 'rgba(255,255,255,.10)';
+      var badge = t.querySelector('[data-pb-count]');
+      if (badge) badge.textContent = c[g];
+    });
+    var d = Object.keys(_dirty).length;
+    var sv = document.getElementById('pbSaveBtn');
+    if (sv) {
+      sv.textContent = d ? ('Save ' + d + ' change' + (d === 1 ? '' : 's')) : 'Save';
+      sv.style.opacity = d ? '1' : '.45';
+      sv.disabled = !d;
+    }
+  }
+
+  // ── The screen ───────────────────────────────────────────────────────────
+  PB.open = function() {
+    var old = document.getElementById('pbOverlay');
+    if (old) old.remove();
+    _q = ''; _dirty = {};
+
+    var ov = document.createElement('div');
+    ov.id = 'pbOverlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:100010;'
+      + 'display:flex;align-items:center;justify-content:center;padding:22px;';
+    ov.addEventListener('mousedown', function(e){ if (e.target === ov) PB.close(); });
+
+    var shell = document.createElement('div');
+    shell.style.cssText = 'background:#22262b;border:1px solid rgba(255,255,255,.10);border-radius:14px;'
+      + 'width:100%;max-width:1180px;height:92vh;display:flex;flex-direction:column;overflow:hidden;'
+      + 'box-shadow:0 26px 70px rgba(0,0,0,.65);font-family:Outfit,sans-serif;';
+
+    shell.innerHTML = ''
+      // header
+      + '<div style="padding:18px 22px 14px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:flex-start;gap:16px;">'
+      +   '<div style="flex:1;min-width:0;">'
+      +     '<div style="font-size:17px;font-weight:800;color:#fff;letter-spacing:.2px;">Price Book</div>'
+      +     '<div id="pbSub" style="font-size:11px;color:#8f98a6;margin-top:3px;"></div>'
+      +   '</div>'
+      +   '<button id="pbClose" style="background:none;border:none;color:#8f98a6;font-size:24px;line-height:1;cursor:pointer;padding:0 2px;">&times;</button>'
+      + '</div>'
+      // search
+      + '<div style="padding:14px 22px 0;">'
+      +   '<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6f7885;margin-bottom:6px;">Search every group</div>'
+      +   '<input id="pbSearch" placeholder="SKU or description…" autocomplete="off" '
+      +     'style="width:100%;box-sizing:border-box;padding:11px 13px;border-radius:9px;'
+      +     'border:1px solid rgba(var(--gold-rgb),.25);background:#2e3238;color:#e8ebf0;'
+      +     'font-size:13px;font-family:Outfit,sans-serif;">'
+      + '</div>'
+      // tabs
+      + '<div style="padding:13px 22px 12px;display:flex;gap:8px;flex-wrap:wrap;">'
+      +   GROUPS.map(function(g) {
+            return '<button data-pb-tab="' + g + '" style="padding:8px 15px;border-radius:9px;'
+              + 'border:1px solid rgba(255,255,255,.10);background:transparent;color:#8f98a6;'
+              + 'font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;letter-spacing:.3px;">'
+              + g + '<span data-pb-count style="margin-left:8px;padding:1px 7px;border-radius:20px;'
+              + 'background:rgba(255,255,255,.07);font-size:10px;font-weight:700;">0</span></button>';
+          }).join('')
+      + '</div>'
+      // table
+      + '<div id="pbBody" style="flex:1;min-height:0;overflow-y:auto;margin:0 22px;border-radius:10px;'
+      +   'border:1px solid rgba(255,255,255,.08);"></div>'
+      + '<div id="pbElsewhere"></div>'
+      // footer
+      + '<div style="padding:14px 22px 18px;border-top:1px solid rgba(255,255,255,.08);'
+      +   'display:flex;align-items:center;gap:12px;flex-wrap:wrap;">'
+      +   '<div id="pbScopeWrap" style="display:flex;gap:6px;align-items:center;">'
+      +     '<span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6f7885;">Save to</span>'
+      +     '<button data-pb-scope="company" style="padding:6px 12px;border-radius:7px;border:1px solid rgba(var(--gold-rgb),.45);background:rgba(var(--gold-rgb),.14);color:var(--gold);font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">This company</button>'
+      +     '<button data-pb-scope="base" style="padding:6px 12px;border-radius:7px;border:1px solid rgba(255,255,255,.10);background:transparent;color:#8f98a6;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Everyone</button>'
+      +   '</div>'
+      +   '<div id="pbStatus" style="flex:1;font-size:11px;color:#8f98a6;min-width:120px;"></div>'
+      +   '<button id="pbExport" style="padding:9px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:#aab2be;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Export CSV</button>'
+      +   '<button id="pbSaveBtn" style="padding:10px 22px;border-radius:8px;border:none;background:var(--gold);color:#fff;font-size:12px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;letter-spacing:.3px;">Save</button>'
+      + '</div>';
+
+    ov.appendChild(shell);
+    document.body.appendChild(ov);
+
+    var all = build();
+    var sub = document.getElementById('pbSub');
+    if (sub) {
+      var unp = all.filter(function(r){ var p = priceOf(r.sku); return p == null || +p === 0; }).length;
+      sub.innerHTML = all.length + ' items your buildings can call for'
+        + (unp ? ' &nbsp;·&nbsp; <span style="color:#fbbf24;font-weight:700;">' + unp + ' without a price</span>' : '');
+    }
+
+    document.getElementById('pbClose').addEventListener('click', PB.close);
+    document.getElementById('pbSearch').addEventListener('input', function() {
+      _q = this.value.trim().toLowerCase();
+      render();
+    });
+    document.getElementById('pbSaveBtn').addEventListener('click', PB.save);
+    document.getElementById('pbExport').addEventListener('click', PB.exportCsv);
+
+    shell.addEventListener('click', function(e) {
+      var t = e.target.closest ? e.target.closest('[data-pb-tab],[data-pb-goto],[data-pb-scope],[data-pb-del]') : null;
+      if (!t) return;
+      if (t.hasAttribute('data-pb-tab'))  { _tab = t.getAttribute('data-pb-tab'); render(); }
+      if (t.hasAttribute('data-pb-goto')) { _tab = t.getAttribute('data-pb-goto'); render(); }
+      if (t.hasAttribute('data-pb-del'))  PB.remove(t.getAttribute('data-pb-del'));
+      if (t.hasAttribute('data-pb-scope')) {
+        _scope = t.getAttribute('data-pb-scope');
+        Array.prototype.forEach.call(shell.querySelectorAll('[data-pb-scope]'), function(b) {
+          var on = b.getAttribute('data-pb-scope') === _scope;
+          b.style.background  = on ? 'rgba(var(--gold-rgb),.14)' : 'transparent';
+          b.style.color       = on ? 'var(--gold)' : '#8f98a6';
+          b.style.borderColor = on ? 'rgba(var(--gold-rgb),.45)' : 'rgba(255,255,255,.10)';
+        });
+        status(_scope === 'base'
+          ? 'Changes will apply to every company.'
+          : 'Changes apply to this company only.');
+      }
+    });
+
+    // Price edits are held until Save so a mistyped digit is never live.
+    shell.addEventListener('input', function(e) {
+      var el = e.target;
+      if (!el.hasAttribute || !el.hasAttribute('data-pb-price')) return;
+      var sku = el.getAttribute('data-pb-price');
+      var v = String(el.value).trim();
+      if (v === '') { delete _dirty[sku]; }
+      else {
+        var n = parseFloat(v);
+        if (isFinite(n)) _dirty[sku] = n;
+      }
+      var d = Object.keys(_dirty).length;
+      var sv = document.getElementById('pbSaveBtn');
+      if (sv) {
+        sv.textContent = d ? ('Save ' + d + ' change' + (d === 1 ? '' : 's')) : 'Save';
+        sv.style.opacity = d ? '1' : '.45';
+        sv.disabled = !d;
+      }
+    });
+
+    render();
+    setTimeout(function(){ var s = document.getElementById('pbSearch'); if (s) s.focus(); }, 60);
+  };
+
+  PB.close = function() {
+    if (Object.keys(_dirty).length &&
+        !confirm(Object.keys(_dirty).length + ' unsaved price change(s). Close anyway?')) return;
+    var ov = document.getElementById('pbOverlay');
+    if (ov) ov.remove();
+  };
+
+  function status(msg, color) {
+    var el = document.getElementById('pbStatus');
+    if (el) { el.textContent = msg || ''; el.style.color = color || '#8f98a6'; }
+  }
+
+  PB.remove = function(sku) {
+    if (!confirm('Remove ' + sku + ' from the price book?\n\nIt stays in your full price list — this only takes it out of the list you maintain.')) return;
+    _rows = _rows.filter(function(r){ return r.sku !== sku; });
+    delete _dirty[sku];
+    (window.SAUCE_PB_REMOVED = window.SAUCE_PB_REMOVED || {})[sku] = 1;
+    render();
+    status(sku + ' removed.', '#86efac');
+  };
+
+  PB.save = async function() {
+    var skus = Object.keys(_dirty);
+    if (!skus.length) return;
+    status('Saving ' + skus.length + '...', 'var(--gold)');
+    var co = (_scope === 'base') ? (window.SAUCE_SHARED_INVENTORY || 'default') : null;
+    try {
+      var rows = skus.map(function(s) {
+        var r = build().filter(function(x){ return x.sku === s; })[0] || {};
+        return { sku: s, description: r.desc || '', price: _dirty[s] };
+      });
+      var ok = await window.sbUpsertInventory(rows, co);
+      if (ok === false || (typeof sbFailed === 'function' && sbFailed())) {
+        status('Could not save: ' + (typeof sbWhyRefused === 'function' ? sbWhyRefused() : 'refused'), '#ef4444');
+        return;
+      }
+      rows.forEach(function(r) {
+        if (window.SauceMaterials && window.SauceMaterials._priceTable)
+          window.SauceMaterials._priceTable[r.sku] = r.price;
+      });
+      _dirty = {};
+      render();
+      status('Saved ' + rows.length + ' price' + (rows.length === 1 ? '' : 's')
+             + (_scope === 'base' ? ' for everyone.' : ' for this company.'), '#86efac');
+      if (typeof schedulePrice === 'function') schedulePrice();
+    } catch (e) {
+      status('Could not save: ' + e.message, '#ef4444');
+    }
+  };
+
+  PB.exportCsv = function() {
+    var csv = 'Group,SKU,Description,Covers,Price\n' + build().map(function(r) {
+      var p = priceOf(r.sku);
+      return [r.group, r.sku, '"' + String(r.desc).replace(/"/g,'""') + '"',
+              '"' + String(r.meta).replace(/"/g,'""') + '"', (p == null ? '' : p)].join(',');
+    }).join('\n');
+    try {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+      a.download = 'price-book.csv';
+      a.click();
+      setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000);
+      status('Exported.', '#86efac');
+    } catch (e) { status('Could not export: ' + e.message, '#ef4444'); }
+  };
+
+  return PB;
+})();
+
+window.openPriceBook = function() { window.SaucePriceBook.open(); };
+
+  /* @SAUCE-PRICE-BOOK-START */
+  window.SAUCE_PRICE_BOOK = [["G","GD1010INW","GD1010INW","10' X 10' GARAGE DOOR INSULATE WHITE",1,""],["G","GD1010W","GD1010W","10' X 10' GARAGE DOOR NON INS WHITE",1,""],["G","GD1012INW","GD1012INW","10' X 12' GARAGE DOOR INSULATE WHITE",1,""],["G","GD1012W","GD1012W","10' X 12' GARAGE DOOR NON INS WHITE",1,""],["G","GD1014INW","GD1014INW","10' X 14' GARAGE DOOR INSULATE WHITE",1,""],["G","GD1014W","GD1014W","10' X 14' GARAGE DOOR NON INS WHITE",1,""],["G","GD108INW","GD108INW","10' X 8' GARAGE DOOR INSULATE WHITE",1,""],["G","GD108W","GD108W","10' X 8' GARAGE DOOR NON INS WHITE",1,""],["G","GD1210INW","GD1210INW","12' X 10' GARAGE DOOR INSULAT WHITE",1,""],["G","GD1210W","GD1210W","12' X 10'  GARAGE DOOR NON INS WHITE",1,""],["G","GD1212INW","GD1212INW","12' X 12' GARAGE DOOR INSULATE WHITE",1,""],["G","GD1212W","GD1212W","12' X 12' GARAGE DOOR NON INS WHITE",1,""],["G","GD1214INW","GD1214INW","12' X 14' GARAGE DOOR INSULATE WHITE",1,""],["G","GD1214W","GD1214W","12' X 14' GARAGE DOOR NON INS WHITE",1,""],["G","GD128INW","GD128INW","12' X 8' GARAGE DOOR INSULATE WHITE",1,""],["G","GD128W","GD128W","12' X 8' GARAGE DOOR NON INS WHITE",1,""],["G","GD1410INW","GD1410INW","14' X 10' GARAGE DOOR INSULATE WHITE",1,""],["G","GD1410W","GD1410W","14' X 10' GARAGE DOOR NON INS WHITE",1,""],["G","GD1412INW","GD1412INW","14' X 12' GARAGE DOOR INSULATE WHITE",1,""],["G","GD1412W","GD1412W","14 X 12 GARAGE DOOR NON INS WHITE",1,""],["G","GD1414INW","GD1414INW","14X14 GARAGE DOOR INSULATED WHITE",1,""],["G","GD1414W","GD1414W","14X14  GARAGE DOOR NON INS WHITE",1,""],["G","GD1610INSW","GD1610INSW","16X10 GARAG DOOR INSULATED WHITE",1,""],["G","GD1610W","GD1610W","16' X 10' GARAGE DOOR NON INS WHITE",1,""],["G","GD1612INW","GD1612INW","16X12 GARAGE DOOR INSULATED WHITE",1,""],["G","GD1612W","GD1612W","16X12 GARAGE DOOR NON INS WHITE",1,""],["G","GD1614INW","GD1614INW","16' X 14' GARAGE DOOR INSULATE WHITE",1,""],["G","GD1614W","GD1614W","16' X 14' GARAGE DOOR NON INS WHITE",1,""],["G","GD88INW","GD88INW","8X8 GARAGE DOOR INSULATED WHITE",1,""],["G","GD88W","GD88W","8X8 GARAGE DOOR NON INS WHITE",1,""],["G","GD910INW","GD910INW","9X10 GARAGE DOOR INSULATED WHITE",1,""],["G","GD910W","GD910W","9X10 GARAGE DOOR NON INS WHITE",1,""],["G","GD97INW","GD97INW","9' X 7' GARAGE DOOR INSULATE WHITE",1,""],["G","GD97W","GD97W","9' X 7' GARAGE DOOR NON INS WHITE",1,""],["G","GD98INSW","GD98INSW","9' x 8' GARAGE DOOR INSULATED WHITE",1,""],["G","GD98W","GD98W","9' X 8' GARAGE DOOR NON INS WHITE",1,""],["G","GD99INW","GD99INW","9' X 9' GARAGE DOOR INSULATE WHITE",1,""],["G","GD99W","GD99W","9' X 9' GARAGE DOOR NON INS WHITE",1,""],["M","ATTIC-UPGRADE","ATTIC-UPGRADE","",1,"not in vendor list"],["M","BB6BC","BB6BC","10\" Board & Batton Panel 26 Ga (BLUE Charcoal) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6BK","BB6BK","10\" Board & Batton Panel 26 Ga (Black) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6BS","BB6BS","10\" Board & Batton Panel 26 Ga (Buckskin) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6BW","BB6BW","10\" Board & Batton Panel 26 Ga (BONE WHITE) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6BZ","BB6BZ","10\" Board & Batton Panel 26 Ga (Bronze) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6CC","BB6CC","10\" Board & Batton Panel 26 Ga (County Charcoal) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6CL","BB6CL","10\" Board & Batton Panel 26 Ga (Clay) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6DR","BB6DR","10\" Board & Batton Panel 26 Ga (DARK RED) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6DRSC","BB6DRSC","10\" Board & Batton Panel 26 Ga (DISTRESSED ROUGH SAWN CEDAR) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6FBK","BB6FBK","10\" Board & Batton Panel 26 Ga (FROST BLACK) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6FCC","BB6FCC","10\" Board & Batton Panel 26 Ga (FROST CHARCOAL) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6GA","BB6GA","10\" Board & Batton Panel 26 Ga (GALVALUME) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6IV","BB6IV","10\" Board & Batton Panel 26 Ga (IVORY) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6LI","BB6LI","10\" Board & Batton Panel 26 Ga (Light Gray) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6MBK","BB6MBK","10\" Board & Batton Panel 26 Ga (Matte Black) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6MO","BB6MO","10\" Board & Batton Panel 26 Ga (Medium Oak) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6PG","BB6PG","10\" Board & Batton Panel 26 Ga (PATINA GREEN) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6PW","BB6PW","10\" Board & Batton Panel 26 Ga (Pure White) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6RCN","BB6RCN","10\" Board & Batton Panel 26 Ga (ROUGH CEDAR NATURAL) [WOODGRAIN] [EMBOSSED]",1,""],["M","BB6WA","BB6WA","10\" Board & Batton Panel 26 Ga (Weathered Ash) [WOODGRAIN] [EMBOSSED]",1,""],["M","BBFJ6*10","BBFJ6‹colour›10","Board & Batton FJ Trim10' 4\"",32,""],["M","BBFJ6*12","BBFJ6‹colour›12","Board & Batton FJ Trim12' 4\"",32,""],["M","BBFJ6*14","BBFJ6‹colour›14","Board & Batton FJ Trim14' 4\"",31,""],["M","BBFJ6*16","BBFJ6‹colour›16","Board & Batton FJ Trim16' 4\"",32,""],["M","BBFJ6*18","BBFJ6‹colour›18","Board & Batton FJ Trim18' 4\"",31,""],["M","BBFJ6*20","BBFJ6‹colour›20","Board & Batton FJ Trim20' 4\"",31,""],["M","BBJC6*10","BBJC6‹colour›10","Board And Batton J Channel 26ga (Barn Red) 10'4\"",25,""],["M","BBJC6*12","BBJC6‹colour›12","Board And Batton J Channel 26ga (Barn Red) 12'4\"",21,""],["M","BBJC6*14","BBJC6‹colour›14","Board And Batton J Channel 26ga (Barn Red) 14'4\"",20,""],["M","BBJC6*16","BBJC6‹colour›16","Board And Batton J Channel 26ga (Barn Red) 16'4\"",20,""],["M","BBJC6*18","BBJC6‹colour›18","Board And Batton J Channel 26ga (Barn Red) 18'4\"",20,""],["M","BBJC6*20","BBJC6‹colour›20","Board And Batton J Channel 26ga (Barn Red) 20'4\"",20,""],["M","BBOC6*10","BBOC6‹colour›10","Board And Batton Outside Corner 26ga (Barn Red) 10'4\"",24,""],["M","BBOC6*12","BBOC6‹colour›12","Board And Batton Outside Corner 26ga (Barn Red) 12'4\"",24,""],["M","BBOC6*14","BBOC6‹colour›14","Board And Batton Outside Corner 26ga (FROST BLACK) 14'4\"",2,""],["M","BBOC6*16","BBOC6‹colour›16","Board And Batton Outside Corner 26ga (Barn Red) 16'6\"",5,""],["M","BBOC6*18","BBOC6‹colour›18","Board And Batton Outside Corner 26ga (FROST CHARCOAL) 18'4\"",1,""],["M","BBRG6*10","BBRG6‹colour›10","Board And Batton Rat Guard 26ga (Barn Red) 10'4\"",25,""],["M","BBRG6*12","BBRG6‹colour›12","Board And Batton Rat Guard 26ga (Barn Red) 12'4\"",20,""],["M","BBRG6*14","BBRG6‹colour›14","Board And Batton Rat Guard 26ga (Barn Red) 14'4\"",20,""],["M","BBRG6*16","BBRG6‹colour›16","Board And Batton Rat Guard 26ga (Barn Red) 16'4\"",20,""],["M","BBRG6*18","BBRG6‹colour›18","Board And Batton Rat Guard 26ga (Barn Red) 18'4\"",20,""],["M","BBRG6*20","BBRG6‹colour›20","Board And Batton Rat Guard 26ga (Barn Red) 20'4\"",20,""],["M","BBUT6*10","BBUT6‹colour›10","Board & Batton Utility Trim10' 4\"",32,""],["M","BBUT6*12","BBUT6‹colour›12","Board & Batton Utility Trim12' 4\"",31,""],["M","BBUT6*14","BBUT6‹colour›14","Board & Batton Utility Trim14' 4\"",31,""],["M","BBUT6*16","BBUT6‹colour›16","Board & Batton Utility Trim16' 4\"",31,""],["M","BBUT6*18","BBUT6‹colour›18","Board & Batton Utility Trim18' 4\"",31,""],["M","BBUT6*20","BBUT6‹colour›20","Board & Batton Utility Trim20' 4\"",31,""],["M","BBZB6*10","BBZB6‹colour›10","Board And Batton Z Bar 26ga (Barn Red) 10'4\"",25,""],["M","BBZB6*12","BBZB6‹colour›12","Board And Batton Z Bar 26ga (Barn Red) 12'4\"",20,""],["M","BBZB6*14","BBZB6‹colour›14","Board And Batton Z Bar 26ga (Barn Red) 14'4\"",20,""],["M","BBZB6*16","BBZB6‹colour›16","Board And Batton Z Bar 26ga (Barn Red) 16'4\"",20,""],["M","BBZB6*18","BBZB6‹colour›18","Board And Batton Z Bar 26ga (Barn Red) 18'4\"",20,""],["M","BBZB6*20","BBZB6‹colour›20","Board And Batton Z Bar 26ga (Barn Red) 20'4\"",20,""],["M","BR10","BR10","10'  WHITE AL BOTTOM RAIL",1,""],["M","BR12","BR12","12'  WHITE AL BOTTOM RAIL",1,""],["M","BR14","BR14","14'  WHITE AL BOTTOM RAIL",1,""],["M","BR16","BR16","16'  WHITE AL BOTTOM RAIL",1,""],["M","CB18","CB18","18 CANE BOLT FOR SLIDING DOOR\"",1,""],["M","CCA4","CCA4","4 TITEN CONCRETE ANCHOR\"",1,""],["M","CIJ1178","CIJ1178","Custom 11 7/8\" I-JOIST 2 1/2\" FLANGE PER FT",1,""],["M","CIJ14","CIJ14","Custom 14\" I-JOIST 2 1/2\" FLANGE PER FT",1,""],["M","CIJ162.5","CIJ162.5","Custom 16\" I-JOIST 2 1/2\" FLANGE PER FT",1,""],["M","CIJ163.5","CIJ163.5","Custom 16\" I-JOIST 3 1/2\" FLANGE PER FT",1,""],["M","CL","CL","CENTER LATCH PB128",1,""],["M","CLOOSC","CLOOSC","OUTSIDE SOLID CLOSURES",1,""],["M","CLVL1178","CLVL1178","Custom 11 7/8\" LVL PER FT",1,""],["M","COM","COM","[Comment]",1,""],["M","CRANE","CRANE","CRANE CHARGE",1,""],["M","CUPOLA","CUPOLA","",1,"not in vendor list"],["M","DA6*10","DA6‹colour›10","Double Angle 26ga (Barn Red) 10'4' [PBR]",24,""],["M","DA6*12","DA6‹colour›12","Double Angle 26ga (Barn Red) 12'4\" [PBR]",21,""],["M","DA6*14","DA6‹colour›14","Double Angle 26ga (Barn Red) 14'4\" [PBR]",20,""],["M","DA6*16","DA6‹colour›16","Double Angle 26ga (Barn Red) 16'4\" [PBR]",20,""],["M","DA6*18","DA6‹colour›18","Double Angle 26ga (Barn Red) 18'4\" [PBR]",20,""],["M","DA6*20","DA6‹colour›20","Double Angle 26ga (Barn Red) 20'4\" [PBR]",20,""],["M","DA9*10","DA9‹colour›10","Double Angle 29ga (#2 WHITE) 10'4\"",33,""],["M","DA9*12","DA9‹colour›12","Double Angle 29ga (#2 WHITE) 12'4\"",33,""],["M","DA9*14","DA9‹colour›14","Double Angle 29ga (Barn Red) 14'4\"",31,""],["M","DA9*16","DA9‹colour›16","Double Angle 29ga (Barn Red) 16'4\"",31,""],["M","DA9*18","DA9‹colour›18","Double Angle 29ga (Barn Red) 18'4\"",31,""],["M","DA9*20","DA9‹colour›20","Double Angle 29ga (Barn Red) 20'4\"",31,""],["M","DEMO-","DEMO-","",1,"not in vendor list"],["M","DJT9","DJT9","",1,"not in vendor list"],["M","DJT9PW10","DJT9PW10","Door Jamb Trim 29ga (Pure White) 10'9\"",1,""],["M","DJT9PW12","DJT9PW12","Door Jamb Trim 29ga (Pure White) 12'9\"",1,""],["M","DJT9PW14","DJT9PW14","Door Jamb Trim 29ga (Pure White) 14'9\"",1,""],["M","DJT9PW16","DJT9PW16","Door Jamb Trim 29ga (Pure White) 16'9\"",1,""],["M","DP","DP","WHITE DOOR HANDLE PB207S",1,""],["M","DPBAPB88R","DPBAPB88R","8in X 8in POST BASE ROUGH SAWN",1,""],["M","DPBAPGP1212","DPBAPGP1212","SIMSPSON DECORATIVE 12/12 GABLE PLATE",1,""],["M","DPBAPL6","DPBAPL6","SIMSPSON DECORATIVE 6in ( L )   BEAM TO COLUMN TIE",1,""],["M","DPBKTAPGP1212","DPBKTAPGP1212","SIMSPSON DECORATIVE 12/12 GABLE PLATE INCLUDES 20- 3 1/2\" LAGS AND DECORATIVE NUTS",1,""],["M","DSTP","DSTP","DOOR STOP #PB66",1,""],["M","DTR10","DTR10","10' DOOR TRACK BC201",1,""],["M","DTR12","DTR12","12' DOOR TRACK BC201",1,""],["M","DTR8","DTR8","8' DOOR TRACK",1,""],["M","EWF6*10","EWF6‹colour›10","End Wall 26ga (Barn Red) 10'4\" [PBR]",21,""],["M","EWF6*12","EWF6‹colour›12","End Wall 26ga (Barn Red) 12'4\" [PBR]",22,""],["M","EWF6*14","EWF6‹colour›14","End Wall 26ga (Barn Red) 14'4\" [PBR]",19,""],["M","EWF6*16","EWF6‹colour›16","End Wall 26ga (Barn Red) 16'4\" [PBR]",19,""],["M","EWF6*18","EWF6‹colour›18","End Wall 26ga (Barn Red) 18'4\" [PBR]",19,""],["M","EWF6*20","EWF6‹colour›20","End Wall 26ga (Barn Red) 20'4\" [PBR]",19,""],["M","EWF9*10","EWF9‹colour›10","End Wall 29ga (#2 WHITE) 10'4\"",33,""],["M","EWF9*12","EWF9‹colour›12","End Wall 29ga (#2 WHITE) 12'4\"",33,""],["M","EWF9*14","EWF9‹colour›14","End Wall 29ga (Barn Red) 14'4\"",31,""],["M","EWF9*16","EWF9‹colour›16","End Wall 29ga (Barn Red) 16'4\"",31,""],["M","EWF9*18","EWF9‹colour›18","End Wall 29ga (Barn Red) 18'4\"",31,""],["M","EWF9*20","EWF9‹colour›20","End Wall 29ga (Barn Red) 20'4\"",31,""],["M","EXC","EXC","CUSTOM EXTERIOR ENTRY DOOR",1,""],["M","FJ6*10","FJ6‹colour›10","F&J 26ga (Barn Red) 10'4\" [PBR]",20,""],["M","FJ6*12","FJ6‹colour›12","F&J 26ga (Barn Red) 12'4\" [PBR]",19,""],["M","FJ6*14","FJ6‹colour›14","F&J 26ga (Barn Red) 14'4\" [PBR]",19,""],["M","FJ6*16","FJ6‹colour›16","F&J 26ga (Barn Red) 16'4\" [PBR]",19,""],["M","FJ6*18","FJ6‹colour›18","F&J 26ga (Barn Red) 18'4\" [PBR]",19,""],["M","FJ6*20","FJ6‹colour›20","F&J 26ga (Barn Red) 20'4\" [PBR]",19,""],["M","FJ9","FJ9","",1,"not in vendor list"],["M","FJ9*10","FJ9‹colour›10","F&J 29ga (#2 WHITE) 10'4\"",36,""],["M","FJ9*12","FJ9‹colour›12","F&J 29ga (#2 WHITE ) 12'4\"",34,""],["M","FJ9*14","FJ9‹colour›14","F&J 29ga (Barn Red) 14'4\"",32,""],["M","FJ9*16","FJ9‹colour›16","F&J 29ga (Barn Red) 16'4\"",32,""],["M","FJ9*18","FJ9‹colour›18","F&J 29ga (Barn Red) 18'4\"",32,""],["M","FJ9*20","FJ9‹colour›20","F&J 29ga (Barn Red) 20'4\"",32,""],["M","GR","GR","DOOR GUIDE ROLLER PB975",1,""],["M","GRT6*10","GRT6‹colour›10","Gable Rake 26ga (Barn Red) 10'4\" [PBR]",19,""],["M","GRT6*12","GRT6‹colour›12","Gable Rake 26ga (Barn Red) 12'4\" [PBR]",19,""],["M","GRT6*14","GRT6‹colour›14","Gable Rake 26ga (Barn Red) 14'4\" [PBR]",19,""],["M","GRT6*16","GRT6‹colour›16","Gable Rake 26ga (Barn Red) 16'4\" [PBR]",19,""],["M","GRT6*18","GRT6‹colour›18","Gable Rake 26ga (Barn Red) 18'4\" [PBR]",19,""],["M","GRT6*20","GRT6‹colour›20","Gable Rake 26ga (Barn Red) 20'4\" [PBR]",19,""],["M","GRT9*10","GRT9‹colour›10","Gable Rake 29ga (#2 WHITE) 10'4\"",33,""],["M","GRT9*12","GRT9‹colour›12","Gable Rake 29ga (#2 WHITE) 12'4\"",33,""],["M","GRT9*14","GRT9‹colour›14","Gable Rake 29ga (Barn Red) 14'4\"",31,""],["M","GRT9*16","GRT9‹colour›16","Gable Rake 29ga (Barn Red) 16'4\"",31,""],["M","GRT9*18","GRT9‹colour›18","Gable Rake 29ga (Barn Red) 18'4\"",31,""],["M","GRT9*20","GRT9‹colour›20","Gable Rake 29ga (Barn Red) 20'4\"",31,""],["M","HB2S","HB2S","H2.5 HURRICANE CLIPS RT7A",1,""],["M","HBBA","HBBA","GA2 GUSSET BASE ANGLE",1,""],["M","HDGRS10D30","HDGRS10D30","10D 30 DEG HDGRS CLPHD PAPER 3\"",1,""],["M","HDGRS12D30","HDGRS12D30","12D 30 DEG HDGRS PAPER 3 1/4\"",1,""],["M","HDGRS8D30","HDGRS8D30","8D 30 DEG HDGRS CLPHD PAPER 2 3/8",1,""],["M","HL10","HL10","10 TIMBER LOK  SCREW\"",1,""],["M","HL8","HL8","8 HEAD LOCK STRUCTURAL WO\"",1,""],["M","INAA6125","INAA6125","SUMMER SHIELD 6' X 125'",1,""],["M","INHWTY10100","INHWTY10100","10' X 100' TYPAR HOUSEWRAP",1,""],["M","ISC6*10","ISC6‹colour›10","Inside Corner 26ga (Barn Red) 10'4\" [PBR]",23,""],["M","ISC6*12","ISC6‹colour›12","Inside Corner 26ga (Barn Red) 12'4\" [PBR]",19,""],["M","ISC6*14","ISC6‹colour›14","Inside Corner 26ga (Barn Red) 14'4\" [PBR]",20,""],["M","ISC6*16","ISC6‹colour›16","Inside Corner 26ga (Barn Red) 16'4\" [PBR]",19,""],["M","ISC6*18","ISC6‹colour›18","Inside Corner 26ga (Barn Red) 18'4\" [PBR]",19,""],["M","ISC6*20","ISC6‹colour›20","Inside Corner 26ga (Barn Red) 20'4\" [PBR]",19,""],["M","ISC9*10","ISC9‹colour›10","Inside Corner 29ga (#2  White) 10'4\"",33,""],["M","ISC9*12","ISC9‹colour›12","Inside Corner 29ga (#2 White) 12'4\"",32,""],["M","ISC9*14","ISC9‹colour›14","Inside Corner 29ga (Barn Red) 14'4\"",31,""],["M","ISC9*16","ISC9‹colour›16","Inside Corner 29ga (Barn Red) 16'4\"",31,""],["M","ISC9*18","ISC9‹colour›18","Inside Corner 29ga (Barn Red) 18'4\"",31,""],["M","ISC9*20","ISC9‹colour›20","Inside Corner 29ga (Barn Red) 20'4\"",31,""],["M","JC9","JC9","",1,"not in vendor list"],["M","JC9BK10","JC9BK10","J Channel 29ga (Black) 10'4\"",1,""],["M","JC9PW10","JC9PW10","J Channel 29ga (Pure White) 10'4\"",1,""],["M","JC9PW12","JC9PW12","J Channel 29ga (Pure White) 12'4\"",1,""],["M","JH2","JH2","",1,"not in vendor list"],["M","JH212","JH212","2x12  JOIST HANGERS",1,""],["M","JHNS1.255LB","JHNS1.255LB","JOIST HANGER NAIL 1 1/4 5 LB\"",1,""],["M","JHRH46R","JHRH46R","4X6 OR 4X8 FACE MOUNT RAFTER HANGER 2/12  ROUGH SAWN BLACK INCLUDES 8 - 3 1/2 SIMPSON SCREWS",1,""],["M","JL","JL","SIDE JAMB LATCH PB121-W",1,""],["M","KLSDB","KLSDB","DEAD BOLT LOCK SET",1,""],["M","LAG5","LAG5","1/2'' X 5'' GALV. LAG BOLTS",1,""],["M","LVL117/816","LVL117/816","",1,"not in vendor list"],["M","LVL117/818","LVL117/818","",1,"not in vendor list"],["M","LVL117/820","LVL117/820","",1,"not in vendor list"],["M","LVL117/822","LVL117/822","",1,"not in vendor list"],["M","MARKUP","MARKUP","",1,"not in vendor list"],["M","MRSPAGAL","MRSPAGAL","",1,"not in vendor list"],["M","MRSPOPPW","MRSPOPPW","BAG OF 100 CT POP RIVETS PURE WHITE",1,""],["M","MRSWB1.5","MRSWB1.5","",1,"not in vendor list"],["M","OC6*10","OC6‹colour›10","Outside Corner 26ga (Barn Red) 10'4\" [PBR]",22,""],["M","OC6*12","OC6‹colour›12","Outside Corner 26ga (Barn Red) 12'4\" [PBR]",24,""],["M","OC6*14","OC6‹colour›14","Outside Corner 26ga (Barn Red) 14'4\" [PBR]",24,""],["M","OC6*16","OC6‹colour›16","Outside Corner 26ga (Barn Red) 16'4\" [PBR]",21,""],["M","OC6*18","OC6‹colour›18","Outside Corner 26ga (Barn Red) 18'4\" [PBR]",23,""],["M","OC6*20","OC6‹colour›20","Outside Corner 26ga (Barn Red) 20'4\" [PBR]",19,""],["M","OC9*10","OC9‹colour›10","Outside Corner 29ga (#2 WHITE) 10'4\"",35,""],["M","OC9*12","OC9‹colour›12","Outside Corner 29ga (#2 WHITE) 12'4\"",33,""],["M","OC9*14","OC9‹colour›14","Outside Corner 29ga (Barn Red) 14'4\"",32,""],["M","OC9*16","OC9‹colour›16","Outside Corner 29ga (Barn Red) 16'4\"",31,""],["M","OC9*18","OC9‹colour›18","Outside Corner 29ga (Barn Red) 18'4\"",31,""],["M","OC9*20","OC9‹colour›20","Outside Corner 29ga (Barn Red) 20'4\"",31,""],["M","ODT76*10","ODT76‹colour›10","Overhead Door Trim 7\" 26ga (Barn Red) 10'9\" [PBR]",21,""],["M","ODT76*12","ODT76‹colour›12","Overhead Door Trim 7\" 26ga (Barn Red) 12'9\" [PBR]",19,""],["M","ODT76*14","ODT76‹colour›14","Overhead Door Trim 7\" 26ga (Barn Red) 14'9\" [PBR]",19,""],["M","ODT76*16","ODT76‹colour›16","Overhead Door Trim 7\" 26ga (Barn Red) 16'9\" [PBR]",19,""],["M","ODT76*18","ODT76‹colour›18","Overhead Door Trim 7\" 26ga (Barn Red) 18'9\" [PBR]",19,""],["M","ODT76*20","ODT76‹colour›20","Overhead Door Trim 7\" 26ga (Barn Red) 20'9\" [PBR]",19,""],["M","ODT79*10","ODT79‹colour›10","Overhead Door Trim 7\" 29ga (#2 WHITE) 10'9\"",33,""],["M","ODT79*12","ODT79‹colour›12","Overhead Door Trim 7\" 29ga (#2 WHITE) 12'9\"",33,""],["M","ODT79*14","ODT79‹colour›14","Overhead Door Trim 7\" 29ga (Barn Red) 14'9\"",31,""],["M","ODT79*16","ODT79‹colour›16","Overhead Door Trim 7\" 29ga (Barn Red) 16'9\"",31,""],["M","ODT79*18","ODT79‹colour›18","Overhead Door Trim 7\" 29ga (Barn Red) 18'9\"",31,""],["M","ODT79*20","ODT79‹colour›20","Overhead Door Trim 7\" 29ga (Barn Red) 20'9\"",31,""],["M","OSB5.8","OSB5.8","SHEETS 5/8  OSB",1,""],["M","P6BA","P6BA","36\" PBR Panel 26 Ga (Barn Red)",1,""],["M","P6BK","P6BK","36\" PBR Panel 26 Ga (Gloss Black)",1,""],["M","P6BN","P6BN","36\" PBR Panel 26 Ga (Brown)",1,""],["M","P6BR","P6BR","36\" PBR Panel 26 Ga (Bright Red)",1,""],["M","P6BS","P6BS","36\" PBR Panel 26 Ga (Buckskin)",1,""],["M","P6BW","P6BW","36\" PBR Panel 26 Ga (Bone White)",1,""],["M","P6BZ","P6BZ","36\" PBR Panel 26 Ga (Bronze)",1,""],["M","P6CBA","P6CBA","36\" PBR Panel 26 Ga (Barn Red) w/ Condenstop",1,""],["M","P6CBK","P6CBK","36\" PBR Panel 26 Ga (Black) w/ Condenstop",1,""],["M","P6CBN","P6CBN","36\" PBR Panel 26 Ga (Brown) w/ Condenstop",1,""],["M","P6CBR","P6CBR","36\" PBR Panel 26 Ga (Bright Red) w/ Condenstop",1,""],["M","P6CBS","P6CBS","36\" PBR Panel 26 Ga (Buckskin) w/ Condenstop",1,""],["M","P6CBW","P6CBW","36\" PBR Panel 26 Ga (Bone White) w/ Condenstop",1,""],["M","P6CBZ","P6CBZ","36\" PBR Panel 26 Ga (Bronze) w/ Condenstop",1,""],["M","P6CC","P6CC","36\" PBR Panel 26 Ga (County Charcoal)",1,""],["M","P6CCC","P6CCC","36\" PBR Panel 26 Ga (County Charcoal) w/ Condenstop",1,""],["M","P6CCL","P6CCL","36\" PBR Panel 26 Ga (Clay) w/ Condenstop",1,""],["M","P6CCO","P6CCO","36\" PBR Panel 26 Ga (Copper) w/ Condenstop",1,""],["M","P6CDR","P6CDR","36\" PBR Panel 26 Ga (Dark Red) w/ Condenstop",1,""],["M","P6CFO","P6CFO","36\" PBR Panel 26 Ga (Forest Green) w/ Condenstop",1,""],["M","P6CGA","P6CGA","36\" PBR Panel 26 Ga (Galvalume) w/ Condenstop",1,""],["M","P6CL","P6CL","36\" PBR Panel 26 Ga (Clay)",1,""],["M","P6CLG","P6CLG","36\" PBR Panel 26 Ga (Light Gray) w/ Condenstop",1,""],["M","P6CMBK","P6CMBK","36\" PBR Panel 26 Ga (Matte Black) w/ Condenstop",1,""],["M","P6CO","P6CO","36\" PBR Panel 26 Ga (Copper )",1,""],["M","P6CPW","P6CPW","36\" PBR Panel 26 Ga (Pure White) w/ Condenstop",1,""],["M","P6CST","P6CST","36\" PBR Panel 26 Ga (Stone) w/ Condenstop",1,""],["M","P6CTA","P6CTA","36\" PBR Panel 26 Ga (Tan) w/ Condenstop",1,""],["M","P6DR","P6DR","36\" PBR Panel 26 Ga (Dark Red)",1,""],["M","P6FO","P6FO","36\" PBR Panel 26 Ga (Forest Green)",1,""],["M","P6GA","P6GA","36\" PBR Panel 26 Ga (Galvalume)",1,""],["M","P6LG","P6LG","36\" PBR Panel 26 Ga (Light Gray)",1,""],["M","P6MBK","P6MBK","36\" PBR Panel 26 Ga (Matte Black)",1,""],["M","P6PW","P6PW","36\" PBR Panel 26 Ga (Pure White)",1,""],["M","P6ST","P6ST","36\" PBR Panel 26 Ga (Stone)",1,""],["M","P6TA","P6TA","36\" PBR Panel 26 Ga (Tan)",1,""],["M","P6WA","P6WA","36\" PBR Panel 26 Ga (Weathered Ash)",1,""],["M","PAL","PAL","Q CRETE PALLET",1,""],["M","PBFP16","PBFP16","16\" FOOTING PAD COMPOSITE POST COOKIE",1,""],["M","PBKT4.4","PBKT4.4","4 X 4 POST BASE INCLUDES 1 4 TITEN CONCRETE ANCHOR\"",1,""],["M","PC1292W10","PC1292W10","10' 29ga BIRD BOX TRIM (#2 WHITE)",1,""],["M","PC129BA10","PC129BA10","10' 29ga BIRD BOX TRIM ( BARN RED )",1,""],["M","PC129BC10","PC129BC10","10' 29ga BIRD BOX TRIM (Blue Charcoal)",1,""],["M","PC129BK10","PC129BK10","10' 29ga BIRD BOX TRIM (Black)",1,""],["M","PC129BN10","PC129BN10","10' 29ga BIRD BOX TRIM (Brown)",1,""],["M","PC129BR10","PC129BR10","10' 29ga BIRD BOX TRIM (Bright Red)",1,""],["M","PC129BS10","PC129BS10","10' 29ga BIRD BOX TRIM (Buckskin)",1,""],["M","PC129BU10","PC129BU10","10' 29ga BIRD BOX TRIM (Burgundy)",1,""],["M","PC129BW10","PC129BW10","10' 29ga BIRD BOX TRIM (Bone White)",1,""],["M","PC129BZ10","PC129BZ10","10' 29ga BIRD BOX TRIM (Bronze)",1,""],["M","PC129CC10","PC129CC10","10' 29ga BIRD BOX TRIM (County Charcoal)",1,""],["M","PC129CL10","PC129CL10","10' 29ga BIRD BOX TRIM (Clay)",1,""],["M","PC129CO10","PC129CO10","10' 29ga BIRD BOX TRIM (Copper)",1,""],["M","PC129DR10","PC129DR10","10' 29ga BIRD BOX TRIM (Dark Red)",1,""],["M","PC129FAB10","PC129FAB10","10' 29ga BIRD BOX TRIM (Frost Bronze)",1,""],["M","PC129FBR10","PC129FBR10","10' 29ga BIRD BOX TRIM (Frost Barn Red)",1,""],["M","PC129FDS10","PC129FDS10","10' 29ga BIRD BOX TRIM (Frost Clay)",1,""],["M","PC129FEG10","PC129FEG10","10' 29ga BIRD BOX TRIM (Frost Green)",1,""],["M","PC129FGR10","PC129FGR10","10' 29ga BIRD BOX TRIM (Frost Charcoal)",1,""],["M","PC129FMI10","PC129FMI10","10' 29ga BIRD BOX TRIM (Frost Black)",1,""],["M","PC129FO10","PC129FO10","10' 29ga BIRD BOX TRIM (Forest Green)",1,""],["M","PC129GA10","PC129GA10","10' 29ga BIRD BOX TRIM (Galvalume)",1,""],["M","PC129GB10","PC129GB10","10' 29ga BIRD BOX TRIM (Gallery Blue)",1,""],["M","PC129GV10","PC129GV10","10' 29ga BIRD BOX TRIM (Galvanized G-90)",1,""],["M","PC129HB10","PC129HB10","10' 29ga BIRD BOX TRIM (Hawaiian Blue)",1,""],["M","PC129IV10","PC129IV10","10' 29ga BIRD BOX TRIM (Ivory)",1,""],["M","PC129LG10","PC129LG10","10' 29ga BIRD BOX TRIM (Light Gray)",1,""],["M","PC129MBK10","PC129MBK10","10' 29ga BIRD BOX TRIM (Matte Black)",1,""],["M","PC129PG10","PC129PG10","10' 29ga BIRD BOX TRIM (Patina Green)",1,""],["M","PC129PW10","PC129PW10","10' 29ga BIRD BOX TRIM (Pure White)",1,""],["M","PC129ST10","PC129ST10","10' 29ga BIRD BOX TRIM (Stone)",1,""],["M","PC129TA10","PC129TA10","10' 29ga BIRD BOX TRIM (Tan)",1,""],["M","PC129WA10","PC129WA10","10' 29ga BIRD BOX TRIM (WEATHERED ASH)",1,""],["M","PC19PW10","PC19PW10","Post Cover Trim 1.5 X 3.5 29ga (Pure White) 10'4\"",1,""],["M","PC19PW12","PC19PW12","Post Cover Trim 1.5 X 3.5 29ga (Pure White) 12'4\"",1,""],["M","PC39","PC39","",1,"not in vendor list"],["M","PP6660","PP6660","6 X 6\" X 60\" POST PROTECTOR\"",1,""],["M","PP8860","PP8860","8 X 8\" X 60\" POST PROTECTOR\"",1,""],["M","PT2616","PT2616","2X6X16 PT",1,""],["M","PT268","PT268","2X6X8 PT",1,""],["M","PT4610","PT4610","4X6X10 PT",1,""],["M","PT4612","PT4612","4X6X12 PT",1,""],["M","PW669","PW669","",1,"not in vendor list"],["M","QBET9*10","QBET9‹colour›10","Quality Building Eve Trim 29ga (Barn Red) 10'4\"",31,""],["M","QBET9*12","QBET9‹colour›12","Quality Building Eve Trim 29ga (Barn Red) 12'4\"",31,""],["M","QBET9*14","QBET9‹colour›14","Quality Building Eve Trim 29ga (Barn Red) 14'4\"",31,""],["M","QBET9*16","QBET9‹colour›16","Quality Building Eve Trim 29ga (Barn Red) 16'4\"",31,""],["M","QBET9*18","QBET9‹colour›18","Quality Building Eve Trim 29ga (Barn Red) 18'4\"",31,""],["M","QBET9*20","QBET9‹colour›20","Quality Building Eve Trim 29ga (Barn Red) 20'4\"",31,""],["M","QCR","QCR","SACKRETE / QUIKRETE 80 LB BAG",1,""],["M","QFBG11","QFBG11","QUICK FRAME 11'BOX GIRT",1,""],["M","QFBG13","QFBG13","QUICK FRAME 13'BOX GIRT",1,""],["M","QFBG15","QFBG15","QUICK FRAME 15' BOX  GIRT",1,""],["M","QFBG9","QFBG9","QUICK FRAME 9' BOX GIRT",1,""],["M","QFF10W","QFF10W","10' WHITE AL FEMALE Q FRAME",1,""],["M","QFF12W","QFF12W","12' WHITE AL FEMALE Q FRAME",1,""],["M","QFF14W","QFF14W","14' WHITE AL FEMALE Q FRAME",1,""],["M","QFF16W","QFF16W","16' WHITE AL FEMALE Q FRAME",1,""],["M","QFM10W","QFM10W","10' WHITE AL MALE Q FRAME",1,""],["M","QFM12W","QFM12W","12' WHITE AL MALE Q FRAME",1,""],["M","QFM14W","QFM14W","14' WHITE AL MALE Q FRAME",1,""],["M","QFM16W","QFM16W","16' WHITE AL MALE Q FRAME",1,""],["M","QFM8W","QFM8W","8' WHITE AL MALE Q FRAME",1,""],["M","RC6*10","RC6‹colour›10","Ridge Cap 26ga (Barn Red) 10'9\" [PBR]",24,""],["M","RC6*12","RC6‹colour›12","Ridge Cap 26ga (Barn Red) 12'9\" [PBR]",21,""],["M","RC6*14","RC6‹colour›14","Ridge Cap 26ga (Barn Red) 14'9\" [PBR]",19,""],["M","RC6*16","RC6‹colour›16","Ridge Cap 26ga (Barn Red) 16'9\" [PBR]",19,""],["M","RC6*18","RC6‹colour›18","Ridge Cap 26ga (Barn Red) 18'9\" [PBR]",19,""],["M","RC6*20","RC6‹colour›20","Ridge Cap 26ga (Barn Red) 20'9\" [PBR]",19,""],["M","RCC1610","RCC1610","1 X 6 X 10 ROUGH CUT CYPRESS",1,""],["M","RCC18","RCC18","",1,"not in vendor list"],["M","RCC1814","RCC1814","1 X 8 X 14 ROUGH CUT CYPRESS",1,""],["M","RCC28","RCC28","",1,"not in vendor list"],["M","RCC48","RCC48","",1,"not in vendor list"],["M","RCC6610","RCC6610","6 X 6 X 10 ROUGH CUT CYPRESS",1,""],["M","RCC88","RCC88","",1,"not in vendor list"],["M","RCCBATT","RCCBATT","",1,"not in vendor list"],["M","RET6*10","RET6‹colour›10","Residential Eve Trim 26ga (Barn Red) 10'4\" [PBR]",41,""],["M","RET6*12","RET6‹colour›12","Residential Eve Trim 26ga (Barn Red) 12'4\" [PBR]",40,""],["M","RET6*14","RET6‹colour›14","Residential Eve Trim 26ga (Barn Red) 14'4\" [PBR]",38,""],["M","RET6*16","RET6‹colour›16","Residential Eve Trim 26ga (Barn Red) 16'4\" [PBR]",38,""],["M","RET6*18","RET6‹colour›18","Residential Eve Trim 26ga (Barn Red) 18'4\" [PBR]",38,""],["M","RET6*20","RET6‹colour›20","Residential Eve Trim 26ga (Barn Red) 20'4\" [PBR]",38,""],["M","RET9*10","RET9‹colour›10","Residential Eve Trim 29ga (#2 WHITE) 10'4\"",65,""],["M","RET9*12","RET9‹colour›12","Residential Eve Trim 29ga (#2 WHITE) 12'4\"",64,""],["M","RET9*14","RET9‹colour›14","Residential Eve Trim 29ga (Barn Red) 14'4\"",62,""],["M","RET9*16","RET9‹colour›16","Residential Eve Trim 29ga (Barn Red) 16'4\"",62,""],["M","RET9*18","RET9‹colour›18","Residential Eve Trim 29ga (Barn Red) 18'4\"",62,""],["M","RET9*20","RET9‹colour›20","Residential Eve Trim 29ga (Barn Red) 20'4\"",62,""],["M","RG6*10","RG6‹colour›10","Rat Guard 26ga (Barn Red) 10'4\" [PBR]",25,""],["M","RG6*12","RG6‹colour›12","Rat Guard 26ga (Barn Red) 12'4\" [PBR]",20,""],["M","RG6*14","RG6‹colour›14","Rat Guard 26ga (Barn Red) 14'4\" [PBR]",19,""],["M","RG6*16","RG6‹colour›16","Rat Guard 26ga (Barn Red) 16'4\" [PBR]",19,""],["M","RG6*18","RG6‹colour›18","Rat Guard 26ga (Barn Red) 18'4\" [PBR]",19,""],["M","RG6*20","RG6‹colour›20","Rat Guard 26ga (Barn Red) 20'4\" [PBR]",19,""],["M","RG9*10","RG9‹colour›10","Rat Guard 29ga (#2 WHITE) 10'4\"",35,""],["M","RG9*12","RG9‹colour›12","Rat Guard 29ga (#2 WHITE) 12'4\"",33,""],["M","RG9*14","RG9‹colour›14","Rat Guard 29ga (Barn Red) 14'4\"",31,""],["M","RG9*16","RG9‹colour›16","Rat Guard 29ga (Barn Red) 16'4\"",31,""],["M","RG9*18","RG9‹colour›18","Rat Guard 29ga (Barn Red) 18'4\"",31,""],["M","RG9*20","RG9‹colour›20","Rat Guard 29ga (Barn Red) 20'4\"",31,""],["M","ROCKWAINSCOT","ROCKWAINSCOT","",1,"not in vendor list"],["M","RS00","RS00","CLEAR ROOFING SEALANT MR150 / 61111",1,""],["M","RT6*10","RT6‹colour›10","Rock Trim 26ga (Barn Red) 10'4\" [PBR]",23,""],["M","RT6*12","RT6‹colour›12","Rock Trim 26ga (Barn Red) 12'4\" [PBR]",19,""],["M","RT6*14","RT6‹colour›14","Rock Trim 26ga (Barn Red) 14'4\" [PBR]",19,""],["M","RT6*16","RT6‹colour›16","Rock Trim 26ga (Barn Red) 16'4\" [PBR]",19,""],["M","RT6*18","RT6‹colour›18","Rock Trim 26ga (Barn Red) 18'4\" [PBR]",19,""],["M","RT6*20","RT6‹colour›20","Rock Trim 26ga (Barn Red) 20'4\" [PBR]",19,""],["M","RT9*10","RT9‹colour›10","Rock Trim 29ga (Barn Red) 10'4\"",31,""],["M","RT9*12","RT9‹colour›12","Rock Trim 29ga (Barn Red) 12'4\"",31,""],["M","RT9*14","RT9‹colour›14","Rock Trim 29ga (Barn Red) 14'4\"",31,""],["M","RT9*16","RT9‹colour›16","Rock Trim 29ga (Barn Red) 16'4\"",31,""],["M","RT9*18","RT9‹colour›18","Rock Trim 29ga (Barn Red) 18'4\"",31,""],["M","RT9*20","RT9‹colour›20","Rock Trim 29ga (Barn Red) 20'4\"",31,""],["M","SC","SC","SPLICE COLLAR B1SP-201",1,""],["M","SCISSOR-UPGRADE","SCISSOR-UPGRADE","",1,"not in vendor list"],["M","SDPC1","SDPC1","SELF DRILLER PANCAKE SCREW 1\"",1,""],["M","SFG","SFG","SUB FLOOR GLUE 28 OZ",1,""],["M","SGSGG","SGSGG","************SEAMLESS GUTTER - GUTTER GUARD***********",1,""],["M","SGSM","SGSM","Mileage Surcharge over 75 Miles From STM",1,""],["M","SILL5.5","SILL5.5","50' SILL SEALER 5 1/2",1,""],["M","SPF2410","SPF2410","2X4X10 SPF-PREM.",1,""],["M","SPF2412","SPF2412","2X4X12 SPF-PREM.",1,""],["M","SPF2414","SPF2414","2X4X14 SPF-PREM.",1,""],["M","SPF2416","SPF2416","2X4X16 SPF-PREM",1,""],["M","SPF2420","SPF2420","2X4X20SPF",1,""],["M","SPF2610","SPF2610","2X6X10 SPF",1,""],["M","SPF2612","SPF2612","2X6X12 SPF",1,""],["M","SPF2614","SPF2614","2X6X14 SPF",1,""],["M","SPF2616","SPF2616","2X6X16 SPF",1,""],["M","SPF2620","SPF2620","2X6X20 SPF",1,""],["M","SS6NFS","SS6NFS","",1,"not in vendor list"],["M","SSET6*10","SSET6‹colour›10","Standing Seam Eve Trim 26ga (Barn Red) 10'4\"",20,""],["M","SSET6*12","SSET6‹colour›12","Standing Seam Eve Trim 26ga (Barn Red) 12'4\"",19,""],["M","SSET6*14","SSET6‹colour›14","Standing Seam Eve Trim 26ga (Barn Red) 14'4\"",19,""],["M","SSET6*16","SSET6‹colour›16","Standing Seam Eve Trim 26ga (Barn Red) 16'4\"",19,""],["M","SSET6*18","SSET6‹colour›18","Standing Seam Eve Trim 26ga (Barn Red) 18'4\"",19,""],["M","SSET6*20","SSET6‹colour›20","Standing Seam Eve Trim 26ga (Barn Red) 20'4\"",19,""],["M","SSEW6*10","SSEW6‹colour›10","Standing Seam End Wall 26ga (Barn Red) 10'4\"",20,""],["M","SSEW6*12","SSEW6‹colour›12","Standing Seam End Wall 26ga (Barn Red) 12'4\"",20,""],["M","SSEW6*14","SSEW6‹colour›14","Standing Seam End Wall 26ga (Barn Red) 14'4\"",19,""],["M","SSEW6*16","SSEW6‹colour›16","Standing Seam End Wall 26ga (Barn Red) 16'4\"",19,""],["M","SSEW6*18","SSEW6‹colour›18","Standing Seam End Wall 26ga (Barn Red) 18'4\"",19,""],["M","SSEW6*20","SSEW6‹colour›20","Standing Seam End Wall 26ga (Barn Red) 20'4\"",19,""],["M","SSGR6*10","SSGR6‹colour›10","Standing Gable Rake 26ga (Barn Red) 10'4\"",20,""],["M","SSGR6*12","SSGR6‹colour›12","Standing Gable Rake 26ga (Barn Red) 12'4\"",20,""],["M","SSGR6*14","SSGR6‹colour›14","Standing Gable Rake 26ga (Barn Red) 14'4\"",20,""],["M","SSGR6*16","SSGR6‹colour›16","Standing Gable Rake 26ga (Barn Red) 16'4\"",20,""],["M","SSGR6*18","SSGR6‹colour›18","Standing Gable Rake 26ga (Barn Red) 18'4\"",19,""],["M","SSGR6*20","SSGR6‹colour›20","Standing Gable Rake 26ga (Barn Red) 20'4\"",20,""],["M","SSRC6*10","SSRC6‹colour›10","Standing Seam Ridge Cap 26ga (Barn Red) 10'6\"",20,""],["M","SSRC6*12","SSRC6‹colour›12","Standing Seam Ridge Cap 26ga (Barn Red) 12'6\"",19,""],["M","SSRC6*14","SSRC6‹colour›14","Standing Seam Ridge Cap 26ga (Barn Red) 14'6\"",19,""],["M","SSRC6*16","SSRC6‹colour›16","Standing Seam Ridge Cap 26ga (Barn Red) 16'6\"",19,""],["M","SSRC6*18","SSRC6‹colour›18","Standing Seam Ridge Cap 26ga (Barn Red) 18'6\"",19,""],["M","SSRC6*20","SSRC6‹colour›20","Standing Seam Ridge Cap 26ga (Barn Red) 20'6\"",19,""],["M","SSSW6*10","SSSW6‹colour›10","Standing Seam Side Wall 26ga (Barn Red) 10'4\"",20,""],["M","SSSW6*12","SSSW6‹colour›12","Standing Seam Side Wall 26ga (Barn Red) 12'4\"",20,""],["M","SSSW6*14","SSSW6‹colour›14","Standing Seam Side Wall 26ga (Barn Red) 14'4\"",20,""],["M","SSSW6*16","SSSW6‹colour›16","Standing Seam Side Wall 26ga (Barn Red) 16'4\"",19,""],["M","SSSW6*18","SSSW6‹colour›18","Standing Seam Side Wall 26ga (Barn Red) 18'4\"",19,""],["M","SSSW6*20","SSSW6‹colour›20","Standing Seam Side Wall 26ga (Barn Red) 20'4\"",19,""],["M","SSTF6*10","SSTF6‹colour›10","Standing Seam Transition Flashing 26ga (Barn Red) 10'4\"",20,""],["M","SSTF6*12","SSTF6‹colour›12","Standing Seam Transition Flashing 26ga (Barn Red) 12'4\"",19,""],["M","SSTF6*14","SSTF6‹colour›14","Standing Seam Transition Flashing 26ga (Barn Red) 14'4\"",19,""],["M","SSTF6*16","SSTF6‹colour›16","Standing Seam Transition Flashing 26ga (Barn Red) 16'4\"",19,""],["M","SSTF6*18","SSTF6‹colour›18","Standing Seam Transition Flashing 26ga (Barn Red) 18'4\"",19,""],["M","SSTF6*20","SSTF6‹colour›20","Standing Seam Transition Flashing 26ga (Barn Red) 20'4\"",19,""],["M","SSVP6*10","SSVP6‹colour›10","Standing Seam Valley Panel 26ga (Barn Red) 10'4\"",20,""],["M","SSVP6*12","SSVP6‹colour›12","Standing Seam Valley Panel 26ga (Barn Red) 12'4\"",20,""],["M","SSVP6*14","SSVP6‹colour›14","Standing Seam Valley Panel 26ga (Barn Red) 14'4\"",20,""],["M","SSVP6*16","SSVP6‹colour›16","Standing Seam Valley Panel 26ga (Barn Red) 16'4\"",20,""],["M","SSVP6*18","SSVP6‹colour›18","Standing Seam Valley Panel 26ga (Barn Red) 18'4\"",19,""],["M","SSVP6*20","SSVP6‹colour›20","Standing Seam Valley Panel 26ga (Barn Red) 20'4\"",19,""],["M","SSZB6*10","SSZB6‹colour›10","Standing Seam Z-bar 26ga (Barn Red) 10'4\"  Nail Flange",20,""],["M","SSZB6*12","SSZB6‹colour›12","Standing Seam Z-bar 26ga (Barn Red) 12'4\"  Nail Flange",19,""],["M","SSZB6*14","SSZB6‹colour›14","Standing Seam Z-bar 26ga (Barn Red) 14'4\"  Nail Flange",19,""],["M","SSZB6*16","SSZB6‹colour›16","Standing Seam Z-bar 26ga (Barn Red) 16'4\"  Nail Flange",19,""],["M","SSZB6*18","SSZB6‹colour›18","Standing Seam Z-bar 26ga (Barn Red) 18'4\"  Nail Flange",19,""],["M","SSZB6*20","SSZB6‹colour›20","Standing Seam Z-bar 26ga (Barn Red) 20'4\"  Nail Flange",19,""],["M","STP38A11","STP38A11","5000 CT 3/8 ARROW STAPLES A11\"",1,""],["M","SWF6*10","SWF6‹colour›10","Side Wall Flashing 26ga (Barn Red) 10'4\" [PBR]",20,""],["M","SWF6*12","SWF6‹colour›12","Side Wall Flashing 26ga (Barn Red) 12'4\" [PBR]",21,""],["M","SWF6*14","SWF6‹colour›14","Side Wall Flashing 26ga (Barn Red) 14'4\" [PBR]",19,""],["M","SWF6*16","SWF6‹colour›16","Side Wall Flashing 26ga (Barn Red) 16'4\" [PBR]",19,""],["M","SWF6*18","SWF6‹colour›18","Side Wall Flashing 26ga (Barn Red) 18'4\" [PBR]",19,""],["M","SWF6*20","SWF6‹colour›20","Side Wall Flashing 26ga (Barn Red) 20'4\" [PBR]",19,""],["M","SWF9*10","SWF9‹colour›10","Side Wall Flashing 29ga (#2 WHITE) 10'4\"",33,""],["M","SWF9*12","SWF9‹colour›12","Side Wall Flashing 29ga (#2 WHITE) 12'4\"",33,""],["M","SWF9*14","SWF9‹colour›14","Side Wall Flashing 29ga (Barn Red) 14'4\"",31,""],["M","SWF9*16","SWF9‹colour›16","Side Wall Flashing 29ga (Barn Red) 16'4\"",31,""],["M","SWF9*18","SWF9‹colour›18","Side Wall Flashing 29ga (Barn Red) 18'4\"",31,""],["M","SWF9*20","SWF9‹colour›20","Side Wall Flashing 29ga (Barn Red) 20'4\"",31,""],["M","SYP210","SYP210","",1,"not in vendor list"],["M","SYP21012","SYP21012","2X10X12 SYP#2",1,""],["M","SYP21016","SYP21016","2X10X16 SYP",1,""],["M","SYP212","SYP212","",1,"not in vendor list"],["M","SYP21210","SYP21210","2X12X10 SYP",1,""],["M","SYP21212","SYP21212","2X12X12 SYP",1,""],["M","SYP21214","SYP21214","2X12X14 SYP",1,""],["M","SYP21224","SYP21224","2x12x24 SYP#1",1,""],["M","SYP24","SYP24","",1,"not in vendor list"],["M","SYP2412","SYP2412","2X4X12 SYP",1,""],["M","SYP2416","SYP2416","2X4X16 SYP",1,""],["M","SYP2420","SYP2420","2x4x20 SYP",1,""],["M","SYP2612TG","SYP2612TG","2X6X12 TONGUE AND GROOVE",1,""],["M","SYP2616","SYP2616","2X6X16 SYP",1,""],["M","SYP2620","SYP2620","2x6x20 SYP",1,""],["M","T111S","T111S","SHEETS T-111-5/8'' SIDING",1,""],["M","T6BA","T6BA","36\" Tuff Rib Panel 26 Ga (Barn Red)",1,""],["M","T6BC","T6BC","36\" Tuff Rib Panel 26 Ga (Blue Charcoal)",1,""],["M","T6BK","T6BK","36\" Tuff Rib Panel 26 Ga (Gloss Black)",1,""],["M","T6BN","T6BN","36\" Tuff Rib Panel 26 Ga (Brown)",1,""],["M","T6BR","T6BR","36\" Tuff Rib Panel 26 Ga (Bright Red)",1,""],["M","T6BS","T6BS","36\" Tuff Rib Panel 26 Ga (Buckskin)",1,""],["M","T6BW","T6BW","36\" Tuff Rib Panel 26 Ga (Bone White)",1,""],["M","T6BZ","T6BZ","36\" Tuff Rib Panel 26 Ga (Bronze)",1,""],["M","T6CBA","T6CBA","36\" Tuff Rib Panel 26 Ga (Barn Red) w/Condenstop",1,""],["M","T6CBK","T6CBK","36\" Tuff Rib Panel 26 Ga (Black) w/Condenstop",1,""],["M","T6CBN","T6CBN","36\" Tuff Rib Panel 26 Ga (Brown) w/Condenstop",1,""],["M","T6CBR","T6CBR","36\" Tuff Rib Panel 26 Ga (Bright Red) w/Condenstop",1,""],["M","T6CBS","T6CBS","36\" Tuff Rib Panel 26 Ga (Buckskin) w/Condenstop",1,""],["M","T6CBW","T6CBW","36\" Tuff Rib Panel 26 Ga (Bone White) w/Condenstop",1,""],["M","T6CBZ","T6CBZ","36\" Tuff Rib Panel 26 Ga (Bronze) w/Condenstop",1,""],["M","T6CC","T6CC","36\" Tuff Rib Panel 26 Ga (County Charcoal)",1,""],["M","T6CCC","T6CCC","36\" Tuff Rib Panel 26 Ga (County Charcoal) w/Condenstop",1,""],["M","T6CCL","T6CCL","36\" Tuff Rib Panel 26 Ga (Clay) w/Condenstop",1,""],["M","T6CCO","T6CCO","36\" Tuff Rib Panel 26 Ga (Copper) w/Condenstop",1,""],["M","T6CDR","T6CDR","36\" Tuff Rib Panel 26 Ga (Dark Red) w/Condenstop",1,""],["M","T6CFO","T6CFO","36\" Tuff Rib Panel 26 Ga (Forest Green) w/Condenstop",1,""],["M","T6CGA","T6CGA","36\" Tuff Rib Panel 26 Ga (Galvalume) w/Condenstop",1,""],["M","T6CL","T6CL","36\" Tuff Rib Panel 26 Ga (Clay)",1,""],["M","T6CLG","T6CLG","36\" Tuff Rib Panel 26 Ga (Light Gray) w/Condenstop",1,""],["M","T6CMBK","T6CMBK","36\" Tuff Rib Panel 26 Ga (Matte Black) w/Condenstop",1,""],["M","T6CO","T6CO","36\" Tuff Rib Panel 26 Ga (Copper)",1,""],["M","T6CPW","T6CPW","36\" Tuff Rib Panel 26 Ga (Pure White) w/Condenstop",1,""],["M","T6CST","T6CST","36\" Tuff Rib Panel 26 Ga (Stone) w/Condenstop",1,""],["M","T6CTA","T6CTA","36\" Tuff Rib Panel 26 Ga (Tan) w/Condenstop",1,""],["M","T6DO","T6DO","36\" Tuff Rib Panel 26 Ga (DARK OAK)",1,""],["M","T6DR","T6DR","36\" Tuff Rib Panel 26 Ga (Dark Red)",1,""],["M","T6DRSC","T6DRSC","36\" Tuff Rib Panel 26 Ga (Distressed Rough Sawn Cedar)",1,""],["M","T6FBK","T6FBK","36\" Tuff Rib Panel 26 Ga FROST  BLACK",1,""],["M","T6FO","T6FO","36\" Tuff Rib Panel 26 Ga (Forest Green)",1,""],["M","T6GA","T6GA","36\" Tuff Rib Panel 26 Ga (Galvalume)",1,""],["M","T6GRSC","T6GRSC","36\" Tuff Rib Panel 26 Ga (Gray Rough Sawn Cedar)",1,""],["M","T6LG","T6LG","36\" Tuff Rib Panel 26 Ga (Light Gray)",1,""],["M","T6MBK","T6MBK","36\" Tuff Rib Panel 26 Ga (Matte Black)",1,""],["M","T6PG","T6PG","36\" Tuff Rib Panel 26 Ga PATINA GREEN",1,""],["M","T6PW","T6PW","36\" Tuff Rib Panel 26 Ga (Pure White)",1,""],["M","T6RCN","T6RCN","36\" Tuff Rib Panel 26 Ga (Rough Cedar Natural)",1,""],["M","T6ST","T6ST","36\" Tuff Rib Panel 26 Ga (Stone)",1,""],["M","T6TA","T6TA","36\" Tuff Rib Panel 26 Ga (Tan)",1,""],["M","T6WA","T6WA","36\" Tuff Rib Panel 26 Ga (Weathered Ash)",1,""],["M","T9","T9","",1,"not in vendor list"],["M","T92W","T92W","36\" Tuff Rib Panel 29 Ga (#2 White)",1,""],["M","T9BA","T9BA","36\" Tuff Rib Panel 29 Ga (Barn Red)",1,""],["M","T9BC","T9BC","36\" Tuff Rib Panel 29Ga (Blue Charcoal)",1,""],["M","T9BK","T9BK","36\" Tuff Rib Panel 29Ga (Gloss Black)",1,""],["M","T9BN","T9BN","36\" Tuff Rib Panel 29Ga (Brown)",1,""],["M","T9BR","T9BR","36\" Tuff Rib Panel 29Ga (Bright Red)",1,""],["M","T9BS","T9BS","36\" Tuff Rib Panel 29Ga (Buckskin)",1,""],["M","T9BU","T9BU","36\" Tuff Rib Panel 29Ga (Burgundy)",1,""],["M","T9BW","T9BW","36\" Tuff Rib Panel 29Ga (Bone White)",1,""],["M","T9BZ","T9BZ","36\" Tuff Rib Panel 29Ga (Bronze)",1,""],["M","T9C2W","T9C2W","36\" Tuff Rib Panel 29 Ga (#2 White) w/ Condenstop",1,""],["M","T9CBA","T9CBA","36\" Tuff Rib Panel 29 Ga (Barn Red) w/ Condenstop",1,""],["M","T9CBC","T9CBC","36\" Tuff Rib Panel 29Ga (Blue Charcoal) w/ Condenstop",1,""],["M","T9CBK","T9CBK","36\" Tuff Rib Panel 29Ga (Black) w/ Condenstop",1,""],["M","T9CBN","T9CBN","36\" Tuff Rib Panel 29Ga (Brown) w/ Condenstop",1,""],["M","T9CBR","T9CBR","36\" Tuff Rib Panel 29Ga (Bright Red) w/ Condenstop",1,""],["M","T9CBS","T9CBS","36\" Tuff Rib Panel 29Ga (Buckskin) w/ Condenstop",1,""],["M","T9CBU","T9CBU","36\" Tuff Rib Panel 29Ga (Burgundy) w/ Condenstop",1,""],["M","T9CBW","T9CBW","36\" Tuff Rib Panel 29Ga (Bone White) w/ Condenstop",1,""],["M","T9CBZ","T9CBZ","36\" Tuff Rib Panel 29Ga (Bronze) w/ Condenstop",1,""],["M","T9CC","T9CC","36\" Tuff Rib Panel 29Ga (County Charcoal)",1,""],["M","T9CCC","T9CCC","36\" Tuff Rib Panel 29Ga (County Charcoal) w/ Condenstop",1,""],["M","T9CCL","T9CCL","36\" Tuff Rib Panel 29Ga (Clay) w/ Condenstop",1,""],["M","T9CCO","T9CCO","36\" Tuff Rib Panel 29Ga (Copper) w/ Condenstop",1,""],["M","T9CDR","T9CDR","36\" Tuff Rib Panel 29Ga (Dark Red) w/ Condenstop",1,""],["M","T9CFBR","T9CFBR","36\" Tuff Rib Panel 29Ga (Frost Barn Red) w/ Condenstop",1,""],["M","T9CFBZ","T9CFBZ","36\" Tuff Rib Panel 29Ga (Frost Bronze) w/ Condenstop",1,""],["M","T9CFCC","T9CFCC","36\" Tuff Rib Panel 29Ga (Frost Charcoal) w/ Condenstop",1,""],["M","T9CFDS","T9CFDS","36\" Tuff Rib Panel 29Ga (Frost Clay) w/ Condenstop",1,""],["M","T9CFEG","T9CFEG","36\" Tuff Rib Panel 29Ga (Frost Green) w/ Condenstop",1,""],["M","T9CFMI","T9CFMI","36\" Tuff Rib Panel 29Ga (Frost Black) w/ Condenstop",1,""],["M","T9CFO","T9CFO","36\" Tuff Rib Panel 29Ga (Forest Green) w/ Condenstop",1,""],["M","T9CGA","T9CGA","36\" Tuff Rib Panel 29Ga (Galvalume) w/ Condenstop",1,""],["M","T9CGB","T9CGB","36\" Tuff Rib Panel 29Ga (Gallery Blue) w/ Condenstop",1,""],["M","T9CGV","T9CGV","36\" Tuff Rib Panel 29Ga (GALVANIZED) w/ Condenstop",1,""],["M","T9CHB","T9CHB","36\" Tuff Rib Panel 29Ga (Hawaiian Blue) w/ Condenstop",1,""],["M","T9CIV","T9CIV","36\" Tuff Rib Panel 29Ga (Ivory) w/ Condenstop",1,""],["M","T9CL","T9CL","36\" Tuff Rib Panel 29Ga (Clay)",1,""],["M","T9CLG","T9CLG","36\" Tuff Rib Panel 29Ga (Light Gray) w/ Condenstop",1,""],["M","T9CMBK","T9CMBK","36\" Tuff Rib Panel 29Ga (Matte Black) w/ Condenstop",1,""],["M","T9CO","T9CO","36\" Tuff Rib Panel 29Ga (Copper)",1,""],["M","T9CPG","T9CPG","36\" Tuff Rib Panel 29Ga (Patina Green) w/ Condenstop",1,""],["M","T9CPW","T9CPW","36\" Tuff Rib Panel 29Ga (Pure White) w/ Condenstop",1,""],["M","T9CST","T9CST","36\" Tuff Rib Panel 29Ga (Stone) w/ Condenstop",1,""],["M","T9CTA","T9CTA","36\" Tuff Rib Panel 29Ga (Tan) w/ Condenstop",1,""],["M","T9DR","T9DR","36\" Tuff Rib Panel 29Ga (Dark Red)",1,""],["M","T9FBK","T9FBK","36\" Tuff Rib Panel 29Ga (Frost Black)",1,""],["M","T9FBR","T9FBR","36\" Tuff Rib Panel 29Ga (Frost Barn Red)",1,""],["M","T9FBZ","T9FBZ","36\" Tuff Rib Panel 29Ga (Frost Bronze)",1,""],["M","T9FCC","T9FCC","36\" Tuff Rib Panel 29Ga (Frost Charcoal)",1,""],["M","T9FCL","T9FCL","36\" Tuff Rib Panel 29Ga (Frost Clay)",1,""],["M","T9FFO","T9FFO","36\" Tuff Rib Panel 29Ga (Frost Green)",1,""],["M","T9FO","T9FO","36\" Tuff Rib Panel 29Ga (Forest Green)",1,""],["M","T9GA","T9GA","36\" Tuff Rib Panel 29Ga (Galvalume)",1,""],["M","T9GB","T9GB","36\" Tuff Rib Panel 29Ga (Gallery Blue)",1,""],["M","T9GV","T9GV","36\" Tuff Rib Panel 29Ga *******(Galvanized)******",1,""],["M","T9HB","T9HB","36\" Tuff Rib Panel 29Ga (Hawaiian Blue)",1,""],["M","T9IV","T9IV","36\" Tuff Rib Panel 29Ga (Ivory)",1,""],["M","T9LG","T9LG","36\" Tuff Rib Panel 29Ga (Light Gray)",1,""],["M","T9MBK","T9MBK","36\" Tuff Rib Panel 29Ga (Matte Black)",1,""],["M","T9PG","T9PG","36\" Tuff Rib Panel 29Ga (Patina Green)",1,""],["M","T9PW","T9PW","36\" Tuff Rib Panel 29Ga (Pure White)",1,""],["M","T9ST","T9ST","36\" Tuff Rib Panel 29Ga (Stone)",1,""],["M","T9TA","T9TA","36\" Tuff Rib Panel 29Ga (Tan)",1,""],["M","TAPBT3.4","TAPBT3.4","3/4\" BUTYL TAPE 45'",1,""],["M","TAPWT","TAPWT","WINDOW TAPE 4 X 75' WRAP\"",1,""],["M","TBFG","TBFG","3-1PC BRACKETS FOR TRACK COVER",1,""],["M","TC9PW10","TC9PW10","Track Cover 29ga (Pure White) 10'4\"",1,""],["M","TC9PW12","TC9PW12","Track Cover 29ga (Pure White) 12'4\"",1,""],["M","TC9PW14","TC9PW14","Track Cover 29ga (Pure White) 14'4\"",1,""],["M","TC9PW16","TC9PW16","Track Cover 29ga (Pure White) 16'4\"",1,""],["M","TF6*10","TF6‹colour›10","Transition Flashing 26ga (Barn Red) 10'4\" [PBR]",21,""],["M","TF6*12","TF6‹colour›12","Transition Flashing 26ga (Barn Red) 12'4\" [PBR]",21,""],["M","TF6*14","TF6‹colour›14","Transition Flashing 26ga (Barn Red) 14'4\" [PBR]",19,""],["M","TF6*16","TF6‹colour›16","Transition Flashing 26ga (Barn Red) 16'4\" [PBR]",19,""],["M","TF6*18","TF6‹colour›18","Transition Flashing 26ga (Barn Red) 18'4\" [PBR]",19,""],["M","TF6*20","TF6‹colour›20","Transition Flashing 26ga (Barn Red) 20'4\" [PBR]",19,""],["M","TF9*10","TF9‹colour›10","Transition Flashing 29ga (#2  White) 10'4\"",32,""],["M","TF9*12","TF9‹colour›12","Transition Flashing 29ga (#2 White) 12'4\"",32,""],["M","TF9*14","TF9‹colour›14","Transition Flashing 29ga (Barn Red) 14'4\"",31,""],["M","TF9*16","TF9‹colour›16","Transition Flashing 29ga (Barn Red) 16'4\"",31,""],["M","TF9*18","TF9‹colour›18","Transition Flashing 29ga (Barn Red) 18'4\"",31,""],["M","TF9*20","TF9‹colour›20","Transition Flashing 29ga (Barn Red) 20'4\"",31,""],["M","TRBALLB","TRBALLB","PAIR TROLLEY PB25T9",1,""],["M","TSBJ2066C","TSBJ2066C","20' STEEL BAR-JOIST CENTER FOR 6X6 POSTS  REGULAR (UP TO 40' TRUSSES)",1,""],["M","VP9","VP9","",1,"not in vendor list"],["M","VWC","VWC","CUSTOM VINYL WINDOW",1,""],["N","2/8 x 6/10 Fixed Trapezoid","2/8 x 6/10 Fixed Trapezoid","2/8 x 6/10 Fixed Trapezoid",1,"needs review"],["N","3036 Fixed Trapezoid","3036 Fixed Trapezoid","3036 Fixed Trapezoid",1,"needs review"],["N","3x4 Casement Black","3x4 Casement Black","3x4 Casement Black",1,"needs review"],["N","4x2","4x2","4x2",1,"needs review"],["N","5x5 Picture","5x5 Picture","5x5 Picture",1,"needs review"],["N","5x5 slider","5x5 slider","5x5 slider",1,"needs review"],["N","6036 Slider","6036 Slider","6036 Slider",1,"needs review"],["N","VW23","VW23","2/0 X 3/0 WHT WINDOW LOW E ARGON",1,""],["N","VW33","VW33","3/0 X 3/0 WHITE  WINDOW  LOW E ARGON",1,""],["N","VW34","VW34","3/0 X 4/0 WHT WINDOW LOW E ARGON",1,""],["N","VW34 - Double Hung","VW34 - Double Hung","VW34 - Double Hung",1,"needs review"],["N","VW35","VW35","3/0 X 5/0 WHT WINDOW LOW E ARGON",1,""],["N","VW36","VW36","3/0 X 6/0 WHITE LOW-E ARGON",1,""],["N","VWBL33","VWBL33","3/0 X 3/0 BLACK EXTERIOR AND WHITE INTERIOR NO GRIDS ULTRA LOW-E/ARGON HALF SCREEN.",1,""],["N","VWBL34","VWBL34","3/0 X 4/0 BLACK EXTERIOR AND WHITE INTERIOR NO GRIDS ULTRA LOW-E/ARGON HALF SCREEN.",1,""],["N","VWBL35","VWBL35","3/0 X 5/0 BLACK EXTERIOR AND WHITE INTERIOR NO GRIDS ULTRA LOW-E/ARGON HALF SCREEN.",1,""],["N","VWBL36","VWBL36","3/0 X 6/0 BLACK EXTERIOR AND WHITE INTERIOR NO GRIDS ULTRA LOW-E/ARGON HALF SCREEN.",1,""],["N","VWBLT35","VWBLT35","3/0 X 5/0 TWIN BLACK EXTERIOR AND WHITE INTERIOR NO GRIDS ULTRA LOW-E/ARGON HALF SCREEN.",1,""],["N","VWC33","VWC33","3/0 X 3/0 CLAY WINDOW",1,""],["N","VWC34","VWC34","3/0 X 4/0 CLAY WINDOW",1,""],["N","VWC35","VWC35","VWC35",1,"needs review"],["N","VWHBCSM3050L","VWHBCSM3050L","3/0 X 5/0 WHITE INTERIOR BLACK EXTERIOR LH CASEMENT WINDOW LOW-E ARGON",1,""],["N","VWHBDH2640","VWHBDH2640","2/6 X 4/0 WHITE INTERIOR BLACK EXTERIOR DOUBLE HUNG WINDOW LOW-E ARGON",1,""],["N","VWHBDH3030","VWHBDH3030","3/0 X 3/0 WHITE INTERIOR BLACK EXTERIOR DOUBLE HUNG WINDOW LOW-E ARGON",1,""],["N","VWHBDH3056","VWHBDH3056","3/0 X 5/6 WHITE INTERIOR BLACK EXTERIOR DOUBLE HUNG WINDOW LOW-E ARGON",1,""],["N","VWHBDH3060","VWHBDH3060","3/0 X 6/0 WHITE INTERIOR BLACK EXTERIOR DOUBLE HUNG WINDOW LOW-E ARGON",1,""],["N","VWHBDHTP3030","VWHBDHTP3030","3/0 X 3/0 WHITE INTERIOR BLACK EXTERIOR DOUBLE HUNG TEMPERED WINDOW LOW-E ARGON",1,""],["N","VWHBDHTW3056","VWHBDHTW3056","TWIN 3/0 X 5/6  DOUBLE HUNG WINDOW WHITE INTERIOR BLACK EXTERIOR LOW-E ARGON",1,""],["N","VWHBPC4020","VWHBPC4020","4/0 X 2/0 WHITE INTERIOR BLACK EXTERIOR PICTURE WINDOW LOW-E ARGON",1,""],["N","VWT34","VWT34","3/0 X 4/0 TWIN WHITE NO GRIDS",1,""],["N","VWT35","VWT35","3/0 X 5/0 TWIN WHITE NO GRIDS",1,""],["W","EXD301/2GLH","EXD301/2GLH","3/0 1/2 GLASS LH SMOOTH FIBERGLASS",1,""],["W","EXD306PLH","EXD306PLH","3/0 6 PANEL LH SMOOTH FIBERGLASS",1,""],["W","EXD309LLH","EXD309LLH","3/0 9 LITE LH SMOOTH FIBERGLASS",1,""],["W","EXD30LH3/4G-CW","EXD30LH3/4G-CW","CENTRAL WOODWORKS 3/0 MAHOGANY 3/4 GLASS 4-LITE LH",1,"not in vendor list"],["W","EXDD601/2GLH","EXDD601/2GLH","6/0 1/2 GLASS NO GRIDS LH",1,""],["W","EXDD60FBRH","EXDD60FBRH","6/0 FRENCH FULL BLINDS RH",1,""],["W","EXDD60FVLH","EXDD60FVLH","6/0 FULL VIEW NO GRIDS LH",1,""],["W","EXDTF10300104LTR","EXDTF10300104LTR","TEXTURED FIBERGLASS 4-LITE SDL RH BRONZE",1,"not in vendor list"],["W","PLY1/29LLHB","PLY1/29LLHB","BLACK 3/0 9-LITE PLYCO LH",1,""],["W","PLY1/29LRH","PLY1/29LRH","3/0 9-LITE PLYCO RH",1,""],["W","PLY1/2LITELH","PLY1/2LITELH","3/0 PLYCO 1/2 GLASS L.H. DEAD BOLT SERIES #95",1,""],["W","PLY1/2LITELHB","PLY1/2LITELHB","BLACK 3/0 -1/2 GLASS PLYCO LH",1,""],["W","PLY9560W","PLY9560W","WHITE 6/0 FRENCH STEEL FRAME SPECIFY HAND SPECIAL ORDER",1,""],["W","PLY9930B","PLY9930B","BLACK 3/0 PLYCO SERIES #85",1,""],["W","PLY9930W","PLY9930W","WHITE 3/0 PLYCO STEEL FRAME DEADBOLT UNIVERSAL",1,""],["W","PLY9940W","PLY9940W","WHITE PLYCO 4/0 STEEL FRAME",1,""]];
+  /* @SAUCE-PRICE-BOOK-END */
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PRICE BOOK — the baseline every company prices from
+//
+//  The vendor list runs to ~28,800 SKUs; a building can only ever call for a
+//  few hundred of them. This is that reachable set: 511 rows, each carrying the
+//  vendor's own description. Trim is one row per family+length — colour is
+//  applied when the SKU is emitted onto a material list, never when it is
+//  priced, because every colour of a given trim costs the same.
+//
+//  Prices still live in `inventory`: the shared 'default' rows are the base,
+//  a company's own rows override them. Editing here writes to whichever the
+//  user is entitled to.
+// ═══════════════════════════════════════════════════════════════════════════
+(function() {
+  var GROUPS = { M: 'Materials', G: 'Garage Doors', W: 'Walk Doors', N: 'Windows' };
+  var ORDER  = ['M', 'G', 'W', 'N'];
+  var _tab = 'M', _q = '', _dirty = {};
+
+  function book() { return window.SAUCE_PRICE_BOOK || []; }
+
+  // Which price-book row a real SKU belongs to. Built from _SKU_MAP so the
+  // colour expansion is never duplicated in two places.
+  var _skuToKey = null;
+  function skuToKey() {
+    if (_skuToKey) return _skuToKey;
+    _skuToKey = {};
+    try {
+      var M = window._SKU_MAP || {}, colors = Object.keys(M.colors || {});
+      (function walk(o, path) {
+        for (var k in o) {
+          var v = o[k];
+          if (v && typeof v === 'object') walk(v, path.concat(k));
+          else {
+            var p = path.concat(k);
+            // Same key shape collapseSkuColor() already produces, so the
+            // existing getPrice fallback finds these with no change.
+            _skuToKey[String(v).toUpperCase()] = p[0] + '*' + p[p.length - 1];
+          }
+        }
+      })(M.trim || {}, []);
+      // Panels are NOT collapsed: colour genuinely changes a panel's price
+      // (29ga runs $2.39 to $4.90), so each one is its own row.
+    } catch (e) {}
+    return _skuToKey;
+  }
+  // Used by getPrice: the baseline key to try when an exact SKU has no price.
+  window.priceBookKeyFor = function(sku) {
+    return skuToKey()[String(sku || '').toUpperCase()] || null;
+  };
+
+  function hiddenKeys() {
+    try {
+      var h = ((window.SauceRates.all().materials || {}).priceBookHidden) || [];
+      var m = {}; h.forEach(function(k) { m[k] = 1; }); return m;
+    } catch (e) { return {}; }
+  }
+
+  function priceOf(key) {
+    if (_dirty[key] !== undefined) return _dirty[key];
+    try {
+      var t = window.SauceMaterials && window.SauceMaterials._priceTable;
+      if (t && t[key] != null) return t[key];
+      if (typeof getPrice === 'function') { var p = getPrice(key, null); if (p) return p; }
+    } catch (e) {}
+    return null;
+  }
+
+  function rowsFor(tab, q) {
+    var hid = hiddenKeys(), out = [];
+    book().forEach(function(r) {
+      if (hid[r[1]]) return;
+      if (q) {
+        var hay = (r[1] + ' ' + r[2] + ' ' + r[3]).toLowerCase();
+        if (hay.indexOf(q) < 0) return;
+      } else if (r[0] !== tab) return;
+      out.push(r);
+    });
+    return out;
+  }
+
+  function money(v) {
+    return (v == null || v === '') ? '' : Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+  // ── rendering ────────────────────────────────────────────────────────────
+  function tabBar() {
+    var hid = hiddenKeys();
+    return '<div style="display:flex;gap:6px;flex-shrink:0;">' + ORDER.map(function(g) {
+      var n = book().filter(function(r) { return r[0] === g && !hid[r[1]]; }).length;
+      var on = (_tab === g && !_q);
+      return '<button data-pb-tab="' + g + '" style="flex:1;padding:11px 8px;border-radius:9px;cursor:pointer;'
+        + 'border:1.5px solid ' + (on ? 'rgba(var(--gold-rgb),.55)' : 'rgba(255,255,255,.10)') + ';'
+        + 'background:' + (on ? 'rgba(var(--gold-rgb),.10)' : 'rgba(255,255,255,.03)') + ';'
+        + 'color:' + (on ? 'var(--gold)' : '#8f98a6') + ';font-family:Outfit,sans-serif;'
+        + 'font-size:12px;font-weight:800;letter-spacing:.4px;">'
+        + GROUPS[g] + '<span style="display:block;font-size:9px;font-weight:700;opacity:.65;margin-top:2px;">'
+        + n + ' items</span></button>';
+    }).join('') + '</div>';
+  }
+
+  function tableHtml() {
+    var rows = rowsFor(_tab, _q);
+    var head = ['SKU', 'Description', 'Colours', 'Price', ''];
+    var wid  = ['22%', '', '68px', '110px', '34px'];
+    var al   = ['left', 'left', 'center', 'right', 'center'];
+    var html = '<table style="width:100%;border-collapse:collapse;">'
+      + '<thead><tr style="background:#262a30;position:sticky;top:0;z-index:1;">'
+      + head.map(function(h, i) {
+          return '<th style="padding:9px 8px;font-size:9px;font-weight:700;text-transform:uppercase;'
+            + 'letter-spacing:1px;color:#6b7280;text-align:' + al[i] + ';'
+            + (wid[i] ? 'width:' + wid[i] + ';' : '') + '">' + h + '</th>';
+        }).join('')
+      + '</tr></thead><tbody>';
+
+    if (!rows.length) {
+      html += '<tr><td colspan="5" style="padding:34px 12px;text-align:center;color:#6b7280;'
+           + 'font-size:12px;font-family:Outfit,sans-serif;">'
+           + (_q ? 'Nothing matches &ldquo;' + esc(_q) + '&rdquo;.' : 'Nothing in this group.')
+           + '</td></tr>';
+    }
+
+    var lastGroup = null;
+    rows.forEach(function(r) {
+      // When searching we span every group, so label which one each row is in.
+      if (_q && r[0] !== lastGroup) {
+        lastGroup = r[0];
+        html += '<tr><td colspan="5" style="padding:9px 8px 5px;font-size:9px;font-weight:800;'
+             + 'text-transform:uppercase;letter-spacing:1.2px;color:var(--gold);background:#23262b;">'
+             + GROUPS[r[0]] + '</td></tr>';
+      }
+      var p = priceOf(r[1]);
+      var flagged = !!r[5];
+      html += '<tr style="border-bottom:1px solid rgba(255,255,255,.05);">'
+        + '<td style="padding:7px 8px;font-size:11px;font-weight:700;color:#c8cfd8;'
+        +   'font-family:ui-monospace,Menlo,monospace;">' + esc(r[2])
+        +   (flagged ? '<div style="margin-top:3px;font-size:9px;font-weight:700;color:#fbbf24;'
+              + 'font-family:Outfit,sans-serif;">&#9888; ' + esc(r[5]) + '</div>' : '')
+        + '</td>'
+        + '<td style="padding:7px 8px;font-size:12px;color:#aab2be;font-family:Outfit,sans-serif;">'
+        +   esc(r[3] || '&mdash;') + '</td>'
+        + '<td style="padding:7px 8px;text-align:center;font-size:11px;color:#6b7280;'
+        +   'font-family:Outfit,sans-serif;">' + (r[4] > 1 ? r[4] : '&mdash;') + '</td>'
+        + '<td style="padding:5px 8px;text-align:right;">'
+        +   '<input data-pb-key="' + esc(r[1]) + '" type="number" step="0.01" inputmode="decimal" '
+        +   'value="' + (p == null ? '' : p) + '" placeholder="&mdash;" '
+        +   'style="width:100px;box-sizing:border-box;padding:6px 8px;border-radius:7px;'
+        +   'border:1px solid ' + (p == null ? 'rgba(251,191,36,.45)' : 'rgba(var(--gold-rgb),.25)') + ';'
+        +   'background:#2e3238;color:#e8ebf0;font-size:12px;font-weight:700;text-align:right;'
+        +   'font-family:Outfit,sans-serif;"></td>'
+        + '<td style="padding:5px 6px;text-align:center;">'
+        +   '<button data-pb-del="' + esc(r[1]) + '" title="Remove from the price book" '
+        +   'style="width:22px;height:22px;line-height:1;border-radius:6px;cursor:pointer;'
+        +   'border:1px solid rgba(239,68,68,.30);background:rgba(239,68,68,.08);color:#ef4444;'
+        +   'font-size:13px;font-weight:800;">&times;</button></td>'
+        + '</tr>';
+    });
+    return html + '</tbody></table>';
+  }
+
+  function paint() {
+    var t = document.getElementById('pbTabs');   if (t) t.innerHTML = tabBar();
+    var b = document.getElementById('pbTable');  if (b) b.innerHTML = tableHtml();
+    var c = document.getElementById('pbCount');
+    if (c) {
+      var rows = rowsFor(_tab, _q), unpriced = rows.filter(function(r) { return priceOf(r[1]) == null; }).length;
+      c.innerHTML = rows.length + ' item' + (rows.length === 1 ? '' : 's')
+        + (unpriced ? ' &middot; <span style="color:#fbbf24;">' + unpriced + ' without a price</span>' : '')
+        + (Object.keys(_dirty).length ? ' &middot; <span style="color:var(--gold);">'
+            + Object.keys(_dirty).length + ' edited</span>' : '');
+    }
+  }
+  window._pbPaint = paint;
+
+  function status(msg, color) {
+    var el = document.getElementById('pbStatus');
+    if (el) { el.innerHTML = msg || ''; el.style.color = color || '#8f98a6'; }
+  }
+
+  window.openPriceBook = function() {
+    var old = document.getElementById('pbOverlay'); if (old) old.remove();
+    _tab = 'M'; _q = ''; _dirty = {};
+
+    var ov = document.createElement('div');
+    ov.id = 'pbOverlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:100010;'
+      + 'display:flex;align-items:center;justify-content:center;padding:22px;';
+    ov.addEventListener('mousedown', function(e) { if (e.target === ov) ov.remove(); });
+
+    var shell = document.createElement('div');
+    shell.style.cssText = 'background:#1f2227;border:1px solid rgba(255,255,255,.09);border-radius:16px;'
+      + 'width:100%;max-width:1080px;height:92vh;display:flex;flex-direction:column;overflow:hidden;'
+      + 'box-shadow:0 26px 80px rgba(0,0,0,.65);font-family:Outfit,sans-serif;';
+
+    shell.innerHTML =
+      // header
+        '<div style="padding:18px 22px 14px;border-bottom:1px solid rgba(255,255,255,.07);'
+      +   'display:flex;align-items:flex-start;gap:14px;flex-shrink:0;">'
+      +   '<div style="flex:1;">'
+      +     '<div style="font-size:17px;font-weight:800;color:#fff;letter-spacing:.2px;">Price Book</div>'
+      +     '<div id="pbSub" style="font-size:11px;color:#8f98a6;margin-top:3px;"></div>'
+      +   '</div>'
+      +   '<button id="pbClose" style="background:none;border:none;color:#6b7280;font-size:26px;'
+      +     'line-height:1;cursor:pointer;padding:0 2px;">&times;</button>'
+      + '</div>'
+      // search
+      + '<div style="padding:14px 22px 10px;flex-shrink:0;">'
+      +   '<div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;'
+      +     'color:#6b7280;margin-bottom:5px;">Search every group</div>'
+      +   '<input id="pbSearch" placeholder="SKU or description\u2026" autocomplete="off" '
+      +     'style="width:100%;box-sizing:border-box;padding:11px 13px;border-radius:9px;'
+      +     'border:1px solid rgba(var(--gold-rgb),.28);background:#2e3238;color:#e8ebf0;'
+      +     'font-size:13px;font-family:Outfit,sans-serif;">'
+      + '</div>'
+      // tabs
+      + '<div id="pbTabs" style="padding:2px 22px 12px;flex-shrink:0;"></div>'
+      // table
+      + '<div id="pbTable" style="flex:1;min-height:0;overflow-y:auto;margin:0 22px;'
+      +   'border-radius:10px;border:1px solid rgba(255,255,255,.07);"></div>'
+      // footer
+      + '<div style="padding:12px 22px 18px;flex-shrink:0;">'
+      +   '<div style="display:flex;align-items:center;gap:12px;margin-bottom:9px;">'
+      +     '<div id="pbCount" style="flex:1;font-size:11px;color:#8f98a6;"></div>'
+      +     '<div id="pbStatus" style="font-size:11px;color:#8f98a6;text-align:right;"></div>'
+      +   '</div>'
+      +   '<div style="display:flex;gap:9px;flex-wrap:wrap;">'
+      +     '<button id="pbSave" style="flex:1;min-width:150px;padding:11px 16px;border:none;'
+      +       'border-radius:9px;background:var(--gold);color:#fff;font-size:13px;font-weight:800;'
+      +       'cursor:pointer;font-family:Outfit,sans-serif;letter-spacing:.3px;">Save Prices</button>'
+      +     '<button id="pbCsv" style="padding:11px 15px;border-radius:9px;border:1px solid rgba(255,255,255,.14);'
+      +       'background:rgba(255,255,255,.04);color:#aab2be;font-size:12px;font-weight:700;'
+      +       'cursor:pointer;font-family:Outfit,sans-serif;">Download CSV</button>'
+      +     '<button id="pbRestore" style="padding:11px 15px;border-radius:9px;border:1px solid rgba(255,255,255,.14);'
+      +       'background:rgba(255,255,255,.04);color:#aab2be;font-size:12px;font-weight:700;'
+      +       'cursor:pointer;font-family:Outfit,sans-serif;">Restore Removed</button>'
+      +   '</div>'
+      + '</div>';
+
+    ov.appendChild(shell);
+    document.body.appendChild(ov);
+
+    var co = (window.currentUser || {}).companyName || (window.currentUser || {}).companyId || 'this company';
+    var sub = document.getElementById('pbSub');
+    if (sub) sub.innerHTML = 'Everything a building can call for \u2014 ' + book().length
+      + ' items. Editing saves for <b style="color:#aab2be;">' + esc(co) + '</b>.';
+
+    document.getElementById('pbClose').onclick = function() { ov.remove(); };
+    document.getElementById('pbSave').onclick    = window._pbSave;
+    document.getElementById('pbCsv').onclick     = window._pbCsv;
+    document.getElementById('pbRestore').onclick = window._pbRestore;
+
+    var s = document.getElementById('pbSearch');
+    var timer;
+    s.addEventListener('input', function() {
+      var v = this.value;
+      clearTimeout(timer);
+      timer = setTimeout(function() { _q = v.trim().toLowerCase(); paint(); }, 120);
+    });
+
+    // Delegated so the table can repaint freely without rebinding.
+    document.getElementById('pbTabs').addEventListener('click', function(e) {
+      var b = e.target.closest ? e.target.closest('[data-pb-tab]') : null;
+      if (!b) return;
+      _tab = b.getAttribute('data-pb-tab');
+      _q = ''; var si = document.getElementById('pbSearch'); if (si) si.value = '';
+      paint();
+    });
+    var tw = document.getElementById('pbTable');
+    tw.addEventListener('input', function(e) {
+      var el = e.target;
+      if (!el.hasAttribute || !el.hasAttribute('data-pb-key')) return;
+      var v = parseFloat(el.value);
+      _dirty[el.getAttribute('data-pb-key')] = (el.value === '' || !isFinite(v)) ? null : v;
+      el.style.borderColor = 'rgba(var(--gold-rgb),.6)';
+      var c = document.getElementById('pbCount');
+      if (c) paint.timer || (paint.timer = setTimeout(function() { paint.timer = null; paint(); }, 400));
+    });
+    tw.addEventListener('click', function(e) {
+      var b = e.target.closest ? e.target.closest('[data-pb-del]') : null;
+      if (!b) return;
+      window._pbRemove(b.getAttribute('data-pb-del'));
+    });
+
+    paint();
+    setTimeout(function() { s.focus(); }, 60);
+  };
+
+  // ── remove / restore ─────────────────────────────────────────────────────
+  window._pbRemove = async function(key) {
+    var row = book().filter(function(r) { return r[1] === key; })[0];
+    if (!row) return;
+    if (!confirm('Remove "' + (row[3] || row[2]) + '" from the price book?\n\n'
+      + 'It stops being listed here. Nothing is deleted from your vendor list, and it can be restored.')) return;
+    var rates = window.SauceRates.all();
+    rates.materials = rates.materials || {};
+    var h = (rates.materials.priceBookHidden || []).slice();
+    if (h.indexOf(key) < 0) h.push(key);
+    rates.materials.priceBookHidden = h;
+    window.SauceRates.save(rates);
+    paint();
+    status('Removing\u2026', 'var(--gold)');
+    var res = await _persistRatesForCompany(rates, 'Company Rates');
+    status(res && res.ok ? 'Removed.' : 'Removed on this device only \u2014 ' + ((res && res.why) || 'not saved'),
+           (res && res.ok) ? '#86efac' : '#fbbf24');
+  };
+
+  window._pbRestore = async function() {
+    var rates = window.SauceRates.all();
+    var n = (((rates.materials || {}).priceBookHidden) || []).length;
+    if (!n) { status('Nothing has been removed.', '#8f98a6'); return; }
+    if (!confirm('Put all ' + n + ' removed item' + (n === 1 ? '' : 's') + ' back in the price book?')) return;
+    rates.materials = rates.materials || {};
+    rates.materials.priceBookHidden = [];
+    window.SauceRates.save(rates);
+    paint();
+    var res = await _persistRatesForCompany(rates, 'Company Rates');
+    status(res && res.ok ? 'Restored ' + n + '.' : 'Restored on this device only.', (res && res.ok) ? '#86efac' : '#fbbf24');
+  };
+
+  // ── save ─────────────────────────────────────────────────────────────────
+  window._pbSave = async function() {
+    var keys = Object.keys(_dirty);
+    if (!keys.length) { status('No changes to save.', '#8f98a6'); return; }
+    status('Saving ' + keys.length + ' price' + (keys.length === 1 ? '' : 's') + '\u2026', 'var(--gold)');
+    var byKey = {};
+    book().forEach(function(r) { byKey[r[1]] = r; });
+    var rows = keys.map(function(k) {
+      var r = byKey[k] || [];
+      return { sku: k, description: r[3] || '', price: _dirty[k] == null ? 0 : _dirty[k] };
+    });
+    var ok = await sbUpsertInventory(rows);
+    if (ok === false || (typeof sbFailed === 'function' && sbFailed())) {
+      status('Could not save: ' + (typeof sbWhyRefused === 'function' ? sbWhyRefused() : 'the write was refused'), '#ef4444');
+      return;
+    }
+    rows.forEach(function(r) {
+      try { window.SauceMaterials._priceTable[r.sku] = r.price; } catch (e) {}
+    });
+    _dirty = {};
+    paint();
+    status(rows.length + ' price' + (rows.length === 1 ? '' : 's') + ' saved.', '#86efac');
+    try { schedulePrice(); } catch (e) {}
+  };
+
+  // ── csv ──────────────────────────────────────────────────────────────────
+  window._pbCsv = function() {
+    var hid = hiddenKeys();
+    var lines = ['Group,SKU,Description,Colours,Price,Flag'];
+    book().forEach(function(r) {
+      if (hid[r[1]]) return;
+      var p = priceOf(r[1]);
+      lines.push([GROUPS[r[0]], r[1], '"' + String(r[3]).replace(/"/g, '""') + '"',
+                  r[4], p == null ? '' : p, '"' + r[5] + '"'].join(','));
+    });
+    try {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
+      a.download = 'price-book.csv';
+      a.click();
+      setTimeout(function() { URL.revokeObjectURL(a.href); }, 2000);
+      status('Downloaded.', '#86efac');
+    } catch (e) { status('Could not download: ' + e.message, '#ef4444'); }
+  };
+})();
 
   // ── GARAGE DOOR PRICE TABLE ──────────────────────────────────────────────
   // A door sheet quotes a price per size per backing plus a window panel, which
