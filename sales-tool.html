@@ -213,6 +213,16 @@ body.matlist-docked #inputsBar{right:var(--matdock-w);}
 #qgRV{position:absolute;inset:0;}
 #qgRV canvas{width:100%!important;height:100%!important;display:block;}
 /* Force 3D canvas to fill its container on mobile — overrides Three.js inline pixel values */
+  /* Nothing branded paints until we know which company this is. The elements
+     keep their space, so the login screen does not jump when it resolves. */
+  body:not(.brand-ready) #slBrandLogo,
+  body:not(.brand-ready) #slBrandName,
+  body:not(.brand-ready) #slBrandSub,
+  body:not(.brand-ready) .logo-mark,
+  body:not(.brand-ready) .brand-name-sales,
+  body:not(.brand-ready) .brand-sub-sales,
+  body:not(.brand-ready) #brandFooter{visibility:hidden!important;}
+
   /* ── Price Book ───────────────────────────────────────────────────────── */
   .pb-overlay{position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:100010;
     display:flex;align-items:center;justify-content:center;padding:20px;}
@@ -1404,8 +1414,8 @@ body.customer-mode #stab_specs { display: block !important; }
 <div id="salesLoginModal" style="display:none;position:fixed;inset:0;background:rgba(10,16,32,.85);z-index:500;align-items:center;justify-content:center;backdrop-filter:blur(4px);">
   <div style="background:#fff;border-radius:16px;padding:32px;width:100%;max-width:360px;box-shadow:0 20px 60px rgba(0,0,0,.4);">
     <div id="slBrandLogo" style="display:none;margin-bottom:14px;text-align:center;"></div>
-    <div id="slBrandName" style="font-family:'Outfit',sans-serif;font-weight:900;font-size:22px;color:#4B4B4B;margin-bottom:4px;">Sales Tool</div>
-    <div id="slBrandSub" style="font-size:12px;color:#888888;margin-bottom:24px;letter-spacing:.5px;">Sauce Estimator · Internal</div>
+    <div id="slBrandName" style="font-family:'Outfit',sans-serif;font-weight:900;font-size:22px;color:#4B4B4B;margin-bottom:4px;min-height:26px;"></div>
+    <div id="slBrandSub" style="font-size:12px;color:#888888;margin-bottom:24px;letter-spacing:.5px;min-height:16px;"></div>
     <div id="salesLoginNote" style="display:none;font-size:12px;color:#0f766e;background:#ccfbf1;border:1px solid #5eead4;border-radius:8px;padding:9px 11px;margin-bottom:12px;line-height:1.45;"></div>
     <div id="slErr" style="color:#dc2626;font-size:12px;margin-bottom:12px;min-height:16px;"></div>
     <div style="margin-bottom:12px;">
@@ -22203,34 +22213,32 @@ async function sbLoadInventory(companyId) {
 }
 
 async function _sbInventoryFor(co) {
-  var prices = {}, descs = {}, from = 0, page = 1000, total = 0;
-  var WAVE = 6;                                     // pages fetched in parallel
-  var done = false;
+  // Keyset paging, not offset. `offset=27000` makes Postgres walk and discard
+  // 27,000 rows for the last page; six of those in parallel is what hit the
+  // statement timeout and left a quote with no prices at all. Asking for
+  // "the next 1000 after this sku" is an index range scan every time.
+  var prices = {}, descs = {}, total = 0, after = '', guard = 0;
 
-  function _get(offset) {
-    return sbFetch('inventory?select=sku,description,price&company_id=eq.' +
-      encodeURIComponent(co) + '&order=sku.asc&offset=' + offset + '&limit=' + page,
-      { method: 'GET' });
-  }
-
-  while (!done) {
-    var reqs = [];
-    for (var w = 0; w < WAVE; w++) reqs.push(_get(from + w * page));
-    var results = await Promise.all(reqs);
-    for (var i = 0; i < results.length; i++) {
-      var rows = results[i];
-      if (rows === null) { if (!total) return null; done = true; break; }
-      rows.forEach(function(r) {
-        var sku = String(r.sku || '').trim().toUpperCase();
-        if (!sku) return;
-        var pr = parseFloat(r.price);
-        if (!isNaN(pr)) { prices[sku] = pr; total++; }
-        if (r.description) descs[sku] = r.description;
-      });
-      if (rows.length < page) { done = true; break; }
+  while (guard++ < 60) {
+    var q = 'inventory?select=sku,description,price&company_id=eq.'
+          + encodeURIComponent(co) + '&order=sku.asc&limit=1000'
+          + (after ? '&sku=gt.' + encodeURIComponent(after) : '');
+    var rows = await sbFetch(q, { method: 'GET' });
+    if (rows === null) {
+      // A refusal on the first page means no list; later it means we have some.
+      if (!total) return null;
+      break;
     }
-    from += WAVE * page;
-    if (from > 120000) break;                       // sanity stop
+    if (!rows.length) break;
+    rows.forEach(function(r) {
+      var sku = String(r.sku || '').trim().toUpperCase();
+      if (!sku) return;
+      var pr = parseFloat(r.price);
+      if (!isNaN(pr)) { prices[sku] = pr; total++; }
+      if (r.description) descs[sku] = r.description;
+    });
+    after = rows[rows.length - 1].sku;
+    if (rows.length < 1000) break;
   }
   return { prices: prices, descriptions: descs, count: total, companyId: co };
 }
@@ -26121,14 +26129,29 @@ window._previewCompany = null;
 // parameter, so a company can be handed a link that is theirs from first sight.
 // ── The login screen wears the company's brand ─────────────────────────────
 // Which company are we? In order: an explicit ?co=, the hostname the tool is
-// served on, then whatever this browser saw last. The first two work on a
-// first visit; the third only makes the second visit faster.
+// served on, then whatever this browser saw last. Nothing branded is painted
+// until one of those answers, so a tenant never sees the default name flash
+// past before their own appears.
 //
-// Branding is read from the public company_brand view, which exposes nothing
-// but the name, logo and accent — no addresses, no settings, no flags.
+// Branding comes from the public company_brand view, which exposes nothing but
+// the name, logo and accent — no addresses, no settings, no feature flags.
 (function _brandBeforeLogin() {
+  var DEFAULT_NAME = 'Sales Tool';
+  var DEFAULT_SUB  = 'Sauce Estimator \u00b7 Internal';
+
+  function reveal() {
+    try { document.body.classList.add('brand-ready'); } catch(e) {}
+  }
+  function fillDefaults() {
+    try {
+      var n = document.getElementById('slBrandName');
+      if (n && !n.textContent.trim()) n.textContent = DEFAULT_NAME;
+      var sub = document.getElementById('slBrandSub');
+      if (sub && !sub.textContent.trim()) sub.textContent = DEFAULT_SUB;
+    } catch(e) {}
+  }
   function paint(b) {
-    if (!b) return;
+    if (!b) return false;
     var cur = window._companySettings || {};
     if (b.brand_name)   cur.brandName   = b.brand_name;
     if (b.logo_data)    cur.logoData    = b.logo_data;
@@ -26137,6 +26160,7 @@ window._previewCompany = null;
     window._companySettings = cur;
     try { if (b.company_id) localStorage.setItem('sauceBrand::' + b.company_id, JSON.stringify(b)); } catch(e) {}
     if (typeof applyCompanyBranding === 'function') applyCompanyBranding();
+    return true;
   }
 
   async function fromServer(where) {
@@ -26154,25 +26178,33 @@ window._previewCompany = null;
     try { co = (new URLSearchParams(location.search).get('co') || '').toLowerCase().trim(); } catch(e) {}
     var host = (location.hostname || '').toLowerCase().trim();
 
-    // Show a cached brand straight away so there is no flash of the default,
-    // then confirm it against the server.
+    // A brand this browser already knows paints at once — no request, no wait.
+    var painted = false;
     try {
-      var last = co || localStorage.getItem('sauceBrandLast') || '';
-      var raw = last && localStorage.getItem('sauceBrand::' + last.toLowerCase().trim());
-      if (raw) paint(JSON.parse(raw));
+      var key = co || localStorage.getItem('sauceBrandLast') || '';
+      var raw = key && localStorage.getItem('sauceBrand::' + key.toLowerCase().trim());
+      if (raw) painted = paint(JSON.parse(raw));
     } catch(e) {}
+    if (painted) reveal();
+
+    // Never leave the screen blank if the lookup is slow or fails.
+    var guard = setTimeout(function() { fillDefaults(); reveal(); }, 2500);
 
     var b = null;
-    if (co)   b = await fromServer('company_id=eq.' + encodeURIComponent(co));
+    if (co) b = await fromServer('company_id=eq.' + encodeURIComponent(co));
     if (!b && host && host.indexOf('localhost') < 0) {
       b = await fromServer('brand_host=eq.' + encodeURIComponent(host));
     }
+    clearTimeout(guard);
     if (b) paint(b);
+    else if (!painted) fillDefaults();
+    reveal();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go);
   else go();
 })();
+
 
 
 // Super-user only: view the tool as another company, without signing in as one
