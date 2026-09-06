@@ -8455,6 +8455,20 @@ window.applyBasicMode = function() {
   return true;
 };
 
+// Signing out leaves the page loaded, so the next person inherits whatever
+// the last one could see. Put every account-gated button back to hidden and
+// drop the cached rates, so nothing carries across a user switch.
+window.resetToolbarForSignedOut = function() {
+  var ids = (window.SAUCE_BASIC_HIDE || []).concat(['vpHardRefreshBtn','vpBackfillBtn','vpFollowUpsBtn']);
+  ids.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  // The basic-user list and every rate came from the last company.
+  try { window.SauceRates.forget(); } catch(e) {}
+  window._companySettings = {};
+};
+
 window.refreshAccountButtons = function() {
   try {
     var bb = document.getElementById('vpBrandBtn');
@@ -25684,6 +25698,13 @@ async function doSalesLogin() {
         localStorage.setItem('sauce_user', JSON.stringify(window.currentUser));
       } catch(e) {}
       hideSalesLoginModal();
+      // The session-restore path fires this; signing in through the modal did
+      // not, which is why a user switch kept the previous person's buttons
+      // until a hard refresh went back through restore.
+      try { window.resetToolbarForSignedOut(); } catch(e) {}
+      try { window.dispatchEvent(new Event('crm:authready')); } catch(e) {}
+      if (window.SauceRates) { try { window.SauceRates.syncFromServer(true); } catch(e) {} }
+      if (typeof loadCompanySettings === 'function') { try { loadCompanySettings(); } catch(e) {} }
       setTimeout(warmPing, 500);
       try { window._startSessionKeepAlive(); } catch(e) {}
       loadInventoryPricing();
@@ -39740,6 +39761,17 @@ window.SauceRates = (function() {
       if (!obj || typeof obj !== 'object') throw new Error('Not a rate file');
       _persist(obj);
       return true;
+    },
+
+    // Drop everything that belonged to the last signed-in user: cached rates,
+    // the synced profile list and the admin flags. Called on sign-out so the
+    // next person cannot inherit the previous company's rates or basic-user
+    // list before their own sync lands.
+    forget: function() {
+      try { localStorage.removeItem(STORE_KEY); } catch(e) {}
+      try { localStorage.removeItem(PROFILE_KEY); } catch(e) {}
+      _cache = null; _profiles = []; _activeId = ''; _synced = false;
+      _isAdmin = false; _isSuperUser = false;
     },
 
     // ── PROFILES ─────────────────────────────────────────────────────────────
