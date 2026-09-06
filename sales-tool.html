@@ -8739,7 +8739,12 @@ window.refreshAccountButtons = function() {
     }
   } catch(e) { document.body.classList.add('auth-ready'); }
 };
-window.addEventListener('crm:authready', function() { try { refreshAccountButtons(); } catch(e) {} try { updateDemoBadge(); } catch(e) {} });
+window.addEventListener('crm:authready', function() {
+  try { refreshAccountButtons(); } catch(e) {}
+  try { updateDemoBadge(); } catch(e) {}
+  // Anything that asked to be priced before the session resolved.
+  if (window._pricePending) { try { schedulePrice(); } catch(e) {} }
+});
 
 // A standing marker whenever demo pricing is on, so nobody sends a nudged figure
 // to a customer thinking it is a real quote.
@@ -23785,6 +23790,9 @@ async function loadSavedDesign(d){
     var _bfBtn = document.getElementById('vpBackfillBtn'); if (_bfBtn) _bfBtn.style.display = _isAdminLoad ? '' : 'none';
     var _fuBtn = document.getElementById('vpFollowUpsBtn'); if (_fuBtn) _fuBtn.style.display = '';
     var pdfBtn = document.getElementById('quotePdfBtn'); if (pdfBtn) pdfBtn.style.display = '';
+    // The lines above decide by "is signed in", not by role — re-apply the real
+    // rules so basic mode and company admin are not overridden.
+    try { window.refreshAccountButtons(); } catch(e) {}
     // Mobile post-load buttons — same rules as desktop
     var mobileRow = document.getElementById('postSaveMobileRow');
     if (mobileRow) mobileRow.style.display = 'flex';
@@ -24448,6 +24456,7 @@ async function saveSalesQuote(overwriteMode) {
     var _bfBtn = document.getElementById('vpBackfillBtn'); if (_bfBtn) _bfBtn.style.display = isAdminUser ? '' : 'none';
     var _fuBtn = document.getElementById('vpFollowUpsBtn'); if (_fuBtn) _fuBtn.style.display = '';
     var pdfBtn = document.getElementById('quotePdfBtn'); if (pdfBtn) pdfBtn.style.display = '';
+    try { window.refreshAccountButtons(); } catch(e) {}
 
     // Mobile post-save row — show the whole row, then hide lain-only buttons if needed
     var mobileRow = document.getElementById('postSaveMobileRow');
@@ -27223,7 +27232,15 @@ function markQuoteDirty() {
 
 function schedulePrice() {
   clearTimeout(_priceCalcTimer);
-  if (!window.currentUser) { console.log('[Price] no user, skipping'); return; }
+  if (!window.currentUser) {
+    // The build can be ready before the session is. Remember that a price was
+    // wanted and run it when the user lands, instead of dropping it silently —
+    // that is why a quote only priced after a hard refresh.
+    window._pricePending = true;
+    console.log('[Price] no user yet, queued');
+    return;
+  }
+  window._pricePending = false;
   console.log('[Price] scheduled');
   markQuoteDirty();
   _priceCalcTimer = setTimeout(updatePriceStrip, 400);
@@ -39615,6 +39632,9 @@ window.SauceMaterials.calculate = function(forcedType) {
 // the $0.00 they were built with before the list arrived.
 function _refreshAfterPrices() {
   setTimeout(function() {
+    // Prices may land before or after the building is built; run both so the
+    // strip is never left showing a total from an empty price list.
+    try { schedulePrice(); } catch(e) {}
     try { updateStripFromLocalCalc(); } catch(e) {}
     try { if (typeof populateColorDropdowns === 'function') populateColorDropdowns(); } catch(e) {}
     try {
