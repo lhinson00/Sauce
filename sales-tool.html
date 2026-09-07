@@ -9398,6 +9398,25 @@ function renderInteriorWalls() {
       // only worked while that table had no row level security. It has now, so
       // this reads the public quote_view instead: the building and the price
       // for one id, and nothing else about the customer.
+      // Add &debug=1 to a shared link to see each step on the page itself.
+      var _dbg = new URLSearchParams(window.location.search).get('debug') === '1';
+      function _say(msg, bad) {
+        console.log('[QuoteLoad] ' + msg);
+        if (!_dbg) return;
+        try {
+          var box = document.getElementById('_shareDbg');
+          if (!box) {
+            box = document.createElement('div');
+            box.id = '_shareDbg';
+            box.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483647;'
+              + 'background:#111;color:#0f0;font:12px ui-monospace,Menlo,monospace;'
+              + 'padding:8px 12px;white-space:pre-wrap;max-height:45vh;overflow:auto;';
+            (document.body || document.documentElement).appendChild(box);
+          }
+          box.textContent += (bad ? '\u2717 ' : '\u2713 ') + msg + '\n';
+        } catch(e) {}
+      }
+
       (function loadSharedQuote(tries) {
         // init() runs the moment this script is parsed, thousands of lines
         // before SAUCE_ENDPOINTS is defined. Reading it here threw and left the
@@ -9405,7 +9424,7 @@ function renderInteriorWalls() {
         tries = tries || 0;
         if (!window.SAUCE_ENDPOINTS || !window.SAUCE_ENDPOINTS.supabaseUrl) {
           if (tries > 100) {                      // ~10s, then give up quietly
-            console.warn('[QuoteLoad] endpoints never became available');
+            _say('endpoints never became available', true);
             try { triggerBuild(); } catch(e) {}
             return;
           }
@@ -9415,30 +9434,32 @@ function renderInteriorWalls() {
         var url = window.SAUCE_ENDPOINTS.supabaseUrl
                 + '/rest/v1/quote_view?id=eq.' + encodeURIComponent(quoteId)
                 + '&select=config_encoded,display_summary,pricing_results&limit=1';
+        _say('asking for ' + quoteId + ' after ' + tries + ' wait(s)');
         fetch(url, { headers: { 'apikey': window.SAUCE_ENDPOINTS.supabaseKey } })
-          .then(function(r){ return r.ok ? r.json() : null; })
+          .then(function(r){ _say('server replied ' + r.status, !r.ok); return r.ok ? r.json() : null; })
           .then(function(rows){
             var row = rows && rows[0];
+            _say('rows back: ' + ((rows && rows.length) || 0));
             if (!row || !row.config_encoded) {
-              console.warn('[QuoteLoad] shared link found no quote for', quoteId);
+              _say('no config on that quote', true);
               try { triggerBuild(); } catch(e) {}
               return;
             }
-            console.log('[QuoteLoad] shared quote loaded, length:', row.config_encoded.length);
+            _say('config found, ' + row.config_encoded.length + ' chars');
             var snap = row.display_summary || {};
             snap.pricingResults = row.pricing_results || snap.pricingResults || {};
             snap._inferType = true;
             safeDecodeAsync(row.config_encoded)
               .catch(function(){ return safeDecode(row.config_encoded); })
               .then(function(cfg){
-                if (!cfg) { console.warn('[QuoteLoad] shared decode failed'); try { triggerBuild(); } catch(e) {} return; }
+                if (!cfg) { _say('decode failed', true); try { triggerBuild(); } catch(e) {} return; }
                 // Same sequence the ?config= path uses. Calling restoreConfig
                 // straight away runs it before the page is ready, which is why
                 // the model came up as a plain default building.
                 setTimeout(function(){
                   restoreConfig(cfg);
                   triggerBuild();
-                  console.log('[QuoteLoad] shared config restored:', JSON.stringify(cfg.Q || {}));
+                  _say('restored ' + JSON.stringify(cfg.Q || {}));
                   setTimeout(function(){
                     try { populateViewCard(snap); } catch(e) {}
                   }, 1200);
@@ -9446,7 +9467,7 @@ function renderInteriorWalls() {
               });
           })
           .catch(function(err){
-            console.warn('[QuoteLoad] shared link failed:', err);
+            _say('request failed: ' + (err && err.message ? err.message : err), true);
             try { triggerBuild(); } catch(e) {}
           });
       })();
