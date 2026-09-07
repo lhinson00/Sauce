@@ -26397,7 +26397,17 @@ window.SauceSession = (function() {
   return {
     start: function(signedInAtMs) {
       _ending = false;
-      _signedInAt   = signedInAtMs || Date.now();
+      _signedInAt = signedInAtMs || Date.now();
+      // A stored timestamp older than the cap would expire the session in the
+      // first tick, before anyone could do anything about it. Treat that as a
+      // stale value and start the clock now rather than locking the user out.
+      var _capMs = (window.SAUCE_SESSION.absoluteHours || 12) * 3600 * 1000;
+      if (Date.now() - _signedInAt > _capMs) {
+        console.warn('[Session] stored sign-in time was ' +
+          Math.round((Date.now() - _signedInAt) / 3600000) + 'h ago, past the ' +
+          window.SAUCE_SESSION.absoluteHours + 'h cap — starting fresh instead of locking out');
+        _signedInAt = Date.now();
+      }
       _lastActivity = Date.now();
       _clearWarning();
       if (_tick) clearInterval(_tick);
@@ -26635,6 +26645,10 @@ async function doSalesLogin() {
     // sauce_user is cleared by the tenant wipe, so keep the name separately or
     // the restore has nothing to match on and can settle on the wrong row.
     try { localStorage.setItem('sauce_login_user', u.trim().toLowerCase()); } catch(e) {}
+    // The absolute session cap counts from here. Without this the reload read
+    // the PREVIOUS sign-in's timestamp, found the cap already blown, and signed
+    // the user straight back out — a loop no password could get past.
+    try { localStorage.setItem('sauce_signed_in_at', String(Date.now())); } catch(e) {}
     var profile = await window.SauceAuth.loadProfile(signed.session.access_token, u.trim());
     if (!profile) {
       if (err) err.textContent = 'Signed in, but this account has no profile yet. An admin needs to finish setting it up.';
