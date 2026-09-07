@@ -2180,6 +2180,7 @@ body.customer-mode #stab_specs { display: block !important; }
           <option value="2 Vinyl Back">2" Vinyl Back</option>
           <option value="3 Vinyl Back">3" Vinyl Back</option>
           <option value="Solar Eclipse">Solar Eclipse</option>
+          <option value="Spray Foam">Spray Foam</option>
         </select>
         <div id="insulLocRow" style="margin-top:6px;">
           <div class="toggle-row" style="border-bottom:none;">
@@ -20190,7 +20191,14 @@ function modernQuoteContext(a) {
 
   // insulation
   var insul = [], ins = el('st_insulation');
-  if (ins && ins !== 'None') {
+  if (ins === 'Spray Foam') {
+    // Spray foam reads as one line saying where it went, not as a pair of
+    // rows repeating the product name.
+    var where = [];
+    if (chk('st_insulRoof'))  where.push('Roof');
+    if (chk('st_insulWalls')) where.push('Walls');
+    if (where.length) insul.push(['Spray Foam', 'Included \u2014 ' + where.join(' & ')]);
+  } else if (ins && ins !== 'None') {
     insul.push(['Roof',  chk('st_insulRoof')  ? ins : 'Not included']);
     insul.push(['Walls', chk('st_insulWalls') ? ins : 'Not included']);
   }
@@ -21151,8 +21159,13 @@ async function generateQuotePDF() {
       var iloc = [];
       if (chk('st_insulRoof'))  iloc.push('Roof');
       if (chk('st_insulWalls')) iloc.push('Walls');
-      specRow2('Type', ins2);
-      specRow2('Coverage', iloc.join(' & '));
+      if (ins2 === 'Spray Foam') {
+        // One line: what it is, that it is in, and where it went.
+        specRow2('Spray Foam', 'Included \u2014 ' + iloc.join(' & '));
+      } else {
+        specRow2('Type', ins2);
+        specRow2('Coverage', iloc.join(' & '));
+      }
     }
 
     // ── 9. UPGRADES & OPTIONS ────────────────────────────
@@ -26491,16 +26504,39 @@ window.SauceAuth = (function() {
 
     // Everything the tool needs about the person, from their own profile row.
     loadProfile: async function(accessToken) {
-      var rows = await sbFetch('profiles?select=*', {
+      // Ask for OUR row by id, not for every row we are allowed to see. A
+      // super user can see every profile at every company, and picking
+      // rows[0] out of that meant signing in as whoever the database happened
+      // to return first — and inheriting their company.
+      var uid = '';
+      try {
+        // The user id is the 'sub' claim of the access token itself, so it is
+        // known here even before the session object has been stored.
+        var _p = JSON.parse(atob(String(accessToken).split('.')[1]
+                 .replace(/-/g,'+').replace(/_/g,'/')));
+        uid = _p.sub || '';
+      } catch(e) {}
+      if (!uid) {
+        try { uid = ((window._sbSession || {}).user || {}).id || ''; } catch(e) {}
+      }
+
+      var rows = await sbFetch('profiles?select=*'
+        + (uid ? '&id=eq.' + encodeURIComponent(uid) : ''), {
         method: 'GET',
         headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + accessToken }
       });
       if (!rows || !rows.length) return null;
       var me = rows[0];
-      // With more than one visible (an admin), pick our own row.
       if (rows.length > 1) {
-        var uid = (window._sbSession || {}).user && window._sbSession.user.id;
-        me = rows.filter(function(r) { return r.id === uid; })[0] || rows[0];
+        // More than one came back, so the id filter did not apply. Never fall
+        // back to rows[0] here — a wrong row means the wrong company.
+        var mine = rows.filter(function(r) { return r.id === uid; })[0];
+        if (!mine) {
+          console.error('[Auth] could not identify which profile row is ours '
+                      + '(' + rows.length + ' visible). Refusing to guess.');
+          return null;
+        }
+        me = mine;
       }
       return {
         username:          me.username,
@@ -27261,6 +27297,8 @@ function applyCompanyBranding() {
     var gb = document.getElementById('vpGalleryBtn');
     if (gb) gb.style.display = (tenantAllows('gallery') && !_basic) ? '' : 'none';
   } catch(e) {}
+  // The company is known here, so the insulation list can be settled.
+  try { window.applySprayFoamOption(); } catch(e) {}
 }
 
 // Single source of truth for what a company gets. Checked by the buttons AND
@@ -27310,7 +27348,10 @@ async function loadCompanySettings() {
       showKits:      r.show_kits    !== false,
       showGallery:   r.show_gallery !== false,
       depositPct:    (r.deposit_pct === null || r.deposit_pct === undefined) ? null : parseFloat(r.deposit_pct),
-      quoteLayout:   r.quote_layout || 'classic'
+      quoteLayout:   r.quote_layout || 'classic',
+      sprayFoam:     !!r.spray_foam_enabled,
+      sprayFoamRate: (r.spray_foam_rate === null || r.spray_foam_rate === undefined)
+                       ? null : parseFloat(r.spray_foam_rate)
     } };
     window._companySettings = j.settings || {};
     SHOP_ADDRESS = window._companySettings.shopAddress || '';
@@ -37923,6 +37964,10 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
   var insulWalls = !!(document.getElementById('st_insulWalls')||{}).checked;
   if (!insulRoof && !insulWalls) return [];
 
+  // Spray foam is applied on site, so there is nothing to order by the roll.
+  // The area is worked out the same way and handed to the pricing side.
+  var isSprayFoam = insulType === 'Spray Foam';
+
   var isVinyl  = insulType.indexOf('Vinyl Back') !== -1;
   var rollSize = isVinyl ? 300 : 750;
 
@@ -38016,6 +38061,18 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
   }
 
   var totalLinFt = roofLinFt + wallLinFt;
+
+  if (isSprayFoam) {
+    // Same panel coverage the roll maths uses: linear feet x 3 ft wide.
+    window._sprayFoamArea = {
+      roof:  Math.round(roofLinFt * 3),
+      walls: Math.round(wallLinFt * 3),
+      total: Math.round(totalLinFt * 3)
+    };
+    return results;                 // nothing to order
+  }
+  window._sprayFoamArea = null;
+
   if (totalLinFt > 0) {
     // sqft -> rolls with NO rounding at the division, then a 10% waste factor,
     // and only then round UP. Rounding at the division first (and adding a flat
@@ -40725,7 +40782,8 @@ window.SauceRates = (function() {
       width:      { over50: 0, over60: 0 },
       perFoot:    { soffit: 0, wainscot: 0, windSill: 0 },
       insulation: { solarEclipse: 0, bubbleWrap: 0, thermaGuard: 0,
-                    vinyl2: 0, vinyl3: 0, vinyl4: 0, houseWrap: 0 },
+                    vinyl2: 0, vinyl3: 0, vinyl4: 0, houseWrap: 0,
+                    sprayFoam: 0 },
       shed:       { buildPerSqft: 0, tgCeiling: 0, tgCeilingWide: 0, loftPerSqft: 0,
                     metalCeiling: 0, metalCeilingWide: 0, enclWallPerLf: 0,
                     cornerBrace: 0, minBuild: 0 },
@@ -41059,6 +41117,7 @@ window.SauceRates = (function() {
     perFoot: 'Per-foot rates', soffit: 'Soffit ($/ln ft)', wainscot: 'Wainscot ($/LF)',
     windSill: 'Wind sill / partial wall ($/LF)',
     insulation: 'Insulation install ($/sqft)', solarEclipse: 'Solar Eclipse',
+    sprayFoam: 'Spray Foam ($/sqft of roof + wall)',
     bubbleWrap: 'Bubble Wrap', thermaGuard: 'Therma Guard', vinyl2: '2" vinyl back',
     vinyl3: '3" vinyl back', vinyl4: '4" vinyl back', houseWrap: 'House wrap (stud)',
     shed: 'Side sheds & extensions', buildPerSqft: 'Build ($/sqft)',
@@ -42137,7 +42196,7 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       pitch:      { over4: 0.30, over6: 0.85, over8: 1.35, over10: 1.90 },
       width:      { over50: 0.45, over60: 0.70 },
       perFoot:    { soffit: 11, wainscot: 2.75, windSill: 6 },
-      insulation: { solarEclipse: 0.35, bubbleWrap: 0.28, thermaGuard: 0.28,
+      insulation: { sprayFoam: 1.85, solarEclipse: 0.35, bubbleWrap: 0.28, thermaGuard: 0.28,
                     vinyl2: 0.50, vinyl3: 0.60, vinyl4: 0.72, houseWrap: 0.28 },
       shed:       { buildPerSqft: 2.40, tgCeiling: 1.60, tgCeilingWide: 1.85, loftPerSqft: 2.00,
                     metalCeiling: 1.35, metalCeilingWide: 1.55, enclWallPerLf: 14,
@@ -43625,6 +43684,37 @@ window.quoteLayout = function() {
   catch (e) { return 'classic'; }
 };
 
+// Spray foam is offered per company, so the option is hidden unless theirs
+// has it switched on — a salesman cannot quote what the company does not sell.
+window.sprayFoamEnabled = function() {
+  try { return !!(window._companySettings || {}).sprayFoam; } catch (e) { return false; }
+};
+// The company's own rate wins; the labor profile is the fallback.
+window.sprayFoamRate = function() {
+  try {
+    var c = parseFloat((window._companySettings || {}).sprayFoamRate);
+    if (c > 0) return c;
+    return window.SauceRates.v('labor.insulation.sprayFoam') || 0;
+  } catch (e) { return 0; }
+};
+window.applySprayFoamOption = function() {
+  try {
+    var sel = document.getElementById('st_insulation');
+    if (!sel) return;
+    var opt = Array.prototype.filter.call(sel.options, function(o){ return o.value === 'Spray Foam'; })[0];
+    var on  = window.sprayFoamEnabled();
+    if (on && !opt) {
+      opt = document.createElement('option');
+      opt.value = 'Spray Foam'; opt.textContent = 'Spray Foam';
+      sel.appendChild(opt);
+    } else if (!on && opt) {
+      // Never leave a company quoting an option they do not offer.
+      if (sel.value === 'Spray Foam') { sel.value = 'None'; try { onInsulationChange(); } catch(e) {} }
+      opt.remove();
+    }
+  } catch (e) {}
+};
+
 window.concreteIncludes = function() {
     try {
       var incl = (window.SauceRates.all().concrete || {}).incl || {};
@@ -45078,6 +45168,26 @@ window.SauceLabor.calcInsulationAdder = function() {
     '3 Vinyl Back':   _v3,
     '4 Vinyl Back':   _v4
   };
+  // Spray foam is a straight rate per square foot of what it covers.
+  if (insulType === 'Spray Foam') {
+    var SMf = window.SauceMaterials;
+    if (!SMf || !SMf.calcInsulation) return null;
+    SMf.calcInsulation(window._Q, window._WALLS, window._shedConfigs || []);
+    var area = window._sprayFoamArea;
+    if (!area || !area.total) return null;
+    var foamRate = window.sprayFoamRate ? window.sprayFoamRate()
+                                        : R.v('labor.insulation.sprayFoam');
+    if (!foamRate) return null;
+    var parts = [];
+    if (area.roof)  parts.push('roof ' + area.roof.toLocaleString() + ' sqft');
+    if (area.walls) parts.push('walls ' + area.walls.toLocaleString() + ' sqft');
+    return {
+      label: 'Spray Foam  |  ' + parts.join(' + ')
+           + ' = ' + area.total.toLocaleString() + ' sqft @ $' + foamRate.toFixed(2),
+      amount: area.total * foamRate
+    };
+  }
+
   var rate = rates[insulType] || 0;
   if (!rate) return null;
 
