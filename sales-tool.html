@@ -26504,40 +26504,50 @@ window.SauceAuth = (function() {
 
     // Everything the tool needs about the person, from their own profile row.
     loadProfile: async function(accessToken) {
-      // Ask for OUR row by id, not for every row we are allowed to see. A
-      // super user can see every profile at every company, and picking
-      // rows[0] out of that meant signing in as whoever the database happened
-      // to return first — and inheriting their company.
-      var uid = '';
+      // Identify OUR row rather than taking whichever one the database
+      // returns first. A super user can see every profile at every company,
+      // and picking rows[0] out of that meant signing in as someone else and
+      // inheriting their company. Match on the token's own claims instead.
+      var uid = '', uemail = '';
       try {
-        // The user id is the 'sub' claim of the access token itself, so it is
-        // known here even before the session object has been stored.
         var _p = JSON.parse(atob(String(accessToken).split('.')[1]
                  .replace(/-/g,'+').replace(/_/g,'/')));
-        uid = _p.sub || '';
+        uid    = _p.sub || '';
+        uemail = String(_p.email || '').toLowerCase().trim();
       } catch(e) {}
-      if (!uid) {
-        try { uid = ((window._sbSession || {}).user || {}).id || ''; } catch(e) {}
-      }
+      if (!uid) { try { uid = ((window._sbSession || {}).user || {}).id || ''; } catch(e) {} }
 
-      var rows = await sbFetch('profiles?select=*'
-        + (uid ? '&id=eq.' + encodeURIComponent(uid) : ''), {
+      var rows = await sbFetch('profiles?select=*', {
         method: 'GET',
         headers: { 'apikey': _SB_KEY, 'Authorization': 'Bearer ' + accessToken }
       });
       if (!rows || !rows.length) return null;
-      var me = rows[0];
-      if (rows.length > 1) {
-        // More than one came back, so the id filter did not apply. Never fall
-        // back to rows[0] here — a wrong row means the wrong company.
-        var mine = rows.filter(function(r) { return r.id === uid; })[0];
-        if (!mine) {
-          console.error('[Auth] could not identify which profile row is ours '
-                      + '(' + rows.length + ' visible). Refusing to guess.');
+
+      var me = null;
+      if (rows.length === 1) {
+        me = rows[0];                       // only our own row is visible
+      } else {
+        // Several visible, so this is an admin. The profile id may or may not
+        // be the auth user id depending on how the row was created, so try id
+        // first and then the email on the token.
+        me = rows.filter(function(r) { return uid && r.id === uid; })[0];
+        if (!me && uemail) {
+          me = rows.filter(function(r) {
+            return String(r.email || '').toLowerCase().trim() === uemail;
+          })[0];
+        }
+        if (!me && uemail) {
+          me = rows.filter(function(r) {
+            return String(r.username || '').toLowerCase().trim() === uemail.split('@')[0];
+          })[0];
+        }
+        if (!me) {
+          console.error('[Auth] cannot tell which of ' + rows.length
+                      + ' profile rows is ours — refusing to guess a company.');
           return null;
         }
-        me = mine;
       }
+
       return {
         username:          me.username,
         fullName:          me.full_name || me.username,
