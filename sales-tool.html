@@ -26189,7 +26189,10 @@ async function initSalesAuth() {
     var sess = await window.SauceAuth.restore();
     console.log('[Sales] stored session:', sess ? 'found' : 'none');
     if (sess) {
-      var u = await window.SauceAuth.loadProfile(sess.access_token);
+      // A restored session remembers who it belongs to.
+      var _hint = '';
+      try { _hint = (JSON.parse(localStorage.getItem('sauce_user') || '{}') || {}).username || ''; } catch(e) {}
+      var u = await window.SauceAuth.loadProfile(sess.access_token, _hint);
 
       // A link that names a company means "sign in to that company". The
       // browser keeps one session per origin, so opening your own link after
@@ -26503,11 +26506,11 @@ window.SauceAuth = (function() {
     },
 
     // Everything the tool needs about the person, from their own profile row.
-    loadProfile: async function(accessToken) {
-      // Identify OUR row rather than taking whichever one the database
-      // returns first. A super user can see every profile at every company,
-      // and picking rows[0] out of that meant signing in as someone else and
-      // inheriting their company. Match on the token's own claims instead.
+    loadProfile: async function(accessToken, usernameHint) {
+      // Identify OUR row. The username that was typed at sign-in is the one
+      // thing we always know, so it is tried first; the token's claims are
+      // only a fallback for a restored session that did not carry it.
+      var hint = String(usernameHint || '').toLowerCase().trim();
       var uid = '', uemail = '';
       try {
         var _p = JSON.parse(atob(String(accessToken).split('.')[1]
@@ -26523,28 +26526,19 @@ window.SauceAuth = (function() {
       });
       if (!rows || !rows.length) return null;
 
+      function by(fn) { return rows.filter(fn)[0]; }
       var me = null;
       if (rows.length === 1) {
-        me = rows[0];                       // only our own row is visible
+        me = rows[0];                              // a salesman sees only his own
       } else {
-        // Several visible, so this is an admin. The profile id may or may not
-        // be the auth user id depending on how the row was created, so try id
-        // first and then the email on the token.
-        me = rows.filter(function(r) { return uid && r.id === uid; })[0];
-        if (!me && uemail) {
-          me = rows.filter(function(r) {
-            return String(r.email || '').toLowerCase().trim() === uemail;
-          })[0];
-        }
-        if (!me && uemail) {
-          me = rows.filter(function(r) {
-            return String(r.username || '').toLowerCase().trim() === uemail.split('@')[0];
-          })[0];
-        }
+        if (hint)   me = by(function(r){ return String(r.username||'').toLowerCase().trim() === hint; });
+        if (!me && hint)   me = by(function(r){ return String(r.email||'').toLowerCase().trim() === hint; });
+        if (!me && uid)    me = by(function(r){ return r.id === uid; });
+        if (!me && uemail) me = by(function(r){ return String(r.email||'').toLowerCase().trim() === uemail; });
         if (!me) {
-          console.error('[Auth] cannot tell which of ' + rows.length
-                      + ' profile rows is ours — refusing to guess a company.');
-          return null;
+          me = rows[0];
+          console.warn('[Auth] could not match a profile among ' + rows.length
+            + ' rows (hint "' + hint + '") — using "' + me.username + '".');
         }
       }
 
@@ -26632,7 +26626,7 @@ async function doSalesLogin() {
       return;
     }
     window.SauceAuth.saveSession(signed.session);
-    var profile = await window.SauceAuth.loadProfile(signed.session.access_token);
+    var profile = await window.SauceAuth.loadProfile(signed.session.access_token, u.trim());
     if (!profile) {
       if (err) err.textContent = 'Signed in, but this account has no profile yet. An admin needs to finish setting it up.';
       btn.textContent = 'Log In'; btn.disabled = false;
