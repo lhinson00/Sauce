@@ -26191,26 +26191,16 @@ async function initSalesAuth() {
     if (sess) {
       // A restored session remembers who it belongs to.
       var _hint = '';
-      try { _hint = (JSON.parse(localStorage.getItem('sauce_user') || '{}') || {}).username || ''; } catch(e) {}
+      try { _hint = localStorage.getItem('sauce_login_user') || ''; } catch(e) {}
+      if (!_hint) {
+        try { _hint = (JSON.parse(localStorage.getItem('sauce_user') || '{}') || {}).username || ''; } catch(e) {}
+      }
       var u = await window.SauceAuth.loadProfile(sess.access_token, _hint);
 
-      // A link that names a company means "sign in to that company". The
-      // browser keeps one session per origin, so opening your own link after
-      // using someone else's would otherwise restore theirs — same file, same
-      // storage, only the ?co= differs. If the stored session belongs to a
-      // different company than the link asks for, end it and show their login.
-      try {
-        var _wantCo = (new URLSearchParams(location.search).get('co') || '').toLowerCase().trim();
-        var _haveCo = String((u && u.companyId) || '').toLowerCase().trim();
-        if (_wantCo && _haveCo && _wantCo !== _haveCo) {
-          console.log('[Sales] link is for "' + _wantCo + '" but the session is "'
-                      + _haveCo + '" — signing that one out');
-          try { window.resetToolbarForSignedOut(); } catch(e) {}
-          try { await window.SauceAuth.signOut(); } catch(e) {}
-          window.currentUser = null;
-          u = null;
-        }
-      } catch(e) {}
+      // A link's ?co= only decides which brand the login screen wears. It used
+      // to sign out a session whose company did not match, which threw people
+      // straight back to the login screen moments after they got in. Identity
+      // comes from the session alone now.
 
       if (u && u.active !== false) {
         u.token = sess.access_token;
@@ -26240,7 +26230,9 @@ async function initSalesAuth() {
         }, window.innerWidth < 700 ? 1500 : 800);
         return;
       }
-      console.log('[Sales] Session valid but no usable profile — signing out');
+      console.log('[Sales] Session valid but no usable profile for hint "'
+                  + _hint + '" — signing out');
+      try { localStorage.removeItem('sauce_login_user'); } catch(e) {}
       await window.SauceAuth.signOut();
     }
   } catch(e) { console.log('[Sales] Auth error:', e); }
@@ -26626,6 +26618,10 @@ async function doSalesLogin() {
       return;
     }
     window.SauceAuth.saveSession(signed.session);
+    // Sign-in reloads the page, and the reload has to know who it is restoring.
+    // sauce_user is cleared by the tenant wipe, so keep the name separately or
+    // the restore has nothing to match on and can settle on the wrong row.
+    try { localStorage.setItem('sauce_login_user', u.trim().toLowerCase()); } catch(e) {}
     var profile = await window.SauceAuth.loadProfile(signed.session.access_token, u.trim());
     if (!profile) {
       if (err) err.textContent = 'Signed in, but this account has no profile yet. An admin needs to finish setting it up.';
@@ -28075,6 +28071,7 @@ function handleSessionExpired() {
   window.currentUser = null;
   sessionStorage.removeItem('sauce_user');
   localStorage.removeItem('sauce_user');
+  try { localStorage.removeItem('sauce_login_user'); } catch(e) {}
   showSalesLoginModal();
   var err = document.getElementById('slErr');
   if (err) err.textContent = 'Your session expired. Please log in again.';
