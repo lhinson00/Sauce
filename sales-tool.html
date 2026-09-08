@@ -2221,7 +2221,6 @@ body.customer-mode #stab_specs { display: block !important; }
           <option value="2 Vinyl Back">2" Vinyl Back</option>
           <option value="3 Vinyl Back">3" Vinyl Back</option>
           <option value="Solar Eclipse">Solar Eclipse</option>
-          <option value="Spray Foam">Spray Foam</option>
         </select>
         <div id="insulLocRow" style="margin-top:6px;">
           <div class="toggle-row" style="border-bottom:none;">
@@ -2241,6 +2240,31 @@ body.customer-mode #stab_specs { display: block !important; }
           <div class="toggle-row" id="rowInsulateWalls">
             <div class="toggle-info"><div class="toggle-lbl">Insulate Walls</div></div>
             <label class="tog"><input type="checkbox" id="st_insulWalls" onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+          </div>
+        </div>
+
+        <!-- Spray foam sits alongside the insulation choice rather than inside
+             it: most jobs that get foam also get Therma Guard, so it has to be
+             selectable at the same time, with its own roof and wall coverage. -->
+        <div id="sprayFoamBlock" style="display:none;margin-top:8px;padding-top:8px;
+             border-top:1px solid rgba(255,255,255,.08);">
+          <div class="toggle-row" style="border-bottom:none;">
+            <div class="toggle-info">
+              <div class="toggle-lbl">Spray Foam</div>
+              <div class="toggle-sub">Priced on panel area &mdash; in addition to any insulation above</div>
+            </div>
+            <label class="tog"><input type="checkbox" id="st_sprayFoam" onchange="try{onSprayFoamChange();}catch(e){}"><span class="tog-track"></span></label>
+          </div>
+          <div id="sprayFoamLoc" style="display:none;margin-left:10px;padding-left:12px;
+               border-left:2px solid rgba(255,255,255,.10);">
+            <div class="toggle-row" style="border-bottom:none;">
+              <div class="toggle-info"><div class="toggle-lbl" style="font-size:11px;">&#8627; Foam Roof</div></div>
+              <label class="tog"><input type="checkbox" id="st_foamRoof" checked onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+            </div>
+            <div class="toggle-row">
+              <div class="toggle-info"><div class="toggle-lbl" style="font-size:11px;">&#8627; Foam Walls</div></div>
+              <label class="tog"><input type="checkbox" id="st_foamWalls" checked onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
+            </div>
           </div>
         </div>
       </div>
@@ -20232,16 +20256,16 @@ function modernQuoteContext(a) {
 
   // insulation
   var insul = [], ins = el('st_insulation');
-  if (ins === 'Spray Foam') {
-    // Spray foam reads as one line saying where it went, not as a pair of
-    // rows repeating the product name.
-    var where = [];
-    if (chk('st_insulRoof'))  where.push('Roof');
-    if (chk('st_insulWalls')) where.push('Walls');
-    if (where.length) insul.push(['Spray Foam', 'Included \u2014 ' + where.join(' & ')]);
-  } else if (ins && ins !== 'None') {
+  if (ins && ins !== 'None') {
     insul.push(['Roof',  chk('st_insulRoof')  ? ins : 'Not included']);
     insul.push(['Walls', chk('st_insulWalls') ? ins : 'Not included']);
+  }
+  // Foam is an addition, so it gets its own line under whatever else is there.
+  if (chk('st_sprayFoam')) {
+    var fw = [];
+    if (chk('st_foamRoof'))  fw.push('Roof');
+    if (chk('st_foamWalls')) fw.push('Walls');
+    if (fw.length) insul.push(['Spray Foam', 'Included \u2014 ' + fw.join(' & ')]);
   }
 
   // options worth naming on a quote
@@ -21193,19 +21217,31 @@ async function generateQuotePDF() {
     }
 
     // ── 8. INSULATION ────────────────────────────────────
+    // Foam can be on with no insulation at all, so the section has to open for
+    // either one.
+    var _foamOn2 = chk('st_sprayFoam') && (chk('st_foamRoof') || chk('st_foamWalls'));
     var ins2 = val2('st_insulation');
+    if (_foamOn2 && !(ins2 && ins2!=='None' && (chk('st_insulRoof')||chk('st_insulWalls')))) {
+      specSection('Insulation');
+      rowIdx2 = 0;
+      var _fw2 = [];
+      if (chk('st_foamRoof'))  _fw2.push('Roof');
+      if (chk('st_foamWalls')) _fw2.push('Walls');
+      specRow2('Spray Foam', 'Included \u2014 ' + _fw2.join(' & '));
+    }
     if (ins2 && ins2!=='None' && (chk('st_insulRoof')||chk('st_insulWalls'))) {
       specSection('Insulation');
       rowIdx2 = 0;
       var iloc = [];
       if (chk('st_insulRoof'))  iloc.push('Roof');
       if (chk('st_insulWalls')) iloc.push('Walls');
-      if (ins2 === 'Spray Foam') {
-        // One line: what it is, that it is in, and where it went.
-        specRow2('Spray Foam', 'Included \u2014 ' + iloc.join(' & '));
-      } else {
-        specRow2('Type', ins2);
-        specRow2('Coverage', iloc.join(' & '));
+      specRow2('Type', ins2);
+      specRow2('Coverage', iloc.join(' & '));
+      if (_foamOn2) {
+        var _fw3 = [];
+        if (chk('st_foamRoof'))  _fw3.push('Roof');
+        if (chk('st_foamWalls')) _fw3.push('Walls');
+        specRow2('Spray Foam', 'Included \u2014 ' + _fw3.join(' & '));
       }
     }
 
@@ -38029,6 +38065,28 @@ window.SauceMaterials.calcHeadLockScrews = function(Q, WALLS, shedCfgs, allDoors
 // Walls: linear ft from sidewall metal + wainscot metal × 3 = sqft
 // Vinyl Back → 300 sqft rolls. All others → 750 sqft rolls.
 
+// Roof and wall panel area, worked out regardless of which insulation was
+// chosen. Spray foam is selected alongside insulation, not instead of it, so
+// it cannot lean on the insulation coverage toggles for its own area.
+window.SauceMaterials.panelAreas = function(Q, WALLS, shedCfgs) {
+  function lf(items) { return linearFtFromItems(items || []); }
+  var roofLf = 0, wallLf = 0;
+  try {
+    var allSheds = shedCfgs || window._shedConfigs || [];
+    roofLf = lf(window.SauceMaterials.calcRoofMetal(Q, allSheds));
+  } catch (e) {}
+  try {
+    wallLf = lf(window.SauceMaterials.calcSidewallMetal(Q, WALLS, shedCfgs))
+           + lf(window.SauceMaterials.calcWainscotMetal(Q, WALLS, shedCfgs))
+           + lf(window._shedOnlyMode ? [] : window.SauceMaterials.calcGableMetal(Q, WALLS))
+           + lf(window.SauceMaterials.calcStepGableMetal(Q));
+  } catch (e) {}
+  return {                                   // panels cover 3 ft
+    roof:  Math.round(roofLf * 3),
+    walls: Math.round(wallLf * 3)
+  };
+};
+
 window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
   var insulType  = (document.getElementById('st_insulation')||{}).value || 'None';
   if (insulType === 'None') return [];
@@ -38036,10 +38094,6 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
   var insulRoof  = !!(document.getElementById('st_insulRoof')||{}).checked;
   var insulWalls = !!(document.getElementById('st_insulWalls')||{}).checked;
   if (!insulRoof && !insulWalls) return [];
-
-  // Spray foam is applied on site, so there is nothing to order by the roll.
-  // The area is worked out the same way and handed to the pricing side.
-  var isSprayFoam = insulType === 'Spray Foam';
 
   var isVinyl  = insulType.indexOf('Vinyl Back') !== -1;
   var rollSize = isVinyl ? 300 : 750;
@@ -38134,17 +38188,6 @@ window.SauceMaterials.calcInsulation = function(Q, WALLS, shedCfgs) {
   }
 
   var totalLinFt = roofLinFt + wallLinFt;
-
-  if (isSprayFoam) {
-    // Same panel coverage the roll maths uses: linear feet x 3 ft wide.
-    window._sprayFoamArea = {
-      roof:  Math.round(roofLinFt * 3),
-      walls: Math.round(wallLinFt * 3),
-      total: Math.round(totalLinFt * 3)
-    };
-    return results;                 // nothing to order
-  }
-  window._sprayFoamArea = null;
 
   if (totalLinFt > 0) {
     // sqft -> rolls with NO rounding at the division, then a 10% waste factor,
@@ -43781,20 +43824,27 @@ window.sprayFoamRate = function() {
 };
 window.applySprayFoamOption = function() {
   try {
-    var sel = document.getElementById('st_insulation');
-    if (!sel) return;
-    var opt = Array.prototype.filter.call(sel.options, function(o){ return o.value === 'Spray Foam'; })[0];
-    var on  = window.sprayFoamEnabled();
-    if (on && !opt) {
-      opt = document.createElement('option');
-      opt.value = 'Spray Foam'; opt.textContent = 'Spray Foam';
-      sel.appendChild(opt);
-    } else if (!on && opt) {
-      // Never leave a company quoting an option they do not offer.
-      if (sel.value === 'Spray Foam') { sel.value = 'None'; try { onInsulationChange(); } catch(e) {} }
-      opt.remove();
+    var block = document.getElementById('sprayFoamBlock');
+    if (!block) return;
+    var on = window.sprayFoamEnabled();
+    block.style.display = on ? '' : 'none';
+    if (!on) {
+      // Never leave a company quoting something they do not offer.
+      var cb = document.getElementById('st_sprayFoam');
+      if (cb && cb.checked) { cb.checked = false; window.onSprayFoamChange(); }
     }
   } catch (e) {}
+};
+
+// Reveal the roof/wall choice only once foam is actually selected.
+window.onSprayFoamChange = function() {
+  try {
+    var on = !!(document.getElementById('st_sprayFoam') || {}).checked;
+    var loc = document.getElementById('sprayFoamLoc');
+    if (loc) loc.style.display = on ? '' : 'none';
+  } catch (e) {}
+  try { scheduleBuild(); } catch (e) {}
+  try { updateStripFromLocalCalc(); } catch (e) {}
 };
 
 window.concreteIncludes = function() {
@@ -45406,6 +45456,37 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
   return lines;
 };
 
+// ── SPRAY FOAM ───────────────────────────────────────────────────────────────
+// Selected alongside insulation, not instead of it — most jobs that get foam
+// also get Therma Guard — so it has its own coverage toggles and its own line.
+window.SauceLabor.calcSprayFoamAdder = function() {
+  if (!(document.getElementById('st_sprayFoam') || {}).checked) return null;
+  var onRoof  = !!(document.getElementById('st_foamRoof')  || {}).checked;
+  var onWalls = !!(document.getElementById('st_foamWalls') || {}).checked;
+  if (!onRoof && !onWalls) return null;
+
+  var rate = window.sprayFoamRate ? window.sprayFoamRate()
+                                  : window.SauceRates.v('labor.insulation.sprayFoam');
+  if (!rate) return null;
+
+  var SM = window.SauceMaterials;
+  if (!SM || !SM.panelAreas) return null;
+  var a = SM.panelAreas(window._Q, window._WALLS, window._shedConfigs || []);
+
+  var sqft = (onRoof ? a.roof : 0) + (onWalls ? a.walls : 0);
+  if (!sqft) return null;
+
+  var parts = [];
+  if (onRoof  && a.roof)  parts.push('roof ' + a.roof.toLocaleString() + ' sqft');
+  if (onWalls && a.walls) parts.push('walls ' + a.walls.toLocaleString() + ' sqft');
+
+  return {
+    label: 'Spray Foam  |  ' + parts.join(' + ')
+         + ' = ' + sqft.toLocaleString() + ' sqft @ $' + rate.toFixed(2),
+    amount: sqft * rate
+  };
+};
+
 // ── INSULATION ADDER -────────────────────────────────────────────────────────
 // Per sqft off total rolls sold
 window.SauceLabor.calcInsulationAdder = function() {
@@ -45428,26 +45509,6 @@ window.SauceLabor.calcInsulationAdder = function() {
     '3 Vinyl Back':   _v3,
     '4 Vinyl Back':   _v4
   };
-  // Spray foam is a straight rate per square foot of what it covers.
-  if (insulType === 'Spray Foam') {
-    var SMf = window.SauceMaterials;
-    if (!SMf || !SMf.calcInsulation) return null;
-    SMf.calcInsulation(window._Q, window._WALLS, window._shedConfigs || []);
-    var area = window._sprayFoamArea;
-    if (!area || !area.total) return null;
-    var foamRate = window.sprayFoamRate ? window.sprayFoamRate()
-                                        : R.v('labor.insulation.sprayFoam');
-    if (!foamRate) return null;
-    var parts = [];
-    if (area.roof)  parts.push('roof ' + area.roof.toLocaleString() + ' sqft');
-    if (area.walls) parts.push('walls ' + area.walls.toLocaleString() + ' sqft');
-    return {
-      label: 'Spray Foam  |  ' + parts.join(' + ')
-           + ' = ' + area.total.toLocaleString() + ' sqft @ $' + foamRate.toFixed(2),
-      amount: area.total * foamRate
-    };
-  }
-
   var rate = rates[insulType] || 0;
   if (!rate) return null;
 
@@ -45680,6 +45741,10 @@ window.SauceLabor.calculate = function(overrideConfig) {
   // 8. Insulation
   var insul = SL.calcInsulationAdder();
   if (insul) lines.push(insul);
+
+  // 8a. Spray foam — its own line, so it can sit beside Therma Guard
+  var foam = SL.calcSprayFoamAdder && SL.calcSprayFoamAdder();
+  if (foam) lines.push(foam);
 
   // 8b. OSB sheathing labor — $10/sheet for walls (stud only) + roof (all wood truss)
   (function() {
