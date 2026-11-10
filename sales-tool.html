@@ -7604,6 +7604,7 @@ function serializeConfig() {
       barjoistQty:(document.getElementById('st_barjoistQty')||{}).value||'0',
       barjoists: JSON.parse(JSON.stringify(window._barjoists||[])),
       pitch612:  !!(document.getElementById('st_pitch612')||{}).checked,
+      longMileage: (document.getElementById('st_longMileage')||{}).checked !== false,
       wetSetPosts:!!(document.getElementById('st_wetSetPosts')||{}).checked,
       sonoTube:!!(document.getElementById('st_sonoTube')||{}).checked,
       rockWainscot:!!(document.getElementById('st_rockWainscot')||{}).checked,
@@ -7923,6 +7924,7 @@ function restoreConfig(cfg) {
       _sv('st_barjoistQty',sf.barjoistQty);
       if(sf.barjoists) { window._barjoists = sf.barjoists; renderBarjoists(); }
       _sv('st_pitch612',  sf.pitch612);
+      _sv('st_longMileage', sf.longMileage !== false);
       _sv('st_wetSetPosts',sf.wetSetPosts);
       _sv('st_sonoTube',sf.sonoTube);
       _sv('st_rockWainscot',sf.rockWainscot);
@@ -27911,6 +27913,25 @@ window.renderShippingControls = function() {
        +    '</div>'
        +  '</div>';
 
+  // The long-haul labor adder belongs here rather than in Upgrades: it is
+  // decided by the address, so it sits with the mileage that triggers it.
+  // Kept in the DOM at all times so switching it off survives an address
+  // change; only shown once the job is actually beyond 200 miles.
+  var _miles = parseFloat(window._cachedMileage) || 0;
+  html += '<div id="st_lmWrap" style="flex-basis:100%;' + (_miles > 200 ? '' : 'display:none;') + '">'
+       +    '<label for="st_longMileage" style="display:flex;align-items:center;gap:7px;cursor:pointer;'
+       +      'padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:#f4f6f8;">'
+       +      '<input type="checkbox" id="st_longMileage" checked '
+       +        'onchange="try{updateStripFromLocalCalc();}catch(e){}" '
+       +        'style="width:14px;height:14px;cursor:pointer;flex-shrink:0;margin:0;">'
+       +      '<span style="flex:1;font-size:10px;font-weight:600;color:var(--navy);line-height:1.3;">'
+       +        'Long-haul labor adder'
+       +        '<span style="display:block;font-size:9px;font-weight:600;color:var(--muted);">'
+       +          'Applies beyond 200 mi. Untick to waive it.</span>'
+       +      '</span>'
+       +    '</label>'
+       +  '</div>';
+
   wrap.innerHTML = html
     + '<div id="st_shipCtlNote" style="flex-basis:100%;font-size:9px;color:var(--muted);min-height:11px;"></div>';
 
@@ -27923,6 +27944,22 @@ window.renderShippingControls = function() {
 
   var fp = document.getElementById('st_fuelPct');
   if (fp) fp.onchange = function() { window._saveFuelPct(parseFloat(this.value)); };
+
+  // Re-rendering rebuilds the checkbox, so put the salesman's choice back.
+  var lm = document.getElementById('st_longMileage');
+  if (lm) {
+    if (window._longMileageOff) lm.checked = false;
+    lm.addEventListener('change', function(){ window._longMileageOff = !this.checked; });
+  }
+};
+
+// Show or hide the long-haul row as the mileage changes, without rebuilding
+// the whole control strip on every keystroke in the address field.
+window.syncLongMileageRow = function() {
+  var w = document.getElementById('st_lmWrap');
+  if (!w) return;
+  var m = parseFloat(window._cachedMileage) || 0;
+  w.style.display = (m > 200) ? '' : 'none';
 };
 
 // Kept so older call sites still work.
@@ -28031,6 +28068,7 @@ async function doAddressLookup(addrOverride) {
   // Apply results
   _cachedMileage        = mileage;
   window._cachedMileage = mileage;
+  try { if (window.syncLongMileageRow) window.syncLongMileageRow(); } catch(e) {}
   _cachedZip            = zip;
   _cachedCounty         = county;
   window._cachedCity    = city;
@@ -46350,11 +46388,17 @@ window.SauceLabor.calculate = function(overrideConfig) {
   var afterMin = Math.max(subtotal, minimum);
   var minApplied = afterMin > subtotal;
 
-  // 11. Mileage (after minimum) — 10% labor upcharge beyond 200 miles
+  // 11. Mileage (after minimum) - labor upcharge beyond 200 miles. The salesman
+  // can waive it per quote with the Long-Haul Labor Adder toggle; it is on by
+  // default, so leaving it alone bills exactly as before.
   var mileageAmt = 0;
-  if (mileage > 200) {
-    mileageAmt = afterMin * (window.SauceRates ? window.SauceRates.v('labor.installAdder.longMileagePct') : 0);
-    lines.push({ label: 'Mileage Upcharge  |  ' + mileage + ' mi → 10%  |  $' + afterMin.toFixed(2) + ' × 10%', amount: mileageAmt });
+  var _lmEl = document.getElementById('st_longMileage');
+  var _lmOn = _lmEl ? !!_lmEl.checked : true;
+  if (mileage > 200 && _lmOn) {
+    var _lmPct = window.SauceRates ? window.SauceRates.v('labor.installAdder.longMileagePct') : 0;
+    mileageAmt = afterMin * _lmPct;
+    var _lmTxt = (_lmPct * 100).toFixed(0) + '%';
+    lines.push({ label: 'Mileage Upcharge  |  ' + mileage + ' mi \u2192 ' + _lmTxt + '  |  $' + afterMin.toFixed(2) + ' \u00d7 ' + _lmTxt, amount: mileageAmt });
   }
 
   var finalLabor = afterMin + mileageAmt;
@@ -46385,9 +46429,11 @@ window.SauceLabor.calculateAll = function() {
     var soAfterMin = Math.max(soSubtotal, soMin);
     var soMileage = parseFloat(window._cachedMileage || 0) || 0;
     var soMileageAmt = 0;
-    if (soMileage > 200) {
-      soMileageAmt = soAfterMin * (window.SauceRates ? window.SauceRates.v('labor.installAdder.longMileagePct') : 0);
-      soLines.push({ label: 'Mileage Upcharge  |  ' + soMileage + ' mi (+10%)', amount: soMileageAmt });
+    var _soLmEl = document.getElementById('st_longMileage');
+    if (soMileage > 200 && (_soLmEl ? !!_soLmEl.checked : true)) {
+      var _soPct = window.SauceRates ? window.SauceRates.v('labor.installAdder.longMileagePct') : 0;
+      soMileageAmt = soAfterMin * _soPct;
+      soLines.push({ label: 'Mileage Upcharge  |  ' + soMileage + ' mi (+' + (_soPct*100).toFixed(0) + '%)', amount: soMileageAmt });
     }
     var shedResult = {
       lines: soLines,
