@@ -25516,7 +25516,7 @@ function buildEmailQuoteModal() {
   m.id = 'emailQuoteModal';
   m.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center;';
   m.innerHTML = '<div style="background:#2e2e2e;border:1px solid rgba(var(--gold-rgb),.25);border-radius:16px;padding:28px 28px 24px;width:90%;max-width:440px;font-family:Outfit,sans-serif;">'
-    + '<div style="font-size:15px;font-weight:800;color:#f0f3f7;margin-bottom:4px;">Download Quote PDF</div>'
+    + '<div style="font-size:15px;font-weight:800;color:#f0f3f7;margin-bottom:4px;">Quote PDF &amp; Email</div>'
     + '<div style="font-size:10px;color:#8f8f8f;margin-bottom:8px;line-height:1.45;">Pick the prices to show, then download. Attach the PDF to your own email — replies come straight back to you.</div>'
     + '<div style="font-size:11px;color:#888888;margin-bottom:20px;" id="eqQuoteIdLabel"></div>'
     + '<div style="display:flex;flex-direction:column;gap:12px;">'
@@ -25559,6 +25559,18 @@ function buildEmailQuoteModal() {
     + '<div style=\'font-size:10px;color:#888888;margin-top:1px;\'>PDF attachment included with email</div></div>'
     + '</label>'
     + '<div><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#888888;margin-bottom:4px;">Personal Note (optional)</div>'
+    + '<div style="display:flex;gap:8px;margin-bottom:8px;">'
+    +   '<div style="flex:1;display:flex;flex-direction:column;gap:3px;">'
+    +     '<label for="eqTo" style="font-size:10px;color:#9aa0a6;font-weight:600;">Send to</label>'
+    +     '<input id="eqTo" type="email" placeholder="customer@example.com" '
+    +       'style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:#2a2a32;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;">'
+    +   '</div>'
+    +   '<div style="flex:1;display:flex;flex-direction:column;gap:3px;">'
+    +     '<label for="eqCc" style="font-size:10px;color:#9aa0a6;font-weight:600;">Copy to (optional)</label>'
+    +     '<input id="eqCc" type="email" placeholder="you@example.com" '
+    +       'style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:#2a2a32;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;">'
+    +   '</div>'
+    + '</div>'
     + '<textarea id="eqNote" rows="3" placeholder="Notes to print on the quote (optional)" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(var(--gold-rgb),.25);background:#4B4B4B;color:#f0f3f7;font-size:12px;font-family:Outfit,sans-serif;resize:vertical;"></textarea></div>'
     + '</div>'
     + '<div style="display:flex;gap:10px;margin-top:20px;">'
@@ -25951,26 +25963,87 @@ async function sendSalesQuoteEmail() {
       + (window._shedOnlyMode ? '_Side_Shed' : '_Building') + '_Quote'
       + '_' + new Date().toISOString().slice(0, 10) + '.pdf';
 
-    var _dlUrl = URL.createObjectURL(_pdfBlob);
-    var _a = document.createElement('a');
-    _a.href = _dlUrl;
-    _a.download = _fileName;
-    document.body.appendChild(_a);
-    _a.click();
-    document.body.removeChild(_a);
-    setTimeout(function(){ URL.revokeObjectURL(_dlUrl); }, 10000);
+    // Download a copy for the salesman's own records, then send.
+    function _dl() {
+      var u = URL.createObjectURL(_pdfBlob);
+      var a = document.createElement('a');
+      a.href = u; a.download = _fileName;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function(){ URL.revokeObjectURL(u); }, 10000);
+    }
 
-    // The 3D view link is worth having on the clipboard — it is the thing a
-    // salesman usually wants to paste into the same email as the attachment.
+    var _to = ((document.getElementById('eqTo')||{}).value || '').trim();
+    var _cc = ((document.getElementById('eqCc')||{}).value || '').trim();
+
+    // No recipient means the salesman just wants the file.
+    if (!_to) {
+      _dl();
+      try { if (navigator.clipboard && _filteredLink) await navigator.clipboard.writeText(_filteredLink); } catch(e) {}
+      btn.textContent = '[OK] Downloaded';
+      setTimeout(function(){
+        closeEmailQuoteModal();
+        btn.disabled = false; btn.textContent = 'Download PDF';
+      }, 1400);
+      return;
+    }
+
+    // Send it. The PDF rides along as base64 so the customer gets the
+    // attachment without the salesman touching his mail client.
+    btn.textContent = 'Sending\u2026';
+    var _b64 = await new Promise(function(resolve, reject) {
+      var fr = new FileReader();
+      fr.onload  = function(){ resolve(String(fr.result).split(',')[1] || ''); };
+      fr.onerror = function(){ reject(new Error('Could not read the PDF.')); };
+      fr.readAsDataURL(_pdfBlob);
+    });
+
+    var _co   = (window._companySettings && window._companySettings.brandName) || currentCompanyName() || '';
+    var _first = (_custName && _custName !== 'Customer') ? _custName.split(' ')[0] : '';
+    var _subj = (_custName && _custName !== 'Customer' ? _custName + ' \u2014 ' : '')
+              + 'Building Quote' + (_co ? ' from ' + _co : '');
+    var _text = 'Hi' + (_first ? ' ' + _first : '') + ',\n\n'
+              + 'Your building quote is attached.\n\n'
+              + (note ? note + '\n\n' : '')
+              + (_filteredLink ? 'View the building in 3D:\n' + _filteredLink + '\n\n' : '')
+              + ((_cu.fullName || _cu.username || '') ? (_cu.fullName || _cu.username) + '\n' : '')
+              + (_cu.phone ? _cu.phone + '\n' : '')
+              + (_co || '');
+
+    var _res = null;
     try {
-      if (navigator.clipboard && _filteredLink) await navigator.clipboard.writeText(_filteredLink);
-    } catch(e) {}
+      _res = await sbFunction('send-email', {
+        to: _to, cc: _cc, subject: _subj, text: _text,
+        pdfBase64: _b64, filename: _fileName
+      }, 60000);
+    } catch (e) {
+      _res = { error: e.message };
+    }
 
-    btn.textContent = '[OK] Downloaded';
-    setTimeout(function(){
-      closeEmailQuoteModal();
-      btn.disabled = false; btn.textContent = 'Download PDF';
-    }, 1400);
+    if (_res && _res.success) {
+      _dl();   // keep a copy locally too
+      btn.textContent = '[OK] Sent to ' + _to;
+      setTimeout(function(){
+        closeEmailQuoteModal();
+        btn.disabled = false; btn.textContent = 'Download PDF';
+      }, 1800);
+    } else {
+      // Never leave the salesman with nothing: hand him the file and his own
+      // mail client, and say plainly why the send did not go.
+      _dl();
+      var _why = (_res && _res.error) || 'the mail service did not respond.';
+      var _mail = 'mailto:' + encodeURIComponent(_to)
+                + '?subject=' + encodeURIComponent(_subj)
+                + (_cc ? '&cc=' + encodeURIComponent(_cc) : '')
+                + '&body=' + encodeURIComponent(_text + '\n\n(' + _fileName + ' is in your Downloads folder \u2014 attach it before sending.)');
+      try { window.open(_mail, '_blank'); } catch(e) {}
+      btn.textContent = 'Opened your mail app';
+      alert('The quote could not be sent from the tool: ' + _why
+            + '\n\nThe PDF has been downloaded and your mail app opened instead \u2014 attach it and send.');
+      setTimeout(function(){
+        closeEmailQuoteModal();
+        btn.disabled = false; btn.textContent = 'Download PDF';
+      }, 1200);
+    }
   } catch(err) {
     btn.disabled = false; btn.textContent = 'Download PDF';
     alert('Could not build the PDF: ' + err.message);
@@ -62400,6 +62473,15 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     document.body.appendChild(modal);
 
     // Dismiss on backdrop click — but require the mousedown to ALSO start on the backdrop
+    // Prefill: the customer's address off the form, a copy to the salesman.
+    try {
+      var _to = document.getElementById('eqTo');
+      if (_to && !_to.value) _to.value = ((document.getElementById('st_email')||{}).value || '').trim();
+      var _cc = document.getElementById('eqCc');
+      var _me = (window.currentUser || {}).email || '';
+      if (_cc && !_cc.value) _cc.value = _me;
+    } catch(e) {}
+
     // so selecting text in an input and releasing outside doesn't accidentally close the modal.
     var _cmpMouseDownOnBackdrop = false;
     modal.addEventListener('mousedown', function(e) { _cmpMouseDownOnBackdrop = (e.target === modal); });
