@@ -27481,6 +27481,7 @@ async function loadCompanySettings() {
     applyCompanyBranding();
     try { window.refreshAccountButtons(); } catch(e) {}
     console.log('[Company] settings loaded for', window._companySettings.companyId, '| origin:', SHOP_ADDRESS || '(none set)');
+    try { if (typeof window.renderOriginPicker === 'function') window.renderOriginPicker(); } catch(e) {}
     return j.settings;
   } catch(e) {
     console.warn('[Company] settings load failed:', e);
@@ -27516,6 +27517,164 @@ function scheduleAddressLookup() {
   _addrTimer = setTimeout(doAddressLookup, 1200);
 }
 
+// ====================================================================
+// SHIPPING ORIGINS - the yard a job is measured FROM.
+// The list lives in the rate profile (Pricing -> Shipping), one per line as
+// "Label | Address", so a new yard is a text edit, not a code change.
+// Coordinates are geocoded on first use and cached, so picking an origin
+// costs one lookup ever rather than one per quote.
+// ====================================================================
+window.SauceOrigins = {
+  DEFAULT_LABEL: 'Default',
+
+  list: function() {
+    var raw = '';
+    try { raw = window.SauceRates ? window.SauceRates.text('shipping.origins', '') : ''; } catch(e) {}
+    var out = [];
+    String(raw || '').split(/\r?\n/).forEach(function(line) {
+      line = line.trim();
+      if (!line) return;
+      var bar   = line.indexOf('|');
+      var label = bar === -1 ? line : line.slice(0, bar).trim();
+      var addr  = bar === -1 ? line : line.slice(bar + 1).trim();
+      if (!addr) addr = label;
+      if (addr) out.push({ label: label || addr, address: addr });
+    });
+    // Always offer the company's own origin so this can never leave the tool
+    // with nothing to ship from.
+    var co = (window._companySettings && window._companySettings.shopAddress) || SHOP_ADDRESS || '';
+    if (co && !out.some(function(o){ return o.address.toLowerCase() === co.toLowerCase(); })) {
+      out.unshift({ label: window.SauceOrigins.DEFAULT_LABEL, address: co });
+    }
+    return out;
+  },
+
+  current: function() {
+    var all = this.list();
+    if (!all.length) return null;
+    var saved = '';
+    try { saved = localStorage.getItem('sauceShipOrigin') || ''; } catch(e) {}
+    var hit = all.filter(function(o){ return o.address === saved; })[0];
+    return hit || all[0];
+  },
+
+  set: function(address) {
+    try { localStorage.setItem('sauceShipOrigin', address || ''); } catch(e) {}
+  },
+
+  // Returns {lat,lng} for an address, geocoding once and remembering it.
+  coords: async function(addr) {
+    if (!addr) return null;
+    var key = 'sauceOriginGeo::' + addr.toLowerCase();
+    window._originCoords = window._originCoords || {};
+    if (window._originCoords[key]) return window._originCoords[key];
+    try {
+      var cached = JSON.parse(localStorage.getItem(key) || 'null');
+      if (cached && cached.lat) { window._originCoords[key] = cached; return cached; }
+    } catch(e) {}
+    try {
+      var url = 'https://maps.googleapis.com/maps/api/geocode/json?address='
+              + encodeURIComponent(addr) + '&key=' + window._SAUCE_GKEY;
+      var r = await fetch(url);
+      var d = await r.json();
+      if (!d.results || !d.results.length) return null;
+      var loc = d.results[0].geometry.location;
+      var c = { lat: loc.lat, lng: loc.lng };
+      window._originCoords[key] = c;
+      try { localStorage.setItem(key, JSON.stringify(c)); } catch(e) {}
+      console.log('[Origin] geocoded', addr, '->', c.lat, c.lng);
+      return c;
+    } catch(e) { console.log('[Origin] geocode failed for', addr, e.message); return null; }
+  }
+};
+
+// Shipping controls that sit under the job address: which yard to measure
+// from, and the fuel upcharge. The fuel field edits the COMPANY setting, so
+// changing it here is the same as changing it in Pricing - Shipping.
+window.renderShippingControls = function() {
+  var host = document.getElementById('st_mileageDisplay');
+  if (!host) return;
+
+  var wrap = document.getElementById('st_shipCtl');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.id = 'st_shipCtl';
+    wrap.style.cssText = 'margin-top:5px;display:flex;flex-direction:column;gap:4px;';
+    host.parentNode.insertBefore(wrap, host.nextSibling);
+  }
+
+  var all = window.SauceOrigins.list();
+  var cur = window.SauceOrigins.current();
+
+  // Origin picker - only worth showing when there is a choice to make.
+  var selHtml = '';
+  if (all.length > 1) {
+    selHtml = '<select id="st_shipOrigin" title="Measure delivery from this yard" '
+      + 'style="width:100%;font-size:10px;padding:4px 6px;border-radius:6px;border:1px solid rgba(255,255,255,.18);'
+      + 'background:#2a2a32;color:#f0f3f7;font-family:Outfit,sans-serif;">'
+      + all.map(function(o) {
+          return '<option value="' + o.address.replace(/"/g,'&quot;') + '"'
+               + (cur && o.address === cur.address ? ' selected' : '') + '>Ship from: '
+               + o.label.replace(/</g,'&lt;') + '</option>';
+        }).join('')
+      + '</select>';
+  }
+
+  var fuel = 0;
+  try { fuel = window.SauceRates.raw('shipping.fuelPct') || 0; } catch(e) {}
+
+  wrap.innerHTML = selHtml
+    + '<div style="display:flex;align-items:center;gap:6px;">'
+    +   '<label for="st_fuelPct" style="flex:1;font-size:10px;color:#9aa0a6;font-family:Outfit,sans-serif;">Fuel upcharge</label>'
+    +   '<input id="st_fuelPct" type="number" min="0" max="100" step="0.5" value="' + fuel + '" '
+    +     'title="Percent added to the delivery charge. 0 switches it off. Saves for the whole company." '
+    +     'style="width:58px;padding:3px 5px;border-radius:6px;border:1px solid rgba(255,255,255,.18);'
+    +     'background:#2a2a32;color:#facc15;font-size:11px;font-weight:700;text-align:right;font-family:Outfit,sans-serif;">'
+    +   '<span style="font-size:10px;color:#9aa0a6;">%</span>'
+    + '</div>'
+    + '<div id="st_shipCtlNote" style="font-size:9px;color:#9aa0a6;min-height:11px;"></div>';
+
+  var sel = document.getElementById('st_shipOrigin');
+  if (sel) sel.onchange = function() {
+    window.SauceOrigins.set(this.value);
+    var a = (document.getElementById('st_address') || {}).value || '';
+    if (a) { try { doAddressLookup(a); } catch(e) {} }
+  };
+
+  var fp = document.getElementById('st_fuelPct');
+  if (fp) fp.onchange = function() { window._saveFuelPct(parseFloat(this.value)); };
+};
+
+// Kept so older call sites still work.
+window.renderOriginPicker = function() { window.renderShippingControls(); };
+
+// Write the fuel upcharge to the company rate profile and reprice. Falls back
+// to this browser only if the save is refused, and says so rather than looking
+// like it saved.
+window._saveFuelPct = async function(pct) {
+  var note = document.getElementById('st_shipCtlNote');
+  function say(m, c) { if (note) { note.textContent = m || ''; note.style.color = c || '#9aa0a6'; } }
+
+  if (isNaN(pct) || pct < 0) pct = 0;
+
+  var obj = window.SauceRates.all();
+  if (!obj.shipping || typeof obj.shipping !== 'object') obj.shipping = {};
+  obj.shipping.fuelPct = pct;
+  window.SauceRates.save(obj);                     // live immediately
+  try { if (typeof window.schedulePrice === 'function') window.schedulePrice(); } catch(e) {}
+  try { if (typeof updateStripFromLocalCalc === 'function') updateStripFromLocalCalc(); } catch(e) {}
+
+  say('Saving\u2026');
+  try {
+    var res = await window._persistRatesForCompany(obj, 'Company Rates');
+    if (res && res.ok) say(pct > 0 ? ('Fuel upcharge set to ' + pct + '% for the company.') : 'Fuel upcharge switched off.', '#86efac');
+    else say('Applied on this device only \u2014 ' + ((res && res.why) || 'the rate store refused the write.'), '#f59e0b');
+  } catch(e) {
+    say('Applied on this device only \u2014 ' + e.message, '#f59e0b');
+  }
+  setTimeout(function(){ say(''); }, 6000);
+};
+
 async function doAddressLookup(addrOverride) {
   clearTimeout(_addrTimer);
   var addr = addrOverride || (document.getElementById('st_address')||{}).value || '';
@@ -27534,7 +27693,21 @@ async function doAddressLookup(addrOverride) {
   if (display) { display.textContent = 'Calculating distance...'; display.style.color = '#888'; }
 
   var GKEY = 'AIzaSyCs2SXmB1WkirXhYmIrH4xedaWs-xZ2JV8';
+  window._SAUCE_GKEY = GKEY;
+  // Falls back to the original yard when no origin is picked or geocoding fails,
+  // so a delivery is never routed from nowhere.
   var SHOP_LAT = 35.4496, SHOP_LNG = -87.3372;
+  var _origin = null;
+  try { _origin = window.SauceOrigins ? window.SauceOrigins.current() : null; } catch(e) {}
+  if (_origin && _origin.address) {
+    var _oc = await window.SauceOrigins.coords(_origin.address);
+    if (_oc) {
+      SHOP_LAT = _oc.lat; SHOP_LNG = _oc.lng;
+      console.log('[Addr] origin:', _origin.label, '|', _origin.address);
+    } else {
+      console.log('[Addr] could not geocode origin "' + _origin.address + '" - using the default yard');
+    }
+  }
   var mileage = 0, zip = '', county = '', city = '', state = '';
 
   try {
@@ -27586,7 +27759,7 @@ async function doAddressLookup(addrOverride) {
 
   if (display) {
     if (mileage > 0) {
-      var msg = mileage + ' mi from shop';
+      var msg = mileage + ' mi from ' + ((_origin && _origin.label) || 'shop');
       if (city && state) msg += '  ·  ' + city + ', ' + state;
       if (zip)           msg += '  ·  ' + zip;
       if (county)        msg += '  ·  ' + county + ' Co.';
@@ -40871,6 +41044,9 @@ window.SauceRates = (function() {
       perMile: 0,    // one-way rate per mile
       minCharge: 0,    // never charge less than this when miles > 0
       freeMiles: 0,    // miles included before per-mile billing starts
+      // Where delivery is measured FROM. One per line, "Label | Address".
+      // Edited in Pricing -> Shipping; the salesman picks one on the form.
+      origins: '',
       fuelPct: 0,    // percent added to the delivery charge (0 = off)
       fuelStartMiles: 0,    // surcharge applies beyond this distance (0 = off)
       fuelPerMile: 0,    // surcharge per mile past fuelStartMiles
@@ -41141,6 +41317,9 @@ window.SauceRates = (function() {
           _persist(pick.rates);
         }
         console.log('[Rates] profiles synced:', _profiles.length, '| active:', _activeId || '(built-in)');
+        // The ship-from list lives in the rates, so the picker can only be
+        // built once they have landed.
+        try { if (typeof window.renderOriginPicker === 'function') window.renderOriginPicker(); } catch(e) {}
         // The basic-user list lives in the profile that just landed, so the
         // toolbar was decided before it was known. Decide it again now — this
         // is why it took a hard refresh (which reads the cached profile
@@ -44505,6 +44684,21 @@ window.concreteIncludes = function() {
       + '</div>';
   }
 
+  // Multi-line text rate (origin list, and anything else that is a list rather
+  // than a number). Saved by savePricingPanel alongside the numeric fields.
+  function _pcText(path, label, placeholder, rows) {
+    var v = '';
+    try { v = window.SauceRates.text(path, ''); } catch(e) {}
+    return '<div style="padding:5px 0;border-bottom:1px solid rgba(255,255,255,.05);">'
+      + (label ? '<label style="display:block;font-size:11px;color:#c8c8c8;margin-bottom:4px;font-family:Outfit,sans-serif;">' + label + '</label>' : '')
+      + '<textarea data-pc-text="' + path + '" rows="' + (rows || 3) + '" placeholder="' + String(placeholder||'').replace(/"/g,'&quot;') + '" '
+      +   'style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #5e5e5e;'
+      +   'background:#2b2b2b;color:#fff;font-size:11px;font-family:Outfit,sans-serif;line-height:1.5;resize:vertical;">'
+      +   String(v || '').replace(/</g,'&lt;')
+      + '</textarea>'
+      + '</div>';
+  }
+
   function _pcSection(t) {
     return '<div style="margin:14px 0 4px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#8f8f8f;font-family:Outfit,sans-serif;">' + t + '</div>';
   }
@@ -44540,6 +44734,8 @@ window.concreteIncludes = function() {
   // profile yet, make one — otherwise the numbers live in one browser and every
   // salesman still prices on zeros.
   async function _persistRatesForCompany(rates, newName) {
+    // (exposed below as window._persistRatesForCompany so the shipping controls
+    // on the form can write the company setting, not just this modal)
     var act = null;
     try { act = window.SauceRates.active(); } catch(e) {}
     if (act && act.canEdit) {
@@ -44557,6 +44753,7 @@ window.concreteIncludes = function() {
     }
     return { ok: false, why: (j2 && j2.error) || 'the rate store refused the write.' };
   }
+  window._persistRatesForCompany = _persistRatesForCompany;
 
   window.savePricingPanel = async function(id) {
     var obj = window.SauceRates.all();
@@ -44571,7 +44768,22 @@ window.concreteIncludes = function() {
       var n = parseFloat(inputs[i].value);
       node[parts[parts.length - 1]] = isNaN(n) ? 0 : n;
     }
+
+    // Text rates (the ship-from list). Kept separate because a blank one must
+    // stay a blank string, not become 0 the way an empty number field does.
+    var texts = document.querySelectorAll('#' + id + 'Body [data-pc-text]');
+    for (var t = 0; t < texts.length; t++) {
+      var tp = texts[t].getAttribute('data-pc-text').split('.');
+      var tn = obj;
+      for (var k = 0; k < tp.length - 1; k++) {
+        if (!tn[tp[k]] || typeof tn[tp[k]] !== 'object') tn[tp[k]] = {};
+        tn = tn[tp[k]];
+      }
+      tn[tp[tp.length - 1]] = String(texts[t].value || '').trim();
+    }
+
     window.SauceRates.save(obj);
+    try { if (typeof window.renderOriginPicker === 'function') window.renderOriginPicker(); } catch(e) {}
     var st = document.getElementById(id + 'Status');
     function say(m, c) { if (st) { st.textContent = m; st.style.color = c || '#8f8f8f'; } }
 
@@ -44626,6 +44838,12 @@ window.concreteIncludes = function() {
       + _pcNum('shipping.fuelPct', 'Fuel upcharge %', 'Percent added to the delivery charge. Set to 0 to switch it off.')
       + _pcNum('shipping.fuelStartMiles', 'Applies beyond', 'Miles. Leave 0 to switch the per-mile surcharge off entirely.')
       + _pcNum('shipping.fuelPerMile',    'Per mile past that')
+      + _pcSection('Ship-from locations')
+      + '<div style="font-size:10px;color:#8f8f8f;padding:2px 0 6px;line-height:1.45;font-family:Outfit,sans-serif;">'
+      +   'One per line, as <b style="color:#c8c8c8;">Label | Address</b>. Two or more and a picker appears '
+      +   'under the job address so the salesman chooses which yard the delivery is measured from.'
+      + '</div>'
+      + _pcText('shipping.origins', '', 'Summertown | 3864 Summertown Hwy, Summertown, TN 38483\nMorristown | 4622 Eneka Hwy, Morristown, TN 37813', 4)
       + _pcSection('Long-haul installs')
       + _pcNum('shipping.longHaulPerMile', 'Per mile beyond 205', 'Added to door install jobs at a distance.');
     _pcShell('shippingPricingModal', 'Shipping', 'Delivery and mileage', html);
