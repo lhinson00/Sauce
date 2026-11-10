@@ -40743,7 +40743,12 @@ window.SauceDemo = (function() {
 // a customer might quote back at you at worst.
 function _showSkuCodes() {
   var info = window._priceListInfo || {};
-  if (!info.count) return false;                     // nothing loaded
+  // Count the loaded table directly as well - _priceListInfo is only written
+  // after a successful fetch, so an early render could hide codes that are
+  // in fact priced and ready.
+  var loaded = info.count
+            || Object.keys((window.SauceMaterials && window.SauceMaterials._priceTable) || {}).length;
+  if (!loaded) return false;                         // nothing loaded
   return window.SauceDemo ? !window.SauceDemo.active() : true;
 }
 
@@ -40866,6 +40871,7 @@ window.SauceRates = (function() {
       perMile: 0,    // one-way rate per mile
       minCharge: 0,    // never charge less than this when miles > 0
       freeMiles: 0,    // miles included before per-mile billing starts
+      fuelPct: 0,    // percent added to the delivery charge (0 = off)
       fuelStartMiles: 0,    // surcharge applies beyond this distance (0 = off)
       fuelPerMile: 0,    // surcharge per mile past fuelStartMiles
       longHaulPerMile: 0     // extra per mile on installs beyond 205 miles
@@ -44617,7 +44623,8 @@ window.concreteIncludes = function() {
       + _pcNum('shipping.freeMiles', 'Miles included',     'Billing starts after this many miles. 0 bills from the first mile.')
       + _pcNum('shipping.minCharge', 'Minimum charge',     'Never bill less than this once there is any mileage.')
       + _pcSection('Fuel surcharge')
-      + _pcNum('shipping.fuelStartMiles', 'Applies beyond', 'Miles. Leave 0 to switch the surcharge off entirely.')
+      + _pcNum('shipping.fuelPct', 'Fuel upcharge %', 'Percent added to the delivery charge. Set to 0 to switch it off.')
+      + _pcNum('shipping.fuelStartMiles', 'Applies beyond', 'Miles. Leave 0 to switch the per-mile surcharge off entirely.')
       + _pcNum('shipping.fuelPerMile',    'Per mile past that')
       + _pcSection('Long-haul installs')
       + _pcNum('shipping.longHaulPerMile', 'Per mile beyond 205', 'Added to door install jobs at a distance.');
@@ -45687,13 +45694,43 @@ window.SauceLabor.calcTax = function(materialTotal) {
 window.SauceLabor.calcShipping = function() {
   var miles = window._cachedMileage || 0;
   if (!miles) return null;
-  var perMile = window.SauceRates.v('labor.shippingPerMile');
-  var amount = miles * perMile;
-  return {
-    label:  'Shipping  |  ' + miles + ' mi × $' + perMile.toFixed(2) + '/mi',
-    amount: amount,
-    miles:  miles
-  };
+  var R = window.SauceRates;
+
+  // These are the keys the Pricing → Shipping screen actually edits. The older
+  // labor.shippingPerMile stays as a fallback so a profile that was only ever
+  // given that one keeps billing instead of dropping to zero.
+  var perMile   = R.v('shipping.perMile') || R.v('labor.shippingPerMile');
+  var freeMiles = R.v('shipping.freeMiles');
+  var minCharge = R.v('shipping.minCharge');
+  var fuelPct   = R.v('shipping.fuelPct');
+  var fuelStart = R.v('shipping.fuelStartMiles');
+  var fuelPer   = R.v('shipping.fuelPerMile');
+
+  var billable = Math.max(0, miles - freeMiles);
+  var amount   = billable * perMile;
+
+  // The minimum only bites once there is something to bill — a job inside the
+  // included radius is free, not minimum-charged.
+  if (billable > 0 && minCharge > 0 && amount < minCharge) amount = minCharge;
+
+  var label = 'Shipping  |  ' + miles + ' mi × $' + perMile.toFixed(2) + '/mi';
+  if (freeMiles > 0) label += '  (first ' + freeMiles + ' mi included)';
+
+  // Per-mile fuel surcharge past a distance, if the company uses one.
+  if (fuelStart > 0 && fuelPer > 0 && miles > fuelStart) {
+    var extraMiles = miles - fuelStart;
+    amount += extraMiles * fuelPer;
+    label  += '  + ' + extraMiles + ' mi fuel @ $' + fuelPer.toFixed(2);
+  }
+
+  // Percentage fuel upcharge on the delivery charge. Set it to 0 in
+  // Pricing → Shipping to switch it off.
+  if (fuelPct > 0) {
+    amount += amount * (fuelPct / 100);
+    label  += '  + ' + fuelPct + '% fuel';
+  }
+
+  return { label: label, amount: amount, miles: miles };
 };
 
 window.SauceLabor.calculate = function(overrideConfig) {
@@ -50632,7 +50669,7 @@ window.openMaterialsModal = function(initialTab) {
         info.appendChild(desc); info.appendChild(detail);
 
         var skuEl = document.createElement('div');
-        skuEl.style.cssText = 'font-size:11px;font-weight:800;color:var(--gold);white-space:nowrap;' + (isSignedInModal ? 'cursor:pointer;' : '');
+        skuEl.style.cssText = 'font-size:11px;font-weight:800;color:#facc15;white-space:nowrap;' + (isSignedInModal ? 'cursor:pointer;' : '');
         // Part codes stay out of the customer-facing list until a real inventory
         // is loaded — until then they are internal lookup keys, not anything a
         // salesman or customer should be reading. Description and quantity are
