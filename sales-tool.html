@@ -7525,7 +7525,7 @@ function newQuoteSameCustomer(){
 
 function serializeConfig() {
   return {
-    Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,steelGableOH:Q.steelGableOH||false,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,truss:Q.truss,frameType:Q.frameType,roofStyle:Q.roofStyle||'gable'},
+    Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,steelGableOH:Q.steelGableOH||false,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,truss:Q.truss,frameType:Q.frameType,roofStyle:Q.roofStyle||'gable',ventGap:!!Q.ventGap},
     walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,bayCount:w.bayCount,partialH:w.partialH,openLenFt:w.openLenFt,openStartFt:w.openStartFt,openPS:w.openPS,wallColor:w.wallColor||null,wainscot:(w.wainscot!=null?!!w.wainscot:null),wainscotColor:w.wainscotColor||null};}),
     doors: allDoors,
     stallPosts: window._stallPosts || [],
@@ -7534,6 +7534,7 @@ function serializeConfig() {
     awnings: window._awnings,
     sheds: window._shedConfigs||[],
     inset: window._inset || null,
+    shipOrigin: (function(){ try { return (window.SauceOrigins.current()||{}).address || ''; } catch(e) { return ''; } })(),
     lofts: window._loftConfigs||[],
     interiorWalls: window._interiorWalls||[],
     levelConfigs:  window._levelConfigs||[],
@@ -7684,6 +7685,11 @@ function restoreConfig(cfg) {
       // Restore eavePS/gablePS from saved Q or derive from walls
       if(cfg.Q.eavePS) Q.eavePS = cfg.Q.eavePS;
       if(cfg.Q.gablePS) Q.gablePS = cfg.Q.gablePS;
+      if(cfg.Q.ventGap != null) Q.ventGap = !!cfg.Q.ventGap;
+    }
+    // Price the reloaded quote from the yard it was quoted from.
+    if (cfg.shipOrigin) {
+      try { window.SauceOrigins.set(cfg.shipOrigin); window.renderShippingControls(); } catch(e) {}
     }
     (WALLS||[]).forEach(function(_w){ if(['left','right','front','back'].indexOf(_w.id)>=0){ _w.openLenFt=0; _w.openStartFt=0; _w.openPS=undefined; } });
     window._openWallActive=null;
@@ -27595,44 +27601,59 @@ window.renderShippingControls = function() {
   var host = document.getElementById('st_mileageDisplay');
   if (!host) return;
 
+  // Sit as a sibling row of the Email / Address row so the controls inherit the
+  // panel's own layout rather than being squeezed into the address column.
+  var row = host.parentNode && host.parentNode.parentNode;
+  if (!row) return;
+
   var wrap = document.getElementById('st_shipCtl');
   if (!wrap) {
     wrap = document.createElement('div');
     wrap.id = 'st_shipCtl';
-    wrap.style.cssText = 'margin-top:5px;display:flex;flex-direction:column;gap:4px;';
-    host.parentNode.insertBefore(wrap, host.nextSibling);
+    wrap.className = 'chip-row';
+    wrap.style.cssText = 'flex-wrap:wrap;gap:6px;margin-bottom:6px;';
+    row.parentNode.insertBefore(wrap, row.nextSibling);
   }
 
   var all = window.SauceOrigins.list();
   var cur = window.SauceOrigins.current();
+  var FIELD = "font-size:11px;padding:5px 6px;border-radius:7px;border:1px solid var(--border);"
+            + "background:#f4f6f8;font-family:'Outfit',sans-serif;font-weight:600;color:var(--navy);"
+            + "width:100%;box-sizing:border-box;";
+  var LABEL = 'font-size:9px;color:var(--muted);font-weight:600;';
+  var COL   = 'display:flex;flex-direction:column;gap:3px;flex:1;min-width:120px;';
 
-  // Origin picker - only worth showing when there is a choice to make.
-  var selHtml = '';
+  var html = '';
+
+  // Only worth a control when there is more than one yard to choose between.
   if (all.length > 1) {
-    selHtml = '<select id="st_shipOrigin" title="Measure delivery from this yard" '
-      + 'style="width:100%;font-size:10px;padding:4px 6px;border-radius:6px;border:1px solid rgba(255,255,255,.18);'
-      + 'background:#2a2a32;color:#f0f3f7;font-family:Outfit,sans-serif;">'
-      + all.map(function(o) {
-          return '<option value="' + o.address.replace(/"/g,'&quot;') + '"'
-               + (cur && o.address === cur.address ? ' selected' : '') + '>Ship from: '
-               + o.label.replace(/</g,'&lt;') + '</option>';
-        }).join('')
-      + '</select>';
+    html += '<div style="' + COL + '">'
+         +    '<div style="' + LABEL + '">Ship From</div>'
+         +    '<select id="st_shipOrigin" style="' + FIELD + '">'
+         +      all.map(function(o) {
+                  return '<option value="' + o.address.replace(/"/g,'&quot;') + '"'
+                       + (cur && o.address === cur.address ? ' selected' : '') + '>'
+                       + o.label.replace(/</g,'&lt;') + '</option>';
+                }).join('')
+         +    '</select>'
+         +  '</div>';
   }
 
   var fuel = 0;
   try { fuel = window.SauceRates.raw('shipping.fuelPct') || 0; } catch(e) {}
 
-  wrap.innerHTML = selHtml
-    + '<div style="display:flex;align-items:center;gap:6px;">'
-    +   '<label for="st_fuelPct" style="flex:1;font-size:10px;color:#9aa0a6;font-family:Outfit,sans-serif;">Fuel upcharge</label>'
-    +   '<input id="st_fuelPct" type="number" min="0" max="100" step="0.5" value="' + fuel + '" '
-    +     'title="Percent added to the delivery charge. 0 switches it off. Saves for the whole company." '
-    +     'style="width:58px;padding:3px 5px;border-radius:6px;border:1px solid rgba(255,255,255,.18);'
-    +     'background:#2a2a32;color:#facc15;font-size:11px;font-weight:700;text-align:right;font-family:Outfit,sans-serif;">'
-    +   '<span style="font-size:10px;color:#9aa0a6;">%</span>'
-    + '</div>'
-    + '<div id="st_shipCtlNote" style="font-size:9px;color:#9aa0a6;min-height:11px;"></div>';
+  html += '<div style="' + COL + '">'
+       +    '<div style="' + LABEL + '">Fuel Upcharge</div>'
+       +    '<div style="display:flex;align-items:center;gap:4px;">'
+       +      '<input id="st_fuelPct" type="number" min="0" max="100" step="0.5" value="' + fuel + '" '
+       +        'title="Percent added to the delivery charge. 0 switches it off. Saves for the whole company." '
+       +        'style="' + FIELD + 'text-align:right;">'
+       +      '<span style="font-size:10px;color:var(--muted);font-weight:600;">%</span>'
+       +    '</div>'
+       +  '</div>';
+
+  wrap.innerHTML = html
+    + '<div id="st_shipCtlNote" style="flex-basis:100%;font-size:9px;color:var(--muted);min-height:11px;"></div>';
 
   var sel = document.getElementById('st_shipOrigin');
   if (sel) sel.onchange = function() {
