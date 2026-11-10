@@ -14818,6 +14818,11 @@ function applyVoiceQuote(parsed, overlay) {
         var _shedCoverGaps = function(wallId, axisLen, axisSc) {
             var gaps = [], OPP = {left:'right',right:'left',front:'back',back:'front'};
             (shedCfgs||[]).forEach(function(sc){
+                // Only an ENCLOSED shed hides the main wall behind its own walls.
+                // An open or roof-only porch leaves that wall in full view, so its
+                // rat guard has to stay - calcRatGuard bills the full wall length
+                // either way, and the drawing was contradicting the material list.
+                if (sc.encl !== 'enclosed') return;
                 var t = sc.type || 'leanto', full = [-axisSc/2, axisSc/2];
                 if (t === 'wrap4') { gaps.push(full); return; }
                 if (t === 'wrap3') { if (wallId !== OPP[sc.wall]) gaps.push(full); return; }
@@ -20755,6 +20760,47 @@ async function generateQuotePDF() {
     return n > 0 ? '$' + Math.round(n).toLocaleString('en-US') : null;
   }
 
+  // Concrete, split the way it is poured: the main building, each side shed or
+  // extension, and any apron. One combined "Concrete" line left the customer
+  // unable to see what the shed cost, which is the first thing they ask.
+  function concreteLines() {
+    var out = [];
+    try {
+      var co = window._lastConcreteOpts;
+      if (!co || !window.SauceConcrete) return out;
+      var _county = window._cachedCounty || '';
+      var _Q  = window._Q || {};
+      var _sh = window._shedConfigs || [];
+
+      if (co.main && co.main.included) {
+        var mainSq = (_Q.w || 0) * (_Q.l || 0);
+        var mainAmt = (co.main.type === 'piers')
+          ? (co.main.cost || 0)
+          : window.SauceConcrete.calculate(_county, mainSq, co.main).finalCost;
+        if (mainAmt > 0) out.push(['Concrete \u2014 Main Building', mainAmt]);
+      }
+
+      (co.sheds || []).forEach(function(sOpts, i) {
+        if (!sOpts || !sOpts.included) return;
+        var sc = _sh[i];
+        if (!sc || !sc.w || !sc.l) return;
+        var amt = 0;
+        try { amt = shedConcreteLineAmt(_county, sc, sOpts, _Q); } catch(e) {}
+        if (amt > 0) {
+          var nm = (sc.type === 'extension') ? 'Extension' : 'Side Shed';
+          out.push(['Concrete \u2014 ' + nm + ((co.sheds.length > 1) ? ' ' + (i + 1) : ''), amt]);
+        }
+      });
+
+      (co.aprons || [co.apron]).filter(Boolean).forEach(function(a, i) {
+        if (!a || !a.included || !a.sqft) return;
+        var amt = window.SauceConcrete.calculate(_county, a.sqft, a).finalCost;
+        if (amt > 0) out.push(['Concrete \u2014 Apron' + (i ? ' ' + (i + 1) : ''), amt]);
+      });
+    } catch(e) { return []; }
+    return out;
+  }
+
   // Estimate height of a price block before drawing it (pt)
   // Per-account: some salesmen present a single Total Investment with no cost
   // breakout. Flag comes from column L of the Users sheet via the login response.
@@ -20775,8 +20821,12 @@ async function generateQuotePDF() {
 
   function priceBlockHeight(entry) {
     var r = entry.r || {};
-    var rows = [r.materialOnly, r.labor, r.laborBeyond200, r.concrete, r.esd, r.shipping, r.tax, r.manualAdders];
-    var visRows = _singleTotalPdf ? 0 : rows.filter(function(v){ return fmtAmt(v); }).length;
+    var _cl = concreteLines();
+    var rows = [r.materialOnly, r.labor, r.laborBeyond200,
+                _cl.length ? null : r.concrete,
+                r.esd, r.shipping, r.tax, r.manualAdders];
+    var visRows = _singleTotalPdf ? 0
+                : rows.filter(function(v){ return fmtAmt(v); }).length + _cl.length;
     return 22 + visRows*18 + 24 + (parseFloat(String(r.materialOnly||0).replace(/[^0-9.]/g,''))>0 ? 20 : 0) + 12;
   }
 
@@ -20788,16 +20838,23 @@ async function generateQuotePDF() {
     doc.setFont('helvetica','bold'); doc.setFontSize(8); setTxt(col.darkGold);
     doc.text(entry.label.toUpperCase(), MG+12, yPos+12.5, { charSpace: 0.5 });
     yPos += 23;
+    // When the pour is split across a main building and sheds, list each one.
+    // Fall back to the single combined figure when there is nothing to split.
+    var _conc = concreteLines();
     var lineItems = [
       ['Material Package',            r.materialOnly],
       ['Installation Labor',          r.labor],
-      ['Labor Beyond 200mi',          r.laborBeyond200],
-      ['Concrete',                    r.concrete],
-      ['Engineered Stamped Drawings', r.esd],
-      ['Delivery',                    r.shipping],
-      ['Sales Tax',                   r.tax],
-      ['Additional Items',            r.manualAdders]
+      ['Labor Beyond 200mi',          r.laborBeyond200]
     ];
+    if (_conc.length) {
+      for (var _ci = 0; _ci < _conc.length; _ci++) lineItems.push(_conc[_ci]);
+    } else {
+      lineItems.push(['Concrete', r.concrete]);
+    }
+    lineItems.push(['Engineered Stamped Drawings', r.esd]);
+    lineItems.push(['Delivery',                    r.shipping]);
+    lineItems.push(['Sales Tax',                   r.tax]);
+    lineItems.push(['Additional Items',            r.manualAdders]);
     var idx = 0;
     for (var li=0; li<lineItems.length && !_singleTotalPdf; li++) {
       var v = lineItems[li][1];
