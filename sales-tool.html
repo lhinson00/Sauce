@@ -27811,26 +27811,49 @@ window.SauceOrigins = {
       if (!addr) addr = label;
       if (addr) out.push({ label: label || addr, address: addr });
     });
-    // Always offer the company's own origin so this can never leave the tool
-    // with nothing to ship from.
-    var co = (window._companySettings && window._companySettings.shopAddress) || SHOP_ADDRESS || '';
-    if (co && !out.some(function(o){ return o.address.toLowerCase() === co.toLowerCase(); })) {
-      out.unshift({ label: window.SauceOrigins.DEFAULT_LABEL, address: co });
+    // The company's own address is a BACKSTOP only, for a company that has
+    // configured no yards at all — without it the tool would have nothing to
+    // ship from. Once yards are configured it is never added, so a street
+    // address nobody calls by that name can't appear beside the real yards
+    // under a label like "Default".
+    if (!out.length) {
+      var co = (window._companySettings && window._companySettings.shopAddress) || SHOP_ADDRESS || '';
+      if (co) out.push({ label: window.SauceOrigins.DEFAULT_LABEL, address: co });
     }
     return out;
+  },
+
+  // The yard a fresh session starts on. Set shipping.defaultOrigin in
+  // Pricing - Shipping to name one (by label or address); otherwise it is the
+  // first yard in the list, so reordering those lines changes the default.
+  defaultAddress: function() {
+    var all = this.list();
+    if (!all.length) return '';
+    var pref = '';
+    try { pref = String(window.SauceRates ? window.SauceRates.text('shipping.defaultOrigin', '') : '').trim(); } catch(e) {}
+    if (pref) {
+      var p = pref.toLowerCase();
+      var hit = all.filter(function(o) {
+        return o.address.toLowerCase() === p || o.label.toLowerCase() === p;
+      })[0];
+      if (hit) return hit.address;
+    }
+    return all[0].address;
   },
 
   current: function() {
     var all = this.list();
     if (!all.length) return null;
-    var saved = '';
-    try { saved = localStorage.getItem('sauceShipOrigin') || ''; } catch(e) {}
-    var hit = all.filter(function(o){ return o.address === saved; })[0];
+    var want = window._shipOriginChoice || this.defaultAddress();
+    var hit = all.filter(function(o){ return o.address === want; })[0];
     return hit || all[0];
   },
 
   set: function(address) {
-    try { localStorage.setItem('sauceShipOrigin', address || ''); } catch(e) {}
+    // Deliberately NOT persisted. The yard is a property of the job being
+    // quoted, so every hard refresh and every new login starts from the
+    // default rather than whatever the last quote happened to use.
+    window._shipOriginChoice = address || '';
   },
 
   // Returns {lat,lng} for an address, geocoding once and remembering it.
@@ -27858,6 +27881,10 @@ window.SauceOrigins = {
     } catch(e) { console.log('[Origin] geocode failed for', addr, e.message); return null; }
   }
 };
+
+// Older builds remembered the yard in localStorage. Clear it once so this
+// update starts from the default instead of inheriting a stale choice.
+try { localStorage.removeItem('sauceShipOrigin'); } catch(e) {}
 
 // Shipping controls that sit under the job address: which yard to measure
 // from, and the fuel upcharge. The fuel field edits the COMPANY setting, so
