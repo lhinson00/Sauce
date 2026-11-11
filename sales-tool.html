@@ -26085,6 +26085,22 @@ async function sendSalesQuoteEmail() {
     var _first = (_custName && _custName !== 'Customer') ? _custName.split(' ')[0] : '';
     var _subj = (_custName && _custName !== 'Customer' ? _custName + ' - ' : '')
               + 'Building Quote' + (_co ? ' from ' + _co : '');
+
+    // The signature, built once and used by both parts of the message. A
+    // salesman who has a signature saved on his profile gets it verbatim;
+    // otherwise it is assembled from his contact fields, so each salesman
+    // signs with his own details rather than anyone's being written into the
+    // tool. Lines with nothing behind them are left out entirely.
+    var _sigLines = [];
+    if (String(_cu.signature || '').trim()) {
+      _sigLines = String(_cu.signature).split(/\r?\n/).filter(function(l){ return l.trim(); });
+    } else {
+      if (_cu.fullName || _cu.username) _sigLines.push(_cu.fullName || _cu.username);
+      if (_cu.phone) _sigLines.push('Office: ' + _cu.phone);
+      if (_cu.cell)  _sigLines.push('Cell: ' + _cu.cell);
+      if (_cu.email) _sigLines.push('Email: ' + _cu.email);
+      if (_co)       _sigLines.push(_co);
+    }
     var _text = 'Hi ' + (_first || 'there') + ',\n\n'
               + 'We appreciate you reaching out to us for a quote on your building project. '
               + 'In this attachment you will find the details for the building project, along '
@@ -26094,9 +26110,7 @@ async function sendSalesQuoteEmail() {
               + 'forward when you are ready.\n\n'
               + (note ? note + '\n\n' : '')
               + (_filteredLink ? 'View the building in 3D:\n' + _filteredLink + '\n\n' : '')
-              + ((_cu.fullName || _cu.username || '') ? (_cu.fullName || _cu.username) + '\n' : '')
-              + (_cu.phone ? _cu.phone + '\n' : '')
-              + (_co || '');
+              + _sigLines.join('\n');
 
     // An HTML part as well, so the 3D link can sit behind a few words instead
     // of sprawling across the customer's screen. The config travels in the URL,
@@ -26108,11 +26122,22 @@ async function sendSalesQuoteEmail() {
         .replace(/&/g, '&amp;').replace(/</g, '&lt;')
         .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
-    var _sig = [];
-    if (_cu.fullName || _cu.username) _sig.push(_esc(_cu.fullName || _cu.username));
-    if (_cu.phone) _sig.push('<a href="tel:' + _esc(String(_cu.phone).replace(/[^0-9+]/g, ''))
-                           + '" style="color:#555;text-decoration:none;">' + _esc(_cu.phone) + '</a>');
-    if (_co) _sig.push(_esc(_co));
+    // Same lines as the plain-text signature. A phone number or address is
+    // made tappable in place, which matters on a phone, without changing what
+    // the line says.
+    var _sig = _sigLines.map(function(line) {
+      var m = String(line).match(/^(Office|Cell|Mobile|Phone):\s*(.+)$/i);
+      if (m) {
+        return _esc(m[1]) + ': <a href="tel:' + _esc(m[2].replace(/[^0-9+]/g, ''))
+             + '" style="color:#555;text-decoration:none;">' + _esc(m[2]) + '</a>';
+      }
+      var e = String(line).match(/^(?:Email:\s*)?([^@\s]+@[^@\s]+\.[^@\s]+)$/i);
+      if (e) {
+        return (/^Email:/i.test(line) ? 'Email: ' : '')
+             + '<a href="mailto:' + _esc(e[1]) + '" style="color:#555;">' + _esc(e[1]) + '</a>';
+      }
+      return _esc(line);
+    });
 
     var _html = '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;'
               +   'line-height:1.55;color:#222;max-width:620px;">'
@@ -26860,6 +26885,8 @@ window.SauceAuth = (function() {
         fullName:          me.full_name || me.username,
         email:             me.email || '',
         phone:             me.phone || '',
+        cell:              me.cell || me.cell_phone || '',
+        signature:         me.signature || me.email_signature || '',
         company:           me.company_name || '',
         companyName:       me.company_name || '',
         companyId:         me.company_id || 'default',
@@ -27623,9 +27650,9 @@ function applyCompanyBranding() {
   // tab title and favicon
   try {
     // The tab names the product, not the salesman's employer. A tenant company
-    // that licenses the tool gets its own name; everyone else gets Sauce
-    // Estimator, which is whose tool this actually is.
-    document.title = (tenant && name) ? name : 'Sauce Estimator';
+    // that licenses the tool keeps exactly the title it has always had;
+    // everyone else gets Sauce Estimator, which is whose tool this actually is.
+    document.title = (tenant && name) ? (name + ' — Sauce Estimator') : 'Sauce Estimator';
     if (s.logoData) {
       var link = document.querySelector("link[rel='icon']");
       if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
@@ -27710,7 +27737,7 @@ function applyCompanyBranding() {
   // accent
   try {
     if (s.accentColor) window.setBrandColor(s.accentColor);
-    document.title = (tenant && name) ? name : 'Sauce Estimator';
+    document.title = (tenant && name) ? (name + ' — Sauce Estimator') : 'Sauce Estimator';
   } catch(e) {}
 
   // feature flags
