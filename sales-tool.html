@@ -61860,71 +61860,57 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
   };
 
   // ── Send comparison via GAS ────────────────────────────
-  CMP.sendComparisonText = function() {
-    var phoneEl = document.getElementById('cmpToPhone');
-    var phone = phoneEl ? phoneEl.value.trim() : '';
-    if (!phone) { alert('Please enter a customer phone number.'); return; }
-
+  // Download the comparison as a PDF for the salesman to look over before he
+  // sends it. Nothing is uploaded: the file goes straight to his machine.
+  CMP.downloadComparisonPDF = function() {
     var slots = CMP.slots;
     if (!slots.length) { alert('No options saved to compare.'); return; }
 
-    var _cu = window.currentUser || {};
-    var _firstName = (document.getElementById('st_name')||{}).value.split(' ')[0] || 'there';
-    var _custName  = (document.getElementById('st_name')||{}).value || 'Customer';
-    var _sn = _cu.fullName || _cu.username || 'Lain';
-    var notesEl = document.getElementById('cmpNotes');
-    var notes = notesEl ? notesEl.value.trim() : '';
-    var _NC = (window.SAUCE_ENDPOINTS.supabaseUrl + '/storage/v1/object/public/quote-pdfs/New%20Customer%20Info.pdf');
+    var btn = document.getElementById('cmpPdfBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Building\u2026'; }
 
-    var _allTypes = [];
-    slots.forEach(function(s){ Object.keys(s.totals||{}).forEach(function(k){ if(_allTypes.indexOf(k)<0) _allTypes.push(k); }); });
-    var activeTypes = (CMP.activeTypes&&CMP.activeTypes.length) ? _allTypes.filter(function(k){ return CMP.activeTypes.indexOf(k)>=0; }) : _allTypes;
-    var TYPE_LABELS2 = { woodOH:'Wood Truss w/ 12" Soffit', woodNoOH:'Wood Truss No Soffit', steel:'Steel Truss No Soffit', stud:'Stud Framed', cypress:'Cypress B&B', metalBB:'Metal Board & Batten' };
+    CMP.buildComparisonBlob().then(function(r) {
+      if (btn) { btn.disabled = false; btn.textContent = 'PDF'; }
+      if (!r || !r.blob) { alert('Could not build the comparison PDF.'); return; }
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(r.blob);
+      a.download = r.filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function(){ try { URL.revokeObjectURL(a.href); } catch(e) {} }, 4000);
+      toast('Comparison PDF downloaded', 'ok');
+    }).catch(function(e) {
+      if (btn) { btn.disabled = false; btn.textContent = 'PDF'; }
+      alert('Could not build the comparison PDF: ' + (e && e.message || 'failed'));
+    });
+  };
 
-    showToast('Generating comparison PDF...', 'success');
+  // One builder for both the download and the email attachment, so the file a
+  // salesman reviews is byte-for-byte the file his customer receives.
+  CMP.buildComparisonBlob = function() {
+    var slots = CMP.slots;
+    var _cuB = window.currentUser || {};
+    var _custB = (document.getElementById('st_name')||{}).value || 'Customer';
+    var notesElB = document.getElementById('cmpNotes');
+    var notesB = notesElB ? notesElB.value.trim() : '';
 
-    // Generate comparison PDF then upload and send
-    _generateComparisonPDFBlob(slots, activeTypes, TYPE_LABELS2, _custName, _cu, notes)
-      .then(function(blob) {
-        if (!blob) throw new Error('PDF generation failed');
-        var _su = window.SAUCE_ENDPOINTS.supabaseUrl;
-        var _sk = (typeof _SB_KEY !== 'undefined') ? _SB_KEY : 'sb_publishable_JFnksTNbexbFQ0LZtC3Olg_Tf2baKx4';  // was a service_role JWT — that key bypasses ALL row-level security and this file is public. Uploads only need the publishable key + a storage insert policy.
-        var qid = window._savedQuoteId || 'cmp';
-        var fname = qid + '-comparison-' + Date.now() + '.pdf';
-        return fetch(_su + '/storage/v1/object/quote-pdfs/' + fname, {
-          method: 'POST',
-          headers: { 'apikey': _sk, 'Authorization': 'Bearer ' + _sk, 'Content-Type': 'application/pdf', 'x-upsert': 'true' },
-          body: blob
-        }).then(function(r) {
-          if (!r.ok) throw new Error('Upload failed');
-          return _su + '/storage/v1/object/public/quote-pdfs/' + fname;
-        });
-      })
-      .then(function(pdfUrl) {
-        var msg = 'Hi ' + _firstName + ',\n\nWe appreciate you reaching out to us for a quote on your potential building project. Please find your building comparison and links below.\n\n';
+    var _allB = [];
+    slots.forEach(function(s){ Object.keys(s.totals||{}).forEach(function(k){ if(_allB.indexOf(k)<0) _allB.push(k); }); });
+    var activeB = (CMP.activeTypes && CMP.activeTypes.length)
+      ? _allB.filter(function(k){ return CMP.activeTypes.indexOf(k) >= 0; })
+      : _allB;
+    var LBL = { woodOH:'Wood Truss w/ 12" Soffit', woodNoOH:'Wood Truss No Soffit',
+                steel:'Steel Truss No Soffit', stud:'Stud Framed',
+                cypress:'Cypress B&B', metalBB:'Metal Board & Batten' };
 
-        slots.forEach(function(s, i) {
-          var label = s.label || ('Option ' + String.fromCharCode(65+i));
-          msg += '--- ' + label + (s.dims ? ' (' + s.dims + ')' : '') + ' ---\n';
-          activeTypes.forEach(function(k) {
-            var t = (s.totals||{})[k];
-            if (t && t.total) msg += (TYPE_LABELS2[k]||k) + ': $' + Math.round(t.total).toLocaleString('en-US') + '\n';
-          });
-          msg += '\n';
-        });
+    var d = new Date();
+    var stamp = d.getFullYear() + '-'
+              + ('0'+(d.getMonth()+1)).slice(-2) + '-'
+              + ('0'+d.getDate()).slice(-2);
+    var fname = (String(_custB).replace(/[^A-Za-z0-9]+/g,'_').replace(/^_|_$/g,'') || 'Customer')
+              + '_Building_Comparison_' + stamp + '.pdf';
 
-        msg += 'Please find your comparison quote by clicking the following link:\n' + pdfUrl + '\n\n';
-        msg += 'Please review the new customer information in the following link:\n' + _NC + '\n\n';
-        if (notes) msg += notes + '\n\n';
-        msg += 'If you have any questions, please do not hesitate to reach out to me at this number.\n\n' + _sn + (currentCompanyName() ? '\n' + currentCompanyName() : '');
-
-        var clean = phone.replace(/[^0-9+]/g,'');
-        var smsLink = 'sms:' + clean + '&body=' + encodeURIComponent(msg);
-        var a = document.createElement('a'); a.href = smsLink; a.style.display = 'none';
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        if (navigator.clipboard) navigator.clipboard.writeText(msg).catch(function(){});
-      })
-      .catch(function(e){ showToast('Error: ' + (e&&e.message||'failed'), 'error'); });
+    return _generateComparisonPDFBlob(slots, activeB, LBL, _custB, _cuB, notesB)
+      .then(function(blob) { return { blob: blob, filename: fname }; });
   };
 
   // Build comparison PDF blob — exact mirror of the email HTML layout
@@ -62556,6 +62542,27 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
                         +   'line-height:1.55;color:#555;margin-top:22px;">' + _sigHtml + '</div>'
                         : '');
 
+      // The same PDF the salesman can download, attached. Built here rather
+      // than uploaded anywhere, so nothing lands in a public bucket. If it
+      // cannot be built the comparison still goes: the table in the body
+      // carries the information, and a missing attachment is no reason to
+      // hold up a send.
+      var _cmpPdf64 = '', _cmpPdfName = 'Building_Comparison.pdf';
+      try {
+        var _built = await CMP.buildComparisonBlob();
+        if (_built && _built.blob) {
+          _cmpPdfName = _built.filename;
+          _cmpPdf64 = await new Promise(function(resolve) {
+            var fr = new FileReader();
+            fr.onload  = function(){ resolve(String(fr.result).split(',')[1] || ''); };
+            fr.onerror = function(){ resolve(''); };
+            fr.readAsDataURL(_built.blob);
+          });
+        }
+      } catch(pdfErr) {
+        console.warn('[CMP] comparison PDF not attached:', pdfErr && pdfErr.message);
+      }
+
       try {
         var _cmpRes = await sbFunction('send-email', {
           to:      customerEmail,
@@ -62563,7 +62570,9 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
           subject: (_custNameC && _custNameC !== 'Customer' ? _custNameC + ' - ' : '')
                    + 'Building Comparison' + (_coC ? ' from ' + _coC : ''),
           text:    _txt,
-          html:    _bodyHtml
+          html:    _bodyHtml,
+          pdfBase64: _cmpPdf64,
+          filename:  _cmpPdfName
         }, 60000);
 
         if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = 'Email'; }
@@ -62766,9 +62775,8 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       + '<textarea id="cmpNotes" rows="3" placeholder="Add context for the customer..." style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid rgba(var(--gold-rgb),.2);background:rgba(255,255,255,.04);color:#e2e8f0;font-size:12px;font-family:Outfit,sans-serif;resize:vertical;outline:none;"></textarea>'
       + (isAdminUser
         ? '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">'
-          + '<input id="cmpToPhone" type="tel" placeholder="Customer phone" style="flex:1;min-width:130px;padding:7px 10px;border-radius:7px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:#e2e8f0;font-size:11px;font-family:Outfit,sans-serif;outline:none;">'
           + '<input id="cmpToEmail" type="email" placeholder="Customer email" style="flex:1;min-width:160px;padding:7px 10px;border-radius:7px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:#e2e8f0;font-size:11px;font-family:Outfit,sans-serif;outline:none;">'
-          + '<button onclick="window._CompareEngine.sendComparisonText()" style="padding:7px 14px;border-radius:7px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:#e2e8f0;font-size:11px;font-weight:800;font-family:Outfit,sans-serif;cursor:pointer;white-space:nowrap;"> Text</button>'
+          + '<button id="cmpPdfBtn" onclick="window._CompareEngine.downloadComparisonPDF()" title="Download the comparison to look over before sending" style="padding:7px 14px;border-radius:7px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:#e2e8f0;font-size:11px;font-weight:800;font-family:Outfit,sans-serif;cursor:pointer;white-space:nowrap;">PDF</button>'
           + '<button id="cmpSendBtn" onclick="window._CompareEngine.sendComparison()" style="padding:7px 18px;border-radius:7px;border:none;background:linear-gradient(135deg,var(--gold),var(--gold2));color:#1a2232;font-size:11px;font-weight:800;font-family:Outfit,sans-serif;cursor:pointer;letter-spacing:.3px;white-space:nowrap;">Email</button>'
           + '</div>'
         : '')
@@ -62776,7 +62784,6 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     // Preserve values from any existing inputs before we blow away innerHTML —
     // prevents re-renders (e.g. filter toggles, slot clears) from wiping customer email / notes.
     var _prevEmail = (m.querySelector('#cmpToEmail')||{}).value;
-    var _prevPhone = (m.querySelector('#cmpToPhone')||{}).value;
     var _prevNotes = (m.querySelector('#cmpNotes')||{}).value;
 
     m.querySelector('#cmpFilter').innerHTML = filterHtml;
@@ -62791,11 +62798,8 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       return '';
     }
     var _custEmail = _firstVal(['qfEmail','st_email','cust_email','eqCustomerEmail']);
-    var _custPhone = _firstVal(['qfPhone','st_phone','cust_phone']);
     var _newEmail = m.querySelector('#cmpToEmail');
     if (_newEmail) _newEmail.value = (_prevEmail != null && _prevEmail !== '') ? _prevEmail : _custEmail;
-    var _newPhone = m.querySelector('#cmpToPhone');
-    if (_newPhone) _newPhone.value = (_prevPhone != null && _prevPhone !== '') ? _prevPhone : _custPhone;
     var _newNotes = m.querySelector('#cmpNotes');
     if (_newNotes && _prevNotes != null) _newNotes.value = _prevNotes;
   }
