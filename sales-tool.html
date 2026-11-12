@@ -1630,7 +1630,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M33-1530</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M34-1604</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -7103,6 +7103,91 @@ function toggleCypressPosts(id, on) {
 
 // True when a shed should be WOOD-framed: either the main is wood, or this shed has
 // the per-shed Wood Rafter Framing override (used on steel mains).
+
+// ============================================================================
+// SauceParts — visual check between a material line and the model.
+// Read-only on the material list: nothing here changes what is calculated,
+// what is billed, or how the list is drawn. Clicking a line asks this module
+// which meshes belong to that line and lights them in the 3D view.
+//
+// Parts are resolved from the line's own wording, so the calculator needs no
+// new fields. A line this module has no mapping for says so plainly rather
+// than lighting nothing and looking broken.
+// ============================================================================
+window.SauceParts = window.SauceParts || (function(){
+
+  // Which groups in the scene hold which kind of member. Extended a part at a
+  // time; anything not listed here reports back as "not mapped yet".
+  var MAP = [
+    { key:'truss',  re:/truss/i,                     groups:['trusses'], label:'trusses' },
+    { key:'post',   re:/\bpost(s)?\b|column/i,       groups:['posts','mainPosts'], label:'posts' }
+  ];
+
+  // One colour per kind, so a part always lights the same colour.
+  var COLOR = { truss:0x22d3ee, post:0xfacc15, _default:0xf472b6 };
+
+  var _held = [];      // {mesh, mat} so the originals go back exactly as they were
+  var _active = null;
+
+  function _grps(){ try { return window._3d && window._3d.grps; } catch(e){ return null; } }
+
+  // Checked before the map, because a line like "Wood Truss Roof Purlins" names a
+  // truss but is not one. Anything caught here reports as not mapped rather than
+  // lighting the wrong members — a wrong highlight is worse than none.
+  var NOT_YET = /purlin|girt|bracing|blocking|plate|stud|rafter|joist|header|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|trim|metal|fascia|soffit|flashing|concrete|sackcrete|pad|ceiling|insulation/i;
+
+  function resolve(item){
+    if (!item) return null;
+    var text = [item.description||'', item.sku||'', item.detail||''].join(' ');
+    if (NOT_YET.test(text)) return null;
+    for (var i=0;i<MAP.length;i++) if (MAP[i].re.test(text)) return MAP[i];
+    return null;
+  }
+
+  function collect(entry){
+    var g = _grps(); if (!g) return [];
+    var out = [];
+    (entry.groups||[]).forEach(function(name){
+      var grp = g[name]; if (!grp) return;
+      grp.traverse(function(o){
+        if (!o.isMesh || !o.material) return;
+        if (o.userData && o.userData.notAPart) return;
+        out.push(o);
+      });
+    });
+    return out;
+  }
+
+  function clear(){
+    _held.forEach(function(h){ try { h.mesh.material = h.mat; } catch(e){} });
+    _held = []; _active = null;
+  }
+
+  function highlight(item){
+    clear();
+    var entry = resolve(item);
+    if (!entry) return { ok:false, reason:'unmapped' };
+    var meshes = collect(entry);
+    if (!meshes.length) return { ok:false, reason:'none', label:entry.label };
+    var mat = new THREE.MeshBasicMaterial({
+      color: COLOR[entry.key] != null ? COLOR[entry.key] : COLOR._default,
+      side: THREE.DoubleSide, transparent:true, opacity:0.95, depthTest:false
+    });
+    meshes.forEach(function(m){ _held.push({mesh:m, mat:m.material}); m.material = mat; });
+    // The members have to be on screen to be checked against the line.
+    try {
+      var g = _grps();
+      (entry.groups||[]).forEach(function(n){ if (g && g[n]) g[n].visible = true; });
+    } catch(e){}
+    _active = entry.key;
+    return { ok:true, count:meshes.length, label:entry.label, key:entry.key };
+  }
+
+  return { highlight: highlight, clear: clear, resolve: resolve,
+           active: function(){ return _active; },
+           color: function(k){ return COLOR[k] != null ? COLOR[k] : COLOR._default; } };
+})();
+
 window.SauceMaterials = window.SauceMaterials || {};
 window.SauceMaterials.shedIsWoodFramed = function(Q, sc) {
   if (Q && Q.truss === 'Wood') return true;
@@ -23194,10 +23279,10 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M33-1530';
+window.SAUCE_BUILD = 'M34-1604';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
-try { console.log('%c[Sauce] BUILD M33-1530', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
+try { console.log('%c[Sauce] BUILD M34-1604', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
 console.log('%c[Sauce] build 2026-08-12 19:31 UTC', 'color:var(--gold);font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
@@ -52229,6 +52314,40 @@ window.openMaterialsModal = function(initialTab) {
         row.style.cssText = 'display:grid;grid-template-columns:' + (isSignedInModal ? (isMobile ? 'auto 1fr auto auto' : 'auto 1fr auto auto auto') : (isMobile ? '1fr auto auto' : '1fr auto auto auto')) + ';align-items:start;gap:' + (isMobile?'5px':'8px') + ';padding:' + (isMobile?'7px 8px':'8px 10px') + ';background:#383838;border-radius:7px;margin-bottom:4px;';
         if (item._added) row.style.background = 'rgba(134,239,172,.10)';
         else if (item._edited) row.style.background = 'rgba(96,165,250,.08)';
+
+        // Click a line to see where it is on the model. Nothing about the line
+        // itself changes — this only recolours meshes in the 3D view.
+        (function(captItem, captRow){
+          var _resolved = null;
+          try { _resolved = window.SauceParts && window.SauceParts.resolve(captItem); } catch(e){}
+          captRow.style.cursor = 'pointer';
+          captRow.title = _resolved ? ('Show on the model') : '';
+          captRow.addEventListener('click', function(ev){
+            if (ev.target && ev.target.closest && ev.target.closest('button,input,select')) return;
+            if (!window.SauceParts) return;
+            var wasOn = (captRow.getAttribute('data-sp-on') === '1');
+            try {
+              document.querySelectorAll('[data-sp-on="1"]').forEach(function(el){
+                el.setAttribute('data-sp-on','0'); el.style.boxShadow = '';
+              });
+            } catch(e){}
+            if (wasOn) { window.SauceParts.clear(); return; }
+            var r = window.SauceParts.highlight(captItem);
+            if (!r.ok) {
+              try { showToast(r.reason === 'unmapped'
+                ? 'No model parts mapped to this line yet'
+                : 'Nothing of that kind is drawn on this model', 'warn'); } catch(e){}
+              return;
+            }
+            captRow.setAttribute('data-sp-on','1');
+            try {
+              var c = window.SauceParts.color(r.key).toString(16);
+              while (c.length < 6) c = '0' + c;
+              captRow.style.boxShadow = 'inset 3px 0 0 #' + c;
+            } catch(e){}
+            try { showToast(r.count + ' ' + r.label + ' highlighted on the model', 'ok'); } catch(e){}
+          });
+        })(item, row);
 
         var info = document.createElement('div');
         var desc = document.createElement('div');
