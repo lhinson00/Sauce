@@ -1630,7 +1630,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M35-1620</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M36-1640</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -7145,13 +7145,17 @@ window.SauceParts = window.SauceParts || (function(){
 
   // Which groups in the scene hold which kind of member. Extended a part at a
   // time; anything not listed here reports back as "not mapped yet".
+  // Order matters — the first rule that matches wins, so the more specific
+  // wording goes first. "Wood Truss Roof Purlins" is a purlin, not a truss.
   var MAP = [
+    { key:'purlin', re:/purlin/i,                    groups:['framing'], label:'purlins' },
+    { key:'girt',   re:/girt/i,                      groups:['framing'], label:'girts' },
     { key:'truss',  re:/truss/i,                     groups:['trusses'], label:'trusses' },
     { key:'post',   re:/\bpost(s)?\b|column/i,       groups:['posts','mainPosts'], label:'posts' }
   ];
 
   // One colour per kind, so a part always lights the same colour.
-  var COLOR = { truss:0x22d3ee, post:0xfacc15, _default:0xf472b6 };
+  var COLOR = { truss:0x22d3ee, post:0xfacc15, purlin:0x4ade80, girt:0xfb923c, _default:0xf472b6 };
 
   var _held = [];      // {mesh, mat} so the originals go back exactly as they were
   var _active = null;
@@ -7161,7 +7165,7 @@ window.SauceParts = window.SauceParts || (function(){
   // Checked before the map, because a line like "Wood Truss Roof Purlins" names a
   // truss but is not one. Anything caught here reports as not mapped rather than
   // lighting the wrong members — a wrong highlight is worse than none.
-  var NOT_YET = /purlin|girt|bracing|blocking|plate|stud|rafter|joist|header|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|trim|metal|fascia|soffit|flashing|concrete|sackcrete|pad|ceiling|insulation/i;
+  var NOT_YET = /bracing|blocking|plate|stud|rafter|joist|header|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|fascia|soffit|flashing|concrete|sackcrete|footing|pad\b|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
 
   // Which part of the building a line is talking about. The list names an
   // attachment three ways: by position ("Shed 2"), by the wall it sits on
@@ -7211,10 +7215,11 @@ window.SauceParts = window.SauceParts || (function(){
     var out = [];
     var wanted = (entry.groups||[]).slice();
     // Members that live in a mixed group carry their own stamp instead.
-    if (entry.key) wanted.push('shed');
+    if (entry.key && wanted.indexOf('shed') < 0) wanted.push('shed');
+    var MIXED = { shed:1, framing:1 };
     wanted.forEach(function(name){
       var grp = g[name]; if (!grp) return;
-      var mixed = (name === 'shed');
+      var mixed = !!MIXED[name];
       grp.traverse(function(o){
         if (!o.isMesh || !o.material) return;
         if (o.userData && o.userData.notAPart) return;
@@ -12632,6 +12637,21 @@ function applyVoiceQuote(parsed, overlay) {
 
         const grps = { slab: new THREE.Group(), posts: new THREE.Group(), mainPosts: new THREE.Group(), walls: new THREE.Group(), wallPanels: new THREE.Group(), roof: new THREE.Group(), doors: new THREE.Group(), dims: new THREE.Group(), shed: new THREE.Group(), loft: new THREE.Group(), trusses: new THREE.Group(), framing: new THREE.Group(), interior: new THREE.Group(), redIron: new THREE.Group() };
         const dimLabels = [];
+        // Framing members all land in one group, so the group alone cannot say what
+        // a member is. Blocks announce what they are building by setting _spPart and
+        // everything added while that is set carries the stamp. Cheaper and far less
+        // error-prone than tagging several hundred individual add() calls.
+        (function(){
+          var _fa = grps.framing.add.bind(grps.framing);
+          grps.framing.add = function(o){
+            if (o && window._spPart) {
+              o.userData = o.userData || {};
+              if (o.userData.sPart == null) o.userData.sPart = window._spPart;
+            }
+            return _fa(o);
+          };
+        })();
+        window._spPart = null;
         Object.values(grps).forEach(g => { g.visible = false; scene.add(g); });
         // Roof renders on top of walls/truss so truss never shows through roof from above
         grps.roof.renderOrder = 1;
@@ -16064,6 +16084,7 @@ function applyVoiceQuote(parsed, overlay) {
                 var _ltRake = (sc && sc.type === 'leanto');
                 function _ltRkF(p1, p2){ grps.shed.add(mkQ([p1[0],p1[1],p1[2], p2[0],p2[1],p2[2], p2[0],p2[1]-_ltRkH,p2[2], p1[0],p1[1]-_ltRkH,p1[2]], _mLtRake)); }
                 // Structural framing for eave-attached lean-tos → grps.framing (Framing toggle).
+                window._spPart = 'purlin';
                 // Purlins across the roof slope, plus girts on enclosed outer wall + gable ends.
                 function _ltFramingEave(oX, aX) {
                   try {
@@ -16082,6 +16103,7 @@ function applyVoiceQuote(parsed, overlay) {
                     }
                     var _encl = sc && sc.encl === 'enclosed';
                     var _ew = (sc && sc.enclWalls) || [];
+                    window._spPart = 'girt';
                     // Outer wall girts — vertical wall at oX, girts run in Z at 2' OC
                     if (_encl && _ew.indexOf('outer') > -1) {
                       for (var _gy = 2*Sc; _gy < outerH - 0.001; _gy += 2*Sc) {
@@ -16390,6 +16412,11 @@ function applyVoiceQuote(parsed, overlay) {
                 var _pMat = new THREE.MeshLambertMaterial({ color: 0xC4A46A, side: THREE.DoubleSide });
                 var _pSp = 2*Sc, _pTk = 0.0225, _pWd = 0.05, _pLift = 0.012;
                 function _extPurlins(axis, a0, a1, ec, rc, eh, rh){
+                    var _spPrev = window._spPart; window._spPart = 'purlin';
+                    try { return _extPurlinsBody(axis, a0, a1, ec, rc, eh, rh); }
+                    finally { window._spPart = _spPrev; }
+                }
+                function _extPurlinsBody(axis, a0, a1, ec, rc, eh, rh){
                     var slopeLen=Math.hypot(rc-ec, rh-eh);
                     var n=Math.max(1, Math.round(slopeLen/_pSp));
                     var len=Math.abs(a1-a0), ctr=(a0+a1)/2;
@@ -18840,6 +18867,7 @@ function applyVoiceQuote(parsed, overlay) {
             var _ssGirtSp    = 2 * Sc; // 2' OC
             var _ssGW        = 0.015, _ssGH = 0.05;
 
+            window._spPart = 'girt';
             // Girts on left (high) eave wall — run along Z at 2' OC up to ssHiH
             if (!_ssLeftOpen) {
               var _ssNgL = Math.floor(ssHiH / _ssGirtSp);
@@ -18884,6 +18912,7 @@ function applyVoiceQuote(parsed, overlay) {
               _topGm.position.set(_ssAX, ssHiH - _ssGH/2, ge.gz); grps.framing.add(_topGm);
             });
 
+            window._spPart = 'purlin';
             // Purlins along the main slope: full building length, 2' OC along slope
             var _ssSlopeLen = Math.sqrt(sw*sw + Math.pow(ssHiH-ssLoH, 2));
             var _ssNumPurlins = Math.floor(_ssSlopeLen / (2*Sc)) - 1;
@@ -19560,6 +19589,7 @@ function applyVoiceQuote(parsed, overlay) {
             });
           }
 
+          window._spPart = 'girt';
           // ── WALL GIRTS — post frame only ──
           if (!isStudFrame) {
             var _hsMaxHsc = _hsOn ? Math.max.apply(null, _hsSecs.map(function(s){return s.h;}))*Sc : sh;
@@ -19598,6 +19628,7 @@ function applyVoiceQuote(parsed, overlay) {
               if (gaps.length) drawOpeningFraming('x', gw.z, gaps, sw/2);
             });
           } // end !isStudFrame girts
+          window._spPart = 'purlin';
 
           // ── ROOF PURLINS — extend full rafter length including overhang ──
           var purlinW  = isSteel ? mbW  : mbH;
@@ -19660,6 +19691,7 @@ function applyVoiceQuote(parsed, overlay) {
             });
           }
         }
+        window._spPart = null;
         // ── SHED FRAMING — rafters/trusses + purlins on side sheds ──────────
         if (shedCfgs && shedCfgs.length) {
           var sSteelMat  = new THREE.MeshLambertMaterial({ color: 0x2a2a2a });
@@ -23357,10 +23389,10 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M35-1620';
+window.SAUCE_BUILD = 'M36-1640';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
-try { console.log('%c[Sauce] BUILD M35-1620', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
+try { console.log('%c[Sauce] BUILD M36-1640', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
 console.log('%c[Sauce] build 2026-08-12 19:31 UTC', 'color:var(--gold);font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
