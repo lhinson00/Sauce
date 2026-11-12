@@ -1937,6 +1937,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="sec-title">Side Sheds & Extensions</div>
         <div id="shedList"></div>
         <button class="opening-add-btn" id="addShedBtn" onclick="addShed()">+ Add Side Shed / Extension</button>
+        <button class="opening-add-btn" id="addPorchGableBtn" onclick="addPorchWithGable()" title="Lean-to porch across the wall with a timber gable centred in it">+ Add Porch with Centre Gable</button>
         <div id="rowShedOnly" style="margin-top:8px;display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:rgba(var(--gold-rgb),.06);border:1px solid rgba(var(--gold-rgb),.2);border-radius:8px;">
           <div>
             <div style="font-size:11px;font-weight:700;color:var(--navy);">Side Shed Only Quote</div>
@@ -6619,6 +6620,56 @@ function addShed(){
   window._shedConfigs.push(sc);
   renderSheds(); scheduleBuild();
 }
+// A porch with a centre gable — the entry treatment in most houses. It is
+// three attachments: lean-to, gable, lean-to. Nothing new to render, so it
+// behaves like any other porch and prices like one. The two lean-to ends that
+// die into the gable are left open, since the gable's own face closes them.
+function addPorchWithGable(){
+  var free = (window.SHED_MAX || 12) - window._shedConfigs.length;
+  if (free < 3) { try { showToast('Needs room for 3 attachments', 'warn'); } catch(e) {} return; }
+
+  var wall = 'front';
+  var isEave = (wall === 'left' || wall === 'right');
+  var wallLen = isEave ? Q.l : Q.w;
+  var depth = 8;                                  // how far the porch projects
+  var gableW = Math.min(14, Math.max(8, Math.round(wallLen * 0.3)));
+  var side = Math.max(0, (wallLen - gableW) / 2); // each lean-to leg
+
+  function leg(label, len, offset, hide1, hide2) {
+    return {
+      id: nextShedId++, idx: 0, label: label,
+      w: depth, l: len, origL: len,
+      wall: wall, type: 'leanto', wrapDir: 'cw', wrapLeg: 0,
+      encl: 'roofonly', enclWalls: [],
+      position: 'custom', offsetFt: offset,
+      gablePS: 10, gablePitch: 4, timberFrame: 'metal',
+      ltPitch: 2, dropFt: 1, frameStyle: 'timber',
+      hideEndCap1: !!hide1, hideEndCap2: !!hide2,
+      noSkirt: true, postsOnTop: false, _open: false
+    };
+  }
+
+  var parts = [];
+  if (side > 0.5) parts.push(leg('Porch — left', side, 0, false, true));
+  parts.push({
+    id: nextShedId++, idx: 0, label: 'Porch — centre gable',
+    w: depth, l: gableW, origL: gableW,
+    wall: wall, type: 'gable', wrapDir: 'cw', wrapLeg: 0,
+    encl: 'roofonly', enclWalls: [],
+    position: 'custom', offsetFt: side,
+    gablePS: 10, gablePitch: 6, ownPitch: true, timberFrame: 'timber',
+    ltPitch: 2, dropFt: 0, frameStyle: 'timber',
+    noSkirt: true, postsOnTop: false, _open: true
+  });
+  if (side > 0.5) parts.push(leg('Porch — right', side, side + gableW, true, false));
+
+  parts.forEach(function(p){ window._shedConfigs.push(p); });
+  window._shedConfigs.forEach(function(s,i){ s.idx = i; });
+  renderSheds(); scheduleBuild();
+  try { updateStripFromLocalCalc(); } catch(e) {}
+  try { showToast('Porch with centre gable added', 'ok'); } catch(e) {}
+}
+
 function removeShed(id){
   window._shedConfigs = window._shedConfigs.filter(function(s){return s.id!==id;});
   window._shedConfigs.forEach(function(s,i){s.idx=i;s.label='Side Shed '+(i+1);});
@@ -7160,12 +7211,11 @@ function renderSheds(){
         extraOptions+='<div class="shed-row"><div><div class="shed-label">Drop (ft)</div>'
           +'<input class="shed-inp" type="number" value="'+(sc.dropFt||0)+'" min="-12" max="12" step="1" onchange="setShedProp('+sc.id+',\'dropFt\',this.value);scheduleBuild()"><div style="font-size:8px;color:var(--muted);margin-top:2px;">Lowers the extension below the main eave. Negative raises it above.</div></div></div>';
       } else {
-        extraOptions+=(sc.ridgeAlong
-          ? '<div class="shed-row"><div><div class="shed-label">Gable Pitch</div>'
-            + '<select class="shed-sel" onchange="setShedProp('+sc.id+',\'gablePitch\',this.value);scheduleBuild()">'
-            + [1,2,3,4,5,6,7,8,9,10,11,12].map(function(p){return '<option value="'+p+'"'+(sc.gablePitch==p?' selected':'')+'>'+p+'/12</option>';}).join('')
-            + '</select><div style="font-size:8px;color:var(--muted);margin-top:2px;">A turned ridge sets its own pitch</div></div></div>'
-          : '');
+        extraOptions+='<div class="shed-row"><div><div class="shed-label">Gable Pitch</div>'
+          + '<select class="shed-sel" onchange="var v=this.value; setShedProp('+sc.id+',\'ownPitch\',!!v); if(v) setShedProp('+sc.id+',\'gablePitch\',v); scheduleBuild(); updateStripFromLocalCalc()">'
+          + '<option value=""'+(sc.ownPitch?'':' selected')+'>Match main roof</option>'
+          + [1,2,3,4,5,6,7,8,9,10,11,12].map(function(p){return '<option value="'+p+'"'+((sc.ownPitch && sc.gablePitch==p)?' selected':'')+'>'+p+'/12</option>';}).join('')
+          + '</select></div></div>';
         extraOptions+='<div class="shed-row"><div><div class="shed-label">Post Spacing</div>'
           +'<input class="shed-inp" type="number" value="'+(sc.gablePS||10)+'" min="1" step="1" onchange="setShedProp('+sc.id+',\'gablePS\',this.value);scheduleBuild()"></div>'
           +'<div><div class="shed-label">Drop (ft)</div>'
@@ -16293,6 +16343,7 @@ function applyVoiceQuote(parsed, overlay) {
                     } else {
                     // Main building pitch slope (scene units of height per scene unit of X from center)
                     var mainPitchSlope = (sw > 0) ? (sr - sh) / (sw / 2) : 0;
+                    if (sc.ownPitch && sc.gablePitch) mainPitchSlope = sc.gablePitch / 12;
                     // Height of extension at any X offset from its center, with drop applied:
                     //   h(x) = (sh - gblDropH) + |x - sco| * mainPitchSlope
                     // Inner peak (at extXmid = sco): sh - gblDropH + extHalfX * slope
@@ -16302,7 +16353,9 @@ function applyVoiceQuote(parsed, overlay) {
                     var extX2 = sco + extHalfX + oh;
                     var extXmid = sco;
                     var gblEaveH = sh - gblDropH;  // outer eave height
-                    var extRidgePeak = Math.min(sr - gblDropH, gblEaveH + extHalfX * mainPitchSlope);
+                    var extRidgePeak = (sc.ownPitch && sc.gablePitch)
+                        ? gblEaveH + extHalfX * mainPitchSlope
+                        : Math.min(sr - gblDropH, gblEaveH + extHalfX * mainPitchSlope);
                     // Helper: roof surface height at a given X for this extension
                     function gblRoofY(gx) {
                         return gblEaveH + Math.max(0, extHalfX - Math.abs(gx - sco)) * mainPitchSlope;
@@ -16558,8 +16611,8 @@ function applyVoiceQuote(parsed, overlay) {
                     const _s  = sc.wall==='left' ? -1 : 1;
                     const _z1 = -_effSsl/2+_effSco, _z2 = _effSsl/2+_effSco;
                     // Offset outward by _skirtOut so the panel clears the post FACE (see _skirtOut)
-                    if (!hasWall('gable1') && !sc.cypressRafters) _drawEndCap(_oX, _aX, _z1 - _skirtOut,  -0.006);
-                    if (!hasWall('gable2') && !sc.cypressRafters) _drawEndCap(_oX, _aX, _z2 + _skirtOut,  0.006);
+                    if (!hasWall('gable1') && !sc.cypressRafters && !sc.hideEndCap1) _drawEndCap(_oX, _aX, _z1 - _skirtOut,  -0.006);
+                    if (!hasWall('gable2') && !sc.cypressRafters && !sc.hideEndCap2) _drawEndCap(_oX, _aX, _z2 + _skirtOut,  0.006);
                 } else {
                     const _oZ = sc.wall==='front' ? -sl/2-ssw : sl/2+ssw;
                     const _aZ = sc.wall==='front' ? -sl/2 : sl/2;
@@ -16579,8 +16632,8 @@ function applyVoiceQuote(parsed, overlay) {
                         _x1 = -ssl/2+sco;
                         _x2 =  ssl/2+sco;
                     }
-                    if (!hasWall('gable1') && !sc.cypressRafters) _drawEndCapX(_oZ, _aZ, _x1 - _skirtOut,  -0.006);
-                    if (!hasWall('gable2') && !sc.cypressRafters) _drawEndCapX(_oZ, _aZ, _x2 + _skirtOut,  0.006);
+                    if (!hasWall('gable1') && !sc.cypressRafters && !sc.hideEndCap1) _drawEndCapX(_oZ, _aZ, _x1 - _skirtOut,  -0.006);
+                    if (!hasWall('gable2') && !sc.cypressRafters && !sc.hideEndCap2) _drawEndCapX(_oZ, _aZ, _x2 + _skirtOut,  0.006);
                 }
             }
             // === OUTER EAVE HEADER — always visible (roofonly, partial, enclosed) ===
