@@ -1630,7 +1630,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M34-1604</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M35-1620</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -6566,11 +6566,28 @@ window._attShift = function(grps, snap, sc, Sc) {
 // Drop-in for `(shedCfgs||[]).forEach(...)` in the render loops: identical
 // behaviour, except a parented shed's meshes are placed against its parent.
 window._attEach = function(cfgs, grps, Sc, fn) {
-  (cfgs || []).forEach(function(sc) {
+  (cfgs || []).forEach(function(sc, idx) {
     var snap = window._attSnap(grps);
     fn(sc);
+    // Everything this attachment just drew belongs to this attachment. Stamping
+    // it here, once, means every attachment renderer is covered without any of
+    // them knowing about it. Meshes with no stamp are the main building.
+    try { window._attTagArea(grps, snap, idx); } catch(e) {}
     window._attShift(grps, snap, sc, Sc);
   });
+};
+
+window._attTagArea = function(grps, snap, idx) {
+  for (var k in grps) {
+    var g = grps[k];
+    if (!g || !g.children) continue;
+    for (var i = (snap[k] || 0); i < g.children.length; i++) {
+      g.children[i].traverse(function(o){
+        o.userData = o.userData || {};
+        if (o.userData.sIdx == null) o.userData.sIdx = idx;
+      });
+    }
+  }
 };
 
 
@@ -7114,6 +7131,16 @@ function toggleCypressPosts(id, on) {
 // new fields. A line this module has no mapping for says so plainly rather
 // than lighting nothing and looking broken.
 // ============================================================================
+// Stamp a kind of member onto whatever a block just added to a group. Used where
+// members land in a mixed group (an extension's truss shares grps.shed with its
+// roof and walls) and the group alone cannot say what they are.
+window._spMark = function(grp, from, part){
+  if (!grp || !grp.children) return;
+  for (var i = from; i < grp.children.length; i++) {
+    grp.children[i].traverse(function(o){ o.userData = o.userData || {}; o.userData.sPart = part; });
+  }
+};
+
 window.SauceParts = window.SauceParts || (function(){
 
   // Which groups in the scene hold which kind of member. Extended a part at a
@@ -7136,22 +7163,64 @@ window.SauceParts = window.SauceParts || (function(){
   // lighting the wrong members — a wrong highlight is worse than none.
   var NOT_YET = /purlin|girt|bracing|blocking|plate|stud|rafter|joist|header|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|trim|metal|fascia|soffit|flashing|concrete|sackcrete|pad|ceiling|insulation/i;
 
+  // Which part of the building a line is talking about. The list names an
+  // attachment three ways: by position ("Shed 2"), by the wall it sits on
+  // ("Side Shed Posts — Left"), or not at all, which means the main building.
+  function areaOf(text){
+    var m;
+    if ((m = /\bShed\s+(\d+)/i.exec(text)) || (m = /\bGable\s+Ext\s+(\d+)/i.exec(text))) {
+      var n = parseInt(m[1], 10) - 1;
+      return { label: 'shed ' + m[1], test: function(sc, idx){ return idx === n; } };
+    }
+    var isGableExt = /gable\s+extension/i.test(text);
+    var isSideShed = /side\s+shed/i.test(text);
+    if (!isGableExt && !isSideShed) {
+      return { label: 'the main building', test: function(sc, idx){ return idx == null; } };
+    }
+    var w = /[—-]\s*(Left|Right|Front|Back)\b/i.exec(text);
+    var wall = w ? w[1].toLowerCase() : null;
+    return {
+      label: (isGableExt ? 'gable extension' : 'side shed') + (wall ? ' — ' + wall : ''),
+      test: function(sc, idx){
+        if (idx == null || !sc) return false;
+        if (wall && (sc.wall || '') !== wall) return false;
+        if (isGableExt && sc.type !== 'gable') return false;
+        if (isSideShed && sc.type === 'gable') return false;
+        return true;
+      }
+    };
+  }
+
   function resolve(item){
     if (!item) return null;
     var text = [item.description||'', item.sku||'', item.detail||''].join(' ');
     if (NOT_YET.test(text)) return null;
-    for (var i=0;i<MAP.length;i++) if (MAP[i].re.test(text)) return MAP[i];
+    for (var i=0;i<MAP.length;i++) {
+      if (MAP[i].re.test(text)) {
+        var a = areaOf(text);
+        return { key: MAP[i].key, groups: MAP[i].groups, label: MAP[i].label,
+                 area: a, where: a.label };
+      }
+    }
     return null;
   }
 
   function collect(entry){
     var g = _grps(); if (!g) return [];
+    var cfgs = window._shedConfigs || [];
     var out = [];
-    (entry.groups||[]).forEach(function(name){
+    var wanted = (entry.groups||[]).slice();
+    // Members that live in a mixed group carry their own stamp instead.
+    if (entry.key) wanted.push('shed');
+    wanted.forEach(function(name){
       var grp = g[name]; if (!grp) return;
+      var mixed = (name === 'shed');
       grp.traverse(function(o){
         if (!o.isMesh || !o.material) return;
         if (o.userData && o.userData.notAPart) return;
+        if (mixed && !(o.userData && o.userData.sPart === entry.key)) return;
+        var idx = (o.userData && o.userData.sIdx != null) ? o.userData.sIdx : null;
+        if (entry.area && !entry.area.test(idx == null ? null : cfgs[idx], idx)) return;
         out.push(o);
       });
     });
@@ -7177,10 +7246,10 @@ window.SauceParts = window.SauceParts || (function(){
     // The members have to be on screen to be checked against the line.
     try {
       var g = _grps();
-      (entry.groups||[]).forEach(function(n){ if (g && g[n]) g[n].visible = true; });
+      (entry.groups||[]).concat(['shed']).forEach(function(n){ if (g && g[n]) g[n].visible = true; });
     } catch(e){}
     _active = entry.key;
-    return { ok:true, count:meshes.length, label:entry.label, key:entry.key };
+    return { ok:true, count:meshes.length, label:entry.label, key:entry.key, where:entry.where };
   }
 
   return { highlight: highlight, clear: clear, resolve: resolve,
@@ -16383,6 +16452,11 @@ function applyVoiceQuote(parsed, overlay) {
                 // axis 'x': members run along X in a plane of constant Z.
                 // axis 'z': members run along Z in a plane of constant X.
                 function _raTruss(axis, plane, c0, c1, cMid, eaveY, ridgeY) {
+                    var _spT0 = grps.shed.children.length;
+                    try { return _raTrussBody(axis, plane, c0, c1, cMid, eaveY, ridgeY); }
+                    finally { window._spMark(grps.shed, _spT0, 'truss'); }
+                }
+                function _raTrussBody(axis, plane, c0, c1, cMid, eaveY, ridgeY) {
                     if (sc.frameStyle !== 'timber') return;
                     var t = 0.067;
                     var tMat = new THREE.MeshLambertMaterial({color: 0x8B6914, side: THREE.DoubleSide});
@@ -16657,6 +16731,7 @@ function applyVoiceQuote(parsed, overlay) {
 
                     // Outer gable face at oX — timber or metal. Skipped where the roof
                     // ties into a building hung on this face; see the note on the other branch.
+                    var _spT1 = grps.shed.children.length;
                     if (_tiedX) { /* roof carries through — no end wall here */ }
                     else if (sc.frameStyle === 'timber') {
                         var tmbr=0.067;
@@ -16693,6 +16768,7 @@ function applyVoiceQuote(parsed, overlay) {
                             grps.shed.add(_st);
                           });
                         }
+                      window._spMark(grps.shed, _spT1, 'truss');
                     } else {
                         // Metal gable face triangle — draw as vertical strips (no degenerate quad)
                         { const wHex=pc(wallColorName);
@@ -16945,6 +17021,7 @@ function applyVoiceQuote(parsed, overlay) {
                     // stands above the other roof, so drawing it walls off the very
                     // connection it is supposed to make.
                     console.log('[GableExt] timberFrame=', sc.timberFrame, 'wall=', sc.wall, 'tied=', _tiedZ);
+                    var _spT2 = grps.shed.children.length;
                     if (_tiedZ) { /* roof carries through — no end wall here */ }
                     else if (sc.frameStyle === 'timber') {
                         var tmbr=0.067;
@@ -16986,6 +17063,7 @@ function applyVoiceQuote(parsed, overlay) {
                             grps.shed.add(_st);
                           });
                         }
+                      window._spMark(grps.shed, _spT2, 'truss');
                     } else {
                     // Outer gable end triangle — same pitch slope as main building, shifted down
                     { const wHex=pc(wallColorName);
@@ -23279,10 +23357,10 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M34-1604';
+window.SAUCE_BUILD = 'M35-1620';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
-try { console.log('%c[Sauce] BUILD M34-1604', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
+try { console.log('%c[Sauce] BUILD M35-1620', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
 console.log('%c[Sauce] build 2026-08-12 19:31 UTC', 'color:var(--gold);font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
@@ -52336,7 +52414,7 @@ window.openMaterialsModal = function(initialTab) {
             if (!r.ok) {
               try { showToast(r.reason === 'unmapped'
                 ? 'No model parts mapped to this line yet'
-                : 'Nothing of that kind is drawn on this model', 'warn'); } catch(e){}
+                : 'Nothing of that kind is drawn there', 'warn'); } catch(e){}
               return;
             }
             captRow.setAttribute('data-sp-on','1');
@@ -52345,7 +52423,7 @@ window.openMaterialsModal = function(initialTab) {
               while (c.length < 6) c = '0' + c;
               captRow.style.boxShadow = 'inset 3px 0 0 #' + c;
             } catch(e){}
-            try { showToast(r.count + ' ' + r.label + ' highlighted on the model', 'ok'); } catch(e){}
+            try { showToast(r.count + ' ' + r.label + ' on ' + r.where, 'ok'); } catch(e){}
           });
         })(item, row);
 
