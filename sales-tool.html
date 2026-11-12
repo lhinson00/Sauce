@@ -1630,7 +1630,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M36-1640</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M37-1708</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -7179,7 +7179,17 @@ window.SauceParts = window.SauceParts || (function(){
     var isGableExt = /gable\s+extension/i.test(text);
     var isSideShed = /side\s+shed/i.test(text);
     if (!isGableExt && !isSideShed) {
-      return { label: 'the main building', test: function(sc, idx){ return idx == null; } };
+      // A main-building line names its wall the same way, and there is no config to
+      // filter on, so the members are picked by where they stand.
+      var mw = [];
+      ['left','right','front','back'].forEach(function(w){
+        if (new RegExp('\\b' + w + '\\b', 'i').test(text)) mw.push(w);
+      });
+      if (/\beave\b/i.test(text) && !mw.length) mw = ['left','right'];
+      if (/\bgable\b/i.test(text) && !mw.length) mw = ['front','back'];
+      return { label: 'the main building' + (mw.length ? ' — ' + mw.join(' & ') : ''),
+               walls: mw.length ? mw : null,
+               test: function(sc, idx){ return idx == null; } };
     }
     var w = /[—-]\s*(Left|Right|Front|Back)\b/i.exec(text);
     var wall = w ? w[1].toLowerCase() : null;
@@ -7202,6 +7212,9 @@ window.SauceParts = window.SauceParts || (function(){
     for (var i=0;i<MAP.length;i++) {
       if (MAP[i].re.test(text)) {
         var a = areaOf(text);
+        // Length is read off the model, not off the line. The detail field carries
+        // spacings, spans and pitches as well as stock lengths — "Every 2ft up wall"
+        // is not a 2ft girt — so matching on it filtered out correct members.
         return { key: MAP[i].key, groups: MAP[i].groups, label: MAP[i].label,
                  area: a, where: a.label };
       }
@@ -7226,10 +7239,45 @@ window.SauceParts = window.SauceParts || (function(){
         if (mixed && !(o.userData && o.userData.sPart === entry.key)) return;
         var idx = (o.userData && o.userData.sIdx != null) ? o.userData.sIdx : null;
         if (entry.area && !entry.area.test(idx == null ? null : cfgs[idx], idx)) return;
+        var info = measure(o);
+        // Brackets, pads and caps share the post group. Nothing under a foot long is
+        // a stick of lumber, so it is not counted or lit.
+        if (entry.key !== 'truss' && info.lenFt != null && info.lenFt < 1) return;
+        if (entry.area && entry.area.walls && !onWall(info, entry.area.walls)) return;
+        o.userData._spLen = info.lenFt;
         out.push(o);
       });
     });
     return out;
+  }
+
+  // A member's length is its longest dimension, read straight off the geometry, so
+  // this works for anything the tool draws without each site having to declare it.
+  var _v = null;
+  function measure(o){
+    try {
+      if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+      var bb = o.geometry.boundingBox;
+      var dx = bb.max.x-bb.min.x, dy = bb.max.y-bb.min.y, dz = bb.max.z-bb.min.z;
+      var longest = Math.max(dx, dy, dz);
+      var sc = window._spSc || 0.1;
+      if (!_v) _v = new THREE.Vector3();
+      o.getWorldPosition(_v);
+      return { lenFt: longest > 0 ? longest / sc : null, x:_v.x, y:_v.y, z:_v.z };
+    } catch(e){ return { lenFt:null, x:0, y:0, z:0 }; }
+  }
+
+  function onWall(info, walls){
+    var Q = window._Q || {}, sc = window._spSc || 0.1;
+    var hw = (Q.w||0)*sc/2, hl = (Q.l||0)*sc/2, tol = 0.25;
+    for (var i=0;i<walls.length;i++){
+      var w = walls[i];
+      if (w === 'left'  && Math.abs(info.x + hw) < tol) return true;
+      if (w === 'right' && Math.abs(info.x - hw) < tol) return true;
+      if (w === 'front' && Math.abs(info.z + hl) < tol) return true;
+      if (w === 'back'  && Math.abs(info.z - hl) < tol) return true;
+    }
+    return false;
   }
 
   function clear(){
@@ -7243,18 +7291,38 @@ window.SauceParts = window.SauceParts || (function(){
     if (!entry) return { ok:false, reason:'unmapped' };
     var meshes = collect(entry);
     if (!meshes.length) return { ok:false, reason:'none', label:entry.label };
-    var mat = new THREE.MeshBasicMaterial({
-      color: COLOR[entry.key] != null ? COLOR[entry.key] : COLOR._default,
-      side: THREE.DoubleSide, transparent:true, opacity:0.95, depthTest:false
+    // Two tints, alternating, so pieces that butt end to end can still be told
+    // apart and counted by eye — one flat colour reads as a single long member.
+    var base = COLOR[entry.key] != null ? COLOR[entry.key] : COLOR._default;
+    function tint(f){
+      var r = Math.min(255, Math.round(((base>>16)&0xff)*f));
+      var g2= Math.min(255, Math.round(((base>>8)&0xff)*f));
+      var b2= Math.min(255, Math.round((base&0xff)*f));
+      return new THREE.MeshBasicMaterial({ color:(r<<16)|(g2<<8)|b2,
+        side:THREE.DoubleSide, transparent:true, opacity:0.95, depthTest:false });
+    }
+    var mA = tint(1.0), mB = tint(0.62);
+    meshes.sort(function(p,q){
+      var a1 = measure(p), b1 = measure(q);
+      return (a1.x - b1.x) || (a1.z - b1.z) || (a1.y - b1.y);
     });
-    meshes.forEach(function(m){ _held.push({mesh:m, mat:m.material}); m.material = mat; });
+    meshes.forEach(function(m, i){ _held.push({mesh:m, mat:m.material}); m.material = (i % 2) ? mB : mA; });
+    var lens = {};
+    meshes.forEach(function(m){
+      var L = m.userData._spLen;
+      if (L == null) return;
+      var r = Math.round(L*2)/2; lens[r] = (lens[r]||0) + 1;
+    });
     // The members have to be on screen to be checked against the line.
     try {
       var g = _grps();
       (entry.groups||[]).concat(['shed']).forEach(function(n){ if (g && g[n]) g[n].visible = true; });
     } catch(e){}
     _active = entry.key;
-    return { ok:true, count:meshes.length, label:entry.label, key:entry.key, where:entry.where };
+    var lenTxt = Object.keys(lens).sort(function(x,y){ return lens[y]-lens[x]; })
+                  .slice(0,3).map(function(k){ return lens[k] + ' @ ' + k + "'"; }).join(', ');
+    return { ok:true, count:meshes.length, label:entry.label, key:entry.key,
+             where:entry.where, lens:lenTxt };
   }
 
   return { highlight: highlight, clear: clear, resolve: resolve,
@@ -12652,6 +12720,7 @@ function applyVoiceQuote(parsed, overlay) {
           };
         })();
         window._spPart = null;
+        window._spSc = Sc;   // scene units per foot, so a member can report its length
         Object.values(grps).forEach(g => { g.visible = false; scene.add(g); });
         // Roof renders on top of walls/truss so truss never shows through roof from above
         grps.roof.renderOrder = 1;
@@ -23389,10 +23458,10 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M36-1640';
+window.SAUCE_BUILD = 'M37-1708';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
-try { console.log('%c[Sauce] BUILD M36-1640', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
+try { console.log('%c[Sauce] BUILD M37-1708', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
 console.log('%c[Sauce] build 2026-08-12 19:31 UTC', 'color:var(--gold);font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
@@ -52455,7 +52524,8 @@ window.openMaterialsModal = function(initialTab) {
               while (c.length < 6) c = '0' + c;
               captRow.style.boxShadow = 'inset 3px 0 0 #' + c;
             } catch(e){}
-            try { showToast(r.count + ' ' + r.label + ' on ' + r.where, 'ok'); } catch(e){}
+            try { showToast(r.count + ' ' + r.label + ' on ' + r.where
+                  + (r.lens ? '  —  ' + r.lens : ''), 'ok'); } catch(e){}
           });
         })(item, row);
 
