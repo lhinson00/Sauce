@@ -6516,8 +6516,7 @@ window._shedParentGeom = function(sc, cfgs, Q) {
   // cannot be worked out from the geometry. It is a choice, hence the toggle.
   var rot = 0;
 
-  return { dx: dx, dz: dz, wallLen: wallLen, rot: rot, pivX: pivX, pivZ: pivZ,
-           attachFt: (Q.h || 0) - (P.dropFt || 0) };
+  return { dx: dx, dz: dz, wallLen: wallLen, rot: rot, pivX: pivX, pivZ: pivZ };
 };
 
 // Note which meshes each group already holds, so the ones a single shed adds
@@ -7090,6 +7089,13 @@ function renderSheds(){
                    + (p.label||('Side Shed '+((p.idx||0)+1))) + '</option>';
             }).join('')
           + '</select></div>';
+        if (sc.type === 'gable' && (sc.wall === 'left' || sc.wall === 'right')) {
+          parentRow += '<div style="margin-top:6px;"><div class="shed-label">Ridge</div>'
+            + '<select class="shed-sel" onchange="setShedProp('+sc.id+',\'ridgeAlong\',this.value===\'1\');scheduleBuild();updateStripFromLocalCalc()">'
+            + '<option value="0"'+(sc.ridgeAlong?'':' selected')+'>Across the wall (standard)</option>'
+            + '<option value="1"'+(sc.ridgeAlong?' selected':'')+'>Along the wall</option>'
+            + '</select></div>';
+        }
       }
     } catch(e) {}
 
@@ -11790,7 +11796,7 @@ function applyVoiceQuote(parsed, overlay) {
           var g = null;
           try { g = window._shedParentGeom(sc, _attSrc, window._Q || Q); } catch(e) {}
           return g ? Object.assign({}, sc, {
-            _pDX: g.dx, _pDZ: g.dz, _pWallLen: g.wallLen, _pAttachFt: g.attachFt,
+            _pDX: g.dx, _pDZ: g.dz, _pWallLen: g.wallLen,
             _pRot: g.rot, _pPivX: g.pivX, _pPivZ: g.pivZ
           }) : sc;
         });
@@ -15605,9 +15611,7 @@ function applyVoiceQuote(parsed, overlay) {
             const ltPitchR = sc.ltPitch || 1;
             const dropHR = (sc.dropFt || 0) * Sc;
             // Step sheds attach at step section eave height, not main building height
-            const _scAttachH = sc._pAttachFt ? sc._pAttachFt * Sc
-                             : sc._isStepShed ? (stepCfg ? stepCfg.height * Sc : sh)
-                             : (isSingleSlope ? (Q.h - Q.w/12) * Sc : sh); // single slope: attach at low eave
+            const _scAttachH = sc._isStepShed ? (stepCfg ? stepCfg.height * Sc : sh) : (isSingleSlope ? (Q.h - Q.w/12) * Sc : sh); // single slope: attach at low eave
             const attachHR = _scAttachH - dropHR;
             const sSh = attachHR - (sc.w * (ltPitchR / 12)) * Sc;
 
@@ -16004,6 +16008,46 @@ function applyVoiceQuote(parsed, overlay) {
                     var z1oh = z1 - oh, z2oh = z2 + oh;
                     var oXoh = oX + dir * oh;
 
+                    if (sc.ridgeAlong) {
+                    // ── Ridge running ALONG the wall ──────────────────────────────
+                    // A connected building sits square to the wall it joins but runs
+                    // the other way, so its ridge is parallel to that wall instead of
+                    // striking out from it. Two planes, an eave on each long edge,
+                    // gable ends front and back. No valley to solve: dropped below the
+                    // main eave, this roof tucks under the main slope rather than
+                    // cutting into it.
+                    var raRidgeX = aX + dir * ssw / 2;
+                    var raRidgeH = Math.min(_extSr, _extEaveH + (sc.w / 2) * (gablePitch / 12) * Sc);
+
+                    // Inner plane: up from the main wall to the ridge.
+                    grps.shed.add(mkQ([aX,       _extEaveH - .003, z1oh,
+                                       raRidgeX, raRidgeH  - .003, z1oh,
+                                       raRidgeX, raRidgeH  - .003, z2oh,
+                                       aX,       _extEaveH - .003, z2oh], mSh));
+                    // Outer plane: down from the ridge to the outer eave.
+                    grps.shed.add(mkQ([raRidgeX, raRidgeH  - .003, z1oh,
+                                       oXoh,     _extEaveH - .003, z1oh,
+                                       oXoh,     _extEaveH - .003, z2oh,
+                                       raRidgeX, raRidgeH  - .003, z2oh], mSh));
+
+                    _extPurlins('z', z1oh, z2oh, aX,   raRidgeX, _extEaveH, raRidgeH);
+                    _extPurlins('z', z1oh, z2oh, oXoh, raRidgeX, _extEaveH, raRidgeH);
+
+                    // Rake trim down both gable ends.
+                    { var _raH = 0.04;
+                      var _mRaRake = new THREE.MeshBasicMaterial({color: pc(trimColorName), side: THREE.DoubleSide});
+                      var _raF = function(p1, p2) {
+                        grps.shed.add(mkQ([p1[0],p1[1],p1[2], p2[0],p2[1],p2[2],
+                                           p2[0],p2[1]-_raH,p2[2], p1[0],p1[1]-_raH,p1[2]], _mRaRake));
+                      };
+                      [[z1oh, -0.006], [z2oh, 0.006]].forEach(function(e) {
+                        var _z = e[0] + e[1];
+                        _raF([aX, _extEaveH, _z], [raRidgeX, raRidgeH, _z]);
+                        _raF([raRidgeX, raRidgeH, _z], [oXoh, _extEaveH, _z]);
+                      });
+                    }
+                    } else {
+
                     // Ridge runs outward along X at zMid from aX@sh to oXoh@extRidgeH
                     // Ridge terminates where it intersects the main roof slope (inward from aX)
                     // Main roof height at X: sh + (sw/2 - |X|) * (sr-sh) / (sw/2)
@@ -16136,6 +16180,7 @@ function applyVoiceQuote(parsed, overlay) {
                         var _ixf=aX+dir*0.003;
                         grps.shed.add(mkQ([_ixf,_extEaveH,_iz, _ixf,_iyL,_iz, _ixf,_iyR,_izR, _ixf,_extEaveH,_izR], _igMat));
                       }
+                    }
                     }
                 } else {
                     // ── Front/back gable extension — same pitch as main roof, optional drop ──
