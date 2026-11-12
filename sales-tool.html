@@ -1630,7 +1630,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M22-1647</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M24-1702</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -16357,6 +16357,11 @@ function applyVoiceQuote(parsed, overlay) {
                     if (sc.encl !== 'roofonly' && sc.encl !== 'open') {
                         _raWall('z', oX, z1, z2, _raBase, function(){ return _extEaveH; }, dir);
                     }
+                    // Face against the parent. Nothing stands behind it, unlike an
+                    // attachment hung straight on the building.
+                    if (sc._pWallLen) {
+                        _raWall('z', aX, z1, z2, _raBase, function(){ return _extEaveH; }, -dir);
+                    }
                     } else {
 
                     // Ridge runs outward along X at zMid from aX@sh to oXoh@extRidgeH
@@ -16441,7 +16446,22 @@ function applyVoiceQuote(parsed, overlay) {
                         // King post: vertical from bottom chord center up to peak
                         var kpH=extRidgeH-_extEaveH-tmbr;
                         if(kpH>0){ var kp=new THREE.Mesh(new THREE.BoxGeometry(tmbr,kpH,tmbr),tmbrMat); kp.position.set(oX,_extEaveH+tmbr+kpH/2,zMid); grps.shed.add(kp); }
-                        // Bottom chord, two rafters and a king post. No diagonal braces.
+                        // Struts: from partway up the king post, down and out to the
+                        // bottom chord at the third points.
+                        if (kpH > 0) {
+                          var _sTopY = _extEaveH + tmbr + kpH * 0.55;
+                          var _sBotY = _extEaveH + tmbr;
+                          [[-1, z1], [1, z2]].forEach(function(e){
+                            var _bz = zMid + (e[1] - zMid) * 0.42;
+                            var _dz = _bz - zMid, _dy = _sBotY - _sTopY;
+                            var _len = Math.sqrt(_dz*_dz + _dy*_dy);
+                            if (!(_len > 0.001)) return;
+                            var _st = new THREE.Mesh(new THREE.BoxGeometry(tmbr*0.8, tmbr*0.8, _len), tmbrMat);
+                            _st.position.set(oX, (_sTopY + _sBotY)/2, (zMid + _bz)/2);
+                            _st.rotation.x = -Math.atan2(_dy, _dz);
+                            grps.shed.add(_st);
+                          });
+                        }
                     } else {
                         // Metal gable face triangle — draw as vertical strips (no degenerate quad)
                         { const wHex=pc(wallColorName);
@@ -16460,23 +16480,44 @@ function applyVoiceQuote(parsed, overlay) {
                             if(yTopL<=_extEaveH && yTopR<=_extEaveH) continue;
                             var xf=oX-dir*0.003; // outward from building so ribs face the viewer
                             grps.shed.add(mkQ([xf,_extEaveH,zr, xf,yTopL,zr, xf,yTopR,zrR, xf,_extEaveH,zrR], mWBase));
-                            grps.shed.add(mkQ([xf-dir*0.003,_extEaveH,zr, xf-dir*0.003,yTopL,zr, xf-dir*0.003,yTopL,zr+gfW, xf-dir*0.003,_extEaveH,zr+gfW], mWRi));
-                            grps.shed.add(mkQ([xf-dir*0.003,_extEaveH,zr+gfW, xf-dir*0.003,yTopL,zr+gfW, xf-dir*0.003,yTopL,zr+gfW*2, xf-dir*0.003,_extEaveH,zr+gfW*2], mWRS));
+                            const _rT=(z)=>{const d=Math.abs(z-zMid);return _extEaveH+(extRidgeH-_extEaveH)*Math.max(0,1-d/halfSpan);};
+                            const _r1=Math.min(zr+gfW,zrR), _r2=Math.min(zr+gfW*2,zrR);
+                            const _y1=_rT(_r1), _y2=_rT(_r2);
+                            grps.shed.add(mkQ([xf-dir*0.003,_extEaveH,zr, xf-dir*0.003,yTopL,zr, xf-dir*0.003,_y1,_r1, xf-dir*0.003,_extEaveH,_r1], mWRi));
+                            grps.shed.add(mkQ([xf-dir*0.003,_extEaveH,_r1, xf-dir*0.003,_y1,_r1, xf-dir*0.003,_y2,_r2, xf-dir*0.003,_extEaveH,_r2], mWRS));
                           }
                         }
                     }
 
-                    // Inner gable face against the main wall (when dropped below the eave)
-                    if ((sc.dropFt||0) > 0 && extRidgeH <= _extSh + 0.001 && sc.frameStyle !== 'timber') {
-                      var _igMat=new THREE.MeshBasicMaterial({color:pc(wallColorName),side:THREE.DoubleSide});
+                    // Face against whatever this attaches to. Normally only the
+                    // triangle above a dropped eave needs filling, because the main
+                    // building closes the rest. Hanging off another attachment, the
+                    // whole face has to be closed — nothing is behind it.
+                    var _igParented = !!sc._pWallLen;
+                    if ((_igParented || ((sc.dropFt||0) > 0 && extRidgeH <= _extSh + 0.001)) && sc.frameStyle !== 'timber') {
+                      var _igWHex=pc(wallColorName);
+                      var _igR=(_igWHex>>16)&0xff,_igG=(_igWHex>>8)&0xff,_igB=_igWHex&0xff;
+                      var _igMat=new THREE.MeshBasicMaterial({color:_igWHex,side:THREE.DoubleSide});
+                      var _igRi=new THREE.MeshBasicMaterial({color:((Math.min(255,_igR+55)<<16)|(Math.min(255,_igG+55)<<8)|Math.min(255,_igB+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
+                      var _igSh=new THREE.MeshBasicMaterial({color:((Math.max(0,_igR-40)<<16)|(Math.max(0,_igG-40)<<8)|Math.max(0,_igB-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
                       var _igHalf=Math.max(0.001,(z2-z1)/2);
+                      var _igW=0.006;
+                      var _igBase=(_igParented && sc.encl !== 'roofonly' && sc.encl !== 'open')
+                                  ? (typeof slabH !== 'undefined' ? slabH : 0) : _extEaveH;
+                      var _igTop=function(z){
+                        return _extEaveH+(extRidgeH-_extEaveH)*Math.max(0,1-Math.abs(z-zMid)/_igHalf);
+                      };
                       for (var _iz=z1; _iz<z2; _iz+=0.075){
                         var _izR=Math.min(_iz+0.075,z2);
-                        var _iyL=_extEaveH+(extRidgeH-_extEaveH)*Math.max(0,1-Math.abs(_iz-zMid)/_igHalf);
-                        var _iyR=_extEaveH+(extRidgeH-_extEaveH)*Math.max(0,1-Math.abs(_izR-zMid)/_igHalf);
-                        if(_iyL<=_extEaveH && _iyR<=_extEaveH) continue;
+                        var _iyL=_igTop(_iz), _iyR=_igTop(_izR);
+                        if(_iyL<=_igBase+0.001 && _iyR<=_igBase+0.001) continue;
                         var _ixf=aX+dir*0.003;
-                        grps.shed.add(mkQ([_ixf,_extEaveH,_iz, _ixf,_iyL,_iz, _ixf,_iyR,_izR, _ixf,_extEaveH,_izR], _igMat));
+                        var _ir1=Math.min(_iz+_igW,_izR), _ir2=Math.min(_iz+_igW*2,_izR);
+                        var _iy1=_igTop(_ir1), _iy2=_igTop(_ir2);
+                        grps.shed.add(mkQ([_ixf,_igBase,_iz, _ixf,_iyL,_iz, _ixf,_iyR,_izR, _ixf,_igBase,_izR], _igMat));
+                        var _ixr=aX+dir*0.006;
+                        grps.shed.add(mkQ([_ixr,_igBase,_iz, _ixr,_iyL,_iz, _ixr,_iy1,_ir1, _ixr,_igBase,_ir1], _igRi));
+                        grps.shed.add(mkQ([_ixr,_igBase,_ir1, _ixr,_iy1,_ir1, _ixr,_iy2,_ir2, _ixr,_igBase,_ir2], _igSh));
                       }
                     }
                     }
@@ -16546,6 +16587,9 @@ function applyVoiceQuote(parsed, overlay) {
                     _raWall('z', sco + ssl / 2, aZ, oZ, _raBase2, _raProfZ,  1);
                     if (sc.encl !== 'roofonly' && sc.encl !== 'open') {
                         _raWall('x', oZ, sco - ssl/2, sco + ssl/2, _raBase2, function(){ return raEaveH; }, dir);
+                    }
+                    if (sc._pWallLen) {
+                        _raWall('x', aZ, sco - ssl/2, sco + ssl/2, _raBase2, function(){ return raEaveH; }, -dir);
                     }
                     } else {
                     // Main building pitch slope (scene units of height per scene unit of X from center)
@@ -16627,7 +16671,21 @@ function applyVoiceQuote(parsed, overlay) {
                         var kpTop = extRidgePeak - halfT;
                         var kpH = kpTop - kpBot;
                         if(kpH>0){ var kp=new THREE.Mesh(new THREE.BoxGeometry(tmbr,kpH,tmbr),tmbrMat); kp.position.set(extXmid, kpBot + kpH/2, tZ); grps.shed.add(kp); }
-                        // Bottom chord, two rafters and a king post. No diagonal braces.
+                        // Struts: from partway up the king post, down and out to the
+                        // bottom chord at the third points.
+                        if (kpH > 0) {
+                          var _sTop = kpBot + kpH * 0.55, _sBot = kpBot;
+                          [-1, 1].forEach(function(s){
+                            var _bx = extXmid + s * extHalfX * 0.42;
+                            var _dx = _bx - extXmid, _dy = _sBot - _sTop;
+                            var _len = Math.sqrt(_dx*_dx + _dy*_dy);
+                            if (!(_len > 0.001)) return;
+                            var _st = new THREE.Mesh(new THREE.BoxGeometry(_len, tmbr*0.8, tmbr*0.8), tmbrMat);
+                            _st.position.set((extXmid + _bx)/2, (_sTop + _sBot)/2, tZ);
+                            _st.rotation.z = Math.atan2(_dy, _dx);
+                            grps.shed.add(_st);
+                          });
+                        }
                     } else {
                     // Outer gable end triangle — same pitch slope as main building, shifted down
                     { const wHex=pc(wallColorName);
@@ -16643,8 +16701,10 @@ function applyVoiceQuote(parsed, overlay) {
                         const yTopR=Math.min(gblRoofY(gxR), extRidgePeak);
                         if(yTopL<=gblEaveH && yTopR<=gblEaveH) continue;
                         grps.shed.add(mkQ([gx,gblEaveH,zf, gx,yTopL,zf, gxR,yTopR,zf, gxR,gblEaveH,zf], mWBase));
-                        grps.shed.add(mkQ([gx,gblEaveH,zf+dir*0.003, gx,yTopL,zf+dir*0.003, gx+gfW,yTopL,zf+dir*0.003, gx+gfW,gblEaveH,zf+dir*0.003], mWRi));
-                        grps.shed.add(mkQ([gx+gfW,gblEaveH,zf+dir*0.003, gx+gfW,yTopL,zf+dir*0.003, gx+gfW*2,yTopL,zf+dir*0.003, gx+gfW*2,gblEaveH,zf+dir*0.003], mWRS));
+                        const _g1=Math.min(gx+gfW,gxR), _g2=Math.min(gx+gfW*2,gxR);
+                        const _gy1=Math.min(gblRoofY(_g1), extRidgePeak), _gy2=Math.min(gblRoofY(_g2), extRidgePeak);
+                        grps.shed.add(mkQ([gx,gblEaveH,zf+dir*0.003, gx,yTopL,zf+dir*0.003, _g1,_gy1,zf+dir*0.003, _g1,gblEaveH,zf+dir*0.003], mWRi));
+                        grps.shed.add(mkQ([_g1,gblEaveH,zf+dir*0.003, _g1,_gy1,zf+dir*0.003, _g2,_gy2,zf+dir*0.003, _g2,gblEaveH,zf+dir*0.003], mWRS));
                       }
                       // If dropped: fill the exposed band on the main gable wall between the
                       // extension's inner peak and the main building's ridge line
@@ -16659,8 +16719,12 @@ function applyVoiceQuote(parsed, overlay) {
                           const yTopR2=sh+(sr-sh)*Math.max(0, 1-Math.abs(gxR-sco)/extHalfX);
                           if(yTopL2<=yBotL && yTopR2<=yBotR) continue;
                           grps.shed.add(mkQ([gx,yBotL,zGap, gx,yTopL2,zGap, gxR,yTopR2,zGap, gxR,yBotR,zGap], mWBase));
-                          grps.shed.add(mkQ([gx,yBotL,zGap+dir*0.003, gx,yTopL2,zGap+dir*0.003, gx+gfW,yTopL2,zGap+dir*0.003, gx+gfW,yBotL,zGap+dir*0.003], mWRi));
-                          grps.shed.add(mkQ([gx+gfW,yBotL,zGap+dir*0.003, gx+gfW,yTopL2,zGap+dir*0.003, gx+gfW*2,yTopL2,zGap+dir*0.003, gx+gfW*2,yBotL,zGap+dir*0.003], mWRS));
+                          const _k1=Math.min(gx+gfW,gxR), _k2=Math.min(gx+gfW*2,gxR);
+                          const _kb1=Math.min(gblRoofY(_k1), extRidgePeak), _kb2=Math.min(gblRoofY(_k2), extRidgePeak);
+                          const _kt1=sh+(sr-sh)*Math.max(0, 1-Math.abs(_k1-sco)/extHalfX);
+                          const _kt2=sh+(sr-sh)*Math.max(0, 1-Math.abs(_k2-sco)/extHalfX);
+                          grps.shed.add(mkQ([gx,yBotL,zGap+dir*0.003, gx,yTopL2,zGap+dir*0.003, _k1,_kt1,zGap+dir*0.003, _k1,_kb1,zGap+dir*0.003], mWRi));
+                          grps.shed.add(mkQ([_k1,_kb1,zGap+dir*0.003, _k1,_kt1,zGap+dir*0.003, _k2,_kt2,zGap+dir*0.003, _k2,_kb2,zGap+dir*0.003], mWRS));
                         }
                       }
                     }
@@ -22857,10 +22921,10 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M22-1647';
+window.SAUCE_BUILD = 'M24-1702';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
-try { console.log('%c[Sauce] BUILD M22-1647', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
+try { console.log('%c[Sauce] BUILD M24-1702', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
 console.log('%c[Sauce] build 2026-08-12 19:31 UTC', 'color:var(--gold);font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
