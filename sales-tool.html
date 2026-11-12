@@ -6644,9 +6644,13 @@ function layoutPorchGroup(gid){
   var legLen  = Math.max(0, (total - gLen) / 2);
   var start   = (g.pgOffset == null || g.pgOffset === '') ? (wallLen - total) / 2 : (parseFloat(g.pgOffset) || 0);
 
+  var porchDrop = parseFloat(g.pgDrop) || 0;
+  var porchFall = (parseFloat(g.w) || 0) * ((parseFloat(g.pgPorchPitch) || 2) / 12);
+  g.dropFt = porchDrop + porchFall;   // gable eave meets the porch header
+
   [lf, rt].forEach(function(s){
     if (!s) return;
-    s.wall = g.wall; s.w = g.w; s.dropFt = g.dropFt;
+    s.wall = g.wall; s.w = g.w; s.dropFt = porchDrop;
     s.encl = g.encl; s.enclWalls = g.enclWalls;
     s.ltPitch = g.pgPorchPitch || 2;
     s.frameStyle = g.frameStyle || 'timber';   // a timber porch is timber throughout
@@ -6730,7 +6734,7 @@ function porchUnitCard(g){
     + '</div>'
     + '<div class="shed-row">'
     +   S('frameStyle', 'Style', g.frameStyle || 'timber', [['timber','Timber Frame'],['metal','Metal']], 'Timber: beams, no skirt')
-    +   N('dropFt', 'Drop (ft)', g.dropFt || 0, 'Below the main eave')
+    +   N('pgDrop', 'Drop (ft)', g.pgDrop || 0, 'Porch below the main eave')
     + '</div>'
     + '<div class="shed-row">'
     +   N('pgOffset', 'Offset (ft)', (g.pgOffset == null ? '' : g.pgOffset), 'Blank centers it on the wall')
@@ -6790,7 +6794,7 @@ function expandPorchGable(id){
     p.pgRole  = (p.type === 'gable') ? 'gable' : (i === 0 && parts.length > 1 ? 'left' : 'right');
   });
   var gg = parts.filter(function(p){ return p.pgRole === 'gable'; })[0];
-  if (gg) { gg.pgTotal = wallLen; gg.pgOffset = null; gg.pgPorchPitch = from.ltPitch || 2; }
+  if (gg) { gg.pgTotal = wallLen; gg.pgOffset = null; gg.pgPorchPitch = from.ltPitch || 2; gg.pgDrop = from.dropFt || 0; }
   window._shedConfigs.splice.apply(window._shedConfigs, [at, 1].concat(parts));
   window._shedConfigs.forEach(function(s,i){ s.idx = i; });
   layoutPorchGroup(gid);
@@ -16201,35 +16205,48 @@ function applyVoiceQuote(parsed, overlay) {
                         m.castShadow=true; grps.framing.add(m);
                     }
                 }
-                // Panelled wall for a turned ridge. Draws in vertical bays with the
-                // same rib highlight and shadow the main building uses, so the metal
-                // matches. `prof` gives the top of the wall at any point along it.
-                // axis 'x': the wall runs along X in a plane of constant Z.
-                // axis 'z': the wall runs along Z in a plane of constant X.
-                function _raWall(axis, plane, c0, c1, baseY, prof, faceOff) {
-                    if (sc.frameStyle === 'timber') return;   // timber shows beams, not panels
+                // Panelled wall for a turned ridge, built exactly the way the
+                // building's own gable faces are: a base quad per bay, then two
+                // rib strips — one lightened, one darkened — each running the
+                // full height of that bay and stopping at the roof line, so the
+                // striations never carry on over the trim. Both faces are drawn,
+                // since a turned extension's gable ends are seen from inside the
+                // porch as well as outside.
+                //   axis 'x': the wall runs along X in a plane of constant Z.
+                //   axis 'z': the wall runs along Z in a plane of constant X.
+                //   outDir:   +1 or -1, which way is outward from the structure.
+                function _raWall(axis, plane, c0, c1, baseY, prof, outDir) {
+                    if (sc.frameStyle === 'timber') return;   // timber shows its truss, not panels
                     var wHex = pc(wallColorName);
-                    var wR=(wHex>>16)&0xff, wG=(wHex>>8)&0xff, wB=wHex&0xff;
-                    var mBase = new THREE.MeshBasicMaterial({color:wHex, side:THREE.DoubleSide});
-                    var mHi   = new THREE.MeshBasicMaterial({color:((Math.min(255,wR+55)<<16)|(Math.min(255,wG+55)<<8)|Math.min(255,wB+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
-                    var mSd   = new THREE.MeshBasicMaterial({color:((Math.max(0,wR-40)<<16)|(Math.max(0,wG-40)<<8)|Math.max(0,wB-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
-                    var sp = 0.075, rw = 0.006;
+                    var wR = (wHex>>16)&0xff, wG = (wHex>>8)&0xff, wB = wHex&0xff;
+                    var mBase = new THREE.MeshBasicMaterial({color: wHex, side: THREE.DoubleSide});
+                    var mRib  = new THREE.MeshBasicMaterial({color:((Math.min(255,wR+55)<<16)|(Math.min(255,wG+55)<<8)|Math.min(255,wB+55)), side: THREE.DoubleSide, transparent:true, opacity:0.9});
+                    var mShd  = new THREE.MeshBasicMaterial({color:((Math.max(0,wR-40)<<16)|(Math.max(0,wG-40)<<8)|Math.max(0,wB-40)), side: THREE.DoubleSide, transparent:true, opacity:0.75});
+                    var gfSp = 0.075, gfW = 0.006;
                     var lo = Math.min(c0, c1), hi = Math.max(c0, c1);
-                    var pf = plane + (faceOff || 0);
-                    for (var c = lo; c < hi; c += sp) {
-                        var cR = Math.min(c + sp, hi);
-                        var yL = prof(c), yR = prof(cR);
-                        if (yL <= baseY + 0.001 && yR <= baseY + 0.001) continue;
-                        if (axis === 'x') {
-                            grps.shed.add(mkQ([c, baseY, pf, c, yL, pf, cR, yR, pf, cR, baseY, pf], mBase));
-                            grps.shed.add(mkQ([c, baseY, pf+0.003, c, yL, pf+0.003, c+rw, yL, pf+0.003, c+rw, baseY, pf+0.003], mHi));
-                            grps.shed.add(mkQ([c+rw, baseY, pf+0.003, c+rw, yL, pf+0.003, c+rw*2, yL, pf+0.003, c+rw*2, baseY, pf+0.003], mSd));
-                        } else {
-                            grps.shed.add(mkQ([pf, baseY, c, pf, yL, c, pf, yR, cR, pf, baseY, cR], mBase));
-                            grps.shed.add(mkQ([pf+0.003, baseY, c, pf+0.003, yL, c, pf+0.003, yL, c+rw, pf+0.003, baseY, c+rw], mHi));
-                            grps.shed.add(mkQ([pf+0.003, baseY, c+rw, pf+0.003, yL, c+rw, pf+0.003, yL, c+rw*2, pf+0.003, baseY, c+rw*2], mSd));
+                    var d  = (outDir < 0) ? -1 : 1;
+
+                    // face: the side being drawn (+1 outward, -1 inward)
+                    function panel(face) {
+                        var p  = plane + face * d * 0.003;      // panel just proud of the structure
+                        var pr = plane + face * d * 0.006;      // ribs a touch further out again
+                        for (var c = lo; c < hi; c += gfSp) {
+                            var cR  = Math.min(c + gfSp, hi);
+                            var yL  = prof(c), yR = prof(cR);
+                            if (yL <= baseY + 0.001 && yR <= baseY + 0.001) continue;
+                            if (axis === 'x') {
+                                grps.shed.add(mkQ([c, baseY, p, c, yL, p, cR, yR, p, cR, baseY, p], mBase));
+                                grps.shed.add(mkQ([c, baseY, pr, c, yL, pr, c+gfW, yL, pr, c+gfW, baseY, pr], mRib));
+                                grps.shed.add(mkQ([c+gfW, baseY, pr, c+gfW, yL, pr, c+gfW*2, yL, pr, c+gfW*2, baseY, pr], mShd));
+                            } else {
+                                grps.shed.add(mkQ([p, baseY, c, p, yL, c, p, yR, cR, p, baseY, cR], mBase));
+                                grps.shed.add(mkQ([pr, baseY, c, pr, yL, c, pr, yL, c+gfW, pr, baseY, c+gfW], mRib));
+                                grps.shed.add(mkQ([pr, baseY, c+gfW, pr, yL, c+gfW, pr, yL, c+gfW*2, pr, baseY, c+gfW*2], mShd));
+                            }
                         }
                     }
+                    panel(1);    // outside
+                    panel(-1);   // inside — visible from under the porch
                 }
 
                 // Timber truss for a turned ridge. Same members as the standard
@@ -16328,18 +16345,18 @@ function applyVoiceQuote(parsed, overlay) {
                     _raTruss('x', z2, aX, oXoh, raRidgeX, _extEaveH, raRidgeH);
 
                     // Close both gable ends, from the slab up to the roof line.
-                    var _raBase = (sc.encl === 'enclosed') ? 0 : _extEaveH;
+                    var _raBase = (sc.encl === 'enclosed') ? (typeof slabH !== 'undefined' ? slabH : 0) : _extEaveH;
                     var _raProfX = function(x) {
                         var span = Math.abs(raRidgeX - aX);
                         if (span < 0.0001) return _extEaveH;
                         var t = 1 - Math.abs(x - raRidgeX) / span;
                         return _extEaveH + (raRidgeH - _extEaveH) * Math.max(0, Math.min(1, t));
                     };
-                    _raWall('x', z1, aX, oX, _raBase, _raProfX, -0.004);
-                    _raWall('x', z2, aX, oX, _raBase, _raProfX,  0.004);
+                    _raWall('x', z1, aX, oX, _raBase, _raProfX, -1);
+                    _raWall('x', z2, aX, oX, _raBase, _raProfX,  1);
                     // Outer wall, eave height, plain rectangle.
                     if (sc.encl === 'enclosed') {
-                        _raWall('z', oX, z1, z2, 0, function(){ return _extEaveH; }, dir * 0.004);
+                        _raWall('z', oX, z1, z2, _raBase, function(){ return _extEaveH; }, dir);
                     }
                     } else {
 
@@ -16531,17 +16548,17 @@ function applyVoiceQuote(parsed, overlay) {
                     _raTruss('z', sco - ssl / 2, aZ, oZoh, raRidgeZ, raEaveH, raRidgeH);
                     _raTruss('z', sco + ssl / 2, aZ, oZoh, raRidgeZ, raEaveH, raRidgeH);
 
-                    var _raBase2 = (sc.encl === 'enclosed') ? 0 : raEaveH;
+                    var _raBase2 = (sc.encl === 'enclosed') ? (typeof slabH !== 'undefined' ? slabH : 0) : raEaveH;
                     var _raProfZ = function(z) {
                         var span = Math.abs(raRidgeZ - aZ);
                         if (span < 0.0001) return raEaveH;
                         var t = 1 - Math.abs(z - raRidgeZ) / span;
                         return raEaveH + (raRidgeH - raEaveH) * Math.max(0, Math.min(1, t));
                     };
-                    _raWall('z', sco - ssl / 2, aZ, oZ, _raBase2, _raProfZ, -0.004);
-                    _raWall('z', sco + ssl / 2, aZ, oZ, _raBase2, _raProfZ,  0.004);
+                    _raWall('z', sco - ssl / 2, aZ, oZ, _raBase2, _raProfZ, -1);
+                    _raWall('z', sco + ssl / 2, aZ, oZ, _raBase2, _raProfZ,  1);
                     if (sc.encl === 'enclosed') {
-                        _raWall('x', oZ, sco - ssl/2, sco + ssl/2, 0, function(){ return raEaveH; }, dir * 0.004);
+                        _raWall('x', oZ, sco - ssl/2, sco + ssl/2, _raBase2, function(){ return raEaveH; }, dir);
                     }
                     } else {
                     // Main building pitch slope (scene units of height per scene unit of X from center)
