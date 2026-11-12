@@ -1937,7 +1937,6 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="sec-title">Side Sheds & Extensions</div>
         <div id="shedList"></div>
         <button class="opening-add-btn" id="addShedBtn" onclick="addShed()">+ Add Side Shed / Extension</button>
-        <button class="opening-add-btn" id="addPorchGableBtn" onclick="addPorchWithGable()" title="Lean-to porch across the wall with a timber gable centred in it">+ Add Porch with Centre Gable</button>
         <div id="rowShedOnly" style="margin-top:8px;display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:rgba(var(--gold-rgb),.06);border:1px solid rgba(var(--gold-rgb),.2);border-radius:8px;">
           <div>
             <div style="font-size:11px;font-weight:700;color:var(--navy);">Side Shed Only Quote</div>
@@ -6575,7 +6574,7 @@ window._attEach = function(cfgs, grps, Sc, fn) {
 };
 
 
-var SHED_TYPES = [{val:'leanto',label:'Lean-to'},{val:'gable',label:'Gable Extension'},{val:'wrap',label:'Wrap 2-Sided'},{val:'wrap3',label:'Wrap 3-Sided'},{val:'wrap4',label:'Full Wrap-Around'}];
+var SHED_TYPES = [{val:'leanto',label:'Lean-to'},{val:'gable',label:'Gable Extension'},{val:'porchgable',label:'Porch + Center Gable'},{val:'wrap',label:'Wrap 2-Sided'},{val:'wrap3',label:'Wrap 3-Sided'},{val:'wrap4',label:'Full Wrap-Around'}];
 var SHED_ENCL = [{val:'roofonly',label:'Roof Only'},{val:'enclosed',label:'Enclosed'},{val:'open',label:'Open Sides'}];
 
 function addStepShed(){
@@ -6624,26 +6623,34 @@ function addShed(){
 // three attachments: lean-to, gable, lean-to. Nothing new to render, so it
 // behaves like any other porch and prices like one. The two lean-to ends that
 // die into the gable are left open, since the gable's own face closes them.
-function addPorchWithGable(){
-  var free = (window.SHED_MAX || 12) - window._shedConfigs.length;
-  if (free < 3) { try { showToast('Needs room for 3 attachments', 'warn'); } catch(e) {} return; }
+//
+// Chosen from the type chips like any other extension: the one attachment
+// becomes the three, measured across the wall it was already on.
+window.PORCH_GABLE_LEN = 10;
 
-  var wall = 'front';
+function expandPorchGable(id){
+  var at = window._shedConfigs.findIndex(function(s){ return s.id === id; });
+  if (at < 0) return;
+  var from = window._shedConfigs[at];
+  var free = (window.SHED_MAX || 12) - window._shedConfigs.length;
+  if (free < 2) { try { showToast('Needs room for 2 more attachments', 'warn'); } catch(e) {} from.type = 'leanto'; renderSheds(); return; }
+
+  var wall = from.wall || 'front';
   var isEave = (wall === 'left' || wall === 'right');
-  var wallLen = isEave ? Q.l : Q.w;
-  var depth = 8;                                  // how far the porch projects
-  var gableW = Math.min(14, Math.max(8, Math.round(wallLen * 0.3)));
-  var side = Math.max(0, (wallLen - gableW) / 2); // each lean-to leg
+  var wallLen = isEave ? (Q.l || 0) : (Q.w || 0);
+  var depth = from.w || 8;
+  var gableW = Math.min(window.PORCH_GABLE_LEN, wallLen);
+  var side = Math.max(0, (wallLen - gableW) / 2);
 
   function leg(label, len, offset, hide1, hide2) {
     return {
       id: nextShedId++, idx: 0, label: label,
       w: depth, l: len, origL: len,
       wall: wall, type: 'leanto', wrapDir: 'cw', wrapLeg: 0,
-      encl: 'roofonly', enclWalls: [],
+      encl: from.encl || 'roofonly', enclWalls: from.enclWalls || [],
       position: 'custom', offsetFt: offset,
       gablePS: 10, gablePitch: 4, timberFrame: 'metal',
-      ltPitch: 2, dropFt: 1, frameStyle: 'timber',
+      ltPitch: from.ltPitch || 2, dropFt: from.dropFt || 0, frameStyle: from.frameStyle || 'timber',
       hideEndCap1: !!hide1, hideEndCap2: !!hide2,
       noSkirt: true, postsOnTop: false, _open: false
     };
@@ -6652,22 +6659,22 @@ function addPorchWithGable(){
   var parts = [];
   if (side > 0.5) parts.push(leg('Porch — left', side, 0, false, true));
   parts.push({
-    id: nextShedId++, idx: 0, label: 'Porch — centre gable',
+    id: nextShedId++, idx: 0, label: 'Porch — center gable',
     w: depth, l: gableW, origL: gableW,
     wall: wall, type: 'gable', wrapDir: 'cw', wrapLeg: 0,
     encl: 'roofonly', enclWalls: [],
     position: 'custom', offsetFt: side,
     gablePS: 10, gablePitch: 6, ownPitch: true, timberFrame: 'timber',
-    ltPitch: 2, dropFt: 0, frameStyle: 'timber',
+    ltPitch: from.ltPitch || 2, dropFt: 0, frameStyle: 'timber',
     noSkirt: true, postsOnTop: false, _open: true
   });
   if (side > 0.5) parts.push(leg('Porch — right', side, side + gableW, true, false));
 
-  parts.forEach(function(p){ window._shedConfigs.push(p); });
+  // Replace the attachment that was turned into a porch.
+  window._shedConfigs.splice.apply(window._shedConfigs, [at, 1].concat(parts));
   window._shedConfigs.forEach(function(s,i){ s.idx = i; });
   renderSheds(); scheduleBuild();
   try { updateStripFromLocalCalc(); } catch(e) {}
-  try { showToast('Porch with centre gable added', 'ok'); } catch(e) {}
 }
 
 function removeShed(id){
@@ -6677,6 +6684,7 @@ function removeShed(id){
 }
 function setShedProp(id,prop,val){
   var sc=window._shedConfigs.find(function(s){return s.id===id;}); if(!sc) return;
+  if (prop === 'type' && val === 'porchgable') { expandPorchGable(id); return; }
   sc[prop]=typeof val==='boolean'?val:isNaN(val)?val:(parseFloat(val)||0);
   if(prop==='wall'){
     var isEave=(val==='left'||val==='right'||val==='step-left'||val==='step-right');
