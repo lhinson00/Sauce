@@ -22120,7 +22120,7 @@ async function generateQuotePDF() {
     var rows = [r.materialOnly, r.labor, r.laborBeyond200,
                 _cl.length ? null : r.concrete,
                 r.esd, r.shipping, r.tax, r.manualAdders];
-    var visRows = _singleTotalPdf ? 0
+    var visRows = (_singleTotalPdf || r.lumpSum) ? 0
                 : rows.filter(function(v){ return fmtAmt(v); }).length + _cl.length;
     return 22 + visRows*18 + 24 + (parseFloat(String(r.materialOnly||0).replace(/[^0-9.]/g,''))>0 ? 20 : 0) + 12;
   }
@@ -22151,7 +22151,7 @@ async function generateQuotePDF() {
     lineItems.push(['Sales Tax',                   r.tax]);
     lineItems.push(['Additional Items',            r.manualAdders]);
     var idx = 0;
-    for (var li=0; li<lineItems.length && !_singleTotalPdf; li++) {
+    for (var li=0; li<lineItems.length && !_singleTotalPdf && !r.lumpSum; li++) {
       var v = lineItems[li][1];
       var n = parseFloat(String(v == null ? 0 : v).replace(/[^0-9.]/g,'')) || 0;
       if (!n) continue;
@@ -22289,6 +22289,10 @@ async function generateQuotePDF() {
     var Q2      = window._Q || {};
     var isSteel = (Q2.truss === 'Steel');
     var isStud  = (Q2.frameType === 'stud');
+    // Red iron is an engineered clear-span frame. None of the post-frame
+    // rows below describe it, and three parts of its spec are fixed.
+    var isRI = false;
+    try { isRI = !!(window.SauceRedIron && window.SauceRedIron.active()); } catch(e) {}
 
     // ── PAGE HEADER — matches page 1 ───────────────────────
     setFill(col.navy); doc.rect(0, 0, PW, 72, 'F');
@@ -22381,6 +22385,10 @@ async function generateQuotePDF() {
     } else {
       specRow2('Roof Pitch', (Q2.pitch||4) + '/12');
     }
+    if (isRI) {
+      specRow2('Frame Type', 'Red Iron — Clear Span');
+      specRow2('Framing', 'Engineered Red Iron — No Interior Columns');
+    } else {
     specRow2('Truss Type', isSteel ? ((Q2.steelGableOH && Q2.oh > 0) ? 'Steel Truss — 18" O/H Eaves + Gables, Extended Purlins (No Soffit)' : 'Steel Truss No Soffit') : (Q2.oh > 0 ? 'Wood Truss w/ 12" Soffit' : 'Wood Truss No Soffit'));
     if (!isSteel) {
       var ts = val2('st_trussSpacing') || val2('sf_trussSpacing') || '5';
@@ -22388,12 +22396,15 @@ async function generateQuotePDF() {
       if (!!(document.getElementById('st_scissorTruss')||{}).checked) specRow2('Scissor Truss', 'Yes');
       if (!!(document.getElementById('st_atticTruss')||{}).checked) specRow2('Attic Truss', 'Yes');
     }
+    }
     var ohIn = Q2.oh || 0;
     if (isSteel) specRow2('Overhang', ohIn > 0 ? (ohIn + '" — No Soffit') : 'None');
     else if (ohIn > 0 && (Q2.soffit || (Q2.truss !== 'Steel' && ohIn > 0))) specRow2('Overhang / Soffit', '12" Overhang with 12" Soffit');
     else if (ohIn > 0) specRow2('Overhang', ohIn + '" — No Soffit');
     else specRow2('Overhang', 'None');
-    if (isStud) {
+    if (isRI) {
+      // Columns are part of the engineered frame — no post schedule to print.
+    } else if (isStud) {
       specRow2('Frame Type', 'Stud Frame — ' + ((val2('sf_studSize')||'2x6')) + ' Studs, ' + (val2('sf_osbWalls')||'7/16') + '" OSB');
     } else {
       var psMap = {};
@@ -22405,13 +22416,14 @@ async function generateQuotePDF() {
       specRow2('Post Size', psSame ? psMap['left'] : 'Front/Back: '+psMap.front+'  Eaves: '+psMap.left);
       specRow2('Post Spacing', postSpacingSpecStr());
     }
-    specRow2('Post Setting', val2('st_postsOnTop')==='Yes' ? 'On Top of Slab (Mono)' : 'In Ground');
+    if (!isRI) specRow2('Post Setting', val2('st_postsOnTop')==='Yes' ? 'On Top of Slab (Mono)' : 'In Ground');
 
     // ── 2. METAL & COLORS ────────────────────────────────
     specSection('Metal & Colors');
     rowIdx2 = 0;
     var rmetal = val2('st_roofMetal') || 'Tuff-Rib 29ga';
     var wmetal = val2('st_wallMetal') || 'Tuff-Rib 29ga';
+    if (isRI) { rmetal = 'PBR 26ga'; wmetal = 'PBR 26ga'; }
     if ((document.getElementById('st_noRoofMetal')||{}).checked) specRow2('Roof Metal', 'Customer Install — excluded from list');
     else specRow2('Roof Metal', rmetal);
     if ((document.getElementById('st_noWallMetal')||{}).checked) specRow2('Wall Metal', 'Customer Install — excluded from list');
@@ -22555,7 +22567,12 @@ async function generateQuotePDF() {
     // ── 7. CONCRETE ─────────────────────────────────────
     var co3 = window._lastConcreteOpts;
     var hasConc = co3 && ((co3.main&&co3.main.included)||(co3.sheds&&co3.sheds.some(function(s){return s&&s.included;}))||(co3.aprons&&co3.aprons.some(function(a){return a&&a.included;})));
-    if (hasConc) {
+    if (isRI) {
+      specSection('Concrete');
+      rowIdx2 = 0;
+      specRow2('Slab', '6" with Footers');
+      specRow2('Included', 'Yes — included in the building price');
+    } else if (hasConc) {
       specSection('Concrete');
       rowIdx2 = 0;
       function concrRow(opts, lbl2) {
@@ -22587,7 +22604,13 @@ async function generateQuotePDF() {
     // either one.
     var _foamOn2 = chk('st_sprayFoam') && (chk('st_foamRoof') || chk('st_foamWalls'));
     var ins2 = val2('st_insulation');
-    if (_foamOn2 && !(ins2 && ins2!=='None' && (chk('st_insulRoof')||chk('st_insulWalls')))) {
+    if (isRI) {
+      specSection('Insulation');
+      rowIdx2 = 0;
+      specRow2('Type', '4" Insulation');
+      specRow2('Included', 'Yes — included in the building price');
+    }
+    if (!isRI && _foamOn2 && !(ins2 && ins2!=='None' && (chk('st_insulRoof')||chk('st_insulWalls')))) {
       specSection('Insulation');
       rowIdx2 = 0;
       var _fw2 = [];
@@ -22595,7 +22618,7 @@ async function generateQuotePDF() {
       if (chk('st_foamWalls')) _fw2.push('Walls');
       specRow2('Spray Foam', 'Included \u2014 ' + _fw2.join(' & '));
     }
-    if (ins2 && ins2!=='None' && (chk('st_insulRoof')||chk('st_insulWalls'))) {
+    if (!isRI && ins2 && ins2!=='None' && (chk('st_insulRoof')||chk('st_insulWalls'))) {
       specSection('Insulation');
       rowIdx2 = 0;
       var iloc = [];
@@ -23571,7 +23594,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M43-1908';
+window.SAUCE_BUILD = 'M44-1638';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
