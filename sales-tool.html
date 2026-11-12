@@ -7102,11 +7102,8 @@ function renderSheds(){
     var extraOptions='';
     if(isLeanto){
       extraOptions+='<div class="shed-row"><div><div class="shed-label">Lean-to Pitch</div>'
-        +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'ltPitch\',this.value)">'
-        +'<option value="1"'+(sc.ltPitch==1?' selected':'')+'>1/12</option>'
-        +'<option value="2"'+(sc.ltPitch==2?' selected':'')+'>2/12</option>'
-        +'<option value="3"'+(sc.ltPitch==3?' selected':'')+'>3/12</option>'
-        +'<option value="4"'+(sc.ltPitch==4?' selected':'')+'>4/12</option>'
+        +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'ltPitch\',this.value);scheduleBuild()">'
+        +[1,2,3,4,5,6,7,8,9,10,11,12].map(function(p){return '<option value="'+p+'"'+(sc.ltPitch==p?' selected':'')+'>'+p+'/12</option>';}).join('')
         +'</select></div>'
         +'<div><div class="shed-label">Drop (ft)</div>'
         +'<input class="shed-inp" type="number" value="'+(sc.dropFt||0)+'" min="-12" max="12" step="1" title="Below the main eave. Negative raises it above." onchange="setShedProp('+sc.id+',\'dropFt\',this.value)"></div>'
@@ -7155,14 +7152,20 @@ function renderSheds(){
       var isGableOnGable = (sc.wall === 'front' || sc.wall === 'back');
       if (!isGableOnGable) {
         extraOptions+='<div class="shed-row"><div><div class="shed-label">Gable Pitch</div>'
-          +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'gablePitch\',this.value)">'
-          +[3,4,5,6].map(function(p){return '<option value="'+p+'"'+(sc.gablePitch==p?' selected':'')+'>'+p+'/12</option>';}).join('')
+          +'<select class="shed-sel" onchange="setShedProp('+sc.id+',\'gablePitch\',this.value);scheduleBuild()">'
+          +[1,2,3,4,5,6,7,8,9,10,11,12].map(function(p){return '<option value="'+p+'"'+(sc.gablePitch==p?' selected':'')+'>'+p+'/12</option>';}).join('')
           +'</select></div>'
           +'<div><div class="shed-label">Post Spacing</div>'
           +'<input class="shed-inp" type="number" value="'+(sc.gablePS||10)+'" min="1" step="1" onchange="setShedProp('+sc.id+',\'gablePS\',this.value);scheduleBuild()"></div></div>';
         extraOptions+='<div class="shed-row"><div><div class="shed-label">Drop (ft)</div>'
           +'<input class="shed-inp" type="number" value="'+(sc.dropFt||0)+'" min="-12" max="12" step="1" onchange="setShedProp('+sc.id+',\'dropFt\',this.value);scheduleBuild()"><div style="font-size:8px;color:var(--muted);margin-top:2px;">Lowers the extension below the main eave. Negative raises it above.</div></div></div>';
       } else {
+        extraOptions+=(sc.ridgeAlong
+          ? '<div class="shed-row"><div><div class="shed-label">Gable Pitch</div>'
+            + '<select class="shed-sel" onchange="setShedProp('+sc.id+',\'gablePitch\',this.value);scheduleBuild()">'
+            + [1,2,3,4,5,6,7,8,9,10,11,12].map(function(p){return '<option value="'+p+'"'+(sc.gablePitch==p?' selected':'')+'>'+p+'/12</option>';}).join('')
+            + '</select><div style="font-size:8px;color:var(--muted);margin-top:2px;">A turned ridge sets its own pitch</div></div></div>'
+          : '');
         extraOptions+='<div class="shed-row"><div><div class="shed-label">Post Spacing</div>'
           +'<input class="shed-inp" type="number" value="'+(sc.gablePS||10)+'" min="1" step="1" onchange="setShedProp('+sc.id+',\'gablePS\',this.value);scheduleBuild()"></div>'
           +'<div><div class="shed-label">Drop (ft)</div>'
@@ -16004,6 +16007,42 @@ function applyVoiceQuote(parsed, overlay) {
                         m.castShadow=true; grps.framing.add(m);
                     }
                 }
+                // Timber truss for a turned ridge. Same members as the standard
+                // gable's — bottom chord, two rafters, king post, two braces —
+                // laid out in whichever plane the gable face falls on.
+                // axis 'x': members run along X in a plane of constant Z.
+                // axis 'z': members run along Z in a plane of constant X.
+                function _raTruss(axis, plane, c0, c1, cMid, eaveY, ridgeY) {
+                    if (sc.frameStyle !== 'timber') return;
+                    var t = 0.067;
+                    var tMat = new THREE.MeshLambertMaterial({color: 0x8B6914, side: THREE.DoubleSide});
+                    function put(len, cc, cy, ang) {
+                        if (!(len > 0.001)) return;
+                        var m = new THREE.Mesh(
+                            axis === 'x' ? new THREE.BoxGeometry(len, t, t)
+                                         : new THREE.BoxGeometry(t, t, len), tMat);
+                        if (axis === 'x') { m.position.set(cc, cy, plane); m.rotation.z =  ang; }
+                        else              { m.position.set(plane, cy, cc); m.rotation.x = -ang; }
+                        m.castShadow = true; grps.shed.add(m);
+                    }
+                    put(Math.abs(c1 - c0), (c0 + c1) / 2, eaveY + t / 2, 0);          // bottom chord
+                    [c0, c1].forEach(function(ce) {                                    // rafters
+                        var dc = cMid - ce, dy = ridgeY - eaveY;
+                        put(Math.sqrt(dc*dc + dy*dy), (ce + cMid) / 2, (eaveY + ridgeY) / 2, Math.atan2(dy, dc));
+                    });
+                    var kh = ridgeY - eaveY - t;                                       // king post
+                    if (kh > 0) {
+                        var kp = new THREE.Mesh(new THREE.BoxGeometry(t, kh, t), tMat);
+                        if (axis === 'x') kp.position.set(cMid, eaveY + t + kh / 2, plane);
+                        else              kp.position.set(plane, eaveY + t + kh / 2, cMid);
+                        kp.castShadow = true; grps.shed.add(kp);
+                    }
+                    [c0, c1].forEach(function(ce) {                                    // braces
+                        var mc = (ce + cMid) / 2, my = (eaveY + ridgeY) / 2;
+                        var dc = mc - cMid, dy = my - (eaveY + t);
+                        put(Math.sqrt(dc*dc + dy*dy), (cMid + mc) / 2, (eaveY + t + my) / 2, Math.atan2(dy, dc));
+                    });
+                }
                 if (sc.wall === 'left' || sc.wall === 'right') {
                     // ── Eave-wall gable extension — ridge runs outward along X ──
                     var dir = sc.wall === 'left' ? -1 : 1;
@@ -16060,6 +16099,8 @@ function applyVoiceQuote(parsed, overlay) {
                         _raF([raRidgeX, raRidgeH, _z], [oXoh, _extEaveH, _z]);
                       });
                     }
+                    _raTruss('x', z1, aX, oXoh, raRidgeX, _extEaveH, raRidgeH);
+                    _raTruss('x', z2, aX, oXoh, raRidgeX, _extEaveH, raRidgeH);
                     } else {
 
                     // Ridge runs outward along X at zMid from aX@sh to oXoh@extRidgeH
@@ -16247,6 +16288,8 @@ function applyVoiceQuote(parsed, overlay) {
                         _raF2([_x, raRidgeH, raRidgeZ], [_x, raEaveH, oZoh]);
                       });
                     }
+                    _raTruss('z', sco - ssl / 2, aZ, oZoh, raRidgeZ, raEaveH, raRidgeH);
+                    _raTruss('z', sco + ssl / 2, aZ, oZoh, raRidgeZ, raEaveH, raRidgeH);
                     } else {
                     // Main building pitch slope (scene units of height per scene unit of X from center)
                     var mainPitchSlope = (sw > 0) ? (sr - sh) / (sw / 2) : 0;
