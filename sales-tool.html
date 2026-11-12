@@ -6493,7 +6493,31 @@ window._shedParentGeom = function(sc, cfgs, Q) {
   else if (w === 'front') { dz = pz0 - (-hl); dx = (px0 + px1) / 2; wallLen = px1 - px0; }
   else                    { dz = pz1 -   hl;  dx = (px0 + px1) / 2; wallLen = px1 - px0; }
 
-  return { dx: dx, dz: dz, wallLen: wallLen, attachFt: (Q.h || 0) - (P.dropFt || 0) };
+  // Where the child currently meets the MAIN building's wall of the same
+  // name. Everything it is made of was built around this point, so it is also
+  // the point to turn it about: turning anywhere else would swing the whole
+  // mass away from the wall it is supposed to be joined to.
+  var cLen = sc.l || 0, cPos = sc.position || 'center', cOff;
+  if (cLen >= wallLen)        cOff = 0;
+  else if (cPos === 'start')  cOff = 0;
+  else if (cPos === 'end')    cOff = wallLen - cLen;
+  else if (cPos === 'custom') cOff = Math.max(0, Math.min(sc.offsetFt || 0, wallLen - cLen));
+  else                        cOff = (wallLen - cLen) / 2;
+  var cCen = cOff + cLen / 2 - wallLen / 2;
+
+  var pivX, pivZ;
+  if (w === 'left')       { pivX = -hw; pivZ = cCen; }
+  else if (w === 'right') { pivX =  hw; pivZ = cCen; }
+  else if (w === 'front') { pivZ = -hl; pivX = cCen; }
+  else                    { pivZ =  hl; pivX = cCen; }
+
+  // A ridge direction follows from the wall a shed sits on, and two parallel
+  // faces give the same direction — so which way a connected building runs
+  // cannot be worked out from the geometry. It is a choice, hence the toggle.
+  var rot = sc.rot90 ? (sc.rot90 === -1 ? -Math.PI / 2 : Math.PI / 2) : 0;
+
+  return { dx: dx, dz: dz, wallLen: wallLen, rot: rot, pivX: pivX, pivZ: pivZ,
+           attachFt: (Q.h || 0) - (P.dropFt || 0) };
 };
 
 // Note which meshes each group already holds, so the ones a single shed adds
@@ -6504,17 +6528,39 @@ window._attSnap = function(grps) {
   return m;
 };
 
-// Move just the meshes that this shed added. No parent means no movement, so
-// an ordinary shed is untouched.
+// Take just the meshes this shed added and re-hang them under a Group that
+// carries the turn and the move. A group is used rather than nudging each
+// mesh because a nudge cannot rotate: the roof panels are built from raw
+// world-space vertices, and a group transform handles those and the ordinary
+// box meshes alike.
+//
+// world = (pivot + delta) + R * (built - pivot)
+//
+// which is why each child's local position has the pivot subtracted from it.
+// A box mesh carries its centre in .position and a vertex-built panel carries
+// zero there with its geometry already in world space; subtracting the pivot
+// is correct for both.
 window._attShift = function(grps, snap, sc, Sc) {
-  var dx = ((sc && sc._pDX) || 0) * Sc, dz = ((sc && sc._pDZ) || 0) * Sc;
-  if (!dx && !dz) return;
+  if (!sc || !sc._pDX && !sc._pDZ && !sc._pRot) return;
+  var dx = (sc._pDX || 0) * Sc, dz = (sc._pDZ || 0) * Sc;
+  var rot = sc._pRot || 0;
+  var pvx = (sc._pPivX || 0) * Sc, pvz = (sc._pPivZ || 0) * Sc;
+
   for (var k in grps) {
     var g = grps[k]; if (!g || !g.children) continue;
-    for (var i = snap[k] || 0; i < g.children.length; i++) {
-      g.children[i].position.x += dx;
-      g.children[i].position.z += dz;
-    }
+    var start = snap[k] || 0;
+    if (g.children.length <= start) continue;
+    var moved = g.children.slice(start);
+    var holder = new THREE.Group();
+    holder.position.set(pvx + dx, 0, pvz + dz);
+    holder.rotation.y = rot;
+    moved.forEach(function(ch) {
+      g.remove(ch);
+      ch.position.x -= pvx;
+      ch.position.z -= pvz;
+      holder.add(ch);
+    });
+    g.add(holder);
   }
 };
 
@@ -7044,6 +7090,14 @@ function renderSheds(){
                    + (p.label||('Side Shed '+((p.idx||0)+1))) + '</option>';
             }).join('')
           + '</select></div>';
+        if (sc.parentShedId) {
+          parentRow += '<div style="margin-top:6px;"><div class="shed-label">Run</div>'
+            + '<select class="shed-sel" onchange="setShedProp('+sc.id+',\'rot90\',parseInt(this.value,10));scheduleBuild();updateStripFromLocalCalc()">'
+            + '<option value="0"'  + (!sc.rot90        ? ' selected' : '') + '>Same as connector</option>'
+            + '<option value="1"'  + (sc.rot90 === 1   ? ' selected' : '') + '>Turned 90&deg;</option>'
+            + '<option value="-1"' + (sc.rot90 === -1  ? ' selected' : '') + '>Turned 90&deg; (other way)</option>'
+            + '</select></div>';
+        }
       }
     } catch(e) {}
 
@@ -11744,7 +11798,8 @@ function applyVoiceQuote(parsed, overlay) {
           var g = null;
           try { g = window._shedParentGeom(sc, _attSrc, window._Q || Q); } catch(e) {}
           return g ? Object.assign({}, sc, {
-            _pDX: g.dx, _pDZ: g.dz, _pWallLen: g.wallLen, _pAttachFt: g.attachFt
+            _pDX: g.dx, _pDZ: g.dz, _pWallLen: g.wallLen, _pAttachFt: g.attachFt,
+            _pRot: g.rot, _pPivX: g.pivX, _pPivZ: g.pivZ
           }) : sc;
         });
       }
