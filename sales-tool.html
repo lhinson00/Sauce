@@ -1630,7 +1630,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M27-1139</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M28-1303</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -16378,6 +16378,39 @@ function applyVoiceQuote(parsed, overlay) {
                     if (dir > 0 && valleyX < 0) valleyX = 0;
                     if (dir < 0 && valleyX > 0) valleyX = 0;
 
+                    // A centre gable standing in a porch is not meeting a vertical wall —
+                    // it is sitting in the porch's own sloping roof. Its eave therefore has
+                    // to climb that slope back to the building, which narrows the gable as
+                    // it goes, or a wedge of daylight opens either side of it. Outside a
+                    // porch group nothing is beside the gable and the eave stays level.
+                    var _pgLeg = sc.pgGroup
+                        ? (shedCfgs || []).filter(function(s){ return s.pgGroup === sc.pgGroup && s.pgRole && s.pgRole !== 'gable'; })[0]
+                        : null;
+                    // Eave line at the building end. Level with the outer eave unless the
+                    // gable sits in a porch, where it climbs the porch roof.
+                    var _eaveWall = _extEaveH, _zw1 = z1, _zw2 = z2;
+                    if (_pgLeg) {
+                        var _pgSlope  = ((_pgLeg.ltPitch || 2) / 12);           // porch rise per run
+                        _eaveWall = Math.min(_extSh, _extEaveH + ssw * _pgSlope); // eave height at the building
+                        var _gSlope   = (ssl > 0) ? (extRidgeH - _extEaveH) / (ssl / 2) : 0;
+                        var _zIn      = (_gSlope > 0.0001) ? Math.min(ssl / 2, (extRidgeH - _eaveWall) / _gSlope) : (ssl / 2);
+                        _zw1 = zMid - _zIn; _zw2 = zMid + _zIn;
+                        // Front slope: valley against the porch roof, up to the ridge.
+                        grps.shed.add(mkQ([aX,_eaveWall-.003,_zw1, oXoh,_extEaveH-.003,z1oh, oXoh,extRidgeH-.003,zMid, aX,extRidgeH-.003,zMid], mSh));
+                        // Back slope: mirror.
+                        grps.shed.add(mkQ([aX,extRidgeH-.003,zMid, oXoh,extRidgeH-.003,zMid, oXoh,_extEaveH-.003,z2oh, aX,_eaveWall-.003,_zw2], mSh));
+                        // Carry on inboard over the main roof to the valley point.
+                        grps.shed.add(mkQ([aX,_eaveWall-.003,_zw1, aX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid], mSh));
+                        grps.shed.add(mkQ([aX,_eaveWall-.003,_zw2, aX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid], mSh));
+                        // Either side of the valley the porch roof carries straight on under
+                        // the gable. The legs stop at the gable, so the gable fills its own
+                        // width here — without it the roof reads as two porches with a hole
+                        // between them.
+                        grps.shed.add(mkQ([oX,_extEaveH-.003,z1, aX,_extSh-.003,z1, aX,_extSh-.003,_zw1, oX,_extEaveH-.003,z1], mSh));
+                        grps.shed.add(mkQ([oX,_extEaveH-.003,z2, aX,_extSh-.003,z2, aX,_extSh-.003,_zw2, oX,_extEaveH-.003,z2], mSh));
+                        _extPurlins('x', aX, oXoh, _zw1, zMid, _eaveWall, extRidgeH);
+                        _extPurlins('x', aX, oXoh, _zw2, zMid, _eaveWall, extRidgeH);
+                    } else {
                     // Front roof panel: eave corner @ z1 → outer eave @ z1oh → outer ridge → valley point
                     grps.shed.add(mkQ([aX,_extEaveH-.003,z1, oXoh,_extEaveH-.003,z1oh, oXoh,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid], mSh));
                     // Back roof panel: mirror
@@ -16390,6 +16423,7 @@ function applyVoiceQuote(parsed, overlay) {
                     // Roof framing — purlins on both slopes (matches main building)
                     _extPurlins('x', aX, oXoh, z1, zMid, _extEaveH, extRidgeH);   // front slope
                     _extPurlins('x', aX, oXoh, z2, zMid, _extEaveH, extRidgeH);   // back slope
+                    }
 
                     // === GABLE RAKE TRIM — fascia along the outer gable-end slopes (x = oXoh) ===
                     { var _geRkH=0.04; var _mGeRake=new THREE.MeshBasicMaterial({color:pc(trimColorName),side:THREE.DoubleSide});
@@ -16417,17 +16451,32 @@ function applyVoiceQuote(parsed, overlay) {
                         // Both X and Z contribute to height
                         return _extEaveH+(extRidgeH-_extEaveH)*Math.max(tx,tz)+0.002;
                       }
-                      // Ribs follow the panel edges: eave edge (aX->oXoh) up to ridge edge (valleyX->oXoh)
-                      var _xrSpan = Math.abs(oXoh-aX)||0.001;
+                      // Panels run ridge-to-eave, so a rib is a strip at one X, not a line
+                      // skewed from the valley to the wall. Drawn skewed, every rib lay flat
+                      // on the main roof through the valley region and z-fought with it — the
+                      // fan of lines that appeared across the main roof beside a gable.
+                      // Below the ridge the strip ends on the eave line outboard of the wall,
+                      // and on the valley line inboard of it.
+                      var _xrSpan = Math.abs(oXoh-valleyX)||0.001;
                       var _nR = Math.max(2, Math.round(_xrSpan/rSp));
+                      var _outDen = (aX - oXoh) || 1;      // wall -> outer end
+                      var _inDen  = (valleyX - aX) || 1;   // wall -> valley point
+                      var _lowAt = function(xv, zEnd, zOut){
+                        var _tO = (aX - xv) / _outDen;
+                        if (_tO >= 0) {                    // outboard of the wall: eave line
+                          _tO = Math.min(1, _tO);
+                          return [ _eaveWall + _tO*(_extEaveH - _eaveWall), zEnd + _tO*(zOut - zEnd) ];
+                        }
+                        var _tI = Math.min(1, Math.max(0, (xv - aX) / _inDen));  // valley line
+                        return [ _eaveWall + _tI*(extRidgeH - _eaveWall), zEnd + _tI*(zMid - zEnd) ];
+                      };
                       for (var _ri=0; _ri<_nR; _ri++){
                         var _u=_ri/_nR, _uW=Math.min(1,_u+rW/_xrSpan);
-                        var _Rx=valleyX+_u*(oXoh-valleyX), _RxW=valleyX+_uW*(oXoh-valleyX);
-                        var _Ex=aX+_u*(oXoh-aX), _ExW=aX+_uW*(oXoh-aX);
-                        var _Ez1=z1+_u*(z1oh-z1), _Ez1W=z1+_uW*(z1oh-z1);
-                        var _Ez2=z2+_u*(z2oh-z2), _Ez2W=z2+_uW*(z2oh-z2);
-                        grps.shed.add(mkQ([_Rx,extRidgeH+0.003,zMid, _RxW,extRidgeH+0.003,zMid, _ExW,_extEaveH+0.003,_Ez1W, _Ex,_extEaveH+0.003,_Ez1], mRi));
-                        grps.shed.add(mkQ([_Rx,extRidgeH+0.003,zMid, _RxW,extRidgeH+0.003,zMid, _ExW,_extEaveH+0.003,_Ez2W, _Ex,_extEaveH+0.003,_Ez2], mRS));
+                        var _xa=valleyX+_u*(oXoh-valleyX), _xb=valleyX+_uW*(oXoh-valleyX);
+                        var _a1=_lowAt(_xa,_zw1,z1oh), _b1=_lowAt(_xb,_zw1,z1oh);
+                        var _a2=_lowAt(_xa,_zw2,z2oh), _b2=_lowAt(_xb,_zw2,z2oh);
+                        grps.shed.add(mkQ([_xa,extRidgeH+0.003,zMid, _xb,extRidgeH+0.003,zMid, _xb,_b1[0]+0.003,_b1[1], _xa,_a1[0]+0.003,_a1[1]], mRi));
+                        grps.shed.add(mkQ([_xa,extRidgeH+0.003,zMid, _xb,extRidgeH+0.003,zMid, _xb,_b2[0]+0.003,_b2[1], _xa,_a2[0]+0.003,_a2[1]], mRS));
                       }
                     }
                     } // end metal ribs
@@ -16436,9 +16485,12 @@ function applyVoiceQuote(parsed, overlay) {
                     if (sc.frameStyle === 'timber') {
                         var tmbr=0.067;
                         var tmbrMat=new THREE.MeshLambertMaterial({color:0x8B6914,side:THREE.DoubleSide});
-                        // Bottom chord across full length
+                        // Bottom chord across full length. It occupies the same band as the
+                        // porch header beam running in from either side — top of the member
+                        // on the eave line — so chord and headers read as one run of timber
+                        // instead of a chord stacked on top of a header.
                         var bc=new THREE.Mesh(new THREE.BoxGeometry(tmbr,tmbr,z2-z1),tmbrMat);
-                        bc.position.set(oX,_extEaveH+tmbr/2,zMid); grps.shed.add(bc);
+                        bc.position.set(oX,_extEaveH-tmbr/2,zMid); grps.shed.add(bc);
                         // Left top chord (rafter)
                         var rLen=Math.sqrt((zMid-z1)*(zMid-z1)+(extRidgeH-_extEaveH)*(extRidgeH-_extEaveH));
                         var rAng=Math.atan2(extRidgeH-_extEaveH,zMid-z1);
@@ -16449,10 +16501,10 @@ function applyVoiceQuote(parsed, overlay) {
                         rr2.position.set(oX,(_extEaveH+extRidgeH)/2,(z2+zMid)/2); rr2.rotation.x=rAng; grps.shed.add(rr2);
                         // King post: vertical from bottom chord center up to peak
                         var kpH=extRidgeH-_extEaveH-tmbr;
-                        if(kpH>0){ var kp=new THREE.Mesh(new THREE.BoxGeometry(tmbr,kpH,tmbr),tmbrMat); kp.position.set(oX,_extEaveH+tmbr+kpH/2,zMid); grps.shed.add(kp); }
+                        if(kpH>0){ var kp=new THREE.Mesh(new THREE.BoxGeometry(tmbr,kpH,tmbr),tmbrMat); kp.position.set(oX,_extEaveH+kpH/2,zMid); grps.shed.add(kp); }
                         // Raking struts: king post base up and out to each rafter.
                         if (kpH > 0) {
-                          var _sY0 = _extEaveH + tmbr * 0.45;          // inside the chord, so the joint closes
+                          var _sY0 = _extEaveH - tmbr * 0.45;          // inside the chord, so the joint closes
                           [z1, z2].forEach(function(_ze){
                             var _mz = (_ze + zMid) / 2;                 // meets the rafter at mid-span
                             var _my = (_extEaveH + extRidgeH) / 2;
@@ -16983,22 +17035,30 @@ function applyVoiceQuote(parsed, overlay) {
                         // in place of skirt metal. Timber framing never gets skirt.
                         const _tmbrSz8 = (8/12) * Sc; // 8" in scene units
                         const _cyMat = new THREE.MeshLambertMaterial({ color: 0x8B6914 }); // cypress amber
+                        // Centred on the posts, not pushed out where the skirt metal goes:
+                        // a centre gable's bottom chord lands on this same line, and the two
+                        // have to read as one continuous run of timber.
+                        const _tX = _oX;
                         // Outer eave header beam (runs full shed length)
                         const _beamGeo = new THREE.BoxGeometry(_tmbrSz8, _tmbrSz8, _z2 - _z1 + _tmbrSz8);
                         const _beam = new THREE.Mesh(_beamGeo, _cyMat);
-                        _beam.position.set(_hX, hTop - _tmbrSz8/2, (_z1+_z2)/2);
+                        _beam.position.set(_tX, hTop - _tmbrSz8/2, (_z1+_z2)/2);
                         _beam.castShadow = true;
                         grps.posts.add(_beam);
-                        // Gable end beams (run shed width from outer edge to building wall)
+                        // Gable end beams — the end rafter. Pitched to the roof it carries,
+                        // so no wedge of daylight opens between beam and roof in side profile.
                         const _aX = sc.wall==='left' ? -sw/2 : sw/2;
-                        const _gableBeamLen = Math.abs(_hX - _aX) + _tmbrSz8;
-                        const _gblCX = (_hX + _aX) / 2;
+                        const _gbRun  = _aX - _tX;
+                        const _gbRise = attachHR - hTop;
+                        const _gbLen  = Math.sqrt(_gbRun*_gbRun + _gbRise*_gbRise) + _tmbrSz8;
+                        const _gbAng  = Math.atan2(_gbRise, _gbRun);
                         [_z1, _z2].forEach(function(gz) {
                             const _gb = new THREE.Mesh(
-                                new THREE.BoxGeometry(_gableBeamLen, _tmbrSz8, _tmbrSz8),
+                                new THREE.BoxGeometry(_gbLen, _tmbrSz8, _tmbrSz8),
                                 _cyMat
                             );
-                            _gb.position.set(_gblCX, hTop - _tmbrSz8/2, gz);
+                            _gb.position.set((_tX + _aX)/2, (hTop + attachHR)/2 - _tmbrSz8/2, gz);
+                            _gb.rotation.z = _gbAng;
                             _gb.castShadow = true;
                             grps.posts.add(_gb);
                         });
@@ -17127,17 +17187,23 @@ function applyVoiceQuote(parsed, overlay) {
                     if (sc.cypressRafters || sc.frameStyle === 'timber') {
                         const _tmbrSz8F = (8/12) * Sc;
                         const _cyMatF = new THREE.MeshLambertMaterial({ color: 0x8B6914 });
+                        // Centred on the posts — see the note on the eave-wall branch.
+                        const _tZ = _oZ;
                         const _beamGeoF = new THREE.BoxGeometry(_x2 - _x1 + _tmbrSz8F, _tmbrSz8F, _tmbrSz8F);
                         const _beamF = new THREE.Mesh(_beamGeoF, _cyMatF);
-                        _beamF.position.set((_x1+_x2)/2, hTop - _tmbrSz8F/2, _hZ);
+                        _beamF.position.set((_x1+_x2)/2, hTop - _tmbrSz8F/2, _tZ);
                         _beamF.castShadow = true;
                         grps.posts.add(_beamF);
+                        // End rafters, pitched to the roof they carry.
                         const _aZF = sc.wall==='front' ? -sl/2 : sl/2;
-                        const _gblLenF = Math.abs(_hZ - _aZF) + _tmbrSz8F;
-                        const _gblCZF = (_hZ + _aZF) / 2;
+                        const _gbRunF  = _aZF - _tZ;
+                        const _gbRiseF = attachHR - hTop;
+                        const _gblLenF = Math.sqrt(_gbRunF*_gbRunF + _gbRiseF*_gbRiseF) + _tmbrSz8F;
+                        const _gbAngF  = Math.atan2(-_gbRiseF, _gbRunF);
                         [_x1, _x2].forEach(function(gx) {
                             const _gbF = new THREE.Mesh(new THREE.BoxGeometry(_tmbrSz8F, _tmbrSz8F, _gblLenF), _cyMatF);
-                            _gbF.position.set(gx, hTop - _tmbrSz8F/2, _gblCZF);
+                            _gbF.position.set(gx, (hTop + attachHR)/2 - _tmbrSz8F/2, (_tZ + _aZF)/2);
+                            _gbF.rotation.x = _gbAngF;
                             _gbF.castShadow = true;
                             grps.posts.add(_gbF);
                         });
@@ -22933,10 +22999,10 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M27-1139';
+window.SAUCE_BUILD = 'M28-1303';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
-try { console.log('%c[Sauce] BUILD M27-1139', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
+try { console.log('%c[Sauce] BUILD M28-1303', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
 console.log('%c[Sauce] build 2026-08-12 19:31 UTC', 'color:var(--gold);font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
