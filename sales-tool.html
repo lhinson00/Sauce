@@ -1630,7 +1630,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M38-1742</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M42-1848</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -3275,19 +3275,28 @@ function _onAtticScissorChange(which) {
   if (!scissorEl || !atticEl) return;
   if (which === 'scissor' && scissorEl.checked) atticEl.checked = false;
   if (which === 'attic'   && atticEl.checked)   scissorEl.checked = false;
-  // Force 2' spacing when attic truss is on; restore to 5' default when turned off
-  if (spacingEl) {
-    if (atticEl.checked) {
-      spacingEl.dataset.prevValue = spacingEl.value; // save previous
-      spacingEl.value = '2';
-      spacingEl.disabled = true;
-    } else {
-      spacingEl.value = spacingEl.dataset.prevValue || '5';
-      spacingEl.disabled = false;
-    }
-  }
+  window._syncTrussSpacingLock();
   _updateAtticLabel();
 }
+
+// Two things pin truss spacing at 2' on centre: an attic truss, and stud framing,
+// which is framed at 24" like any stick-built roof. Either one locks the select;
+// it only goes back to the salesman's own value when neither applies.
+window._syncTrussSpacingLock = function(){
+  var spacingEl = document.getElementById('st_trussSpacing');
+  if (!spacingEl) return;
+  var attic = !!(document.getElementById('st_atticTruss')||{}).checked;
+  var stud  = (typeof currentFrameType !== 'undefined' && currentFrameType === 'stud')
+              || (window._Q && window._Q.frameType === 'stud');
+  if (attic || stud) {
+    if (!spacingEl.disabled) spacingEl.dataset.prevValue = spacingEl.value;
+    spacingEl.value = '2';
+    spacingEl.disabled = true;
+  } else {
+    spacingEl.value = spacingEl.dataset.prevValue || '5';
+    spacingEl.disabled = false;
+  }
+};
 function _updateAtticLabel() {
   var el       = document.getElementById('atticTrussSubLbl');
   var floorRow = document.getElementById('rowAtticFloor');
@@ -4134,6 +4143,7 @@ function buildFrameChips(){
         try{ buildPitchChips(); }catch(e){}
       }
       var _riRow = document.getElementById('redIronRow'); if(_riRow) _riRow.style.display = (v==='redIron') ? '' : 'none';
+      try { window._syncTrussSpacingLock(); } catch(e){}
       _iwShowHide();
       if(window._customerMode) custUpdateConcreteOptions();
       applyRouteUI();
@@ -20732,15 +20742,19 @@ function applyVoiceQuote(parsed, overlay) {
         if (typeof _dimsVisible     !== 'undefined') { grps.dims.visible = _dimsVisible; if (dimLabels) dimLabels.forEach(function(l){ l.visible = _dimsVisible; }); }
         // Red-iron override: show only the steel frame / cladding, hide all post-frame structure.
         if (window._riActive && Q.frameType === 'redIron') {
-          grps.redIron.visible   = true;   // the ONLY steel group (frame + clad, self-toggled)
-          grps.framing.visible   = false;  // red iron has NO wood
+          // Frame view shows the bare steel and nothing else. Clad view is a finished
+          // building, so it uses the tool's own metal and trim — same panels, ribs,
+          // corner trim and rake as any other build — rather than a stand-in skin.
+          var _riFrameView = !(window._redIron && window._redIron.showFrame === false);
+          grps.redIron.visible   = _riFrameView;  // steel frame, frame view only
+          grps.framing.visible   = false;         // red iron has NO wood
           grps.posts.visible     = false;
           grps.mainPosts.visible = false;
           grps.trusses.visible   = false;
-          grps.wallPanels.visible= false;
-          grps.walls.visible     = false;
-          grps.roof.visible      = false;
-          grps.shed.visible      = false;
+          grps.wallPanels.visible= !_riFrameView && (typeof _wallsVisible === 'undefined' || _wallsVisible);
+          grps.walls.visible     = !_riFrameView && (typeof _wallsVisible === 'undefined' || _wallsVisible);
+          grps.roof.visible      = !_riFrameView && (typeof _roofVisible  === 'undefined' || _roofVisible);
+          grps.shed.visible      = !_riFrameView;
           grps.loft.visible      = false;
           grps.interior.visible  = false;
           grps.doors.visible     = true;
@@ -23536,10 +23550,10 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M38-1742';
+window.SAUCE_BUILD = 'M42-1848';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
-try { console.log('%c[Sauce] BUILD M38-1742', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
+try { console.log('%c[Sauce] BUILD M42-1848', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
 console.log('%c[Sauce] build 2026-08-12 19:31 UTC', 'color:var(--gold);font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
@@ -62920,7 +62934,8 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
   var TYPE_LABELS = {
     woodOH:'Wood Truss w/ 12" Soffit', woodNoOH:'Wood Truss No Soffit',
     steel:'Steel Truss', stud:'Stud Frame',
-    cypress:'Cypress', metalBB:'Metal B&B'
+    cypress:'Cypress', metalBB:'Metal B&B',
+    redIron:'Red Iron'
   };
 
   // ── Helpers ────────────────────────────────────────────
@@ -62939,6 +62954,13 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
 
   function safeModal() {
     return document.getElementById('cmpModal');
+  }
+
+  // A red-iron slot is a lump sum: concrete, insulation and the rest are inside the
+  // square-foot rate, so those cells read "Included" rather than Yes, None or a dash.
+  function _riLump(slot){
+    try { var t = (slot && slot.totals) || {}; return !!(t.redIron && t.redIron.lumpSum); }
+    catch(e){ return false; }
   }
 
   // ── Read current strip totals ──────────────────────────
@@ -62960,6 +62982,15 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         out[k] = { material: mat, labor: p.labor||0, concrete: conc, total: p.total||0 };
       }
     });
+    // Red iron is not one of the strip variants — it is a single square-foot
+    // number with no material/labor split, so it contributes a total and nothing
+    // else. Saved alongside the others, a customer can hold them side by side.
+    try {
+      if (window.SauceRedIron && window.SauceRedIron.active()) {
+        var _riT = window.SauceRedIron.total();
+        if (_riT > 0) out.redIron = { material: 0, labor: 0, concrete: 0, total: _riT, lumpSum: true };
+      }
+    } catch(e) {}
     return out;
   }
 
@@ -63187,7 +63218,8 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
       : _allB;
     var LBL = { woodOH:'Wood Truss w/ 12" Soffit', woodNoOH:'Wood Truss No Soffit',
                 steel:'Steel Truss No Soffit', stud:'Stud Framed',
-                cypress:'Cypress B&B', metalBB:'Metal Board & Batten' };
+                cypress:'Cypress B&B', metalBB:'Metal Board & Batten',
+                redIron:'Red Iron' };
 
     var d = new Date();
     var stamp = d.getFullYear() + '-'
@@ -63361,6 +63393,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         }));
         dataRow('Coverage', slots.map(function(s,i){
           var ft=f[i];
+          if (_riLump(s)) return {text:'Included', accent:slotAccentColors[i]};
           var cov=!ft.insulation?'None':(ft.insulRoof&&ft.insulWalls?'Roof & Walls':ft.insulRoof?'Roof Only':ft.insulWalls?'Walls Only':'—');
           var cov0=!f[0].insulation?'None':(f[0].insulRoof&&f[0].insulWalls?'Roof & Walls':f[0].insulRoof?'Roof Only':f[0].insulWalls?'Walls Only':'—');
           var same=i>0&&cov===cov0;
@@ -63382,6 +63415,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
           return {text:String(ft.sheds||'0'), accent:same?null:slotAccentColors[i]};
         }));
         dataRow('Concrete', slots.map(function(s,i){
+          if (_riLump(s)) return {text:'Included', accent:slotAccentColors[i]};
           var ft=f[i]; var same=i>0&&ft.concrete===f[0].concrete;
           return {text:ft.concrete?'Yes':'—', accent:same?null:slotAccentColors[i]};
         }));
@@ -63459,7 +63493,8 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     var TYPE_LABELS2 = {
       woodOH:'Wood Truss w/ 12" Soffit', woodNoOH:'Wood Truss No Soffit',
       steel:'Steel Truss No Soffit', stud:'Wood Truss w/ 12" Soffit',
-      cypress:'Wood Truss w/ 12" Soffit', metalBB:'Wood Truss w/ 12" Soffit'
+      cypress:'Wood Truss w/ 12" Soffit', metalBB:'Wood Truss w/ 12" Soffit',
+      redIron:'Red Iron \u2014 Clear Span'
     };
 
     function fmtN(n) { return (n && n > 0) ? '$' + Math.round(n).toLocaleString('en-US') : '\u2014'; }
@@ -63604,6 +63639,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     html += '<tr>' + labelCell('Coverage');
     slots.forEach(function(s,i){
       var ft=f[i];
+      if (_riLump(s)) { html+=cell('Included',false,slotAccent[i]); return; }
       var cov = !ft.insulation ? 'None' : (ft.insulRoof&&ft.insulWalls?'Roof &amp; Walls':ft.insulRoof?'Roof Only':ft.insulWalls?'Walls Only':'—');
       var same=i>0&&cov===((!f[0].insulation?'None':(f[0].insulRoof&&f[0].insulWalls?'Roof &amp; Walls':f[0].insulRoof?'Roof Only':'Walls Only')));
       html+=cell(cov,false,same?null:slotAccent[i]);
@@ -63621,7 +63657,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
     slots.forEach(function(s,i){ var ft=f[i]; var same=i>0&&ft.sheds===f[0].sheds; html+=cell(ft.sheds||'0',false,same?null:slotAccent[i]); });
     html += '</tr>';
     html += '<tr>' + labelCell('Concrete');
-    slots.forEach(function(s,i){ var ft=f[i]; var same=i>0&&ft.concrete===f[0].concrete; html+=cell(yn(ft.concrete),false,same?null:slotAccent[i]); });
+    slots.forEach(function(s,i){ if (_riLump(s)) { html+=cell('Included',false,slotAccent[i]); return; } var ft=f[i]; var same=i>0&&ft.concrete===f[0].concrete; html+=cell(yn(ft.concrete),false,same?null:slotAccent[i]); });
     html += '</tr>';
     html += '<tr>' + labelCell('Gutters');
     slots.forEach(function(s,i){ var ft=f[i]; var same=i>0&&ft.gutters===f[0].gutters; html+=cell(yn(ft.gutters),false,same?null:slotAccent[i]); });
@@ -63740,6 +63776,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
                 if (k==='stud')     _sTotals.totalStud    = fmtPriceFull(t.total);
                 if (k==='cypress')  _sTotals.totalCypress = fmtPriceFull(t.total);
                 if (k==='metalBB')  _sTotals.totalBB      = fmtPriceFull(t.total);
+                if (k==='redIron')  _sTotals.totalRedIron = fmtPriceFull(t.total);
               }
             });
             _sTotals.total = allTypes.length ? fmtPriceFull(((_slot.totals||{})[allTypes[0]]||{}).total||0) : '';
@@ -63941,7 +63978,7 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         + ' onclick="window._CompareEngine.showAllTypes()">All</label>';
     }
     var _seenChipLabels = {};
-    var _typeOrder = ['steel','woodNoOH','woodOH','stud','cypress','metalBB'];
+    var _typeOrder = ['steel','woodNoOH','woodOH','stud','cypress','metalBB','redIron'];
     var _orderedTypes = _typeOrder.filter(function(k){ return allAvailTypes.indexOf(k) >= 0; });
     allAvailTypes.forEach(function(k){ if (_orderedTypes.indexOf(k) < 0) _orderedTypes.push(k); });
     _orderedTypes.forEach(function(k) {
@@ -63991,9 +64028,11 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
           var dCls = d === null ? '' : (d > 0 ? 'cmp-d-more' : (d < 0 ? 'cmp-d-less' : 'cmp-d-same'));
           cardsHtml += '<div class="cmp-type-block">'
             + '<div class="cmp-type-lbl">' + (TYPE_LABELS[k]||k) + '</div>'
-            + '<div class="cmp-type-row"><span>Materials</span><span>' + fmt(t.material) + '</span></div>'
-            + '<div class="cmp-type-row"><span>Labor</span><span>' + fmt(t.labor) + '</span></div>'
-            + (t.concrete > 0 ? '<div class="cmp-type-row"><span>Concrete</span><span>' + fmt(t.concrete) + '</span></div>' : '')
+            + '<div class="cmp-type-row"><span>Materials</span><span>' + (t.lumpSum ? 'Included' : fmt(t.material)) + '</span></div>'
+            + '<div class="cmp-type-row"><span>Labor</span><span>' + (t.lumpSum ? 'Included' : fmt(t.labor)) + '</span></div>'
+            + (t.lumpSum
+                ? '<div class="cmp-type-row"><span>Concrete</span><span>Included</span></div>'
+                : (t.concrete > 0 ? '<div class="cmp-type-row"><span>Concrete</span><span>' + fmt(t.concrete) + '</span></div>' : ''))
             + '<div class="cmp-type-total"><span>Total</span><span>' + fmt(t.total) + '</span></div>'
             + (d !== null ? '<div class="' + dCls + '" style="font-size:11px;margin-top:3px;text-align:right;">' + fmtDelta(d) + ' vs ' + esc(slots[0].label) + '</div>' : '')
             + '</div>';
