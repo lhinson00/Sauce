@@ -6447,6 +6447,88 @@ var nextShedId = 1;
 // ceiling, not a structure. Raised from 4 because a house is several wings.
 window.SHED_MAX = 12;
 
+// ── ATTACHMENTS THAT HANG OFF OTHER ATTACHMENTS ─────────────────────────────
+// A connector between two buildings is an attachment on an attachment: house →
+// connector → garage. Rather than teach the shed renderer a second frame of
+// reference, work out where the parent sits and carry it as a plain
+// translation. Everything below the normalisation step keeps measuring from
+// the main building exactly as it always has.
+//
+// A shed with no parentShedId gets none of this, so every existing quote takes
+// the identical code path it took before.
+
+// Where a shed must move to, in feet, to hang off its parent instead of the
+// main building. Returns null for an ordinary shed.
+window._shedParentGeom = function(sc, cfgs, Q) {
+  if (!sc || !sc.parentShedId || !Q) return null;
+  var P = (cfgs || []).filter(function(p){ return p && p.id === sc.parentShedId; })[0];
+  if (!P || P.id === sc.id) return null;
+
+  // Where the parent sits along the wall it hangs on — the same rules the
+  // renderer uses, so the two never disagree.
+  var pIsEave  = (P.wall === 'left' || P.wall === 'right');
+  var pWallLen = pIsEave ? (Q.l || 0) : (Q.w || 0);
+  var pLen = P.l || 0, pos = P.position || 'center', pOff;
+  if (pLen >= pWallLen)        pOff = 0;
+  else if (pos === 'start')    pOff = 0;
+  else if (pos === 'end')      pOff = pWallLen - pLen;
+  else if (pos === 'custom')   pOff = Math.max(0, Math.min(P.offsetFt || 0, pWallLen - pLen));
+  else                         pOff = (pWallLen - pLen) / 2;
+  var pCen = pOff + pLen / 2 - pWallLen / 2;
+
+  // The parent's rectangle, in feet, measured from the main building's centre.
+  var hw = (Q.w || 0) / 2, hl = (Q.l || 0) / 2;
+  var px0, px1, pz0, pz1;
+  if (P.wall === 'left')       { px1 = -hw;      px0 = -hw - P.w; pz0 = pCen - pLen/2; pz1 = pCen + pLen/2; }
+  else if (P.wall === 'right') { px0 =  hw;      px1 =  hw + P.w; pz0 = pCen - pLen/2; pz1 = pCen + pLen/2; }
+  else if (P.wall === 'front') { pz1 = -hl;      pz0 = -hl - P.w; px0 = pCen - pLen/2; px1 = pCen + pLen/2; }
+  else                         { pz0 =  hl;      pz1 =  hl + P.w; px0 = pCen - pLen/2; px1 = pCen + pLen/2; }
+
+  // The child is drawn against the MAIN building's wall of the same name, then
+  // shifted: perpendicular, out to the parent's face; along the wall, over to
+  // the parent's centre.
+  var w = sc.wall, dx = 0, dz = 0, wallLen = 0;
+  if (w === 'left')       { dx = px0 - (-hw); dz = (pz0 + pz1) / 2; wallLen = pz1 - pz0; }
+  else if (w === 'right') { dx = px1 -   hw;  dz = (pz0 + pz1) / 2; wallLen = pz1 - pz0; }
+  else if (w === 'front') { dz = pz0 - (-hl); dx = (px0 + px1) / 2; wallLen = px1 - px0; }
+  else                    { dz = pz1 -   hl;  dx = (px0 + px1) / 2; wallLen = px1 - px0; }
+
+  return { dx: dx, dz: dz, wallLen: wallLen, attachFt: (Q.h || 0) - (P.dropFt || 0) };
+};
+
+// Note which meshes each group already holds, so the ones a single shed adds
+// can be told apart afterwards.
+window._attSnap = function(grps) {
+  var m = {};
+  for (var k in grps) { var g = grps[k]; if (g && g.children) m[k] = g.children.length; }
+  return m;
+};
+
+// Move just the meshes that this shed added. No parent means no movement, so
+// an ordinary shed is untouched.
+window._attShift = function(grps, snap, sc, Sc) {
+  var dx = ((sc && sc._pDX) || 0) * Sc, dz = ((sc && sc._pDZ) || 0) * Sc;
+  if (!dx && !dz) return;
+  for (var k in grps) {
+    var g = grps[k]; if (!g || !g.children) continue;
+    for (var i = snap[k] || 0; i < g.children.length; i++) {
+      g.children[i].position.x += dx;
+      g.children[i].position.z += dz;
+    }
+  }
+};
+
+// Drop-in for `(shedCfgs||[]).forEach(...)` in the render loops: identical
+// behaviour, except a parented shed's meshes are placed against its parent.
+window._attEach = function(cfgs, grps, Sc, fn) {
+  (cfgs || []).forEach(function(sc) {
+    var snap = window._attSnap(grps);
+    fn(sc);
+    window._attShift(grps, snap, sc, Sc);
+  });
+};
+
+
 var SHED_TYPES = [{val:'leanto',label:'Lean-to'},{val:'gable',label:'Gable Extension'},{val:'wrap',label:'Wrap 2-Sided'},{val:'wrap3',label:'Wrap 3-Sided'},{val:'wrap4',label:'Full Wrap-Around'}];
 var SHED_ENCL = [{val:'roofonly',label:'Roof Only'},{val:'enclosed',label:'Enclosed'},{val:'open',label:'Open Sides'}];
 
@@ -6945,6 +7027,26 @@ function renderSheds(){
       '<div style="margin-top:6px;"><div class="shed-label">Offset (ft)</div><input class="shed-inp" type="number" value="'+(sc.offsetFt||0)+'" min="0" step="1" onchange="setShedProp('+sc.id+',\'offsetFt\',this.value)"></div>':
       '';
 
+    // Attach this one to another attachment rather than to the main building,
+    // which is how a connector joins two buildings: house -> connector ->
+    // garage. Owner-only while it is new; a salesman sees nothing.
+    var parentRow = '';
+    try {
+      if ((window.currentUser||{}).isSuperAdmin) {
+        var _cands = (window._shedConfigs||[]).filter(function(p){
+          return p.id !== sc.id && p.parentShedId !== sc.id;   // no attaching a thing to its own child
+        });
+        parentRow = '<div style="margin-top:6px;"><div class="shed-label">Attached To</div>'
+          + '<select class="shed-sel" onchange="setShedProp('+sc.id+',\'parentShedId\',this.value?parseInt(this.value,10):null);renderSheds();scheduleBuild();updateStripFromLocalCalc()">'
+          + '<option value=""'+(sc.parentShedId?'':' selected')+'>Main building</option>'
+          + _cands.map(function(p){
+              return '<option value="'+p.id+'"'+(sc.parentShedId===p.id?' selected':'')+'>'
+                   + (p.label||('Side Shed '+((p.idx||0)+1))) + '</option>';
+            }).join('')
+          + '</select></div>';
+      }
+    } catch(e) {}
+
     var extraOptions='';
     if(isLeanto){
       extraOptions+='<div class="shed-row"><div><div class="shed-label">Lean-to Pitch</div>'
@@ -7044,7 +7146,7 @@ function renderSheds(){
       +'</div>'
       +'<div style="margin-bottom:7px;"><div class="shed-label" style="margin-bottom:5px;">Position</div>'
       +'<div class="shed-type-chips">'+posChips+'</div>'
-      +customOffRow+'</div>'
+      +customOffRow+parentRow+'</div>'
       +extraOptions
       // Finished ceiling toggle — leanto/wrap eave sheds, wrap4, AND gable extensions.
       +((isLeanto && (sc.wall==='left'||sc.wall==='right')) || sc.type==='wrap4' || sc.type==='gable' ? (
@@ -11633,6 +11735,20 @@ function applyVoiceQuote(parsed, overlay) {
           });
         });
       }
+      // Attachments hanging off other attachments: resolve where each one's
+      // parent sits and carry it through as a translation. Untouched for any
+      // shed without a parent, which is every shed in every existing quote.
+      if (shedCfgs && shedCfgs.length) {
+        var _attSrc = shedCfgs;
+        shedCfgs = shedCfgs.map(function(sc) {
+          var g = null;
+          try { g = window._shedParentGeom(sc, _attSrc, window._Q || Q); } catch(e) {}
+          return g ? Object.assign({}, sc, {
+            _pDX: g.dx, _pDZ: g.dz, _pWallLen: g.wallLen, _pAttachFt: g.attachFt
+          }) : sc;
+        });
+      }
+
         // ═══ COMPREHENSIVE 3D LOADING FIX ════════════════════════════════════════
         
         console.log('[3D] Starting build3DReplay...');
@@ -12183,10 +12299,10 @@ function applyVoiceQuote(parsed, overlay) {
         } catch(e) { console.warn('[3D] apron render failed:', e && e.message); }
 
         // Shed slabs
-        (shedCfgs || []).forEach(sc => {
+        window._attEach(shedCfgs, grps, Sc, sc => {
             const ssw = sc.w * Sc, ssl = sc.l * Sc;
             const isEW = (sc.wall === 'left' || sc.wall === 'right');
-            const mwl = (sc._isStepShed && isEW ? sc._stepMainL : (isEW ? Q.l : Q.w));
+            const mwl = sc._pWallLen || (sc._isStepShed && isEW ? sc._stepMainL : (isEW ? Q.l : Q.w));
             const _sZOff = sc._stepZOff || 0;
             const sLen = sc.l;
             const sPos = sc.position || 'center';
@@ -12412,7 +12528,7 @@ function applyVoiceQuote(parsed, overlay) {
             }
             if (sc.type !== 'leanto' && sc.type !== 'wrap' && sc.type !== 'wrap3') return;
             const isEave = sc.wall === 'left' || sc.wall === 'right';
-            const mainWallLen = (sc._isStepShed && isEave ? sc._stepMainL : (isEave ? Q.l : Q.w));
+            const mainWallLen = sc._pWallLen || (sc._isStepShed && isEave ? sc._stepMainL : (isEave ? Q.l : Q.w));
             const _scPZOff = sc._stepZOff || 0;
             const shedLen = sc.l;
             const shedPos = sc.position || 'center';
@@ -12630,7 +12746,7 @@ function applyVoiceQuote(parsed, overlay) {
 
         // Shed posts from config
         var _ssShedPostStart = grps.posts.children.length, _ssShedMainPostStart = grps.mainPosts.children.length;
-        (shedCfgs || []).forEach(sc => {
+        window._attEach(shedCfgs, grps, Sc, sc => {
             const ssw = sc.w * Sc, ssl = sc.l * Sc;
             const ltPitchP = sc.ltPitch || 1;
             const dropHP = (sc.dropFt || 0) * Sc;
@@ -15401,7 +15517,7 @@ function applyVoiceQuote(parsed, overlay) {
         }
 
         // === SHED WIDTH CALLOUTS ===
-        (shedCfgs || []).forEach(sc => {
+        window._attEach(shedCfgs, grps, Sc, sc => {
             const ssw = sc.w * Sc, sSh = (Q.h - 3) * Sc;
             const sLbl = mkDL(sc.w + "'", 1.0);
             if (sc.wall === 'left') {
@@ -15437,19 +15553,21 @@ function applyVoiceQuote(parsed, overlay) {
 
         // Shed
         // Shed roofs from config
-        (shedCfgs || []).forEach(sc => {
+        window._attEach(shedCfgs, grps, Sc, sc => {
             const ssw = sc.w * Sc, ssl = sc.l * Sc;
             const ltPitchR = sc.ltPitch || 1;
             const dropHR = (sc.dropFt || 0) * Sc;
             // Step sheds attach at step section eave height, not main building height
-            const _scAttachH = sc._isStepShed ? (stepCfg ? stepCfg.height * Sc : sh) : (isSingleSlope ? (Q.h - Q.w/12) * Sc : sh); // single slope: attach at low eave
+            const _scAttachH = sc._pAttachFt ? sc._pAttachFt * Sc
+                             : sc._isStepShed ? (stepCfg ? stepCfg.height * Sc : sh)
+                             : (isSingleSlope ? (Q.h - Q.w/12) * Sc : sh); // single slope: attach at low eave
             const attachHR = _scAttachH - dropHR;
             const sSh = attachHR - (sc.w * (ltPitchR / 12)) * Sc;
 
             // Compute shed offset for roof positioning
             const isEaveWall = (sc.wall === 'left' || sc.wall === 'right');
             // Step sheds use step section length as the main wall length
-            const mainWallLen = sc._isStepShed && isEaveWall ? (sc._stepMainL || Q.l) : (isEaveWall ? Q.l : Q.w);
+            const mainWallLen = sc._pWallLen || (sc._isStepShed && isEaveWall ? (sc._stepMainL || Q.l) : (isEaveWall ? Q.l : Q.w));
             const shedLen = sc.l;
             const shedPos = sc.position || 'center';
             let shedOffFt = 0;
