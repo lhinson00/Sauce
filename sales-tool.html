@@ -16201,6 +16201,37 @@ function applyVoiceQuote(parsed, overlay) {
                         m.castShadow=true; grps.framing.add(m);
                     }
                 }
+                // Panelled wall for a turned ridge. Draws in vertical bays with the
+                // same rib highlight and shadow the main building uses, so the metal
+                // matches. `prof` gives the top of the wall at any point along it.
+                // axis 'x': the wall runs along X in a plane of constant Z.
+                // axis 'z': the wall runs along Z in a plane of constant X.
+                function _raWall(axis, plane, c0, c1, baseY, prof, faceOff) {
+                    if (sc.frameStyle === 'timber') return;   // timber shows beams, not panels
+                    var wHex = pc(wallColorName);
+                    var wR=(wHex>>16)&0xff, wG=(wHex>>8)&0xff, wB=wHex&0xff;
+                    var mBase = new THREE.MeshBasicMaterial({color:wHex, side:THREE.DoubleSide});
+                    var mHi   = new THREE.MeshBasicMaterial({color:((Math.min(255,wR+55)<<16)|(Math.min(255,wG+55)<<8)|Math.min(255,wB+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
+                    var mSd   = new THREE.MeshBasicMaterial({color:((Math.max(0,wR-40)<<16)|(Math.max(0,wG-40)<<8)|Math.max(0,wB-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
+                    var sp = 0.075, rw = 0.006;
+                    var lo = Math.min(c0, c1), hi = Math.max(c0, c1);
+                    var pf = plane + (faceOff || 0);
+                    for (var c = lo; c < hi; c += sp) {
+                        var cR = Math.min(c + sp, hi);
+                        var yL = prof(c), yR = prof(cR);
+                        if (yL <= baseY + 0.001 && yR <= baseY + 0.001) continue;
+                        if (axis === 'x') {
+                            grps.shed.add(mkQ([c, baseY, pf, c, yL, pf, cR, yR, pf, cR, baseY, pf], mBase));
+                            grps.shed.add(mkQ([c, baseY, pf+0.003, c, yL, pf+0.003, c+rw, yL, pf+0.003, c+rw, baseY, pf+0.003], mHi));
+                            grps.shed.add(mkQ([c+rw, baseY, pf+0.003, c+rw, yL, pf+0.003, c+rw*2, yL, pf+0.003, c+rw*2, baseY, pf+0.003], mSd));
+                        } else {
+                            grps.shed.add(mkQ([pf, baseY, c, pf, yL, c, pf, yR, cR, pf, baseY, cR], mBase));
+                            grps.shed.add(mkQ([pf+0.003, baseY, c, pf+0.003, yL, c, pf+0.003, yL, c+rw, pf+0.003, baseY, c+rw], mHi));
+                            grps.shed.add(mkQ([pf+0.003, baseY, c+rw, pf+0.003, yL, c+rw, pf+0.003, yL, c+rw*2, pf+0.003, baseY, c+rw*2], mSd));
+                        }
+                    }
+                }
+
                 // Timber truss for a turned ridge. Same members as the standard
                 // gable's — bottom chord, two rafters, king post, two braces —
                 // laid out in whichever plane the gable face falls on.
@@ -16295,6 +16326,21 @@ function applyVoiceQuote(parsed, overlay) {
                     }
                     _raTruss('x', z1, aX, oXoh, raRidgeX, _extEaveH, raRidgeH);
                     _raTruss('x', z2, aX, oXoh, raRidgeX, _extEaveH, raRidgeH);
+
+                    // Close both gable ends, from the slab up to the roof line.
+                    var _raBase = (sc.encl === 'enclosed') ? 0 : _extEaveH;
+                    var _raProfX = function(x) {
+                        var span = Math.abs(raRidgeX - aX);
+                        if (span < 0.0001) return _extEaveH;
+                        var t = 1 - Math.abs(x - raRidgeX) / span;
+                        return _extEaveH + (raRidgeH - _extEaveH) * Math.max(0, Math.min(1, t));
+                    };
+                    _raWall('x', z1, aX, oX, _raBase, _raProfX, -0.004);
+                    _raWall('x', z2, aX, oX, _raBase, _raProfX,  0.004);
+                    // Outer wall, eave height, plain rectangle.
+                    if (sc.encl === 'enclosed') {
+                        _raWall('z', oX, z1, z2, 0, function(){ return _extEaveH; }, dir * 0.004);
+                    }
                     } else {
 
                     // Ridge runs outward along X at zMid from aX@sh to oXoh@extRidgeH
@@ -16484,6 +16530,19 @@ function applyVoiceQuote(parsed, overlay) {
                     }
                     _raTruss('z', sco - ssl / 2, aZ, oZoh, raRidgeZ, raEaveH, raRidgeH);
                     _raTruss('z', sco + ssl / 2, aZ, oZoh, raRidgeZ, raEaveH, raRidgeH);
+
+                    var _raBase2 = (sc.encl === 'enclosed') ? 0 : raEaveH;
+                    var _raProfZ = function(z) {
+                        var span = Math.abs(raRidgeZ - aZ);
+                        if (span < 0.0001) return raEaveH;
+                        var t = 1 - Math.abs(z - raRidgeZ) / span;
+                        return raEaveH + (raRidgeH - raEaveH) * Math.max(0, Math.min(1, t));
+                    };
+                    _raWall('z', sco - ssl / 2, aZ, oZ, _raBase2, _raProfZ, -0.004);
+                    _raWall('z', sco + ssl / 2, aZ, oZ, _raBase2, _raProfZ,  0.004);
+                    if (sc.encl === 'enclosed') {
+                        _raWall('x', oZ, sco - ssl/2, sco + ssl/2, 0, function(){ return raEaveH; }, dir * 0.004);
+                    }
                     } else {
                     // Main building pitch slope (scene units of height per scene unit of X from center)
                     var mainPitchSlope = (sw > 0) ? (sr - sh) / (sw / 2) : 0;
