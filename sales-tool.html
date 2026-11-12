@@ -1630,7 +1630,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M37-1708</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M38-1742</span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -4141,8 +4141,55 @@ function buildFrameChips(){
     });
 }
 // Red-iron options row (bay spacing + frame/clad view). Rendered next to the frame chips.
+// ============================================================================
+// Red iron is quoted by the square foot, not off a material list. One rate
+// covers the whole building — shell, slab, insulation, openings, wainscot —
+// so the only numbers that matter are the rate and the footprint.
+//
+// The rate lives on the quote, so it saves and reloads with everything else
+// and can be set per job without touching code.
+// ============================================================================
+window.SauceRedIron = {
+  // Fixed specification. Red iron always goes out this way, so these are stated
+  // on the quote rather than chosen, and they are inside the square-foot rate.
+  SPEC: [
+    '6" concrete with footers',
+    '26 gauge PBR metal',
+    '4" insulation'
+  ],
+
+  active: function(){
+    try { return (window._Q && window._Q.frameType === 'redIron')
+               || (typeof currentFrameType !== 'undefined' && currentFrameType === 'redIron'); }
+    catch(e){ return false; }
+  },
+
+  rate: function(){
+    var ri = window._redIron || {};
+    var v = parseFloat(ri.psf);
+    return isFinite(v) && v > 0 ? v : 0;
+  },
+
+  // Footprint of everything being quoted: the main building, its step section
+  // if there is one, and every attachment hung on it.
+  area: function(){
+    var Q = window._Q || {};
+    var a = (Q.w || 0) * (Q.l || 0);
+    try {
+      if (window._stepSection && window._stepSection.active) a += (Q.w||0) * (window._stepSection.length||0);
+    } catch(e){}
+    (window._shedConfigs || []).forEach(function(sc){
+      a += (parseFloat(sc.w)||0) * (parseFloat(sc.l)||0);
+    });
+    return a;
+  },
+
+  total: function(){ return this.rate() * this.area(); }
+};
+
 function buildRedIronChips(){
-  window._redIron = window._redIron || { bay:25, showFrame:true };
+  window._redIron = window._redIron || { bay:25, showFrame:true, psf:0 };
+  if (window._redIron.psf == null) window._redIron.psf = 0;
   var host = document.getElementById('redIronRow'); if(!host) return;
   host.style.display = (currentFrameType==='redIron') ? '' : 'none';
   host.innerHTML =
@@ -4151,7 +4198,24 @@ function buildRedIronChips(){
     +'<div id="riBayChips" style="display:flex;gap:5px;"></div></div>'
     +'<div><div style="font-size:9px;color:var(--muted);font-weight:600;margin-bottom:3px;">View</div>'
     +'<div id="riViewChips" style="display:flex;gap:5px;"></div></div>'
-    +'</div>';
+    +'<div><div style="font-size:9px;color:var(--muted);font-weight:600;margin-bottom:3px;">Price / Sq Ft</div>'
+    +'<input id="riPsf" type="number" min="0" step="0.01" value="' + (window._redIron.psf || '') + '"'
+    +' style="width:92px;padding:5px 7px;border-radius:7px;border:1px solid rgba(255,255,255,.18);'
+    +'background:#2a2a2a;color:#f0f3f7;font-size:12px;font-weight:700;" /></div>'
+    +'<div id="riTotalOut" style="font-size:11px;color:var(--gold);font-weight:800;line-height:1.5;"></div>'
+    +'</div>'
+    +'<div style="font-size:9px;color:var(--muted);margin-top:5px;">'
+    + window.SauceRedIron.SPEC.join('  ·  ')
+    + '  ·  one rate covers the whole building, openings included</div>';
+  (function(){
+    var el = document.getElementById('riPsf'); if (!el) return;
+    el.addEventListener('input', function(){
+      window._redIron.psf = parseFloat(el.value) || 0;
+      window._riRefreshTotal();
+      try { updateStripFromLocalCalc(); } catch(e){}
+    });
+  })();
+  window._riRefreshTotal();
   chips('riBayChips', [{val:20,label:"20'"},{val:25,label:"25'"}],
     function(){return window._redIron.bay;},
     function(v){ window._redIron.bay = parseInt(v)||25; scheduleBuild(); });
@@ -4159,6 +4223,15 @@ function buildRedIronChips(){
     function(){return window._redIron.showFrame?'frame':'clad';},
     function(v){ window._redIron.showFrame = (v==='frame'); scheduleBuild(); });
 }
+
+// Keeps the readout beside the rate honest as dimensions and attachments change.
+window._riRefreshTotal = function(){
+  var out = document.getElementById('riTotalOut'); if (!out) return;
+  var RI = window.SauceRedIron, a = RI.area(), r = RI.rate();
+  if (!r) { out.textContent = Math.round(a).toLocaleString() + ' sq ft  ·  enter a rate'; return; }
+  out.textContent = Math.round(a).toLocaleString() + " sq ft  ×  $" + r.toFixed(2)
+    + '  =  $' + RI.total().toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+};
 var PS_OPTS = [{val:8,label:"8'"},{val:10,label:"10'"},{val:12,label:"12'"},{val:14,label:"14'"},{val:16,label:"16'"},{val:20,label:"20'"},{val:24,label:"24'"}];
 var PS_OPTS_ENCLOSED = [{val:8,label:"8'"},{val:10,label:"10'"},{val:12,label:"12'"},{val:14,label:"14'"}];
 
@@ -8158,6 +8231,7 @@ function serializeConfig() {
     heightSections: window._heightSections ? JSON.parse(JSON.stringify(window._heightSections)) : null,
     hsRev: (window._hsRev !== false),
     matListOverrides: window._matListOverrides ? JSON.parse(JSON.stringify(window._matListOverrides)) : {},
+    redIron: window._redIron ? JSON.parse(JSON.stringify(window._redIron)) : null,
     salesFields: {
       name:      (document.getElementById('st_name')||{}).value||'',
       phone:     (document.getElementById('st_phone')||{}).value||'',
@@ -8456,6 +8530,10 @@ function restoreConfig(cfg) {
         try { window._matListOverrides = cfg.matListOverrides || {}; window._matOvDims = window._Q ? [window._Q.w, window._Q.l, window._Q.h, window._Q.pitch].join('|') : null; } catch(e){}
       }
       if(conOn) renderConcreteOpts();
+    }
+    if (cfg.redIron) {
+      window._redIron = Object.assign({ bay:25, showFrame:true, psf:0 }, cfg.redIron);
+      try { buildRedIronChips(); } catch(e){}
     }
     if(cfg.contact) {
       var fn=document.getElementById('qfName'); if(fn) fn.value=cfg.contact.name||'';
@@ -23458,10 +23536,10 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M37-1708';
+window.SAUCE_BUILD = 'M38-1742';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
-try { console.log('%c[Sauce] BUILD M37-1708', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
+try { console.log('%c[Sauce] BUILD M38-1742', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
 console.log('%c[Sauce] build 2026-08-12 19:31 UTC', 'color:var(--gold);font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
