@@ -6628,6 +6628,117 @@ function addShed(){
 // becomes the three, measured across the wall it was already on.
 window.PORCH_GABLE_LEN = 10;
 
+// Lay the three pieces out from the unit's settings. Everything the salesman
+// sets lives on the gable member; the two legs are derived from it.
+function layoutPorchGroup(gid){
+  var parts = (window._shedConfigs||[]).filter(function(s){ return s.pgGroup === gid; });
+  var g  = parts.filter(function(s){ return s.pgRole === 'gable'; })[0];
+  var lf = parts.filter(function(s){ return s.pgRole === 'left';  })[0];
+  var rt = parts.filter(function(s){ return s.pgRole === 'right'; })[0];
+  if (!g) return;
+
+  var isEave  = (g.wall === 'left' || g.wall === 'right');
+  var wallLen = isEave ? (Q.l || 0) : (Q.w || 0);
+  var total   = Math.max(1, Math.min(parseFloat(g.pgTotal) || wallLen, wallLen));
+  var gLen    = Math.max(1, Math.min(parseFloat(g.l) || window.PORCH_GABLE_LEN, total));
+  var legLen  = Math.max(0, (total - gLen) / 2);
+  var start   = (g.pgOffset == null || g.pgOffset === '') ? (wallLen - total) / 2 : (parseFloat(g.pgOffset) || 0);
+
+  [lf, rt].forEach(function(s){
+    if (!s) return;
+    s.wall = g.wall; s.w = g.w; s.dropFt = g.dropFt;
+    s.encl = g.encl; s.enclWalls = g.enclWalls;
+    s.ltPitch = g.pgPorchPitch || 2;
+    s.frameStyle = g.frameStyle;
+    s.type = 'leanto'; s.position = 'custom';
+    s.l = legLen; s.origL = legLen;
+  });
+  g.position = 'custom';
+  if (lf) { lf.offsetFt = start;               lf.hideEndCap1 = false; lf.hideEndCap2 = true; }
+  g.offsetFt = start + legLen;
+  if (rt) { rt.offsetFt = start + legLen + gLen; rt.hideEndCap1 = true;  rt.hideEndCap2 = false; }
+}
+
+// One setter for the whole unit.
+window.setPorchProp = function(gid, prop, val){
+  var g = (window._shedConfigs||[]).filter(function(s){ return s.pgGroup === gid && s.pgRole === 'gable'; })[0];
+  if (!g) return;
+  if (prop === '_open') g._open = (val === true || val === 'true');
+  else g[prop] = (typeof val === 'boolean') ? val : (isNaN(val) || val === '' ? val : (parseFloat(val) || 0));
+  layoutPorchGroup(gid);
+  renderSheds(); scheduleBuild();
+  try { updateStripFromLocalCalc(); } catch(e) {}
+};
+
+window.removePorchGroup = function(gid){
+  window._shedConfigs = (window._shedConfigs||[]).filter(function(s){ return s.pgGroup !== gid; });
+  window._shedConfigs.forEach(function(s,i){ s.idx = i; });
+  renderSheds(); scheduleBuild();
+  try { updateStripFromLocalCalc(); } catch(e) {}
+};
+
+// The porch unit's card: one wall, one depth, one length, one gable size, two
+// pitches. Writes to the whole group.
+function porchUnitCard(g){
+  var gid = g.pgGroup;
+  var isEave = (g.wall === 'left' || g.wall === 'right');
+  var wallLen = isEave ? (Q.l || 0) : (Q.w || 0);
+  var total = Math.min(parseFloat(g.pgTotal) || wallLen, wallLen);
+  var gLen  = Math.min(parseFloat(g.l) || window.PORCH_GABLE_LEN, total);
+  var legLen = Math.max(0, (total - gLen) / 2);
+
+  function S(prop, label, val, opts, hint){
+    return '<div><div class="shed-label">' + label + '</div>'
+      + '<select class="shed-sel" onchange="setPorchProp(\'' + gid + '\',\'' + prop + '\',this.value)">'
+      + opts.map(function(o){
+          return '<option value="' + o[0] + '"' + (String(o[0]) === String(val) ? ' selected' : '') + '>' + o[1] + '</option>';
+        }).join('')
+      + '</select>' + (hint ? '<div style="font-size:8px;color:var(--muted);margin-top:2px;">' + hint + '</div>' : '') + '</div>';
+  }
+  function N(prop, label, val, hint, step){
+    return '<div><div class="shed-label">' + label + '</div>'
+      + '<input class="shed-inp" type="number" step="' + (step || 1) + '" value="' + (val == null ? '' : val) + '" '
+      + 'onchange="setPorchProp(\'' + gid + '\',\'' + prop + '\',this.value)">'
+      + (hint ? '<div style="font-size:8px;color:var(--muted);margin-top:2px;">' + hint + '</div>' : '') + '</div>';
+  }
+  var PITCH = [1,2,3,4,5,6,7,8,9,10,11,12].map(function(p){ return [p, p + '/12']; });
+
+  var div = document.createElement('div');
+  div.className = 'shed-card';
+  div.innerHTML =
+      '<div class="shed-card-hdr" onclick="setPorchProp(\'' + gid + '\',\'_open\',' + (g._open ? 'false' : 'true') + ')">'
+    +   '<span class="shed-card-icon"></span>'
+    +   '<span class="shed-card-lbl">Porch + Center Gable</span>'
+    +   '<button class="shed-card-rm" onclick="event.stopPropagation();removePorchGroup(\'' + gid + '\')">&#10005;</button>'
+    +   '<span class="shed-card-toggle' + (g._open ? ' open' : '') + '">&#9660;</span>'
+    + '</div>'
+    + '<div class="shed-body' + (g._open ? ' open' : '') + '">'
+    + '<div class="shed-row">'
+    +   S('wall', 'Attach To Wall', g.wall,
+          [['back','Back'],['front','Front'],['left','Left Eave'],['right','Right Eave']])
+    +   N('w', 'Depth (ft)', g.w, 'How far the porch projects')
+    + '</div>'
+    + '<div class="shed-row">'
+    +   N('pgTotal', 'Total Length (ft)', Math.round(total), 'Across the wall (' + Math.round(wallLen) + ' ft)')
+    +   N('l', 'Gable Length (ft)', Math.round(gLen), 'Centered; porch fills ' + legLen.toFixed(1) + ' ft each side')
+    + '</div>'
+    + '<div class="shed-row">'
+    +   S('pgPorchPitch', 'Porch Pitch', g.pgPorchPitch || 2, PITCH)
+    +   S('gablePitch', 'Gable Pitch', g.gablePitch || 6, PITCH)
+    + '</div>'
+    + '<div class="shed-row">'
+    +   S('frameStyle', 'Style', g.frameStyle || 'timber', [['timber','Timber Frame'],['metal','Metal']])
+    +   N('dropFt', 'Drop (ft)', g.dropFt || 0, 'Below the main eave')
+    + '</div>'
+    + '<div class="shed-row">'
+    +   N('pgOffset', 'Offset (ft)', (g.pgOffset == null ? '' : g.pgOffset), 'Blank centers it on the wall')
+    +   S('encl', 'Enclosure', g.encl || 'roofonly',
+          [['roofonly','Open Porch'],['enclosed','Enclosed'],['partial','Open Sides']])
+    + '</div>'
+    + '</div>';
+  return div;
+}
+
 function expandPorchGable(id){
   var at = window._shedConfigs.findIndex(function(s){ return s.id === id; });
   if (at < 0) return;
@@ -6656,6 +6767,7 @@ function expandPorchGable(id){
     };
   }
 
+  var gid = 'pg' + (nextShedId++);
   var parts = [];
   if (side > 0.5) parts.push(leg('Porch — left', side, 0, false, true));
   parts.push({
@@ -6670,9 +6782,16 @@ function expandPorchGable(id){
   });
   if (side > 0.5) parts.push(leg('Porch — right', side, side + gableW, true, false));
 
-  // Replace the attachment that was turned into a porch.
+  // Tag them as one unit, then replace the attachment this was chosen on.
+  parts.forEach(function(p, i){
+    p.pgGroup = gid;
+    p.pgRole  = (p.type === 'gable') ? 'gable' : (i === 0 && parts.length > 1 ? 'left' : 'right');
+  });
+  var gg = parts.filter(function(p){ return p.pgRole === 'gable'; })[0];
+  if (gg) { gg.pgTotal = wallLen; gg.pgOffset = null; gg.pgPorchPitch = from.ltPitch || 2; }
   window._shedConfigs.splice.apply(window._shedConfigs, [at, 1].concat(parts));
   window._shedConfigs.forEach(function(s,i){ s.idx = i; });
+  layoutPorchGroup(gid);
   renderSheds(); scheduleBuild();
   try { updateStripFromLocalCalc(); } catch(e) {}
 }
@@ -7062,6 +7181,11 @@ function renderSheds(){
   var addBtn=document.getElementById('addShedBtn');
   if(addBtn) addBtn.style.display = window._shedConfigs.length >= (window.SHED_MAX || 12) ? 'none' : '';
   window._shedConfigs.forEach(function(sc){
+    // A porch unit is three attachments but one card. The legs are derived
+    // from the gable member, so they are not shown separately.
+    if (sc.pgGroup && sc.pgRole !== 'gable') return;
+    if (sc.pgGroup && sc.pgRole === 'gable') { list.appendChild(porchUnitCard(sc)); return; }
+
     var div=document.createElement('div'); div.className='shed-card';
     var isLeanto=(sc.type==='leanto'||sc.type==='wrap'||sc.type==='wrap3'||sc.type==='wrap4');
     var isGable=(sc.type==='gable');
