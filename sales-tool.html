@@ -7224,10 +7224,14 @@ function toggleCypressPosts(id, on) {
 // Stamp a kind of member onto whatever a block just added to a group. Used where
 // members land in a mixed group (an extension's truss shares grps.shed with its
 // roof and walls) and the group alone cannot say what they are.
-window._spMark = function(grp, from, part){
+window._spMark = function(grp, from, part, unit){
   if (!grp || !grp.children) return;
   for (var i = from; i < grp.children.length; i++) {
-    grp.children[i].traverse(function(o){ o.userData = o.userData || {}; o.userData.sPart = part; });
+    grp.children[i].traverse(function(o){
+      o.userData = o.userData || {};
+      o.userData.sPart = part;
+      if (unit != null && o.userData.sUnit == null) o.userData.sUnit = unit;
+    });
   }
 };
 
@@ -7443,6 +7447,13 @@ window.SauceParts = window.SauceParts || (function(){
   // Order matters — the first rule that matches wins, so the more specific
   // wording goes first. "Wood Truss Roof Purlins" is a purlin, not a truss.
   var MAP = [
+    // Metal trim. These go first: "Gable Rake Trim" names a gable but is a rake,
+    // and "Outside Corner" is a corner trim, not a post.
+    { key:'ridgeCap',   re:/ridge\s*cap/i,            groups:['roof'],   label:'ridge cap' },
+    { key:'rakeTrim',   re:/\brake\b/i,               groups:['roof'],   label:'rake trim' },
+    { key:'eaveTrim',   re:/eave\s*trim|\bfascia\b/i,  groups:['walls','wallPanels','roof'], label:'eave trim' },
+    { key:'cornerTrim', re:/(outside|inside)\s*corner|corner\s*trim/i, groups:['wallPanels','walls'], label:'corner trim' },
+    { key:'baseTrim',   re:/base\s*trim|rat\s*guard/i, groups:['walls','wallPanels'], label:'base trim' },
     { key:'purlin', re:/purlin/i,                    groups:['framing'], label:'purlins' },
     { key:'girt',   re:/girt/i,                      groups:['framing'], label:'girts' },
     { key:'rafter', re:/rafter/i,                    groups:['framing'], label:'rafters' },
@@ -7453,7 +7464,9 @@ window.SauceParts = window.SauceParts || (function(){
   ];
 
   // One colour per kind, so a part always lights the same colour.
-  var COLOR = { truss:0x22d3ee, post:0xfacc15, purlin:0x4ade80, girt:0xfb923c, rafter:0xa78bfa, stud:0x38bdf8, plate:0xf59e0b, _default:0xf472b6 };
+  var COLOR = { truss:0x22d3ee, post:0xfacc15, purlin:0x4ade80, girt:0xfb923c, rafter:0xa78bfa,
+               stud:0x38bdf8, plate:0xf59e0b, ridgeCap:0xf43f5e, rakeTrim:0xec4899,
+               eaveTrim:0x8b5cf6, cornerTrim:0x14b8a6, baseTrim:0x84cc16, _default:0xf472b6 };
 
   var _held = [];      // {mesh, mat} so the originals go back exactly as they were
   var _segs = [];      // board markers hung on their member, removed on clear
@@ -7464,7 +7477,7 @@ window.SauceParts = window.SauceParts || (function(){
   // Checked before the map, because a line like "Wood Truss Roof Purlins" names a
   // truss but is not one. Anything caught here reports as not mapped rather than
   // lighting the wrong members — a wrong highlight is worse than none.
-  var NOT_YET = /bracing|blocking|joist|header|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|fascia|soffit|flashing|concrete|sackcrete|footing|pad\b|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
+  var NOT_YET = /bracing|blocking|joist|header|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|soffit|flashing|concrete|sackcrete|footing|pad\b|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
 
   // Which part of the building a line is talking about. The list names an
   // attachment three ways: by position ("Shed 2"), by the wall it sits on
@@ -7489,8 +7502,11 @@ window.SauceParts = window.SauceParts || (function(){
       // matched no wall at all and lit every girt on the building.
       if (!mw.length && /side\s*wall|sidewall|\beave\b/i.test(text)) mw = ['left','right'];
       if (!mw.length && /gable\s*end|end\s*wall|endwall|\bgable\b/i.test(text)) mw = ['front','back'];
+      // "Regular Trusses" means the ones that are not the gable ends — the list
+      // bills those on their own line, and the end trusses in the model are them.
+      var notW = (/\bregular\b/i.test(text) && !mw.length) ? ['front','back'] : null;
       return { label: 'the main building' + (mw.length ? ' — ' + mw.join(' & ') : ''),
-               walls: mw.length ? mw : null,
+               walls: mw.length ? mw : null, notWalls: notW,
                test: function(sc, idx){ return idx == null; } };
     }
     var w = /[—-]\s*(Left|Right|Front|Back)\b/i.exec(text);
@@ -7531,7 +7547,7 @@ window.SauceParts = window.SauceParts || (function(){
     var wanted = (entry.groups||[]).slice();
     // Members that live in a mixed group carry their own stamp instead.
     if (entry.key && wanted.indexOf('shed') < 0) wanted.push('shed');
-    var MIXED = { shed:1, framing:1 };
+    var MIXED = { shed:1, framing:1, walls:1, wallPanels:1, roof:1 };
     wanted.forEach(function(name){
       var grp = g[name]; if (!grp) return;
       var mixed = !!MIXED[name];
@@ -7546,6 +7562,7 @@ window.SauceParts = window.SauceParts || (function(){
         // a stick of lumber, so it is not counted or lit.
         if (entry.key !== 'truss' && info.lenFt != null && info.lenFt < 1) return;
         if (entry.area && entry.area.walls && !onWall(info, entry.area.walls)) return;
+        if (entry.area && entry.area.notWalls && onWall(info, entry.area.notWalls)) return;
         o.userData._spLen = info.lenFt;
         out.push(o);
       });
@@ -7564,7 +7581,12 @@ window.SauceParts = window.SauceParts || (function(){
       var longest = Math.max(dx, dy, dz);
       var sc = window._spSc || 0.1;
       if (!_v) _v = new THREE.Vector3();
-      o.getWorldPosition(_v);
+      // Where the piece actually is. A box carries its centre in .position, but a
+      // panel is built from world-space vertices and sits at the origin, so its
+      // centre has to come from the geometry or every wall test sees x = 0.
+      _v.set((bb.max.x+bb.min.x)/2, (bb.max.y+bb.min.y)/2, (bb.max.z+bb.min.z)/2);
+      o.updateWorldMatrix(true, false);
+      _v.applyMatrix4(o.matrixWorld);
       return { lenFt: longest > 0 ? longest / sc : null, x:_v.x, y:_v.y, z:_v.z };
     } catch(e){ return { lenFt:null, x:0, y:0, z:0 }; }
   }
@@ -7588,7 +7610,18 @@ window.SauceParts = window.SauceParts || (function(){
   // length. The dimension has to come off a known list or the split is ambiguous
   // — SYP21216 is a 16' 2x12, not a 1216 of something.
   var DIMS = ['212','210','412','410','612','610','812','810','24','26','28','44','46','48','66','68','88'];
-  function skuLen(sku){
+  // Trim is not sold by lumber dimension. RET9BK10 is a 10' residential eave trim in
+  // 9 gauge black, OC9BK16 a 16' outside corner — the length is the tail of the SKU.
+  var TRIMKEY = { ridgeCap:1, rakeTrim:1, eaveTrim:1, cornerTrim:1, baseTrim:1 };
+  function skuLen(sku, key){
+    if (key && TRIMKEY[key]) {
+      var tm = /(\d+)$/.exec(String(sku||''));
+      if (tm) { var tv = parseInt(tm[1],10); if (tv >= 6 && tv <= 32) return tv; }
+      return null;
+    }
+    return lumberLen(sku);
+  }
+  function lumberLen(sku){
     var s = String(sku||'').toUpperCase();
     var m = /^[A-Z]+(\d+)/.exec(s);
     if (!m) return null;
@@ -7661,15 +7694,37 @@ window.SauceParts = window.SauceParts || (function(){
   function boards(m, Lsc){
     var g = m.geometry;
     var p = g && g.parameters;
-    if (!p || typeof p.width !== 'number') return null;    // boxes only
-    var dims = [['x',p.width],['y',p.height],['z',p.depth]];
-    dims.sort(function(a,b){ return b[1]-a[1]; });
-    var axis = dims[0][0], run = dims[0][1];
-    if (!(run > 0) || Lsc <= 0) return null;
-    var n = Math.floor(run / Lsc + 0.02);
-    if (n < 1) return null;
-    var rest = [dims[1], dims[2]];
-    return { axis:axis, run:run, n:n, a:rest[0], b:rest[1] };
+    if (p && typeof p.width === 'number') {
+      var dims = [['x',p.width],['y',p.height],['z',p.depth]];
+      dims.sort(function(a,b){ return b[1]-a[1]; });
+      var axis = dims[0][0], run = dims[0][1];
+      if (!(run > 0) || Lsc <= 0) return null;
+      var n = Math.floor(run / Lsc + 0.02);
+      if (n < 1) return null;
+      return { axis:axis, run:run, n:n, a:dims[1], b:dims[2] };
+    }
+    // A trim piece is a flat panel, not a box. Its boards run along its longest
+    // edge, which is also how a sloped rake is cut — along the slope, not along X.
+    var pos = g && g.attributes && g.attributes.position;
+    if (!pos || pos.count !== 4 || Lsc <= 0) return null;
+    var v = [], i;
+    for (i=0;i<4;i++) v.push(new THREE.Vector3().fromBufferAttribute(pos,i));
+    var best = null;
+    for (i=0;i<4;i++){
+      var a2 = v[i], b2 = v[(i+1)%4], d = a2.distanceTo(b2);
+      if (!best || d > best.d) best = { a:a2, b:b2, d:d };
+    }
+    if (!best || best.d <= 0) return null;
+    var n2 = Math.ceil(best.d / Lsc - 0.02);
+    if (n2 < 1) return null;
+    // Thickness across the panel, so the marker sits on it rather than inside it.
+    var thick = 0;
+    for (i=0;i<4;i++) thick = Math.max(thick, v[i].distanceTo(best.a) < 1e-9 ? 0 : 0);
+    var mid0 = v[0].clone().add(v[1]).add(v[2]).add(v[3]).multiplyScalar(0.25);
+    var across = 0;
+    for (i=0;i<4;i++) across = Math.max(across, v[i].distanceTo(mid0));
+    return { quad:true, a:best.a, b:best.b, run:best.d, n:n2,
+             t:Math.max(0.02, Math.min(0.08, across*0.5)) };
   }
 
   function highlight(item){
@@ -7699,7 +7754,7 @@ window.SauceParts = window.SauceParts || (function(){
     // whole; members long enough to be cut from it are marked board by board. A
     // member that is neither is a different line's board and stays dark, so four
     // 22' gable posts light and the 12' ones beside them do not.
-    var L = skuLen(item && item.sku);
+    var L = skuLen(item && item.sku, entry.key);
     var sc1 = window._spSc || 0.1;
     var want = (item && parseFloat(item.quantity)) || 0;
     var lens = {}, shown = 0, lit = 0, segMode = false, noneOfLen = false;
@@ -7709,14 +7764,23 @@ window.SauceParts = window.SauceParts || (function(){
       // calculator's own rule, so that match is exact and is tried first. An
       // attachment post is bought under a different rule, so when the stamp finds
       // nothing the measured length is used instead rather than reporting nothing.
+      var isTrim = !!TRIMKEY[entry.key];
       function build(useBuy){
         var out = [];
         meshes.forEach(function(m){
           var buy = m.userData && m.userData.sBuyFt;
           if (useBuy) { if (buy === L) out.push({ m:m, b:null }); return; }
           var len = m.userData._spLen;
-          if (len != null && Math.abs(len - L) <= tol) { out.push({ m:m, b:null }); return; }
-          if (len != null && len > L + tol) {
+          if (len == null) return;
+          // Trim is bought in stock lengths and cut. A run longer than the board is
+          // made of that many boards; anything shorter is cut from one.
+          if (isTrim) {
+            if (len > L * 1.02) { var bt = boards(m, Lsc); if (bt) out.push({ m:m, b:bt }); }
+            else out.push({ m:m, b:null });
+            return;
+          }
+          if (Math.abs(len - L) <= tol) { out.push({ m:m, b:null }); return; }
+          if (len > L + tol) {
             var b = boards(m, Lsc);
             if (b) out.push({ m:m, b:b });
           }
@@ -7725,30 +7789,54 @@ window.SauceParts = window.SauceParts || (function(){
       }
       var plan = build(true);
       if (!plan.length) plan = build(false);
+      // Both faces of a corner trim are one bent piece, so they count once.
+      (function(){
+        var seen = {}, out = [];
+        plan.forEach(function(e){
+          var u = (e.b == null) && e.m.userData && e.m.userData.sUnit;
+          if (!u) { out.push(e); return; }
+          if (seen[u]) { seen[u].more.push(e.m); return; }
+          e.more = []; seen[u] = e; out.push(e);
+        });
+        plan = out;
+      })();
       if (plan.length) {
         segMode = true;
         plan.forEach(function(e){
           if (!e.b) {
             // A part that is lit has to be on screen, or the line appears to
             // match nothing. Posts sit hidden until Show Posts is on.
-            _held.push({ mesh:e.m, mat:e.m.material, vis:e.m.visible });
-            e.m.visible = true;
-            e.m.material = (shown % 2) ? mB : mA;
+            var mt0 = (shown % 2) ? mB : mA;
+            [e.m].concat(e.more || []).forEach(function(mm){
+              _held.push({ mesh:mm, mat:mm.material, vis:mm.visible });
+              mm.visible = true; mm.material = mt0;
+            });
             shown++; lit++;
             label(e.m, null, shown);
             var r0 = Math.round((e.m.userData._spLen)*2)/2; lens[r0] = (lens[r0]||0)+1;
             return;
           }
           lit++;
-          var b = e.b, half = b.run/2, w2 = b.a[1]*1.5, d2 = b.b[1]*1.5;
+          var b = e.b, half = b.run/2;
+          var w2 = b.quad ? 0 : b.a[1]*1.5, d2 = b.quad ? 0 : b.b[1]*1.5;
+          var dirQ = null;
+          if (b.quad) { dirQ = b.b.clone().sub(b.a).normalize(); }
           for (var i=0;i<b.n;i++){
-            var sg = new THREE.Mesh(
-              b.axis === 'x' ? new THREE.BoxGeometry(Lsc*0.94, w2, d2) :
-              b.axis === 'y' ? new THREE.BoxGeometry(w2, Lsc*0.94, d2) :
-                               new THREE.BoxGeometry(w2, d2, Lsc*0.94),
-              (shown % 2) ? mB : mA);
-            var off = -half + Lsc*(i + 0.5);
-            sg.position.set(b.axis==='x'?off:0, b.axis==='y'?off:0, b.axis==='z'?off:0);
+            var sg;
+            if (b.quad) {
+              var segL = Math.min(Lsc, b.run - Lsc*i);
+              sg = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.01, segL*0.94), b.t, b.t), (shown % 2) ? mB : mA);
+              sg.position.copy(b.a).addScaledVector(dirQ, Lsc*i + segL/2);
+              sg.quaternion.setFromUnitVectors(new THREE.Vector3(1,0,0), dirQ);
+            } else {
+              sg = new THREE.Mesh(
+                b.axis === 'x' ? new THREE.BoxGeometry(Lsc*0.94, w2, d2) :
+                b.axis === 'y' ? new THREE.BoxGeometry(w2, Lsc*0.94, d2) :
+                                 new THREE.BoxGeometry(w2, d2, Lsc*0.94),
+                (shown % 2) ? mB : mA);
+              var off = -half + Lsc*(i + 0.5);
+              sg.position.set(b.axis==='x'?off:0, b.axis==='y'?off:0, b.axis==='z'?off:0);
+            }
             sg.renderOrder = 999;
             if (!e.m.visible) { _held.push({ mesh:e.m, mat:e.m.material, vis:false }); e.m.visible = true; }
             e.m.add(sg); _segs.push(sg);
@@ -7766,14 +7854,31 @@ window.SauceParts = window.SauceParts || (function(){
     if (noneOfLen) { clear(); return { ok:false, reason:'nolen', label:entry.label,
                                        where:entry.where, boardFt:L, billed:want||null }; }
     if (!segMode) {
-      meshes.forEach(function(m, i){
-        _held.push({mesh:m, mat:m.material, vis:m.visible});
-        m.visible = true; m.material = (i % 2) ? mB : mA;
-        label(m, null, i+1);
-      });
-      shown = meshes.length; lit = meshes.length;
+      // A truss is bought and delivered as one piece, so its chords and webs are
+      // collapsed back into the truss they belong to: one colour, one number, one
+      // count. Everything else is already one member per piece.
+      var units = [], byUnit = {};
       meshes.forEach(function(m){
-        var L2 = m.userData._spLen;
+        var u = m.userData && m.userData.sUnit;
+        if (u == null) { units.push([m]); return; }
+        if (!byUnit[u]) { byUnit[u] = []; units.push(byUnit[u]); }
+        byUnit[u].push(m);
+      });
+      units.forEach(function(grp, i){
+        var mt = (i % 2) ? mB : mA;
+        grp.forEach(function(m){
+          _held.push({mesh:m, mat:m.material, vis:m.visible});
+          m.visible = true; m.material = mt;
+        });
+        // One number per piece, on the tallest member so it sits at the peak
+        // rather than buried in the webs.
+        var top = grp[0], ty = -Infinity;
+        grp.forEach(function(m){ var p = measure(m); if (p.y > ty) { ty = p.y; top = m; } });
+        label(top, null, i+1);
+      });
+      shown = units.length; lit = units.length;
+      units.forEach(function(grp){
+        var L2 = grp.length > 1 ? null : grp[0].userData._spLen;
         if (L2 == null) return;
         var r = Math.round(L2*2)/2; lens[r] = (lens[r]||0) + 1;
       });
@@ -13186,16 +13291,35 @@ function applyVoiceQuote(parsed, overlay) {
         // a member is. Blocks announce what they are building by setting _spPart and
         // everything added while that is set carries the stamp. Cheaper and far less
         // error-prone than tagging several hundred individual add() calls.
-        (function(){
-          var _fa = grps.framing.add.bind(grps.framing);
-          grps.framing.add = function(o){
-            if (o && window._spPart) {
+        // Trim lands in the same groups as the panels it sits on, so the group
+        // cannot say what a piece is. Same trick as the framing: a block says what
+        // it is building and everything added while that is set carries the stamp.
+        ['framing','walls','wallPanels','roof'].forEach(function(_gn){
+          var _g = grps[_gn]; if (!_g) return;
+          var _fa = _g.add.bind(_g);
+          _g.add = function(o){
+            if (o && (window._spPart || window._spUnit != null)) {
               o.userData = o.userData || {};
-              if (o.userData.sPart == null) o.userData.sPart = window._spPart;
+              if (window._spPart && o.userData.sPart == null) o.userData.sPart = window._spPart;
+              if (window._spUnit != null && o.userData.sUnit == null) o.userData.sUnit = window._spUnit;
             }
             return _fa(o);
           };
+        });
+        // A truss is one thing you buy, but it is drawn as a dozen chords and webs.
+        // Each build announces which truss it is so the list can count trusses
+        // rather than sticks, and put one number on each.
+        (function(){
+          var _ta = grps.trusses.add.bind(grps.trusses);
+          grps.trusses.add = function(o){
+            if (o && window._spUnit != null) {
+              o.userData = o.userData || {};
+              if (o.userData.sUnit == null) o.userData.sUnit = window._spUnit;
+            }
+            return _ta(o);
+          };
         })();
+        window._spUnit = null;
         window._spPart = null;
         window._spSc = Sc;   // scene units per foot, so a member can report its length
         Object.values(grps).forEach(g => { g.visible = false; scene.add(g); });
@@ -14725,6 +14849,7 @@ function applyVoiceQuote(parsed, overlay) {
         }
 
         // Corner trim PANELS (visible trim strips at all 4 corners, like real J-channel)
+        window._spPart = 'cornerTrim';
         const co = 0.01;
         const trimW = 0.06;
         const mTrimPanel = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
@@ -14741,6 +14866,7 @@ function applyVoiceQuote(parsed, overlay) {
                 var _icm = window._insetCornerMeta[window._inset.corner];
                 if (_icm && _icm.gable === gableId && _icm.eave === eaveId) return;
             }
+            window._spUnit = 'ct' + sx + sz;   // both faces of a corner are one bent piece
             const cornerKey = Math.round(cx*1000) + ',' + Math.round(cz*1000);
             const shedCovers = _shedCoveredCorners.has(cornerKey) || _shedFlushCorners.has(cornerKey);
             if (!_wOpen(gableId) && !shedCovers) {
@@ -14751,6 +14877,7 @@ function applyVoiceQuote(parsed, overlay) {
             }
         });
         } // end !isSingleSlope corner trim
+        window._spPart = null; window._spUnit = null;
 
         // Doors (with trim-colored frames)
         placed.forEach(d => {
@@ -15906,6 +16033,7 @@ function applyVoiceQuote(parsed, overlay) {
         const _hasGableRight = (shedCfgs||[]).some(s=>s.type==='gable'&&s.wall==='right');
 
         // === RIDGE CAP — trim-colored strip along the roof peak (gable only) ===
+        window._spPart = 'ridgeCap';
         if (!isSingleSlope && !_hsOn) {
         const ridgeW = 0.03;
         // Main building ridge cap stops at its own gable ends.
@@ -15916,12 +16044,14 @@ function applyVoiceQuote(parsed, overlay) {
         grps.roof.add(mkQ([-ridgeW/2, sr + 0.003, -ridgeOffFront, ridgeW/2, sr + 0.003, -ridgeOffFront,
                             ridgeW/2, sr + 0.003, ridgeOffBack,   -ridgeW/2, sr + 0.003, ridgeOffBack], mRidgeCap));
         } // end gable-only ridge cap
+        window._spPart = null;
 
         // === GABLE RAKE TRIM — trim-colored fascia along the sloped gable edges ===
         // The black trim where the gable-end metal meets the roof slope. Runs from each
         // eave corner up to the ridge peak, on both gable ends. Skipped where a gable
         // extension replaces the end (the extension renders its own rake).
         if (!isSingleSlope && !_hsOn) {
+            window._spPart = 'rakeTrim';
             const rakeH = 0.04;       // face height of the rake trim board
             const rakeEps = 0.006;    // nudge outboard of the gable plane to avoid z-fighting
             const mRake = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
@@ -15934,9 +16064,11 @@ function applyVoiceQuote(parsed, overlay) {
             };
             if (_rakeFront) _addRake(-sl/2 - ohG - rakeEps);
             if (_rakeBack)  _addRake( sl/2 + ohG + rakeEps);
+        window._spPart = null;
         } // end gable rake trim
 
         // === EAVE TRIM — thin fascia board at wall/roof junction ===
+        window._spPart = 'eaveTrim';
         const eaveH = 0.015;
         const mFascia = new THREE.MeshBasicMaterial({ color: pc(trimColorName), transparent: true, opacity: 0.7, side: THREE.DoubleSide });
         if (!isSingleSlope && !_hsOn) {
@@ -15950,10 +16082,12 @@ function applyVoiceQuote(parsed, overlay) {
             grps.walls.add(mkQ([sw/2 + co, sh - eaveH, sl/2, sw/2 + co, sh, sl/2, sw/2 + co, sh, -sl/2, sw/2 + co, sh - eaveH, -sl/2], mFascia));
         }
 
+        window._spPart = null;
         // === Open wall lookup (used by base trim, textures, etc.) ===
         // (leftOpen/rightOpen/frontOpen/backOpen declared early at top of build function)
 
         // === BASE TRIM — trim strip along the bottom of walls (partial walls: at bottom of metal, not ground) ===
+        window._spPart = 'baseTrim';
         const baseH = 0.03;
         if (!isSingleSlope) {
         // Subtract opening spans [a,b] from [lo,hi]; returns remaining segments.
@@ -16043,6 +16177,7 @@ function applyVoiceQuote(parsed, overlay) {
             }
         });
         } // end !isSingleSlope base trim
+        window._spPart = null;
 
         // === GROUND SHADOW — soft shadow plane under the building ===
         const shadowPad = 0.5;
@@ -17032,6 +17167,7 @@ function applyVoiceQuote(parsed, overlay) {
                         grps.trusses.add(m);
                     }
                     for (var _ti = 0; _ti <= _nT; _ti++) {
+                        window._spUnit = 'xt' + (sc.id||'') + '-' + repAxis + _ti;
                         var _rr = r0 + (r1 - r0) * (_ti / _nT);
                         _tBeam(sE1, eh, sMid, rh, _rr, _tcSz, _mTC);
                         _tBeam(sMid, rh, sE2, eh, _rr, _tcSz, _mTC);
@@ -17040,6 +17176,7 @@ function applyVoiceQuote(parsed, overlay) {
                         _tBeam((sE1+sMid)/2, (eh+rh)/2, sMid, eh, _rr, _twSz, _mTW);
                         _tBeam((sE2+sMid)/2, (eh+rh)/2, sMid, eh, _rr, _twSz, _mTW);
                     }
+                    window._spUnit = null;
                     window._spMark(grps.trusses, _tFrom, 'truss');
                 }
                 // Panelled wall for a turned ridge, built exactly the way the
@@ -17096,7 +17233,7 @@ function applyVoiceQuote(parsed, overlay) {
                 function _raTruss(axis, plane, c0, c1, cMid, eaveY, ridgeY) {
                     var _spT0 = grps.shed.children.length;
                     try { return _raTrussBody(axis, plane, c0, c1, cMid, eaveY, ridgeY); }
-                    finally { window._spMark(grps.shed, _spT0, 'truss'); }
+                    finally { window._spMark(grps.shed, _spT0, 'truss', 'tt0-'+(sc.id||'')); }
                 }
                 function _raTrussBody(axis, plane, c0, c1, cMid, eaveY, ridgeY) {
                     if (sc.frameStyle !== 'timber') return;
@@ -17413,7 +17550,7 @@ function applyVoiceQuote(parsed, overlay) {
                             grps.shed.add(_st);
                           });
                         }
-                      window._spMark(grps.shed, _spT1, 'truss');
+                      window._spMark(grps.shed, _spT1, 'truss', 'tt1-'+(sc.id||''));
                     } else {
                         // Metal gable face triangle — draw as vertical strips (no degenerate quad)
                         { const wHex=pc(wallColorName);
@@ -17710,7 +17847,7 @@ function applyVoiceQuote(parsed, overlay) {
                             grps.shed.add(_st);
                           });
                         }
-                      window._spMark(grps.shed, _spT2, 'truss');
+                      window._spMark(grps.shed, _spT2, 'truss', 'tt2-'+(sc.id||''));
                     } else {
                     // Outer gable end triangle — same pitch slope as main building, shifted down
                     { const wHex=pc(wallColorName);
@@ -19479,8 +19616,10 @@ function applyVoiceQuote(parsed, overlay) {
               sb2(_ssRX,ssLoH,_ssRX+_ssNx,ssLoH+_ssNy,_ssTWeb);
             }
             for(var _sti=1;_sti<_ssTrussCount;_sti++){
+              window._spUnit = 'st' + _sti;
               ssTruss(_ssZ1i+(_sti/_ssTrussCount)*sl);
             }
+            window._spUnit = null;
 
             // ── SINGLE SLOPE GIRTS + PURLINS ─────────────────────────────────
             var _ssGirtMat   = new THREE.MeshLambertMaterial({ color: 0xC4A46A, side: THREE.DoubleSide });
@@ -20017,8 +20156,10 @@ function applyVoiceQuote(parsed, overlay) {
             const count   = Math.round(Q.l / (Q.eavePS || Q.postSpacing || 10));
             const z0      = -sl/2;
             for (let i = 0; i <= count; i++) {
+              window._spUnit = 'mt' + i;
               buildTruss(z0 + i * spacing);
             }
+            window._spUnit = null;
           } else {
             // Wood: truss spacing from selector — forced to 2' OC when attic floor is selected
             const _atticFloorOn = isAttic && !!(document.getElementById('st_atticFloor') && document.getElementById('st_atticFloor').checked);
@@ -20027,8 +20168,10 @@ function applyVoiceQuote(parsed, overlay) {
             const count   = Math.round(Q.l / trussSpacingFt);
             const z0      = -sl/2;
             for (let i = 0; i <= count; i++) {
+              window._spUnit = 'mt' + i;
               buildTruss(z0 + i * spacing);
             }
+            window._spUnit = null;
 
             // ── ATTIC FLOOR OSB DECK ─────────────────────────────────────────
             if (_atticFloorOn) {
@@ -24058,7 +24201,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M48-0915';
+window.SAUCE_BUILD = 'M50-1012';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
