@@ -7240,12 +7240,13 @@ window.SauceParts = window.SauceParts || (function(){
   var MAP = [
     { key:'purlin', re:/purlin/i,                    groups:['framing'], label:'purlins' },
     { key:'girt',   re:/girt/i,                      groups:['framing'], label:'girts' },
+    { key:'rafter', re:/rafter/i,                    groups:['framing'], label:'rafters' },
     { key:'truss',  re:/truss/i,                     groups:['trusses'], label:'trusses' },
     { key:'post',   re:/\bpost(s)?\b|column/i,       groups:['posts','mainPosts'], label:'posts' }
   ];
 
   // One colour per kind, so a part always lights the same colour.
-  var COLOR = { truss:0x22d3ee, post:0xfacc15, purlin:0x4ade80, girt:0xfb923c, _default:0xf472b6 };
+  var COLOR = { truss:0x22d3ee, post:0xfacc15, purlin:0x4ade80, girt:0xfb923c, rafter:0xa78bfa, _default:0xf472b6 };
 
   var _held = [];      // {mesh, mat} so the originals go back exactly as they were
   var _active = null;
@@ -7255,7 +7256,7 @@ window.SauceParts = window.SauceParts || (function(){
   // Checked before the map, because a line like "Wood Truss Roof Purlins" names a
   // truss but is not one. Anything caught here reports as not mapped rather than
   // lighting the wrong members — a wrong highlight is worse than none.
-  var NOT_YET = /bracing|blocking|plate|stud|rafter|joist|header|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|fascia|soffit|flashing|concrete|sackcrete|footing|pad\b|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
+  var NOT_YET = /bracing|blocking|plate|stud|joist|header|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|fascia|soffit|flashing|concrete|sackcrete|footing|pad\b|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
 
   // Which part of the building a line is talking about. The list names an
   // attachment three ways: by position ("Shed 2"), by the wall it sits on
@@ -16265,6 +16266,20 @@ function applyVoiceQuote(parsed, overlay) {
                       _pm.position.set(oX + _t*(aX-oX), (outerH + _t*(attachH-outerH)) - _frSz, zCtr);
                       grps.framing.add(_pm);
                     }
+                    // Rafters — up the slope, one per bay at 2' o.c., sitting under the
+                    // purlins. Without these the lean-to reads as a purlin grid floating
+                    // on nothing, and the Side Shed Rafters line has nothing to light up.
+                    window._spPart = 'rafter';
+                    var _rfLen = Math.sqrt(Math.pow(aX-oX,2) + Math.pow(attachH-outerH,2));
+                    var _rfAng = Math.atan2(attachH-outerH, aX-oX);
+                    var _nRaf  = Math.max(1, Math.floor((zLen/Sc)/2));
+                    for (var _ri = 0; _ri <= _nRaf; _ri++) {
+                      var _rm2 = new THREE.Mesh(new THREE.BoxGeometry(_rfLen, _frSz*1.5, _frSz), _frMat);
+                      _rm2.position.set((oX+aX)/2, (outerH+attachH)/2 - _frSz*2.2, zMin + zLen*(_ri/_nRaf));
+                      _rm2.rotation.z = _rfAng;
+                      _rm2.castShadow = true;
+                      grps.framing.add(_rm2);
+                    }
                     var _encl = sc && sc.encl === 'enclosed';
                     var _ew = (sc && sc.enclWalls) || [];
                     window._spPart = 'girt';
@@ -16591,6 +16606,53 @@ function applyVoiceQuote(parsed, overlay) {
                         m.castShadow=true; grps.framing.add(m);
                     }
                 }
+                // ── EXTENSION TRUSSES ────────────────────────────────────────
+                // An extension roof had purlins and nothing holding them up. Same
+                // profile the main building draws — two top chords to the ridge, a
+                // bottom chord, king post and two diagonals — one per bay along the
+                // ridge at the building's own truss spacing.
+                //   repAxis 'x': trusses repeat along X, each profile lies in Z-Y
+                //   repAxis 'z': trusses repeat along Z, each profile lies in X-Y
+                // sMid/sE1/sE2 are ridge and the two eaves on the span axis.
+                function _extTrussRun(repAxis, r0, r1, sMid, sE1, sE2, eh, rh) {
+                    // A timber or cypress frame already shows its own trusses in the
+                    // clad view; drawing a second set behind them doubles the count.
+                    if (sc.frameStyle === 'timber' || sc.cypressRafters) return;
+                    if (!isFinite(r0) || !isFinite(r1) || !isFinite(sMid) || !isFinite(rh)) return;
+                    var _tsFt = (Q.truss === 'Steel')
+                        ? (Q.eavePS || Q.postSpacing || 10)
+                        : (parseFloat((document.getElementById('st_trussSpacing')||{}).value) || Q.postSpacing || 10);
+                    if (!(_tsFt > 0)) _tsFt = 5;
+                    var _rSpan = Math.abs(r1 - r0);
+                    if (_rSpan < 0.001) return;
+                    var _nT = Math.max(1, Math.floor(_rSpan / (_tsFt * Sc)));
+                    var _tcSz = 0.022, _twSz = 0.015;
+                    var _mTC = new THREE.MeshLambertMaterial({ color: 0xC8A878, side: THREE.DoubleSide });
+                    var _mTW = new THREE.MeshLambertMaterial({ color: 0xB89460, side: THREE.DoubleSide });
+                    var _tFrom = grps.trusses.children.length;
+                    function _tBeam(s0, y0, s1, y1, rr, sz, mat) {
+                        var ds = s1 - s0, dy = y1 - y0;
+                        var len = Math.sqrt(ds*ds + dy*dy);
+                        if (len < 0.001) return;
+                        var m = new THREE.Mesh(new THREE.CylinderGeometry(sz/2, sz/2, len, 4, 1), mat);
+                        var d3;
+                        if (repAxis === 'x') { m.position.set(rr, (y0+y1)/2, (s0+s1)/2); d3 = new THREE.Vector3(0, dy, ds); }
+                        else                 { m.position.set((s0+s1)/2, (y0+y1)/2, rr); d3 = new THREE.Vector3(ds, dy, 0); }
+                        m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), d3.normalize());
+                        m.castShadow = true;
+                        grps.trusses.add(m);
+                    }
+                    for (var _ti = 0; _ti <= _nT; _ti++) {
+                        var _rr = r0 + (r1 - r0) * (_ti / _nT);
+                        _tBeam(sE1, eh, sMid, rh, _rr, _tcSz, _mTC);
+                        _tBeam(sMid, rh, sE2, eh, _rr, _tcSz, _mTC);
+                        _tBeam(sE1, eh, sE2, eh, _rr, _tcSz, _mTC);
+                        _tBeam(sMid, rh, sMid, eh, _rr, _twSz, _mTW);
+                        _tBeam((sE1+sMid)/2, (eh+rh)/2, sMid, eh, _rr, _twSz, _mTW);
+                        _tBeam((sE2+sMid)/2, (eh+rh)/2, sMid, eh, _rr, _twSz, _mTW);
+                    }
+                    window._spMark(grps.trusses, _tFrom, 'truss');
+                }
                 // Panelled wall for a turned ridge, built exactly the way the
                 // building's own gable faces are: a base quad per bay, then two
                 // rib strips — one lightened, one darkened — each running the
@@ -16715,6 +16777,7 @@ function applyVoiceQuote(parsed, overlay) {
 
                     _extPurlins('z', z1oh, z2oh, aX,   raRidgeX, _extEaveH, raRidgeH);
                     _extPurlins('z', z1oh, z2oh, oXoh, raRidgeX, _extEaveH, raRidgeH);
+                    _extTrussRun('z', z1oh, z2oh, raRidgeX, aX, oXoh, _extEaveH, raRidgeH);
 
                     // Rake trim down both gable ends.
                     { var _raH = 0.04;
@@ -16799,6 +16862,7 @@ function applyVoiceQuote(parsed, overlay) {
                         // between them.
                         grps.shed.add(mkQ([oX,_extEaveH-.003,z1, aX,_extSh-.003,z1, aX,_extSh-.003,_zw1, oX,_extEaveH-.003,z1], mSh));
                         grps.shed.add(mkQ([oX,_extEaveH-.003,z2, aX,_extSh-.003,z2, aX,_extSh-.003,_zw2, oX,_extEaveH-.003,z2], mSh));
+                        _extTrussRun('x', aX, oXoh, zMid, z1, z2, _extEaveH, extRidgeH);
                         _extPurlins('x', aX, oXoh, _zw1, zMid, _eaveWall, extRidgeH);
                         _extPurlins('x', aX, oXoh, _zw2, zMid, _eaveWall, extRidgeH);
                     } else {
@@ -16812,6 +16876,7 @@ function applyVoiceQuote(parsed, overlay) {
                     // Back valley: mirror
                     grps.shed.add(mkQ([aX,_extEaveH-.003,z2, aX,_extSh-.003,z2, valleyX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid], mSh));
                     // Roof framing — purlins on both slopes (matches main building)
+                    _extTrussRun('x', aX, oXoh, zMid, z1, z2, _extEaveH, extRidgeH);
                     _extPurlins('x', aX, oXoh, z1, zMid, _extEaveH, extRidgeH);   // front slope
                     _extPurlins('x', aX, oXoh, z2, zMid, _extEaveH, extRidgeH);   // back slope
                     }
@@ -17063,6 +17128,7 @@ function applyVoiceQuote(parsed, overlay) {
 
                     _extPurlins('x', raX1, raX2, aZ,   raRidgeZ, raEaveH, raRidgeH);
                     _extPurlins('x', raX1, raX2, oZoh, raRidgeZ, raEaveH, raRidgeH);
+                    _extTrussRun('x', raX1, raX2, raRidgeZ, aZ, oZoh, raEaveH, raRidgeH);
 
                     // Rake trim down both gable ends.
                     { var _raH2 = 0.04;
@@ -17122,6 +17188,7 @@ function applyVoiceQuote(parsed, overlay) {
                     grps.shed.add(mkQ([extX1, gblEaveH-.01, aZ, extXmid, extRidgePeak, aZ, extXmid, extRidgePeak, oZoh, extX1, gblEaveH-.01, oZoh], mSh));
                     grps.shed.add(mkQ([extX2, gblEaveH-.01, oZoh, extXmid, extRidgePeak, oZoh, extXmid, extRidgePeak, aZ, extX2, gblEaveH-.01, aZ], mSh));
                     // Roof framing — purlins on both slopes (matches main building)
+                    _extTrussRun('z', aZ, oZoh, extXmid, extX1, extX2, gblEaveH, extRidgePeak);
                     _extPurlins('z', aZ, oZoh, extX1, extXmid, gblEaveH, extRidgePeak); // left slope
                     _extPurlins('z', aZ, oZoh, extX2, extXmid, gblEaveH, extRidgePeak); // right slope
 
@@ -23594,7 +23661,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M44-1638';
+window.SAUCE_BUILD = 'M45-0733';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
