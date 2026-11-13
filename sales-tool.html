@@ -7231,6 +7231,176 @@ window._spMark = function(grp, from, part){
   }
 };
 
+// An attachment draws its roof, its walls and its trim into one group, so the
+// Roof and Walls toggles had nothing to aim at: Hide Walls left attachment walls
+// standing and Hide Roof took the whole attachment away, walls and all. Each flat
+// panel is tagged with what it is once the build finishes — a panel lying across
+// the slope is roof, a panel standing up is wall — and the toggles act on the
+// tags. Trim, posts and timber are boxes and lines, carry no tag, and stay put.
+(function(){
+  var _a=null,_b=null,_c=null,_n=null;
+  function _vecs(){ if(!_a){ _a=new THREE.Vector3(); _b=new THREE.Vector3(); _c=new THREE.Vector3(); _n=new THREE.Vector3(); } }
+  function _face(p,i0,i1,i2){
+    _a.fromBufferAttribute(p,i0); _b.fromBufferAttribute(p,i1); _c.fromBufferAttribute(p,i2);
+    _b.sub(_a); _c.sub(_a); _n.crossVectors(_b,_c);
+    return _n.lengthSq() > 1e-12;
+  }
+  window._shedRoleTag = function(grps){
+    if (!grps || !grps.shed || typeof THREE === 'undefined') return;
+    _vecs();
+    grps.shed.traverse(function(o){
+      if (!o.isMesh || !o.geometry) return;
+      o.userData = o.userData || {};
+      if (o.userData.sRole) return;
+      var p = o.geometry.attributes && o.geometry.attributes.position;
+      if (!p || p.count !== 4) return;                 // only flat panels classify
+      if (!_face(p,0,1,2) && !_face(p,0,2,3)) return;  // degenerate quad — leave alone
+      _n.normalize();
+      o.updateWorldMatrix(true,false);
+      _n.transformDirection(o.matrixWorld);
+      o.userData.sRole = (Math.abs(_n.y) > 0.35) ? 'roof' : 'wall';
+    });
+  };
+  window._shedRoleApply = function(grps, wallsOn, roofOn){
+    if (!grps || !grps.shed) return;
+    grps.shed.traverse(function(o){
+      if (!o.isMesh) return;
+      var r = o.userData && o.userData.sRole;
+      if (r === 'wall')      o.visible = !!wallsOn;
+      else if (r === 'roof') o.visible = !!roofOn;
+    });
+  };
+  // Single slope puts the whole building in that group, so it keeps the old
+  // all-or-nothing behaviour.
+  window._shedRolesOff = function(){
+    try { return ((window._Q || window.Q || {}).roofStyle === 'single'); } catch(e) { return false; }
+  };
+
+  // Stud walls on attachments. The list bills "Shed N Wall Studs" for every
+  // enclosed attachment and the model drew none of them, because the stud block
+  // runs once over the four main walls and knows nothing about attachments.
+  //
+  // Rather than rebuild each attachment variant's wall geometry a second time —
+  // lean-to, gable extension, turned ridge, wrap, step shed, each with its own
+  // planes and its own top profile — the studs are read off the wall panels that
+  // were just drawn. Those panels already solved where every wall is and how tall
+  // it is at any point along it, so grouping them by plane gives the wall runs for
+  // free, and it stays right for variants nobody has built yet.
+  window._shedStudFrame = function(grps, Sc){
+    if (!grps || !grps.shed || !grps.framing || typeof THREE === 'undefined') return;
+    var isStud = (typeof currentFrameType !== 'undefined' && currentFrameType === 'stud')
+              || ((window._Q || {}).frameType === 'stud');
+    if (!isStud) return;
+    var sc1 = Sc || window._spSc || 0.1;
+    var SP = (16/12) * sc1;          // 16" on centre, same as the main building
+    var W = 0.015, D = 0.040;        // 1.5" face, 5.5" depth
+    var mStud  = new THREE.MeshLambertMaterial({ color: 0xC4A46A });
+    var mPlate = new THREE.MeshLambertMaterial({ color: 0xB08848 });
+    var v = new THREE.Vector3();
+    var buckets = {};
+    grps.shed.traverse(function(o){
+      if (!o.isMesh || !o.userData || o.userData.sRole !== 'wall') return;
+      var idx = o.userData.sIdx; if (idx == null) return;      // attachments only
+      // Only the attachments the list bills studs for. A roof-only porch has no
+      // stud wall, and its gable end cap must not be mistaken for one.
+      var cfg = (window._shedConfigs || [])[idx];
+      if (!cfg || (cfg.encl !== 'enclosed' && cfg.encl !== 'partial')) return;
+      var p = o.geometry && o.geometry.attributes && o.geometry.attributes.position;
+      if (!p || p.count !== 4) return;
+      o.updateWorldMatrix(true,false);
+      var xs=[], ys=[], zs=[];
+      for (var i=0;i<4;i++){ v.fromBufferAttribute(p,i).applyMatrix4(o.matrixWorld); xs.push(v.x); ys.push(v.y); zs.push(v.z); }
+      var xlo=Math.min.apply(null,xs), xhi=Math.max.apply(null,xs);
+      var zlo=Math.min.apply(null,zs), zhi=Math.max.apply(null,zs);
+      var axis, plane, lo, hi;
+      if ((xhi-xlo) <= (zhi-zlo)) { axis='z'; plane=(xlo+xhi)/2; lo=zlo; hi=zhi; }
+      else                        { axis='x'; plane=(zlo+zhi)/2; lo=xlo; hi=xhi; }
+      if (hi - lo < 1e-6) return;
+      // Coarse enough that a panel and its rib strips, and the inside and outside
+      // faces of one wall, all land in the same bucket — they are one wall and
+      // must not each get their own set of studs.
+      var key = idx+'|'+axis+'|'+(Math.round(plane*20)/20);
+      var bk = buckets[key];
+      if (!bk) bk = buckets[key] = { axis:axis, plane:plane, idx:idx,
+                                     lo:Infinity, hi:-Infinity, yMin:Infinity, parts:[] };
+      bk.lo = Math.min(bk.lo, lo); bk.hi = Math.max(bk.hi, hi);
+      bk.yMin = Math.min(bk.yMin, Math.min.apply(null,ys));
+      bk.parts.push({ lo:lo, hi:hi, top:Math.max.apply(null,ys) });
+    });
+    // Wall height anywhere along the run. The panels are narrow strips with gaps
+    // between them, so a stud that falls in a gap has to be interpolated from the
+    // strips either side of it — taking the tallest strip on the wall instead put
+    // a whole gable wall's worth of studs at ridge height.
+    function topAt(bk, t){
+      var pts = bk.pts, n = pts.length;
+      if (!n) return 0;
+      if (t <= pts[0][0]) return pts[0][1];
+      if (t >= pts[n-1][0]) return pts[n-1][1];
+      for (var i=1;i<n;i++){
+        if (t <= pts[i][0]) {
+          var a = pts[i-1], b = pts[i], span = b[0]-a[0];
+          if (span < 1e-9) return Math.max(a[1], b[1]);
+          return a[1] + (b[1]-a[1]) * ((t-a[0])/span);
+        }
+      }
+      return pts[n-1][1];
+    }
+    // One height sample per position along the wall, tallest strip wins at a tie.
+    function profile(bk){
+      var byPos = {};
+      for (var i=0;i<bk.parts.length;i++){
+        var q = bk.parts[i], c = (q.lo+q.hi)/2, k = Math.round(c*2000);
+        if (byPos[k] == null || q.top > byPos[k][1]) byPos[k] = [c, q.top];
+      }
+      bk.pts = Object.keys(byPos).map(function(k){ return byPos[k]; })
+                .sort(function(a,b){ return a[0]-b[0]; });
+    }
+    function stamp(m, idx, part){
+      m.userData = m.userData || {};
+      m.userData.sIdx = idx; m.userData.sPart = part;
+      m.castShadow = true; grps.framing.add(m);
+    }
+    Object.keys(buckets).forEach(function(k){
+      var bk = buckets[k];
+      var run = bk.hi - bk.lo;
+      if (run < SP*0.5) return;                 // too short to be a wall
+      profile(bk);
+      var n = Math.max(1, Math.round(run / SP));
+      var tops = [], flat = true, t0 = null;
+      for (var i=0;i<=n;i++){
+        var t = bk.lo + run*(i/n);
+        var y = topAt(bk, t); tops.push(y);
+        if (t0 == null) t0 = y; else if (Math.abs(y - t0) > 0.02) flat = false;
+      }
+      for (var s=0;s<=n;s++){
+        var ts = bk.lo + run*(s/n);
+        var h  = tops[s] - bk.yMin - W*2;
+        if (h <= 0.02) continue;
+        var g = (bk.axis === 'z') ? new THREE.BoxGeometry(D, h, W) : new THREE.BoxGeometry(W, h, D);
+        var m = new THREE.Mesh(g, mStud);
+        if (bk.axis === 'z') m.position.set(bk.plane, bk.yMin + W + h/2, ts);
+        else                 m.position.set(ts, bk.yMin + W + h/2, bk.plane);
+        stamp(m, bk.idx, 'stud');
+      }
+      // Bottom plate always; top plate only where the wall has a level top — a
+      // gable or a lean-to rake carries no plate, the same as the main building.
+      var ctr = (bk.lo + bk.hi)/2;
+      var bg = (bk.axis === 'z') ? new THREE.BoxGeometry(D, W, run) : new THREE.BoxGeometry(run, W, D);
+      var bm = new THREE.Mesh(bg, mPlate);
+      if (bk.axis === 'z') bm.position.set(bk.plane, bk.yMin + W/2, ctr);
+      else                 bm.position.set(ctr, bk.yMin + W/2, bk.plane);
+      stamp(bm, bk.idx, 'plate');
+      if (flat) {
+        var tg = (bk.axis === 'z') ? new THREE.BoxGeometry(D, W*2, run) : new THREE.BoxGeometry(run, W*2, D);
+        var tm = new THREE.Mesh(tg, mPlate);
+        if (bk.axis === 'z') tm.position.set(bk.plane, tops[0] - W, ctr);
+        else                 tm.position.set(ctr, tops[0] - W, bk.plane);
+        stamp(tm, bk.idx, 'plate');
+      }
+    });
+  };
+})();
+
 window.SauceParts = window.SauceParts || (function(){
 
   // Which groups in the scene hold which kind of member. Extended a part at a
@@ -7241,14 +7411,17 @@ window.SauceParts = window.SauceParts || (function(){
     { key:'purlin', re:/purlin/i,                    groups:['framing'], label:'purlins' },
     { key:'girt',   re:/girt/i,                      groups:['framing'], label:'girts' },
     { key:'rafter', re:/rafter/i,                    groups:['framing'], label:'rafters' },
+    { key:'stud',   re:/\bstud(s)?\b/i,              groups:['framing'], label:'studs' },
+    { key:'plate',  re:/\bplate(s)?\b/i,             groups:['framing'], label:'plates' },
     { key:'truss',  re:/truss/i,                     groups:['trusses'], label:'trusses' },
     { key:'post',   re:/\bpost(s)?\b|column/i,       groups:['posts','mainPosts'], label:'posts' }
   ];
 
   // One colour per kind, so a part always lights the same colour.
-  var COLOR = { truss:0x22d3ee, post:0xfacc15, purlin:0x4ade80, girt:0xfb923c, rafter:0xa78bfa, _default:0xf472b6 };
+  var COLOR = { truss:0x22d3ee, post:0xfacc15, purlin:0x4ade80, girt:0xfb923c, rafter:0xa78bfa, stud:0x38bdf8, plate:0xf59e0b, _default:0xf472b6 };
 
   var _held = [];      // {mesh, mat} so the originals go back exactly as they were
+  var _segs = [];      // board markers hung on their member, removed on clear
   var _active = null;
 
   function _grps(){ try { return window._3d && window._3d.grps; } catch(e){ return null; } }
@@ -7256,7 +7429,7 @@ window.SauceParts = window.SauceParts || (function(){
   // Checked before the map, because a line like "Wood Truss Roof Purlins" names a
   // truss but is not one. Anything caught here reports as not mapped rather than
   // lighting the wrong members — a wrong highlight is worse than none.
-  var NOT_YET = /bracing|blocking|plate|stud|joist|header|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|fascia|soffit|flashing|concrete|sackcrete|footing|pad\b|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
+  var NOT_YET = /bracing|blocking|joist|header|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|fascia|soffit|flashing|concrete|sackcrete|footing|pad\b|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
 
   // Which part of the building a line is talking about. The list names an
   // attachment three ways: by position ("Shed 2"), by the wall it sits on
@@ -7371,9 +7544,54 @@ window.SauceParts = window.SauceParts || (function(){
     return false;
   }
 
+  // ── BOARD LENGTH FROM THE SKU ───────────────────────────────────────────────
+  // A line names its board in its SKU: SYP2612 is a 12' 2x6, PT6622 a 22' 6x6,
+  // SPF26116 a 116" precut stud. Letters, then the lumber dimension, then the
+  // length. The dimension has to come off a known list or the split is ambiguous
+  // — SYP21216 is a 16' 2x12, not a 1216 of something.
+  var DIMS = ['212','210','412','410','612','610','812','810','24','26','28','44','46','48','66','68','88'];
+  function skuLen(sku){
+    var s = String(sku||'').toUpperCase();
+    var m = /^[A-Z]+(\d+)/.exec(s);
+    if (!m) return null;
+    var digits = m[1];
+    for (var i=0;i<DIMS.length;i++){
+      var d = DIMS[i];
+      if (digits.indexOf(d) !== 0) continue;
+      var rest = digits.slice(d.length);
+      if (!rest.length) return null;             // no length in the SKU
+      var n = parseInt(rest, 10);
+      if (!isFinite(n) || n <= 0) return null;
+      if (n >= 60) return n / 12;                // precut studs are in inches
+      if (n > 32)  return null;                  // not a board length
+      return n;
+    }
+    return null;
+  }
+
   function clear(){
     _held.forEach(function(h){ try { h.mesh.material = h.mat; } catch(e){} });
-    _held = []; _active = null;
+    _held = [];
+    _segs.forEach(function(s){ try { s.parent.remove(s); s.geometry.dispose(); } catch(e){} });
+    _segs = []; _active = null;
+  }
+
+  // A member in the model is a whole run; the list counts the boards that run is
+  // filled with. Splitting the run into the clicked line's own board length — in
+  // the member's local frame, so a pitched rafter splits along its own slope —
+  // puts one marker on the model per board on the list.
+  function boards(m, Lsc){
+    var g = m.geometry;
+    var p = g && g.parameters;
+    if (!p || typeof p.width !== 'number') return null;    // boxes only
+    var dims = [['x',p.width],['y',p.height],['z',p.depth]];
+    dims.sort(function(a,b){ return b[1]-a[1]; });
+    var axis = dims[0][0], run = dims[0][1];
+    if (!(run > 0) || Lsc <= 0) return null;
+    var n = Math.floor(run / Lsc + 0.02);
+    if (n < 1) return null;
+    var rest = [dims[1], dims[2]];
+    return { axis:axis, run:run, n:n, a:rest[0], b:rest[1] };
   }
 
   function highlight(item){
@@ -7397,13 +7615,64 @@ window.SauceParts = window.SauceParts || (function(){
       var a1 = measure(p), b1 = measure(q);
       return (a1.x - b1.x) || (a1.z - b1.z) || (a1.y - b1.y);
     });
-    meshes.forEach(function(m, i){ _held.push({mesh:m, mat:m.material}); m.material = (i % 2) ? mB : mA; });
-    var lens = {};
-    meshes.forEach(function(m){
-      var L = m.userData._spLen;
-      if (L == null) return;
-      var r = Math.round(L*2)/2; lens[r] = (lens[r]||0) + 1;
-    });
+
+    // ── BOARD MODE ────────────────────────────────────────────────────────────
+    // The clicked line names one board length. Members that ARE that board light
+    // whole; members long enough to be cut from it are marked board by board. A
+    // member that is neither is a different line's board and stays dark, so four
+    // 22' gable posts light and the 12' ones beside them do not.
+    var L = skuLen(item && item.sku);
+    var sc1 = window._spSc || 0.1;
+    var want = (item && parseFloat(item.quantity)) || 0;
+    var lens = {}, shown = 0, lit = 0, segMode = false;
+    if (L) {
+      var Lsc = L * sc1, tol = Math.max(0.5, L * 0.12);
+      var plan = [];
+      meshes.forEach(function(m){
+        var len = m.userData._spLen;
+        if (len != null && Math.abs(len - L) <= tol) { plan.push({ m:m, b:null }); return; }
+        if (len != null && len > L + tol) {
+          var b = boards(m, Lsc);
+          if (b) { plan.push({ m:m, b:b }); return; }
+        }
+      });
+      if (plan.length) {
+        segMode = true;
+        plan.forEach(function(e){
+          if (!e.b) {
+            _held.push({ mesh:e.m, mat:e.m.material });
+            e.m.material = (shown % 2) ? mB : mA;
+            shown++; lit++;
+            var r0 = Math.round((e.m.userData._spLen)*2)/2; lens[r0] = (lens[r0]||0)+1;
+            return;
+          }
+          lit++;
+          var b = e.b, half = b.run/2, w2 = b.a[1]*1.5, d2 = b.b[1]*1.5;
+          for (var i=0;i<b.n;i++){
+            var sg = new THREE.Mesh(
+              b.axis === 'x' ? new THREE.BoxGeometry(Lsc*0.94, w2, d2) :
+              b.axis === 'y' ? new THREE.BoxGeometry(w2, Lsc*0.94, d2) :
+                               new THREE.BoxGeometry(w2, d2, Lsc*0.94),
+              (shown % 2) ? mB : mA);
+            var off = -half + Lsc*(i + 0.5);
+            sg.position.set(b.axis==='x'?off:0, b.axis==='y'?off:0, b.axis==='z'?off:0);
+            sg.renderOrder = 999;
+            e.m.add(sg); _segs.push(sg);
+            shown++;
+            lens[L] = (lens[L]||0)+1;
+          }
+        });
+      }
+    }
+    if (!segMode) {
+      meshes.forEach(function(m, i){ _held.push({mesh:m, mat:m.material}); m.material = (i % 2) ? mB : mA; });
+      shown = meshes.length; lit = meshes.length;
+      meshes.forEach(function(m){
+        var L2 = m.userData._spLen;
+        if (L2 == null) return;
+        var r = Math.round(L2*2)/2; lens[r] = (lens[r]||0) + 1;
+      });
+    }
     // The members have to be on screen to be checked against the line.
     try {
       var g = _grps();
@@ -7412,11 +7681,12 @@ window.SauceParts = window.SauceParts || (function(){
     _active = entry.key;
     var lenTxt = Object.keys(lens).sort(function(x,y){ return lens[y]-lens[x]; })
                   .slice(0,3).map(function(k){ return lens[k] + ' @ ' + k + "'"; }).join(', ');
-    return { ok:true, count:meshes.length, label:entry.label, key:entry.key,
-             where:entry.where, lens:lenTxt };
+    return { ok:true, count:shown, label:entry.label, key:entry.key,
+             where:entry.where, lens:lenTxt, boardFt:L || null,
+             members:lit, billed:want || null, boards:segMode };
   }
 
-  return { highlight: highlight, clear: clear, resolve: resolve,
+  return { highlight: highlight, clear: clear, resolve: resolve, skuLen: skuLen,
            active: function(){ return _active; },
            color: function(k){ return COLOR[k] != null ? COLOR[k] : COLOR._default; } };
 })();
@@ -9689,7 +9959,10 @@ function vpToggleRoof() {
   if (!d || !d.grps) return;
   _roofVisible = !_roofVisible;
   d.grps.roof.visible = _roofVisible;
-  if (d.grps.shed) d.grps.shed.visible = _roofVisible;
+  if (d.grps.shed) {
+    if (window._shedRolesOff && window._shedRolesOff()) d.grps.shed.visible = _roofVisible;
+    else { d.grps.shed.visible = true; try { window._shedRoleApply(d.grps, _wallsVisible, _roofVisible); } catch(e){} }
+  }
   var btn = document.getElementById('vpRoofToggle');
   if (btn) { btn.style.color = _roofVisible ? 'var(--gold)' : '#888'; btn.style.borderColor = _roofVisible ? 'rgba(var(--gold-rgb),.5)' : 'rgba(255,255,255,.15)'; }
   _syncStaticToggle('vstRoof', _roofVisible);
@@ -9722,6 +9995,9 @@ function vpToggleWalls() {
   d.grps.wallPanels.visible = _wallsVisible;
   d.grps.walls.visible      = _wallsVisible;
   d.grps.doors.visible      = _wallsVisible;
+  if (d.grps.shed && !(window._shedRolesOff && window._shedRolesOff())) {
+    try { window._shedRoleApply(d.grps, _wallsVisible, _roofVisible); } catch(e){}
+  }
 
   var btn = document.getElementById('vpWallToggle');
   if (btn) {
@@ -13187,6 +13463,9 @@ function applyVoiceQuote(parsed, overlay) {
 
         if (isStudFrame) {
             // STUD FRAME: 2×6 studs at 16" OC (1.333 ft)
+            // Declare what this block builds so a stud line on the list can find
+            // its studs — the group alone cannot tell a stud from a purlin.
+            window._spPart = 'stud';
             const studSpacing = 16 / 12; // 16 inches in feet
             const studW = 0.015; // face width ~1.5"
             const studD = 0.040; // depth ~5.5" (2x6 on edge)
@@ -13199,18 +13478,21 @@ function applyVoiceQuote(parsed, overlay) {
                 // Bottom plate — sits on slab if concrete is present
                 var bpY = (conAreas && conAreas.main) ? slabH + studW/2 : studW/2;
                 const bp = new THREE.Mesh(new THREE.BoxGeometry(studD, studW, sl), mPlate);
-                bp.position.set(xSide, bpY, 0); bp.castShadow = true; grps.framing.add(bp);
+                bp.position.set(xSide, bpY, 0); bp.castShadow = true;
+                window._spPart = 'plate'; grps.framing.add(bp); window._spPart = 'stud';
                 // Top plate (double) — steps per height section
                 if (_hsOn) {
                     var _tpAcc = 0;
                     _hsSecs.forEach(function(_s){
                         var _z0 = _tpAcc*Sc - sl/2, _z1 = (_tpAcc+_s.len)*Sc - sl/2; _tpAcc += _s.len;
                         var _tp = new THREE.Mesh(new THREE.BoxGeometry(studD, studW * 2, (_z1-_z0)), mPlate);
-                        _tp.position.set(xSide, _s.h*Sc - studW, (_z0+_z1)/2); _tp.castShadow = true; grps.framing.add(_tp);
+                        _tp.position.set(xSide, _s.h*Sc - studW, (_z0+_z1)/2); _tp.castShadow = true;
+                        window._spPart = 'plate'; grps.framing.add(_tp); window._spPart = 'stud';
                     });
                 } else {
                     const tp = new THREE.Mesh(new THREE.BoxGeometry(studD, studW * 2, sl), mPlate);
-                    tp.position.set(xSide, sh - studW, 0); tp.castShadow = true; grps.framing.add(tp);
+                    tp.position.set(xSide, sh - studW, 0); tp.castShadow = true;
+                    window._spPart = 'plate'; grps.framing.add(tp); window._spPart = 'stud';
                 }
                 // Studs along eave walls
                 const numStuds = Math.floor(Q.l / studSpacing);
@@ -13229,7 +13511,8 @@ function applyVoiceQuote(parsed, overlay) {
                 // Bottom plate — sits on slab if concrete is present
                 var gbpY = (conAreas && conAreas.main) ? slabH + studW/2 : studW/2;
                 const bp = new THREE.Mesh(new THREE.BoxGeometry(sw, studW, studD), mPlate);
-                bp.position.set(0, gbpY, zPos); bp.castShadow = true; grps.framing.add(bp);
+                bp.position.set(0, gbpY, zPos); bp.castShadow = true;
+                window._spPart = 'plate'; grps.framing.add(bp); window._spPart = 'stud';
                 // Top plate follows pitch — skip for simplicity, studs go to rafters
                 const numStuds = Math.floor(Q.w / studSpacing);
                 for (let i = 0; i <= numStuds; i++) {
@@ -13248,6 +13531,7 @@ function applyVoiceQuote(parsed, overlay) {
             });
 
             // Corner king studs are already included in the stud loops above — no separate posts needed
+            window._spPart = null;
 
         } else {
             // POST FRAME: Standard posts at configurable spacing from corners
@@ -20781,10 +21065,17 @@ function applyVoiceQuote(parsed, overlay) {
         if (typeof _framingVisible !== 'undefined') {
           grps.framing.visible = _framingVisible;
         }
+        try { window._shedRoleTag(grps); } catch(e) {}
+        try { window._shedStudFrame(grps, Sc); } catch(e) {}
         if (typeof _wallsVisible    !== 'undefined') { grps.wallPanels.visible = _wallsVisible; grps.walls.visible = _wallsVisible; grps.doors.visible = _wallsVisible; }
         if (typeof _roofVisible     !== 'undefined') {
           grps.roof.visible = _roofVisible;
-          if (grps.shed && !isSingleSlope) grps.shed.visible = _roofVisible;
+          if (grps.shed && !isSingleSlope) grps.shed.visible = true;
+        }
+        if (grps.shed && !isSingleSlope) {
+          try { window._shedRoleApply(grps,
+                  (typeof _wallsVisible === 'undefined') ? true : _wallsVisible,
+                  (typeof _roofVisible  === 'undefined') ? true : _roofVisible); } catch(e) {}
         }
         if (typeof _trussesVisible  !== 'undefined') { grps.trusses.visible = _trussesVisible; }
         if (typeof _postsVisible    !== 'undefined') {
@@ -23661,7 +23952,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M45-0733';
+window.SAUCE_BUILD = 'M47-0830';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -52741,8 +53032,20 @@ window.openMaterialsModal = function(initialTab) {
               while (c.length < 6) c = '0' + c;
               captRow.style.boxShadow = 'inset 3px 0 0 #' + c;
             } catch(e){}
-            try { showToast(r.count + ' ' + r.label + ' on ' + r.where
-                  + (r.lens ? '  —  ' + r.lens : ''), 'ok'); } catch(e){}
+            try {
+              var msg;
+              if (r.boards && r.boardFt) {
+                // The line names a board length, so say how many of that board are
+                // on the model against how many the line buys. They differ by the
+                // overage and by corner and jack pieces, and seeing both is the point.
+                msg = r.count + ' × ' + r.boardFt + "' " + r.label + ' on ' + r.where;
+                if (r.billed) msg += '  —  list buys ' + r.billed;
+              } else {
+                msg = r.count + ' ' + r.label + ' on ' + r.where
+                    + (r.lens ? '  —  ' + r.lens : '');
+              }
+              showToast(msg, 'ok');
+            } catch(e){}
           });
         })(item, row);
 
