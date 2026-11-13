@@ -7447,15 +7447,25 @@ window.SauceParts = window.SauceParts || (function(){
   // Order matters — the first rule that matches wins, so the more specific
   // wording goes first. "Wood Truss Roof Purlins" is a purlin, not a truss.
   var MAP = [
-    // Metal trim. These go first: "Gable Rake Trim" names a gable but is a rake,
+    // Structural members whose wording collides with other rules: "Truss Bracing"
+    // is not a truss and "Corner Bracing" is not corner trim.
+    { key:'cornerBracing', re:/corner\s*brac/i,      groups:['framing'], label:'corner bracing' },
+    { key:'trussBracing',  re:/bracing|\bbrace(s)?\b/i, groups:['framing'], label:'truss bracing' },
+    { key:'header',  re:/header/i,                   groups:['framing'], label:'headers' },
+    { key:'band',    re:/\bband(s)?\b/i,             groups:['framing'], label:'bottom bands' },
+    // Metal trim. These go next: "Gable Rake Trim" names a gable but is a rake,
     // and "Outside Corner" is a corner trim, not a post.
     { key:'ridgeCap',   re:/ridge\s*cap/i,            groups:['roof'],   label:'ridge cap' },
     { key:'rakeTrim',   re:/\brake\b/i,               groups:['roof'],   label:'rake trim' },
-    { key:'eaveTrim',   re:/eave\s*trim|\bfascia\b/i,  groups:['walls','wallPanels','roof'], label:'eave trim' },
+    // Eave fascia is a board, not the metal eave trim — it gets its own rule so a
+    // fascia line is not answered with the trim that covers it.
+    { key:'fascia',     re:/\bfascia\b/i,            groups:['framing'], label:'fascia boards' },
+    { key:'eaveTrim',   re:/eave\s*trim/i,            groups:['walls','wallPanels','roof'], label:'eave trim' },
     { key:'cornerTrim', re:/(outside|inside)\s*corner|corner\s*trim/i, groups:['wallPanels','walls'], label:'corner trim' },
     { key:'baseTrim',   re:/base\s*trim|rat\s*guard/i, groups:['walls','wallPanels'], label:'base trim' },
     { key:'purlin', re:/purlin/i,                    groups:['framing'], label:'purlins' },
     { key:'girt',   re:/girt/i,                      groups:['framing'], label:'girts' },
+    { key:'flyRafter', re:/fly\s*rafter/i,           groups:['framing'], label:'fly rafters' },
     { key:'rafter', re:/rafter/i,                    groups:['framing'], label:'rafters' },
     { key:'stud',   re:/\bstud(s)?\b/i,              groups:['framing'], label:'studs' },
     { key:'plate',  re:/\bplate(s)?\b/i,             groups:['framing'], label:'plates' },
@@ -7466,7 +7476,9 @@ window.SauceParts = window.SauceParts || (function(){
   // One colour per kind, so a part always lights the same colour.
   var COLOR = { truss:0x22d3ee, post:0xfacc15, purlin:0x4ade80, girt:0xfb923c, rafter:0xa78bfa,
                stud:0x38bdf8, plate:0xf59e0b, ridgeCap:0xf43f5e, rakeTrim:0xec4899,
-               eaveTrim:0x8b5cf6, cornerTrim:0x14b8a6, baseTrim:0x84cc16, _default:0xf472b6 };
+               eaveTrim:0x8b5cf6, cornerTrim:0x14b8a6, baseTrim:0x84cc16,
+               header:0xfb7185, trussBracing:0x2dd4bf, cornerBracing:0x0ea5e9,
+               band:0xa3e635, flyRafter:0xfde047, fascia:0xf97316, _default:0xf472b6 };
 
   var _held = [];      // {mesh, mat} so the originals go back exactly as they were
   var _segs = [];      // board markers hung on their member, removed on clear
@@ -7477,7 +7489,7 @@ window.SauceParts = window.SauceParts || (function(){
   // Checked before the map, because a line like "Wood Truss Roof Purlins" names a
   // truss but is not one. Anything caught here reports as not mapped rather than
   // lighting the wrong members — a wrong highlight is worse than none.
-  var NOT_YET = /bracing|blocking|joist|header|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|soffit|flashing|concrete|sackcrete|footing|pad\b|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
+  var NOT_YET = /blocking|joist|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|soffit|flashing|concrete|sackcrete|footing|pad\b|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
 
   // Which part of the building a line is talking about. The list names an
   // attachment three ways: by position ("Shed 2"), by the wall it sits on
@@ -7633,7 +7645,8 @@ window.SauceParts = window.SauceParts || (function(){
       if (!rest.length) return null;             // no length in the SKU
       var n = parseInt(rest, 10);
       if (!isFinite(n) || n <= 0) return null;
-      if (n >= 60) return n / 12;                // precut studs are in inches
+      if (n >= 60 && n <= 240) return n / 12;    // precut studs are in inches
+      if (n > 32) return null;                   // a product code, not a length
       if (n > 32)  return null;                  // not a board length
       return n;
     }
@@ -20391,6 +20404,120 @@ function applyVoiceQuote(parsed, overlay) {
               if (gaps.length) drawOpeningFraming('x', gw.z, gaps, sw/2);
             });
           } // end !isStudFrame girts
+
+          // ── HEADERS, BRACING AND BOTTOM BANDS — post frame ────────────────
+          // All four are on the list and none of them were drawn, so four lines
+          // could never be checked against anything.
+          if (!isStudFrame) {
+            var _wOpenF = function(id){ var w = WALLS.find(function(x){return x.id===id;}); return !w || w.encl === 'open'; };
+            var _hdrMat = new THREE.MeshLambertMaterial({ color: 0xB08848, side: THREE.DoubleSide });
+            var _ptMat  = new THREE.MeshLambertMaterial({ color: 0x7a8b5a, side: THREE.DoubleSide });
+            var _ePSf = parseFloat(Q.eavePS || Q.postSpacing || 10) || 10;
+            var _gPSf = parseFloat(Q.gablePS || Q.postSpacing || 10) || 10;
+
+            // Headers — a 2x12 along the top of the posts on each eave wall, on the
+            // inside and the outside face, which is why the list buys two per wall.
+            window._spPart = 'header';
+            var _hdD = 0.055, _hdT = 0.022, _hdOff = 0.022;
+            [{id:'left', x:-hw2},{id:'right', x:hw2}].forEach(function(ew){
+              if (_wOpenF(ew.id)) return;
+              [-1, 1].forEach(function(face){
+                var m = new THREE.Mesh(new THREE.BoxGeometry(_hdT, _hdD, sl), _hdrMat);
+                m.position.set(ew.x + face*_hdOff, sh - _hdD/2, 0);
+                m.castShadow = true; grps.framing.add(m);
+              });
+            });
+
+            // Truss bracing — lateral runs down the length of the building under the
+            // trusses, one every 5' across the span. That 5' is the rule the list
+            // counts by, so the runs and the boards line up.
+            window._spPart = 'trussBracing';
+            var _tbN = Math.floor((Q.w || 0) / 5);
+            for (var _tb = 0; _tb < _tbN; _tb++) {
+              var _tbx = -sw/2 + sw * ((_tb + 0.5) / _tbN);
+              var _tbm = new THREE.Mesh(new THREE.BoxGeometry(0.030, 0.016, sl), _hdrMat);
+              _tbm.position.set(_tbx, sh + 0.022, 0);
+              _tbm.castShadow = true; grps.framing.add(_tbm);
+            }
+
+            // Corner bracing — two diagonals per enclosed wall, one at each end,
+            // running from the bottom of the end post up to the header.
+            window._spPart = 'cornerBracing';
+            (function(){
+              var _cbT = 0.020;
+              function diag(axis, plane, c0, c1){
+                var run = c1 - c0, rise = sh;
+                var len = Math.sqrt(run*run + rise*rise);
+                var m = new THREE.Mesh(new THREE.BoxGeometry(len, _cbT, _cbT), _hdrMat);
+                if (axis === 'z') {
+                  m.position.set(plane, rise/2, (c0+c1)/2);
+                  m.rotation.y = -Math.PI/2;
+                  m.rotation.x = -Math.atan2(rise, run);
+                } else {
+                  m.position.set((c0+c1)/2, rise/2, plane);
+                  m.rotation.z = Math.atan2(rise, run);
+                }
+                m.castShadow = true; grps.framing.add(m);
+              }
+              var _runZ = Math.min(sl/2, sh), _runX = Math.min(sw/2, sh);
+              [{id:'left', x:-hw2},{id:'right', x:hw2}].forEach(function(ew){
+                if (_wOpenF(ew.id)) return;
+                diag('z', ew.x, -sl/2, -sl/2 + _runZ);
+                diag('z', ew.x,  sl/2,  sl/2 - _runZ);
+              });
+              [{id:'front', z:-sl/2},{id:'back', z:sl/2}].forEach(function(gw){
+                if (_wOpenF(gw.id)) return;
+                diag('x', gw.z, -sw/2, -sw/2 + _runX);
+                diag('x', gw.z,  sw/2,  sw/2 - _runX);
+              });
+            })();
+
+            // Bottom bands — pressure treated, one per bay at the foot of each wall.
+            window._spPart = 'band';
+            (function(){
+              var _bT = 0.030, _bD = 0.018;
+              var _by = (conAreas && conAreas.main ? slabH : 0) + _bT/2 + 0.002;
+              function bands(axis, plane, half, ps){
+                var total = half*2, n = Math.max(1, Math.round((total/Sc) / ps));
+                var seg = total / n;
+                for (var i=0;i<n;i++){
+                  var c = -half + seg*(i + 0.5);
+                  var m = new THREE.Mesh(
+                    axis === 'z' ? new THREE.BoxGeometry(_bD, _bT, seg*0.97)
+                                 : new THREE.BoxGeometry(seg*0.97, _bT, _bD), _ptMat);
+                  m.position.set(axis==='z' ? plane : c, _by, axis==='z' ? c : plane);
+                  m.castShadow = true; grps.framing.add(m);
+                }
+              }
+              [{id:'left', x:-hw2},{id:'right', x:hw2}].forEach(function(ew){
+                if (_wOpenF(ew.id)) return; bands('z', ew.x, sl/2, _ePSf);
+              });
+              [{id:'front', z:-sl/2},{id:'back', z:sl/2}].forEach(function(gw){
+                if (_wOpenF(gw.id)) return; bands('x', gw.z, sw/2, _gPSf);
+              });
+            })();
+
+            // Fly rafters — the outriggers carrying the rake overhang at each gable
+            // end, one per slope. The rake trim was drawn over nothing.
+            if ((Q.oh || 0) > 0 && Q.truss !== 'Steel') {
+              window._spPart = 'flyRafter';
+              var _flT = 0.024;
+              var _flX = sw/2 + oh;
+              function _fly(z, x0, y0, x1, y1){
+                var dx = x1-x0, dy = y1-y0, len = Math.sqrt(dx*dx + dy*dy);
+                if (len < 0.001) return;
+                var m = new THREE.Mesh(new THREE.BoxGeometry(len, _flT*1.6, _flT), _hdrMat);
+                m.position.set((x0+x1)/2, (y0+y1)/2, z);
+                m.rotation.z = Math.atan2(dy, dx);
+                m.castShadow = true; grps.framing.add(m);
+              }
+              [-1, 1].forEach(function(sgn){
+                var _fz = sgn * (sl/2 + oh);
+                _fly(_fz, -_flX, sh, 0, sr);
+                _fly(_fz, 0, sr, _flX, sh);
+              });
+            }
+          }
           window._spPart = 'purlin';
 
           // ── ROOF PURLINS — extend full rafter length including overhang ──
@@ -24201,7 +24328,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M50-1012';
+window.SAUCE_BUILD = 'M51-1055';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
