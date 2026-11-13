@@ -7720,18 +7720,22 @@ window.SauceParts = window.SauceParts || (function(){
     var cov  = (ts === 4) ? 12 : 10;
     var oh   = (((window._Q||{}).oh) || 0) / 12;
     if (runFt < endB * 2) return null;
-    var out = [{ at:0, len:endB }, { at:runFt - endB, len:endB }];
+    var out = [{ at:0, len:endB, nom:endB, end:true },
+               { at:runFt - endB, len:endB, nom:endB, end:true }];
     var at = oh + cov, end = runFt - oh - cov, rem = end - at;
-    var guard = 0;
-    while (rem > 0.05 && guard++ < 200) {
-      var L = (rem >= 20) ? 20 : ((ts === 4 && rem >= 12) ? 12 : 10);
-      out.push({ at:at, len:L });
-      at += L; rem -= L;
+    if (rem <= 0.05) return out;
+    // Full boards go out whole. The fill is 20' unless the span divides evenly at
+    // 12', which is the 4'-spacing case the list already prefers.
+    var fillLen = (ts === 4 && Math.abs(rem % 12) < 0.01) ? 12 : 20;
+    var n = Math.max(1, Math.ceil(rem / fillLen - 0.001));
+    for (var i = 0; i < n; i++) {
+      var a0 = at + i*fillLen;
+      out.push({ at:a0, len:Math.min(fillLen, end - a0), nom:fillLen, end:false });
     }
     return out;
   }
 
-  function boards(m, Lsc, planFn){
+  function boards(m, Lsc, planFn, wantEnd){
     var g = m.geometry;
     var p = g && g.parameters;
     if (p && typeof p.width === 'number') {
@@ -7742,7 +7746,13 @@ window.SauceParts = window.SauceParts || (function(){
       if (planFn) {
         var pl = planFn(run / (window._spSc || 0.1));
         if (pl) {
-          var keep = pl.filter(function(q){ return Math.abs(q.len - Lsc/(window._spSc||0.1)) < 0.01; });
+          var tgt = Lsc / (window._spSc || 0.1);
+          // The line says whether it is the overhang board or field fill, so the
+          // two never light each other even where the lengths happen to match.
+          var keep = pl.filter(function(q){
+            if (Math.abs((q.nom != null ? q.nom : q.len) - tgt) >= 0.01) return false;
+            return (wantEnd == null) ? true : (!!q.end === !!wantEnd);
+          });
           if (!keep.length) return null;
           return { axis:axis, run:run, cuts:keep, a:dims[1], b:dims[2] };
         }
@@ -7813,6 +7823,9 @@ window.SauceParts = window.SauceParts || (function(){
       // attachment post is bought under a different rule, so when the stamp finds
       // nothing the measured length is used instead rather than reporting nothing.
       var isTrim = !!TRIMKEY[entry.key];
+      // An (O/H) purlin line is the outermost board at each end; the plain line
+      // is the field fill between them.
+      var _wantOH = /\(O\/H\)/i.test((item && item.description) || '');
       function build(useBuy){
         var out = [];
         meshes.forEach(function(m){
@@ -7829,7 +7842,8 @@ window.SauceParts = window.SauceParts || (function(){
           }
           if (Math.abs(len - L) <= tol && entry.key !== 'purlin') { out.push({ m:m, b:null }); return; }
           if (len > L - 0.01) {
-            var b = boards(m, Lsc, entry.key === 'purlin' ? purlinPlan : null);
+            var b = boards(m, Lsc, entry.key === 'purlin' ? purlinPlan : null,
+                           entry.key === 'purlin' ? _wantOH : null);
             if (b) out.push({ m:m, b:b });
           }
         });
@@ -24405,7 +24419,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M52-1140';
+window.SAUCE_BUILD = 'M54-1230';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -35222,12 +35236,16 @@ window.SauceMaterials.calcWoodOHPurlins = function(Q) {
     var runs     = runBoards[len];
     var quantity = Math.ceil(runs * count);
     var _syp = window.SauceMaterials.syp24(len, quantity);
+    // Only the outermost boards catch the overhang. Everything else is field
+    // purlin, and labelling it (O/H) hid which boards go where.
+    var _isEnd = (parseFloat(len) === endBoard);
     results.push({
       category:    'Yard',
-      description: 'Wood Truss Roof Purlins (O/H)',
+      description: _isEnd ? 'Wood Truss Roof Purlins (O/H)' : 'Wood Truss Roof Purlins',
       sku:         _syp.sku,
       quantity:    _syp.quantity,
-      detail:      runs + ' runs × ' + count + '  |  ' + Q.w + "' wide  |  "
+      detail:      (_isEnd ? 'outermost run each end  |  ' : 'field fill  |  ')
+                   + runs + ' runs × ' + count + '  |  ' + Q.w + "' wide  |  "
                    + Q.oh + '" O/H  |  ' + Q.pitch + '/12'
     });
   });
@@ -35275,6 +35293,7 @@ window.SauceMaterials.calcWoodOHShedPurlins = function(Q, shedCfgs) {
   }
 
   var groups = {};
+  var endGroups = {};
 
   (shedCfgs || []).forEach(function(sc) {
     if (!sc.wall || !sc.w || !sc.l) return;
@@ -35407,24 +35426,27 @@ window.SauceMaterials.calcWoodOHShedPurlins = function(Q, shedCfgs) {
       });
     }
 
-    // ×2 sides
+    // ×2 sides. The end boards are kept apart from the fill so the list can say
+    // which boards catch the overhang and which are field purlin.
     Object.keys(runBoards).forEach(function(len) {
       var runs     = runBoards[len] * 2;
       var quantity = Math.ceil(runs * purlinCount);
       var _syp = window.SauceMaterials.syp24(len, quantity);
-      groups[_syp.sku] = (groups[_syp.sku]||0) + _syp.quantity;
+      var _bucket = (parseFloat(len) === endBoard) ? endGroups : groups;
+      _bucket[_syp.sku] = (_bucket[_syp.sku]||0) + _syp.quantity;
     });
   });
 
-  return Object.keys(groups).sort().map(function(sku) {
-    return {
-      category:    'Yard',
-      description: 'Wood Side Shed Purlins (O/H)',
-      sku:         sku,
-      quantity:    groups[sku],
-      detail:      '2x4  |  ' + Q.oh + '" O/H'
-    };
-  });
+  var _out = [];
+  function _emit(bucket, label, lead) {
+    Object.keys(bucket).sort().forEach(function(sku) {
+      _out.push({ category:'Yard', description:label, sku:sku,
+                  quantity:bucket[sku], detail:'2x4  |  ' + lead + '  |  ' + Q.oh + '" O/H' });
+    });
+  }
+  _emit(endGroups, 'Wood Side Shed Purlins (O/H)', 'outermost run each end');
+  _emit(groups, 'Wood Side Shed Purlins', 'field fill');
+  return _out;
 };
 
 // ── ITEM 19: TRUSS BRACING ───────────────────────────────────────────────────
