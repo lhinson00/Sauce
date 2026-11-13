@@ -7277,6 +7277,14 @@ window._spMark = function(grp, from, part, unit){
   // Single slope puts the whole building in that group, so it keeps the old
   // all-or-nothing behaviour.
   // Below grade is only drawn through the ground when the walls are off.
+  // Below grade shows when the walls are off, when Show Posts is on, or while a
+  // post or footing line is lit.
+  window._footXrayState = function(){
+    try {
+      return (typeof _hiddenPostsShown !== 'undefined' && _hiddenPostsShown)
+          || (typeof _wallsVisible !== 'undefined' && !_wallsVisible);
+    } catch(e) { return false; }
+  };
   window._footXray = function(on){
     var ms = window._footMats; if (!ms) return;
     ms.forEach(function(m){
@@ -7310,18 +7318,16 @@ window._spMark = function(grp, from, part, unit){
         if (!o.isMesh || !o.geometry) return;
         var p = o.geometry.parameters;
         if (!p || typeof p.height !== 'number') return;
-        var topY = o.position.y + (p.height * (o.scale ? o.scale.y : 1)) / 2;
-        var aboveFt = topY / sc1;
-        if (!(aboveFt > 1)) return;                     // pads, brackets, caps
+        var drawnFt = (p.height * (o.scale ? o.scale.y : 1)) / sc1;
+        if (!(drawnFt > 1)) return;                     // pads, brackets, caps
         o.userData = o.userData || {};
         if (o.userData.sPart == null) o.userData.sPart = 'post';
-        // The buy length is main building only. An attachment post is built at full
-        // length and then clamped to fit under its roof, so its drawn height is not
-        // its height, and it is bought under its own rule besides. Those keep the
-        // measured match, which already lands on the right board for them.
-        if (o.userData.sIdx != null || !canBuy) return;
+        if (!canBuy) return;
+        // The built height, not the drawn one. A post under an attachment roof is
+        // made full length and then clamped to fit, and the list buys the full one.
+        var builtFt = p.height / sc1;
         var size = (p.width && p.width/sc1 > 0.6) ? '8x8' : '6x6';
-        o.userData.sBuyFt = SM.enforceMinPostLen(size, aboveFt + ground);
+        o.userData.sBuyFt = SM.enforceMinPostLen(size, builtFt + ground);
       });
     });
   };
@@ -7529,10 +7535,14 @@ window.SauceParts = window.SauceParts || (function(){
     { key:'baseTrim',   re:/base\s*trim|rat\s*guard/i, groups:['walls','wallPanels'], label:'base trim' },
     { key:'purlin', re:/purlin/i,                    groups:['framing'], label:'purlins' },
     { key:'girt',   re:/girt/i,                      groups:['framing'], label:'girts' },
+    { key:'ledger',  re:/\bledger/i,                 groups:['framing'], label:'ledgers' },
+    { key:'ridgeBoard', re:/ridge\s*board/i,         groups:['framing'], label:'ridge boards' },
+    { key:'valleyBoard', re:/valley\s*board/i,       groups:['framing'], label:'valley boards' },
     { key:'flyRafter', re:/fly\s*rafter/i,           groups:['framing'], label:'fly rafters' },
     { key:'rafter', re:/rafter/i,                    groups:['framing'], label:'rafters' },
     { key:'stud',   re:/\bstud(s)?\b/i,              groups:['framing'], label:'studs' },
     { key:'plate',  re:/\bplate(s)?\b/i,             groups:['framing'], label:'plates' },
+    { key:'gableTruss', re:/gable\s*(end\s*)?truss|gable\s*ext[^|]*gable\s*truss/i, groups:['trusses'], label:'gable trusses' },
     { key:'truss',  re:/truss/i,                     groups:['trusses'], label:'trusses' },
     { key:'footingPad', re:/footing\s*pad|\bpad(s)?\b/i, groups:['posts','mainPosts'], label:'footing pads' },
     { key:'post',   re:/\bpost(s)?\b|column/i,       groups:['posts','mainPosts'], label:'posts' }
@@ -7544,7 +7554,9 @@ window.SauceParts = window.SauceParts || (function(){
                eaveTrim:0x8b5cf6, cornerTrim:0x14b8a6, baseTrim:0x84cc16,
                header:0xfb7185, trussBracing:0x2dd4bf, cornerBracing:0x0ea5e9,
                band:0xa3e635, flyRafter:0xfde047, fascia:0xf97316,
-               openingHeader:0xe879f9, jamb:0x60a5fa, footingPad:0x94a3b8, _default:0xf472b6 };
+               openingHeader:0xe879f9, jamb:0x60a5fa, footingPad:0x94a3b8,
+               gableTruss:0x06b6d4, ledger:0xd946ef, ridgeBoard:0xf43f5e,
+               valleyBoard:0xfb923c, _default:0xf472b6 };
 
   var _held = [];      // {mesh, mat} so the originals go back exactly as they were
   var _segs = [];      // board markers hung on their member, removed on clear
@@ -7589,13 +7601,18 @@ window.SauceParts = window.SauceParts || (function(){
     }
     var w = /[—-]\s*(Left|Right|Front|Back)\b/i.exec(text);
     var wall = w ? w[1].toLowerCase() : null;
+    // The shed purlin line is the one place the list puts side sheds and gable
+    // extensions on the same row, so that row has to be allowed both. Every other
+    // "Side Shed" line really is side sheds only.
+    var bothKinds = isSideShed && /purlin/i.test(text);
     return {
-      label: (isGableExt ? 'gable extension' : 'side shed') + (wall ? ' — ' + wall : ''),
+      label: (isGableExt ? 'gable extension' : (bothKinds ? 'attachments' : 'side shed'))
+             + (wall ? ' — ' + wall : ''),
       test: function(sc, idx){
         if (idx == null || !sc) return false;
         if (wall && (sc.wall || '') !== wall) return false;
         if (isGableExt && sc.type !== 'gable') return false;
-        if (isSideShed && sc.type === 'gable') return false;
+        if (isSideShed && !bothKinds && sc.type === 'gable') return false;
         return true;
       }
     };
@@ -7627,7 +7644,7 @@ window.SauceParts = window.SauceParts || (function(){
     var wanted = (entry.groups||[]).slice();
     // Members that live in a mixed group carry their own stamp instead.
     if (entry.key && wanted.indexOf('shed') < 0) wanted.push('shed');
-    var MIXED = { shed:1, framing:1, walls:1, wallPanels:1, roof:1, posts:1, mainPosts:1 };
+    var MIXED = { shed:1, framing:1, walls:1, wallPanels:1, roof:1, posts:1, mainPosts:1, trusses:1 };
     wanted.forEach(function(name){
       var grp = g[name]; if (!grp) return;
       var mixed = !!MIXED[name];
@@ -7729,6 +7746,7 @@ window.SauceParts = window.SauceParts || (function(){
     _segs = [];
     _labels.forEach(function(s){ try { s.parent.remove(s); } catch(e){} });
     _labels = []; _active = null;
+    try { window._footXray(window._footXrayState()); } catch(e){}
   }
 
   // Numbered boards. Counting coloured blocks by eye stops working somewhere
@@ -7777,7 +7795,27 @@ window.SauceParts = window.SauceParts || (function(){
   // lengths and the coverage come from the same truss spacing the calculator
   // uses, so clicking the 12' line lights the end boards and clicking the 20'
   // line lights the fill — instead of slicing the whole run from one end.
-  function purlinPlan(runFt){
+  function purlinPlan(runFt, m){
+    // A side shed purlin runs between posts and has no overhang end board; the
+    // board length comes from post spacing. A gable extension follows the main
+    // building rule.
+    var _ix = m && m.userData && m.userData.sIdx;
+    var _cf = (_ix != null) ? (window._shedConfigs || [])[_ix] : null;
+    if (_cf && _cf.type !== 'gable') {
+      var _ps = 10;
+      try {
+        var _w = (window._WALLS || []).filter(function(x){ return x.id === _cf.wall; })[0];
+        _ps = parseFloat((_w && _w.postSpacing) || (window._Q||{}).postSpacing || 10) || 10;
+      } catch(e) {}
+      var _bl = (_ps <= 10) ? _ps * 2 : (_ps === 12 ? 20 : _ps);
+      var _o = [], _a = 0, _r = runFt, _g2 = 0;
+      while (_r > 0.05 && _g2++ < 200) {
+        var _L = (_r >= _bl) ? _bl : 10;
+        _o.push({ at:_a, len:Math.min(_L, _r), nom:_L, end:false });
+        _a += _L; _r -= _L;
+      }
+      return _o;
+    }
     var ts = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
     var endB = (ts === 4) ? 16 : 12;
     var cov  = (ts === 4) ? 12 : 10;
@@ -7807,7 +7845,7 @@ window.SauceParts = window.SauceParts || (function(){
       var axis = dims[0][0], run = dims[0][1];
       if (!(run > 0) || Lsc <= 0) return null;
       if (planFn) {
-        var pl = planFn(run / (window._spSc || 0.1));
+        var pl = planFn(run / (window._spSc || 0.1), m);
         if (pl) {
           var tgt = Lsc / (window._spSc || 0.1);
           // The line says whether it is the overhang board or field fill, so the
@@ -8026,6 +8064,10 @@ window.SauceParts = window.SauceParts || (function(){
         if (L2 == null) return;
         var r = Math.round(L2*2)/2; lens[r] = (lens[r]||0) + 1;
       });
+    }
+    // A post or footing line is about what is in the ground, so show it.
+    if (entry.key === 'post' || entry.key === 'footingPad') {
+      try { window._footXray(true); } catch(e){}
     }
     // The members have to be on screen to be checked against the line.
     try {
@@ -10006,6 +10048,7 @@ function vpTogglePosts() {
     });
   }
   d.grps.posts.visible = true; // sheds always show structural posts
+  try { window._footXray(window._footXrayState()); } catch(e){}
 
   var btn = document.getElementById('vpPostToggle');
   if (btn) {
@@ -10352,7 +10395,7 @@ function vpToggleWalls() {
   if (d.grps.shed && !(window._shedRolesOff && window._shedRolesOff())) {
     try { window._shedRoleApply(d.grps, _wallsVisible, _roofVisible); } catch(e){}
   }
-  try { window._footXray(!_wallsVisible); } catch(e){}
+  try { window._footXray(window._footXrayState()); } catch(e){}
 
   var btn = document.getElementById('vpWallToggle');
   if (btn) {
@@ -13439,7 +13482,7 @@ function applyVoiceQuote(parsed, overlay) {
         // Trim lands in the same groups as the panels it sits on, so the group
         // cannot say what a piece is. Same trick as the framing: a block says what
         // it is building and everything added while that is set carries the stamp.
-        ['framing','walls','wallPanels','roof'].forEach(function(_gn){
+        ['framing','walls','wallPanels','roof','trusses'].forEach(function(_gn){
           var _g = grps[_gn]; if (!_g) return;
           var _fa = _g.add.bind(_g);
           _g.add = function(o){
@@ -13451,19 +13494,6 @@ function applyVoiceQuote(parsed, overlay) {
             return _fa(o);
           };
         });
-        // A truss is one thing you buy, but it is drawn as a dozen chords and webs.
-        // Each build announces which truss it is so the list can count trusses
-        // rather than sticks, and put one number on each.
-        (function(){
-          var _ta = grps.trusses.add.bind(grps.trusses);
-          grps.trusses.add = function(o){
-            if (o && window._spUnit != null) {
-              o.userData = o.userData || {};
-              if (o.userData.sUnit == null) o.userData.sUnit = window._spUnit;
-            }
-            return _ta(o);
-          };
-        })();
         window._spUnit = null;
         window._spPart = null;
         window._spSc = Sc;   // scene units per foot, so a member can report its length
@@ -16928,9 +16958,13 @@ function applyVoiceQuote(parsed, overlay) {
                     var zMin = -sL/2 + _sco, zMax = sL/2 + _sco, zLen = (zMax - zMin), zCtr = (zMin + zMax)/2;
                     // Purlins — run in Z, stepped ~2' along the roof slope
                     var _slopeFt = Math.sqrt(Math.pow((aX-oX)/Sc,2) + Math.pow((attachH-outerH)/Sc,2));
-                    var _nPur = Math.max(1, Math.round(_slopeFt / 2));
-                    for (var _pi = 1; _pi < _nPur; _pi++) {
-                      var _t = _pi/_nPur;
+                    // The list pays for a purlin count off its own chart, keyed on shed
+                    // width. Drawing at a flat 2' spacing never agreed with it.
+                    var _chart = (window.SauceMaterials || {}).ssPurlinsPerRun;
+                    var _nPur = (_chart && _chart[sc.w]) ? _chart[sc.w]
+                                                         : Math.max(1, Math.round(_slopeFt / 2));
+                    for (var _pi = 0; _pi < _nPur; _pi++) {
+                      var _t = (_pi + 0.5)/_nPur;
                       var _pm = new THREE.Mesh(new THREE.BoxGeometry(_frSz, _frSz, zLen), _frMat);
                       _pm.position.set(oX + _t*(aX-oX), (outerH + _t*(attachH-outerH)) - _frSz, zCtr);
                       grps.framing.add(_pm);
@@ -17313,6 +17347,7 @@ function applyVoiceQuote(parsed, overlay) {
                     }
                     for (var _ti = 0; _ti <= _nT; _ti++) {
                         window._spUnit = 'xt' + (sc.id||'') + '-' + repAxis + _ti;
+                        window._spPart = (_ti === _nT) ? 'gableTruss' : 'truss';
                         var _rr = r0 + (r1 - r0) * (_ti / _nT);
                         _tBeam(sE1, eh, sMid, rh, _rr, _tcSz, _mTC);
                         _tBeam(sMid, rh, sE2, eh, _rr, _tcSz, _mTC);
@@ -17321,8 +17356,7 @@ function applyVoiceQuote(parsed, overlay) {
                         _tBeam((sE1+sMid)/2, (eh+rh)/2, sMid, eh, _rr, _twSz, _mTW);
                         _tBeam((sE2+sMid)/2, (eh+rh)/2, sMid, eh, _rr, _twSz, _mTW);
                     }
-                    window._spUnit = null;
-                    window._spMark(grps.trusses, _tFrom, 'truss');
+                    window._spUnit = null; window._spPart = null;
                 }
                 // Panelled wall for a turned ridge, built exactly the way the
                 // building's own gable faces are: a base quad per bay, then two
@@ -19762,9 +19796,10 @@ function applyVoiceQuote(parsed, overlay) {
             }
             for(var _sti=1;_sti<_ssTrussCount;_sti++){
               window._spUnit = 'st' + _sti;
+              window._spPart = 'truss';
               ssTruss(_ssZ1i+(_sti/_ssTrussCount)*sl);
             }
-            window._spUnit = null;
+            window._spUnit = null; window._spPart = null;
 
             // ── SINGLE SLOPE GIRTS + PURLINS ─────────────────────────────────
             var _ssGirtMat   = new THREE.MeshLambertMaterial({ color: 0xC4A46A, side: THREE.DoubleSide });
@@ -20302,9 +20337,10 @@ function applyVoiceQuote(parsed, overlay) {
             const z0      = -sl/2;
             for (let i = 0; i <= count; i++) {
               window._spUnit = 'mt' + i;
+              window._spPart = (i === 0 || i === count) ? 'gableTruss' : 'truss';
               buildTruss(z0 + i * spacing);
             }
-            window._spUnit = null;
+            window._spUnit = null; window._spPart = null;
           } else {
             // Wood: truss spacing from selector — forced to 2' OC when attic floor is selected
             const _atticFloorOn = isAttic && !!(document.getElementById('st_atticFloor') && document.getElementById('st_atticFloor').checked);
@@ -20314,9 +20350,10 @@ function applyVoiceQuote(parsed, overlay) {
             const z0      = -sl/2;
             for (let i = 0; i <= count; i++) {
               window._spUnit = 'mt' + i;
+              window._spPart = (i === 0 || i === count) ? 'gableTruss' : 'truss';
               buildTruss(z0 + i * spacing);
             }
-            window._spUnit = null;
+            window._spUnit = null; window._spPart = null;
 
             // ── ATTIC FLOOR OSB DECK ─────────────────────────────────────────
             if (_atticFloorOn) {
@@ -21604,7 +21641,7 @@ function applyVoiceQuote(parsed, overlay) {
           grps.roof.visible = _roofVisible;
           if (grps.shed && !isSingleSlope) grps.shed.visible = true;
         }
-        try { window._footXray(typeof _wallsVisible !== 'undefined' && !_wallsVisible); } catch(e) {}
+        try { window._footXray(window._footXrayState()); } catch(e) {}
         if (grps.shed && !isSingleSlope) {
           try { window._shedRoleApply(grps,
                   (typeof _wallsVisible === 'undefined') ? true : _wallsVisible,
@@ -24485,7 +24522,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M56-1340';
+window.SAUCE_BUILD = 'M58-1500';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -35070,6 +35107,9 @@ window.SauceMaterials.calcWoodShedPurlins = function(Q, shedCfgs) {
     6:4, 8:5, 10:6, 12:7, 14:8, 16:9,
     18:10, 20:11, 22:12, 24:13, 26:14, 28:15, 30:16
   };
+  // Read-only export. The renderer drew purlins at a flat 2' spacing and so never
+  // matched this count; it reads the chart now. Nothing here is computed from it.
+  window.SauceMaterials.ssPurlinsPerRun = ssPurlinsPerRun;
 
   var trussSpacing = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
 
