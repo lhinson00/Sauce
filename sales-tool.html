@@ -7728,8 +7728,14 @@ window.SauceParts = window.SauceParts || (function(){
       _v.set((bb.max.x+bb.min.x)/2, (bb.max.y+bb.min.y)/2, (bb.max.z+bb.min.z)/2);
       o.updateWorldMatrix(true, false);
       _v.applyMatrix4(o.matrixWorld);
-      return { lenFt: longest > 0 ? longest / sc : null, x:_v.x, y:_v.y, z:_v.z };
-    } catch(e){ return { lenFt:null, x:0, y:0, z:0 }; }
+      // Which way the piece runs, and whether it runs that way clearly enough to
+      // say so. This is what keeps a short member next to a corner from being
+      // read as belonging to both walls that meet there.
+      var axis = (longest === dy) ? 'y' : (longest === dx ? 'x' : 'z');
+      var clear = (axis === 'x') ? (dx > dz * 1.2) : (axis === 'z' ? (dz > dx * 1.2) : false);
+      return { lenFt: longest > 0 ? longest / sc : null, x:_v.x, y:_v.y, z:_v.z,
+               axis:axis, axisClear:clear };
+    } catch(e){ return { lenFt:null, x:0, y:0, z:0, axis:null, axisClear:false }; }
   }
 
   function onWall(info, walls){
@@ -7737,6 +7743,13 @@ window.SauceParts = window.SauceParts || (function(){
     var hw = (Q.w||0)*sc/2, hl = (Q.l||0)*sc/2, tol = 0.25;
     for (var i=0;i<walls.length;i++){
       var w = walls[i];
+      // A board that runs along the building lies in an eave wall; one that runs
+      // across it lies in a gable end. Position alone puts a short piece beside a
+      // corner — what a garage door opening leaves behind — on both walls at once.
+      if (info.axisClear) {
+        if ((w === 'left' || w === 'right') && info.axis === 'x') continue;
+        if ((w === 'front' || w === 'back') && info.axis === 'z') continue;
+      }
       if (w === 'left'  && Math.abs(info.x + hw) < tol) return true;
       if (w === 'right' && Math.abs(info.x - hw) < tol) return true;
       if (w === 'front' && Math.abs(info.z + hl) < tol) return true;
@@ -7847,11 +7860,16 @@ window.SauceParts = window.SauceParts || (function(){
   // filled with. Splitting the run into the clicked line's own board length — in
   // the member's local frame, so a pitched rafter splits along its own slope —
   // puts one marker on the model per board on the list.
-  // How a purlin run is actually cut. The two end boards catch the overhang and
-  // run back far enough to land on a truss; the middle is filled with 20s. The
-  // lengths and the coverage come from the same truss spacing the calculator
-  // uses, so clicking the 12' line lights the end boards and clicking the 20'
-  // line lights the fill — instead of slicing the whole run from one end.
+  // How a purlin run is actually cut. Different buildings get different plans —
+  // this does NOT blanket one rule over all of them:
+  //   WITH an overhang: the two end boards catch the O/H and run back far enough
+  //     to land on a truss; the middle is filled with 20s. Clicking the 12' line
+  //     lights the end boards, clicking the 20' line lights the fill.
+  //   NO overhang: nothing to catch, so no end boards — the run is filled truss
+  //     to truss straight through, same fill the calculator uses.
+  //   Side shed: runs between posts, board length driven by post spacing.
+  // The lengths come from the same truss spacing the calculator uses, so the
+  // model and the list agree board for board.
   function purlinPlan(runFt, m){
     // A side shed purlin runs between posts and has no overhang end board; the
     // board length comes from post spacing. A gable extension follows the main
@@ -7874,9 +7892,45 @@ window.SauceParts = window.SauceParts || (function(){
       return _o;
     }
     var ts = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
+    var oh   = (((window._Q||{}).oh) || 0) / 12;
+
+    // NO OVERHANG — there is no overhang to catch, so there are no end boards.
+    // The run is simply filled truss to truss: 20' lands square on a truss at 2',
+    // 4' and 5' spacing alike, so a 60' building is three 20s and nothing else.
+    // This mirrors fillLength() in calcWoodPurlins exactly (same board table, same
+    // fallbacks) so the model and the list agree board for board and every piece
+    // on the line lights up — instead of mapping it like an O/H building and
+    // lighting only the middle.
+    if (oh <= 0.001) {
+      var _s2b  = { 2:20, 4:12, 5:20 };          // truss spacing -> board length
+      var _pref = _s2b[ts];
+      var _fits = function(L){
+        if (!(L > 0)) return false;
+        var q = runFt / L;
+        return Math.abs(q - Math.round(q)) < 0.01 && Math.round(q) >= 1;
+      };
+      var _seq = [];
+      var _push = function(L, n2){ for (var k = 0; k < n2; k++) _seq.push(L); };
+      if (_pref && _fits(_pref))  _push(_pref, Math.round(runFt / _pref));
+      else if (_fits(20))         _push(20, Math.round(runFt / 20));
+      else if (_fits(12))         _push(12, Math.round(runFt / 12));
+      else {
+        var _rm = runFt;
+        if (_rm >= 20) { _push(20, Math.floor(_rm / 20)); _rm = _rm - Math.floor(_rm / 20) * 20; }
+        if (_rm > 0.01) _push(10, Math.ceil(_rm / 10));
+      }
+      if (!_seq.length) return null;
+      var _o2 = [], _a2 = 0;
+      for (var _si = 0; _si < _seq.length; _si++) {
+        var _L2 = _seq[_si];
+        _o2.push({ at:_a2, len:Math.min(_L2, Math.max(0, runFt - _a2)), nom:_L2, end:false });
+        _a2 += _L2;
+      }
+      return _o2;
+    }
+
     var endB = (ts === 4) ? 16 : 12;
     var cov  = (ts === 4) ? 12 : 10;
-    var oh   = (((window._Q||{}).oh) || 0) / 12;
     if (runFt < endB * 2) return null;
     var out = [{ at:0, len:endB, nom:endB, end:true },
                { at:runFt - endB, len:endB, nom:endB, end:true }];
@@ -7893,7 +7947,7 @@ window.SauceParts = window.SauceParts || (function(){
     return out;
   }
 
-  function boards(m, Lsc, planFn, wantEnd){
+  function boards(m, Lsc, planFn, wantEnd, runsHint){
     var g = m.geometry;
     var p = g && g.parameters;
     if (p && typeof p.width === 'number') {
@@ -7905,11 +7959,58 @@ window.SauceParts = window.SauceParts || (function(){
         var pl = planFn(run / (window._spSc || 0.1), m);
         if (pl) {
           var tgt = Lsc / (window._spSc || 0.1);
-          // The line says whether it is the overhang board or field fill, so the
-          // two never light each other even where the lengths happen to match.
-          var keep = pl.filter(function(q){
-            if (Math.abs((q.nom != null ? q.nom : q.len) - tgt) >= 0.01) return false;
-            return (wantEnd == null) ? true : (!!q.end === !!wantEnd);
+          // Group the run's boards by their real cut length, then work out which
+          // group this line is actually paying for. A 10' purlin has no 10' SKU —
+          // it is bought as a 20' stick and cut in half — so a 10' group and a 20'
+          // group can both land on SYP2420. When that happens, the line's own
+          // "N runs ×" tells them apart: the 50' run that is 20+20+10 bills one
+          // line at 2 runs and another at 1, and each lights its own boards.
+          var _grp = {};
+          pl.forEach(function(q){
+            var k = String(q.nom != null ? q.nom : q.len);
+            (_grp[k] = _grp[k] || []).push(q);
+          });
+          var _stockOf = function(L){
+            try {
+              var s = window.SauceMaterials.syp24(L, 1).sku;
+              var n = parseFloat(String(s).replace(/^SYP24/, ''));
+              return isNaN(n) ? L : n;
+            } catch(e) { return L; }
+          };
+          var _cand = Object.keys(_grp).filter(function(k){
+            var nomL = parseFloat(k);
+            return Math.abs(nomL - tgt) < 0.01 || Math.abs(_stockOf(nomL) - tgt) < 0.01;
+          });
+          if (_cand.length > 1) {
+            var _exact = _cand.filter(function(k){ return Math.abs(parseFloat(k) - tgt) < 0.01; });
+            var _picked = null;
+            if (runsHint) {
+              // First try the run count: 20+20+10 bills 2 runs and 1 run.
+              var _byRuns = _cand.filter(function(k){ return _grp[k].length === runsHint.runs; });
+              if (_byRuns.length === 1) _picked = _byRuns;
+              else if (runsHint.qty > 0 && runsHint.count > 0) {
+                // Still tied (20+20+10+10 bills 2 runs twice). The quantity breaks
+                // it: the short group was halved on the way to a 20' SKU, so its
+                // billed count is about half the long group's.
+                var _best = null;
+                (_byRuns.length ? _byRuns : _cand).forEach(function(k){
+                  var pred = Math.ceil(_grp[k].length * runsHint.count);
+                  if (parseFloat(k) <= 10.01) pred = Math.ceil(pred / 2);
+                  var d = Math.abs(pred - runsHint.qty / 1.1);
+                  if (!_best || d < _best.d) _best = { k:k, d:d };
+                });
+                if (_best) _picked = [_best.k];
+              }
+            }
+            _cand = _picked || (_exact.length ? _exact : _cand);
+          }
+          // The line also says whether it is the overhang board or field fill, so
+          // the two never light each other even where the lengths match.
+          var keep = [];
+          _cand.forEach(function(k){
+            _grp[k].forEach(function(q){
+              if (wantEnd == null || (!!q.end === !!wantEnd)) keep.push(q);
+            });
           });
           if (!keep.length) return null;
           return { axis:axis, run:run, cuts:keep, a:dims[1], b:dims[2] };
@@ -8038,9 +8139,75 @@ window.SauceParts = window.SauceParts || (function(){
       // An (O/H) purlin line is the outermost board at each end; the plain line
       // is the field fill between them.
       var _wantOH = /\(O\/H\)/i.test((item && item.description) || '');
+      // "3 runs × 22 purlins" — how many boards of this line's length sit in one
+      // run, and how many runs there are. Read only, nothing about the line
+      // changes; it is what separates two lines that share a SKU because a short
+      // board was bought as a long one and cut.
+      var _runsHint = null;
+      try {
+        var _rh = /(\d+)\s*runs?\s*(?:×|x)\s*(\d+)/i.exec((item && item.detail) || '');
+        if (_rh) _runsHint = { runs: parseInt(_rh[1], 10),
+                               count: parseInt(_rh[2], 10),
+                               qty: parseFloat(item && item.quantity) || 0 };
+      } catch(e) {}
+      // A row broken by an opening still buys the boards for the whole row — the
+      // door only means a board gets cut, not that it stops being shipped. Any
+      // mesh tagged with a run is handled as part of that run: the row's boards
+      // are worked out from its FULL length and then shared across the pieces
+      // that are actually there, by length. Nothing goes dark because a garage
+      // door left no single piece as long as the board.
+      function runGroups(){
+        var by = {};
+        meshes.forEach(function(m){
+          var k = m.userData && m.userData.sRun;
+          if (!k || !(m.userData.sRunFt > 0)) return;
+          (by[k] = by[k] || []).push(m);
+        });
+        return by;
+      }
+      function allocRun(grp, runFt, boardFt){
+        var n = Math.floor(runFt / boardFt + 0.02);
+        if (n < 1) return null;
+        var tot = 0;
+        grp.forEach(function(m){ tot += (m.userData._spLen || 0); });
+        if (!(tot > 0)) return null;
+        // Largest remainder, so the pieces always add up to the row's board count.
+        var share = grp.map(function(m){
+          var exact = (m.userData._spLen || 0) / tot * n;
+          return { m:m, base:Math.floor(exact), rem:exact - Math.floor(exact) };
+        });
+        var used = share.reduce(function(a, s){ return a + s.base; }, 0);
+        share.sort(function(a, b){ return b.rem - a.rem; });
+        for (var i = 0; used < n && i < share.length * 4; i++) { share[i % share.length].base++; used++; }
+        return share.filter(function(s){ return s.base > 0; });
+      }
       function build(useBuy){
         var out = [];
+        var _runs = useBuy ? {} : runGroups();
+        var _done = {};
+        Object.keys(_runs).forEach(function(k){
+          var grp = _runs[k];
+          _done[k] = true;
+          var al = allocRun(grp, grp[0].userData.sRunFt, L);
+          if (!al) return;
+          al.forEach(function(s){
+            var bb = boards(s.m, Lsc);
+            if (!bb) {
+              // The piece is shorter than the board, so it holds no whole board of
+              // its own — it is still part of one, so mark it as the piece it is.
+              var g2 = s.m.geometry, p2 = g2 && g2.parameters;
+              if (!p2) return;
+              var dd = [['x',p2.width],['y',p2.height],['z',p2.depth]];
+              dd.sort(function(a,b){ return b[1]-a[1]; });
+              bb = { axis:dd[0][0], run:dd[0][1], n:1, a:dd[1], b:dd[2] };
+            }
+            bb.n = s.base;
+            bb.step = bb.run / s.base;
+            out.push({ m:s.m, b:bb });
+          });
+        });
         meshes.forEach(function(m){
+          if (!useBuy && m.userData && m.userData.sRun && _done[m.userData.sRun]) return;
           var buy = m.userData && m.userData.sBuyFt;
           if (useBuy) { if (buy === L) out.push({ m:m, b:null }); return; }
           var len = m.userData._spLen;
@@ -8055,7 +8222,8 @@ window.SauceParts = window.SauceParts || (function(){
           if (Math.abs(len - L) <= tol && entry.key !== 'purlin') { out.push({ m:m, b:null }); return; }
           if (len > L - 0.01) {
             var b = boards(m, Lsc, entry.key === 'purlin' ? purlinPlan : null,
-                           entry.key === 'purlin' ? _wantOH : null);
+                           entry.key === 'purlin' ? _wantOH : null,
+                           entry.key === 'purlin' ? _runsHint : null);
             if (b) out.push({ m:m, b:b });
           }
         });
@@ -8110,10 +8278,17 @@ window.SauceParts = window.SauceParts || (function(){
               e.m.add(sg2); _segs.push(sg2);
               shown++;
               label(e.m, sg2.position, shown);
-              lens[q.len] = (lens[q.len]||0)+1;
+              // Count the board we bought, not the part of it that landed on the
+              // run — a 10' board on an 11' tail still shows as a 10' board.
+              lens[q.nom != null ? q.nom : q.len] = (lens[q.nom != null ? q.nom : q.len]||0)+1;
             });
             return;
           }
+          // A run cut by an opening shares its boards out over the pieces left, so
+          // the markers sit evenly inside each piece rather than at a fixed board
+          // length that may not fit in it.
+          var stepL = (b.step > 0) ? b.step : Lsc;
+          var markL = Math.min(Lsc, stepL);
           for (var i=0;i<b.n;i++){
             var sg;
             if (b.quad) {
@@ -8123,11 +8298,11 @@ window.SauceParts = window.SauceParts || (function(){
               sg.quaternion.setFromUnitVectors(new THREE.Vector3(1,0,0), dirQ);
             } else {
               sg = new THREE.Mesh(
-                b.axis === 'x' ? new THREE.BoxGeometry(Lsc*0.94, w2, d2) :
-                b.axis === 'y' ? new THREE.BoxGeometry(w2, Lsc*0.94, d2) :
-                                 new THREE.BoxGeometry(w2, d2, Lsc*0.94),
+                b.axis === 'x' ? new THREE.BoxGeometry(markL*0.94, w2, d2) :
+                b.axis === 'y' ? new THREE.BoxGeometry(w2, markL*0.94, d2) :
+                                 new THREE.BoxGeometry(w2, d2, markL*0.94),
                 (shown % 2) ? mB : mA);
-              var off = -half + Lsc*(i + 0.5);
+              var off = -half + stepL*(i + 0.5);
               sg.position.set(b.axis==='x'?off:0, b.axis==='y'?off:0, b.axis==='z'?off:0);
             }
             sg.renderOrder = 999;
@@ -20640,6 +20815,14 @@ function applyVoiceQuote(parsed, overlay) {
               });
               segs = newSegs;
             });
+            // An opening breaks the row into pieces, but the yard still ships the
+            // same boards for that row — they just get cut on site. Tag every
+            // piece with the row it belongs to and the row's FULL length, so the
+            // material list lights the whole row instead of going dark because no
+            // single piece is as long as the board.
+            var _runKey = 'girt|' + axis + '|' + Math.round(fixedCoord * 1000)
+                        + '|' + Math.round(gy * 1000);
+            var _runFt  = (halfLen * 2) / (window._spSc || Sc);
             segs.forEach(function(seg) {
               var len = seg[1] - seg[0];
               if (len < 0.01) return;
@@ -20652,6 +20835,8 @@ function applyVoiceQuote(parsed, overlay) {
                 gm = new THREE.Mesh(new THREE.BoxGeometry(len, mbH, mbW), mat);
                 gm.position.set(center, gy, fixedCoord);
               }
+              gm.userData.sRun    = _runKey;
+              gm.userData.sRunFt  = _runFt;
               grps.framing.add(gm);
             });
           }
@@ -24697,7 +24882,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M62-1133';
+window.SAUCE_BUILD = 'M64-1238';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
