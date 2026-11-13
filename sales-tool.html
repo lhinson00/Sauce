@@ -14704,23 +14704,30 @@ function applyVoiceQuote(parsed, overlay) {
                     // along the shed LENGTH axis (Z for eave sheds, X for gable-attached) lands in
                     // the enclosed span goes to mainPosts tagged hideBehindWall (hidden until
                     // "Show Posts"); posts in the open/roof-only span go to posts (always shown).
-                    function _shedEnclSpan(lz) {
+                    function _shedEnclSpan(lz, wallKey) {
                         if (sc.encl !== 'enclosed') return false;
-                        // Partial WALL enclosure: if any of the shed's walls is left open, its
-                        // posts are exposed to view and must render on load rather than hiding
-                        // behind the "Show Posts" toggle.
                         var _ewAll = ['outer','gable1','gable2'];
                         var _ewList = sc.enclWalls || _ewAll;
-                        for (var _ei = 0; _ei < _ewAll.length; _ei++) {
-                            if (_ewList.indexOf(_ewAll[_ei]) === -1) return false;
+                        if (wallKey) {
+                            // A post is hidden by the wall it actually stands in. Asking whether
+                            // the WHOLE shed was closed in meant one open gable end pushed every
+                            // post back into view, including the ones buried in a clad outer wall
+                            // — posts striping an enclosed shed wall that has nothing open about it.
+                            if (_ewList.indexOf(wallKey) === -1) return false;
+                        } else {
+                            // No wall named: fall back to the old all-walls test.
+                            for (var _ei = 0; _ei < _ewAll.length; _ei++) {
+                                if (_ewList.indexOf(_ewAll[_ei]) === -1) return false;
+                            }
                         }
                         if (_enclFt == null) return true;
                         if (_enclFrom === 'start') return (lz <= (-ssl/2 + shedCenterOff) + _enclFt + 0.01);
                         return (lz >= (ssl/2 + shedCenterOff) - _enclFt - 0.01);
                     }
-                    function _shedPostGrp(lz) { return _shedEnclSpan(lz) ? grps.mainPosts : grps.posts; }
-                    function _shedAddPost(mesh, lz) {
-                        var _t = _shedPostGrp(lz);
+                    function _shedEnclOuter(lz) { return _shedEnclSpan(lz, 'outer'); }
+                    function _shedPostGrp(lz, wallKey) { return _shedEnclSpan(lz, wallKey) ? grps.mainPosts : grps.posts; }
+                    function _shedAddPost(mesh, lz, wallKey) {
+                        var _t = _shedPostGrp(lz, wallKey);
                         if (_t === grps.mainPosts) { mesh.userData = mesh.userData || {}; mesh.userData.hideBehindWall = true; }
                         _t.add(mesh);
                         return _t;
@@ -14744,14 +14751,14 @@ function applyVoiceQuote(parsed, overlay) {
                                 const zPos = (-ssl/2 + ft * Sc) + shedCenterOff;
                                 const p = new THREE.Mesh(new THREE.BoxGeometry(_postSzEW, shedPostH, _postSzEW), _cyMat8ew);
                                 p.position.set(oX, shedPostBase + shedPostH/2, zPos); p.castShadow = true;
-                                var _pgEW = _shedAddPost(p, zPos);
+                                var _pgEW = _shedAddPost(p, zPos, 'outer');
                                 if (_isMono) addBracket(oX, zPos, _pgEW, slabH, _pgEW === grps.mainPosts);
                             });
                         // Gable end posts — corner post at oX + intermediate posts across shed width
                         const xDir = sc.wall === 'left' ? -1 : 1;
                         const numGableBays = Math.max(1, Math.floor(sc.w / attachPS));
-                        function addGableEndRow(gz) {
-                            var _rg = _shedPostGrp(gz);
+                        function addGableEndRow(gz, _wKey) {
+                            var _rg = _shedPostGrp(gz, _wKey);
                             var _rgHide = (_rg === grps.mainPosts);
                             function _addG(mesh){ if (_rgHide) { mesh.userData = mesh.userData || {}; mesh.userData.hideBehindWall = true; } _rg.add(mesh); }
                             // Corner post at outer edge (oX side)
@@ -14783,8 +14790,8 @@ function applyVoiceQuote(parsed, overlay) {
                             var _pStartZEW = -ssl/2 + shedCenterOff, _pFarZEW = ssl/2 + shedCenterOff;
                             var _pShowG1EW = !_pPartEW || _enclFrom === 'start'; // start end enclosed?
                             var _pShowG2EW = !_pPartEW || _enclFrom === 'end';   // far end enclosed?
-                            if (_ew.includes('gable1') && _pShowG1EW) addGableEndRow(_pStartZEW);
-                            if (_ew.includes('gable2') && _pShowG2EW) addGableEndRow(_pFarZEW);
+                            if (_ew.includes('gable1') && _pShowG1EW) addGableEndRow(_pStartZEW, 'gable1');
+                            if (_ew.includes('gable2') && _pShowG2EW) addGableEndRow(_pFarZEW, 'gable2');
                             // Cap wall at the enclosed/open boundary gets its own infill posts —
                             // matches the cap wall panel and keeps posts off the open gable end.
                             if (_pPartEW) addGableEndRow(_enclFrom === 'start' ? (_pStartZEW + _enclFt) : (_pFarZEW - _enclFt));
@@ -14799,14 +14806,14 @@ function applyVoiceQuote(parsed, overlay) {
                         const _mPshedFB = _shedWallOpenFB ? mPopen : mPencl;
                         const _cyMatFBP = _cyFB ? new THREE.MeshLambertMaterial({ color: 0x8B6914 }) : _mPshedFB;
                         var _cbFB = window.shedCustomBays ? window.shedCustomBays(sc, sc.l) : null;
-                        addPostLineAligned(0, oZ, false, sc.l, attachPS, undefined, undefined, _cyFB ? _ps8FB : undefined, _cyMatFBP, _shedEnclSpan, _cbFB);
+                        addPostLineAligned(0, oZ, false, sc.l, attachPS, undefined, undefined, _cyFB ? _ps8FB : undefined, _cyMatFBP, _shedEnclOuter, _cbFB);
                         // Gable end posts for front/back attached sheds
                         const zDir = sc.wall === 'front' ? -1 : 1;
                         const numGableBaysZ = Math.max(1, Math.floor(sc.w / attachPS));
-                        function addGableEndRowZ(gx) {
+                        function addGableEndRowZ(gx, _wKeyZ) {
                             const _pszGEB = _cyFB ? _ps8FB : ps;
                             const _pmatGEB = _cyFB ? _cyMatFBP : mP;
-                            var _rgZ = _shedPostGrp(gx); // length axis is X for gable-attached sheds
+                            var _rgZ = _shedPostGrp(gx, _wKeyZ); // length axis is X for gable-attached sheds
                             var _rgZHide = (_rgZ === grps.mainPosts);
                             function _addGZ(mesh){ if (_rgZHide) { mesh.userData = mesh.userData || {}; mesh.userData.hideBehindWall = true; } _rgZ.add(mesh); }
                             const gp0 = new THREE.Mesh(new THREE.BoxGeometry(_pszGEB, shedPostH, _pszGEB), _pmatGEB);
@@ -14835,8 +14842,8 @@ function applyVoiceQuote(parsed, overlay) {
                             var _pStartZFB = -ssl/2 + shedCenterOff, _pFarZFB = ssl/2 + shedCenterOff;
                             var _pShowG1FB = !_pPartFB || _enclFrom === 'start';
                             var _pShowG2FB = !_pPartFB || _enclFrom === 'end';
-                            if (_ew.includes('gable1') && _pShowG1FB) addGableEndRowZ(_pStartZFB);
-                            if (_ew.includes('gable2') && _pShowG2FB) addGableEndRowZ(_pFarZFB);
+                            if (_ew.includes('gable1') && _pShowG1FB) addGableEndRowZ(_pStartZFB, 'gable1');
+                            if (_ew.includes('gable2') && _pShowG2FB) addGableEndRowZ(_pFarZFB, 'gable2');
                             if (_pPartFB) addGableEndRowZ(_enclFrom === 'start' ? (_pStartZFB + _enclFt) : (_pFarZFB - _enclFt));
                         }
                     }
@@ -18381,10 +18388,12 @@ function applyVoiceQuote(parsed, overlay) {
                       }
                     }
                     }
-                    // Ridge cap
+                    // Ridge cap — roof colour, same as the main building's. It is roof
+                    // metal running the peak, not a trim piece, and a trim-coloured cap
+                    // read as a black stripe down an extension whose roof matched the barn.
                     var rW2=0.03;
                     grps.shed.add(mkQ([extXmid-rW2/2,extRidgePeak+0.003,aZ, extXmid+rW2/2,extRidgePeak+0.003,aZ, extXmid+rW2/2,extRidgePeak+0.003,oZoh, extXmid-rW2/2,extRidgePeak+0.003,oZoh],
-                                  new THREE.MeshBasicMaterial({color:pc(trimColorName),side:THREE.DoubleSide})));
+                                  new THREE.MeshBasicMaterial({color:pc(roofColorName),side:THREE.DoubleSide})));
                     // Outer gable end — timber or metal. Skipped entirely where the roof
                     // ties into a building hung on this face: the whole of that triangle
                     // stands above the other roof, so drawing it walls off the very
@@ -24941,7 +24950,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M67-1427';
+window.SAUCE_BUILD = 'M69-1445';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
