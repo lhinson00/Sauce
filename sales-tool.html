@@ -7451,6 +7451,8 @@ window.SauceParts = window.SauceParts || (function(){
     // is not a truss and "Corner Bracing" is not corner trim.
     { key:'cornerBracing', re:/corner\s*brac/i,      groups:['framing'], label:'corner bracing' },
     { key:'trussBracing',  re:/bracing|\bbrace(s)?\b/i, groups:['framing'], label:'truss bracing' },
+    { key:'openingHeader', re:/(door|window|opening)\s*header/i, groups:['framing'], label:'opening headers' },
+    { key:'jamb',    re:/\bjamb/i,                    groups:['framing'], label:'jamb posts' },
     { key:'header',  re:/header/i,                   groups:['framing'], label:'headers' },
     { key:'band',    re:/\bband(s)?\b/i,             groups:['framing'], label:'bottom bands' },
     // Metal trim. These go next: "Gable Rake Trim" names a gable but is a rake,
@@ -7478,7 +7480,8 @@ window.SauceParts = window.SauceParts || (function(){
                stud:0x38bdf8, plate:0xf59e0b, ridgeCap:0xf43f5e, rakeTrim:0xec4899,
                eaveTrim:0x8b5cf6, cornerTrim:0x14b8a6, baseTrim:0x84cc16,
                header:0xfb7185, trussBracing:0x2dd4bf, cornerBracing:0x0ea5e9,
-               band:0xa3e635, flyRafter:0xfde047, fascia:0xf97316, _default:0xf472b6 };
+               band:0xa3e635, flyRafter:0xfde047, fascia:0xf97316,
+               openingHeader:0xe879f9, jamb:0x60a5fa, _default:0xf472b6 };
 
   var _held = [];      // {mesh, mat} so the originals go back exactly as they were
   var _segs = [];      // board markers hung on their member, removed on clear
@@ -7538,7 +7541,9 @@ window.SauceParts = window.SauceParts || (function(){
   function resolve(item){
     if (!item) return null;
     var text = [item.description||'', item.sku||'', item.detail||''].join(' ');
-    if (NOT_YET.test(text)) return null;
+    // "Garage Door Headers" is a header. The door skip is there to keep door and
+    // window hardware out, not to hide the lumber over the opening.
+    if (!/header/i.test(text) && NOT_YET.test(text)) return null;
     for (var i=0;i<MAP.length;i++) {
       if (MAP[i].re.test(text)) {
         var a = areaOf(text);
@@ -7704,7 +7709,29 @@ window.SauceParts = window.SauceParts || (function(){
   // filled with. Splitting the run into the clicked line's own board length — in
   // the member's local frame, so a pitched rafter splits along its own slope —
   // puts one marker on the model per board on the list.
-  function boards(m, Lsc){
+  // How a purlin run is actually cut. The two end boards catch the overhang and
+  // run back far enough to land on a truss; the middle is filled with 20s. The
+  // lengths and the coverage come from the same truss spacing the calculator
+  // uses, so clicking the 12' line lights the end boards and clicking the 20'
+  // line lights the fill — instead of slicing the whole run from one end.
+  function purlinPlan(runFt){
+    var ts = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
+    var endB = (ts === 4) ? 16 : 12;
+    var cov  = (ts === 4) ? 12 : 10;
+    var oh   = (((window._Q||{}).oh) || 0) / 12;
+    if (runFt < endB * 2) return null;
+    var out = [{ at:0, len:endB }, { at:runFt - endB, len:endB }];
+    var at = oh + cov, end = runFt - oh - cov, rem = end - at;
+    var guard = 0;
+    while (rem > 0.05 && guard++ < 200) {
+      var L = (rem >= 20) ? 20 : ((ts === 4 && rem >= 12) ? 12 : 10);
+      out.push({ at:at, len:L });
+      at += L; rem -= L;
+    }
+    return out;
+  }
+
+  function boards(m, Lsc, planFn){
     var g = m.geometry;
     var p = g && g.parameters;
     if (p && typeof p.width === 'number') {
@@ -7712,6 +7739,14 @@ window.SauceParts = window.SauceParts || (function(){
       dims.sort(function(a,b){ return b[1]-a[1]; });
       var axis = dims[0][0], run = dims[0][1];
       if (!(run > 0) || Lsc <= 0) return null;
+      if (planFn) {
+        var pl = planFn(run / (window._spSc || 0.1));
+        if (pl) {
+          var keep = pl.filter(function(q){ return Math.abs(q.len - Lsc/(window._spSc||0.1)) < 0.01; });
+          if (!keep.length) return null;
+          return { axis:axis, run:run, cuts:keep, a:dims[1], b:dims[2] };
+        }
+      }
       var n = Math.floor(run / Lsc + 0.02);
       if (n < 1) return null;
       return { axis:axis, run:run, n:n, a:dims[1], b:dims[2] };
@@ -7792,9 +7827,9 @@ window.SauceParts = window.SauceParts || (function(){
             else out.push({ m:m, b:null });
             return;
           }
-          if (Math.abs(len - L) <= tol) { out.push({ m:m, b:null }); return; }
-          if (len > L + tol) {
-            var b = boards(m, Lsc);
+          if (Math.abs(len - L) <= tol && entry.key !== 'purlin') { out.push({ m:m, b:null }); return; }
+          if (len > L - 0.01) {
+            var b = boards(m, Lsc, entry.key === 'purlin' ? purlinPlan : null);
             if (b) out.push({ m:m, b:b });
           }
         });
@@ -7834,6 +7869,25 @@ window.SauceParts = window.SauceParts || (function(){
           var w2 = b.quad ? 0 : b.a[1]*1.5, d2 = b.quad ? 0 : b.b[1]*1.5;
           var dirQ = null;
           if (b.quad) { dirQ = b.b.clone().sub(b.a).normalize(); }
+          if (b.cuts) {
+            var scP = window._spSc || 0.1;
+            b.cuts.forEach(function(q){
+              var sg2 = new THREE.Mesh(
+                b.axis === 'x' ? new THREE.BoxGeometry(q.len*scP*0.96, w2, d2) :
+                b.axis === 'y' ? new THREE.BoxGeometry(w2, q.len*scP*0.96, d2) :
+                                 new THREE.BoxGeometry(w2, d2, q.len*scP*0.96),
+                (shown % 2) ? mB : mA);
+              var o2 = -half + (q.at + q.len/2) * scP;
+              sg2.position.set(b.axis==='x'?o2:0, b.axis==='y'?o2:0, b.axis==='z'?o2:0);
+              sg2.renderOrder = 999;
+              if (!e.m.visible) { _held.push({ mesh:e.m, mat:e.m.material, vis:false }); e.m.visible = true; }
+              e.m.add(sg2); _segs.push(sg2);
+              shown++;
+              label(e.m, sg2.position, shown);
+              lens[q.len] = (lens[q.len]||0)+1;
+            });
+            return;
+          }
           for (var i=0;i<b.n;i++){
             var sg;
             if (b.quad) {
@@ -20317,6 +20371,14 @@ function applyVoiceQuote(parsed, overlay) {
 
           // Draw header + jamb posts for all openings on a wall
           function drawOpeningFraming(axis, fixedCoord, gaps, halfLen) {
+            // These run while the girt stamp is set, so a garage door header was
+            // reporting itself as a girt and no header line could find it.
+            var _opPrev = window._spPart;
+            window._spPart = 'openingHeader';
+            try { return drawOpeningFramingBody(axis, fixedCoord, gaps, halfLen); }
+            finally { window._spPart = _opPrev; }
+          }
+          function drawOpeningFramingBody(axis, fixedCoord, gaps, halfLen) {
             var headerMat = new THREE.MeshLambertMaterial({ color: 0xA07840 }); // darker — 2×12 LVL/header
             var jambMat   = new THREE.MeshLambertMaterial({ color: 0xC4A46A }); // jamb post
             var hdrH  = 0.10 * Sc; // 2×12 header depth ~11.25" ≈ 0.94', use 0.10 scene
@@ -20343,7 +20405,7 @@ function applyVoiceQuote(parsed, overlay) {
                     jambMat
                   );
                   jm.position.set(fixedCoord, jh/2, jz);
-                  grps.framing.add(jm);
+                  window._spPart = 'jamb'; grps.framing.add(jm); window._spPart = 'openingHeader';
                 });
               } else {
                 var hm2 = new THREE.Mesh(
@@ -20359,7 +20421,7 @@ function applyVoiceQuote(parsed, overlay) {
                     jambMat
                   );
                   jm2.position.set(jx, jh2/2, fixedCoord);
-                  grps.framing.add(jm2);
+                  window._spPart = 'jamb'; grps.framing.add(jm2); window._spPart = 'openingHeader';
                 });
               }
             });
@@ -20496,6 +20558,21 @@ function applyVoiceQuote(parsed, overlay) {
                 if (_wOpenF(gw.id)) return; bands('x', gw.z, sw/2, _gPSf);
               });
             })();
+
+            // Eave fascia — the board along the eave edge that the eave trim wraps.
+            // The list buys it and nothing was drawn under the trim.
+            if ((Q.oh || 0) > 0 && Q.truss !== 'Steel') {
+              window._spPart = 'fascia';
+              var _fsX = sw/2 + oh;
+              var _fsSlope = (sw > 0) ? (sr - sh) / (sw/2) : 0;
+              var _fsY = sh - oh * _fsSlope;
+              var _fsD = 0.055, _fsT = 0.020;
+              [-1, 1].forEach(function(sgn){
+                var m = new THREE.Mesh(new THREE.BoxGeometry(_fsT, _fsD, sl + 2*oh), _hdrMat);
+                m.position.set(sgn * _fsX, _fsY - _fsD/2, 0);
+                m.castShadow = true; grps.framing.add(m);
+              });
+            }
 
             // Fly rafters — the outriggers carrying the rake overhang at each gable
             // end, one per slope. The rake trim was drawn over nothing.
@@ -24328,7 +24405,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M51-1055';
+window.SAUCE_BUILD = 'M52-1140';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
