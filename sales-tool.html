@@ -3357,7 +3357,14 @@ window._resizeRender = function(){ try { var c=document.getElementById('qgRV'); 
 // Shared right-dock for the Material / Labor / Concrete panels (desktop). Only one docks at a time.
 window._DOCK_W = 420;
 window._dockPanel = function(overlay, panel){ try {
-  ['sauceMaterialsModal','sauceLaborModal','sauceConcreteModal'].forEach(function(id){ var el=document.getElementById(id); if(el && el!==overlay) el.remove(); });
+  ['sauceMaterialsModal','sauceLaborModal','sauceConcreteModal'].forEach(function(id){
+    var el=document.getElementById(id);
+    if (el && el!==overlay) {
+      // The material list is going away, so its highlight goes with it.
+      if (id === 'sauceMaterialsModal') { try { if (window.SauceParts) window.SauceParts.clear(); } catch(e){} }
+      el.remove();
+    }
+  });
   overlay.style.cssText = 'display:flex;position:fixed;top:0;right:0;bottom:0;width:'+window._DOCK_W+'px;background:#2e2e2e;z-index:9998;align-items:stretch;justify-content:stretch;box-shadow:-8px 0 24px rgba(0,0,0,.35);';
   panel.style.width='100%'; panel.style.maxWidth='none'; panel.style.height='100%'; panel.style.maxHeight='none'; panel.style.borderRadius='0'; panel.style.boxSizing='border-box';
   var _wasDocked = document.body.classList.contains('matlist-docked');
@@ -7252,7 +7259,11 @@ window._spMark = function(grp, from, part, unit){
   window._shedRoleTag = function(grps){
     if (!grps || !grps.shed || typeof THREE === 'undefined') return;
     _vecs();
-    grps.shed.traverse(function(o){
+    // The main building's own surfaces get the same tag, so a metal line can ask
+    // for roof panels or wall panels wherever they live.
+    ['shed','roof','walls','wallPanels'].forEach(function(gn){
+      var g = grps[gn]; if (!g) return;
+      g.traverse(function(o){
       if (!o.isMesh || !o.geometry) return;
       o.userData = o.userData || {};
       if (o.userData.sRole) return;
@@ -7263,6 +7274,10 @@ window._spMark = function(grp, from, part, unit){
       o.updateWorldMatrix(true,false);
       _n.transformDirection(o.matrixWorld);
       o.userData.sRole = (Math.abs(_n.y) > 0.35) ? 'roof' : 'wall';
+      // Which way it faces, coarsely. Two roof slopes and four walls fall into
+      // their own buckets, which is what panels have to be laid out across.
+      o.userData.sFace = Math.round(_n.x*3) + '|' + Math.round(_n.y*3) + '|' + Math.round(_n.z*3);
+      });
     });
   };
   window._shedRoleApply = function(grps, wallsOn, roofOn){
@@ -7515,18 +7530,31 @@ window.SauceParts = window.SauceParts || (function(){
   // Order matters — the first rule that matches wins, so the more specific
   // wording goes first. "Wood Truss Roof Purlins" is a purlin, not a truss.
   var MAP = [
+    // Metal panels. These are surfaces, not sticks, so they are picked by what the
+    // surface is rather than by a part name, and counted in 3' panel widths.
+    { key:'roofMetal', re:/roof\s*metal/i,
+      reDesc:/^(main building|extension|side shed)$|roof\s*metal/i,
+      groups:['roof','shed'], role:'roof', panel:3, label:'roof panels' },
+    { key:'soffitMetal', re:/soffit\s*metal/i, groups:['roof','walls','shed'], role:'roof',
+      panel:3, label:'soffit panels' },
+    { key:'wallMetal', re:/sidewall\s*metal|gable\s*metal|lean-?to\s*gable\s*metal|gable\s*extension\s*metal|wall\s*metal/i,
+      groups:['walls','wallPanels','shed'], role:'wall', panel:3, label:'wall panels' },
     // Structural members whose wording collides with other rules: "Truss Bracing"
     // is not a truss and "Corner Bracing" is not corner trim.
     { key:'cornerBracing', re:/corner\s*brac/i,      groups:['framing'], label:'corner bracing' },
     { key:'trussBracing',  re:/bracing|\bbrace(s)?\b/i, groups:['framing'], label:'truss bracing' },
     { key:'openingHeader', re:/(door|window|opening)\s*header/i, groups:['framing'], label:'opening headers' },
-    { key:'jamb',    re:/\bjamb/i,                    groups:['framing'], label:'jamb posts' },
+    { key:'jamb',    re:/\bjamb|\bjack(s)?\b/i,        groups:['framing'], label:'jamb posts' },
     { key:'header',  re:/header/i,                   groups:['framing'], label:'headers' },
     { key:'band',    re:/\bband(s)?\b/i,             groups:['framing'], label:'bottom bands' },
     // Metal trim. These go next: "Gable Rake Trim" names a gable but is a rake,
     // and "Outside Corner" is a corner trim, not a post.
     { key:'ridgeCap',   re:/ridge\s*cap/i,            groups:['roof'],   label:'ridge cap' },
-    { key:'rakeTrim',   re:/\brake\b/i,               groups:['roof'],   label:'rake trim' },
+    { key:'rakeTrim',   re:/\brake\b|gable\s*trim/i,   groups:['roof','shed'], label:'rake trim' },
+    { key:'jChannel',   re:/j-?channel/i,             groups:['walls','wallPanels','shed'], label:'J-channel' },
+    { key:'valleyPanel', re:/valley\s*panel/i,        groups:['roof','shed'], label:'valley panels' },
+    { key:'birdBox',    re:/bird\s*box/i,             groups:['walls','roof'], label:'bird box trim' },
+    { key:'soffitTrim', re:/soffit\s*(f&j|f\s*&\s*j|trim)/i, groups:['walls','roof'], label:'soffit trim' },
     // Eave fascia is a board, not the metal eave trim — it gets its own rule so a
     // fascia line is not answered with the trim that covers it.
     { key:'fascia',     re:/\bfascia\b/i,            groups:['framing'], label:'fascia boards' },
@@ -7535,6 +7563,7 @@ window.SauceParts = window.SauceParts || (function(){
     { key:'baseTrim',   re:/base\s*trim|rat\s*guard/i, groups:['walls','wallPanels'], label:'base trim' },
     { key:'purlin', re:/purlin/i,                    groups:['framing'], label:'purlins' },
     { key:'girt',   re:/girt/i,                      groups:['framing'], label:'girts' },
+    { key:'osb',     re:/\bosb\b|sheathing/i,         groups:['walls','wallPanels','framing'], label:'sheathing' },
     { key:'ledger',  re:/\bledger/i,                 groups:['framing'], label:'ledgers' },
     { key:'ridgeBoard', re:/ridge\s*board/i,         groups:['framing'], label:'ridge boards' },
     { key:'valleyBoard', re:/valley\s*board/i,       groups:['framing'], label:'valley boards' },
@@ -7544,6 +7573,8 @@ window.SauceParts = window.SauceParts || (function(){
     { key:'plate',  re:/\bplate(s)?\b/i,             groups:['framing'], label:'plates' },
     { key:'gableTruss', re:/gable\s*(end\s*)?truss|gable\s*ext[^|]*gable\s*truss/i, groups:['trusses'], label:'gable trusses' },
     { key:'truss',  re:/truss/i,                     groups:['trusses'], label:'trusses' },
+    { key:'door',    re:/garage\s*door|barn\s*door|walk\s*door|drum\s*door|overhead\s*door/i,
+      groups:['doors'], label:'doors' },
     { key:'footingPad', re:/footing\s*pad|\bpad(s)?\b/i, groups:['posts','mainPosts'], label:'footing pads' },
     { key:'post',   re:/\bpost(s)?\b|column/i,       groups:['posts','mainPosts'], label:'posts' }
   ];
@@ -7556,7 +7587,10 @@ window.SauceParts = window.SauceParts || (function(){
                band:0xa3e635, flyRafter:0xfde047, fascia:0xf97316,
                openingHeader:0xe879f9, jamb:0x60a5fa, footingPad:0x94a3b8,
                gableTruss:0x06b6d4, ledger:0xd946ef, ridgeBoard:0xf43f5e,
-               valleyBoard:0xfb923c, _default:0xf472b6 };
+               valleyBoard:0xfb923c, roofMetal:0x0ea5e9, wallMetal:0x22c55e,
+               soffitMetal:0xa855f7, jChannel:0x38bdf8, valleyPanel:0xf59e0b,
+               birdBox:0xc084fc, soffitTrim:0x2dd4bf, door:0xf97316, osb:0xeab308,
+               _default:0xf472b6 };
 
   var _held = [];      // {mesh, mat} so the originals go back exactly as they were
   var _segs = [];      // board markers hung on their member, removed on clear
@@ -7567,7 +7601,7 @@ window.SauceParts = window.SauceParts || (function(){
   // Checked before the map, because a line like "Wood Truss Roof Purlins" names a
   // truss but is not one. Anything caught here reports as not mapped rather than
   // lighting the wrong members — a wrong highlight is worse than none.
-  var NOT_YET = /blocking|joist|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|soffit|flashing|concrete|sackcrete|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
+  var NOT_YET = /blocking|joist|screw|bolt|nail|hanger|bracket|closure|sealant|flashing|concrete|sackcrete|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
 
   // Which part of the building a line is talking about. The list names an
   // attachment three ways: by position ("Shed 2"), by the wall it sits on
@@ -7618,19 +7652,27 @@ window.SauceParts = window.SauceParts || (function(){
     };
   }
 
+  // Fasteners, fees and consumables. The list buys them and the model has no stick
+  // to point at, so they say so rather than reading as an unmapped line.
+  var HARDWARE = /screw|\bnail|\bbolts?\b|\blag\b|bracket|hanger|sealant|sealer|sackcrete|pallet|\bfee\b|crane|closure|\bglue\b|caulk|tape|fastener|\bclip\b|anchor/i;
+
   function resolve(item){
     if (!item) return null;
     var text = [item.description||'', item.sku||'', item.detail||''].join(' ');
+    if (HARDWARE.test(text)) return { key:'_hardware', groups:[], label:'hardware' };
     // "Garage Door Headers" is a header. The door skip is there to keep door and
     // window hardware out, not to hide the lumber over the opening.
-    if (!/header/i.test(text) && NOT_YET.test(text)) return null;
+    if (!/header|jack|jamb|garage\s*door|barn\s*door|walk\s*door|drum\s*door|overhead\s*door/i.test(text)
+        && NOT_YET.test(text)) return null;
+    var desc = (item.description || '');
     for (var i=0;i<MAP.length;i++) {
-      if (MAP[i].re.test(text)) {
+      if (MAP[i].reDesc ? MAP[i].reDesc.test(desc) : MAP[i].re.test(text)) {
         var a = areaOf(text);
         // Length is read off the model, not off the line. The detail field carries
         // spacings, spans and pitches as well as stock lengths — "Every 2ft up wall"
         // is not a 2ft girt — so matching on it filtered out correct members.
         return { key: MAP[i].key, groups: MAP[i].groups, label: MAP[i].label,
+                 role: MAP[i].role, panel: MAP[i].panel,
                  area: a, where: a.label };
       }
     }
@@ -7651,7 +7693,9 @@ window.SauceParts = window.SauceParts || (function(){
       grp.traverse(function(o){
         if (!o.isMesh || !o.material) return;
         if (o.userData && o.userData.notAPart) return;
-        if (mixed && !(o.userData && o.userData.sPart === entry.key)) return;
+        if (entry.role) {
+          if (!(o.userData && o.userData.sRole === entry.role)) return;
+        } else if (mixed && !(o.userData && o.userData.sPart === entry.key)) return;
         var idx = (o.userData && o.userData.sIdx != null) ? o.userData.sIdx : null;
         if (entry.area && !entry.area.test(idx == null ? null : cfgs[idx], idx)) return;
         var info = measure(o);
@@ -7776,7 +7820,20 @@ window.SauceParts = window.SauceParts || (function(){
       var scene = window._3d && window._3d.scene; if (!scene) return;
       if (!_labV) _labV = new THREE.Vector3();
       if (localPos) { _labV.copy(localPos); member.localToWorld(_labV); }
-      else member.getWorldPosition(_labV);
+      else {
+        // A panel is built from world-space vertices and sits at the origin, so
+        // asking the mesh for its position stacks every label at the centre of
+        // the building. Take the centre of the geometry instead.
+        var _bb = member.geometry && member.geometry.boundingBox;
+        if (!_bb && member.geometry && member.geometry.computeBoundingBox) {
+          member.geometry.computeBoundingBox(); _bb = member.geometry.boundingBox;
+        }
+        if (_bb) {
+          _labV.set((_bb.max.x+_bb.min.x)/2, (_bb.max.y+_bb.min.y)/2, (_bb.max.z+_bb.min.z)/2);
+          member.updateWorldMatrix(true,false);
+          _labV.applyMatrix4(member.matrixWorld);
+        } else member.getWorldPosition(_labV);
+      }
       var sp = new THREE.Sprite(new THREE.SpriteMaterial({
         map: labTex(n), depthTest:false, transparent:true, sizeAttenuation:true }));
       sp.position.copy(_labV);
@@ -7890,6 +7947,7 @@ window.SauceParts = window.SauceParts || (function(){
     clear();
     var entry = resolve(item);
     if (!entry) return { ok:false, reason:'unmapped' };
+    if (entry.key === '_hardware') return { ok:false, reason:'hardware' };
     var meshes = collect(entry);
     if (!meshes.length) return { ok:false, reason:'none', label:entry.label };
     // Two tints, alternating, so pieces that butt end to end can still be told
@@ -7908,12 +7966,65 @@ window.SauceParts = window.SauceParts || (function(){
       return (a1.x - b1.x) || (a1.z - b1.z) || (a1.y - b1.y);
     });
 
+    // ── PANEL MODE ────────────────────────────────────────────────────────────
+    // Metal is a surface, drawn as hundreds of narrow rib strips. Cutting each one
+    // into boards gives thousands of pieces and tells you nothing. The strips are
+    // grouped by which way they face and then banded into 3' panel widths, so a 60'
+    // wall reads as the twenty panels the list buys.
+    if (entry.panel) {
+      var scP2 = window._spSc || 0.1, pw = entry.panel * scP2;
+      var faces = {};
+      meshes.forEach(function(m){
+        var f = (m.userData && m.userData.sFace) || '?';
+        var inf = measure(m);
+        var fb = faces[f] || (faces[f] = { ms:[], minX:1e9, maxX:-1e9, minZ:1e9, maxZ:-1e9 });
+        fb.ms.push({ m:m, x:inf.x, z:inf.z });
+        if (inf.x < fb.minX) fb.minX = inf.x; if (inf.x > fb.maxX) fb.maxX = inf.x;
+        if (inf.z < fb.minZ) fb.minZ = inf.z; if (inf.z > fb.maxZ) fb.maxZ = inf.z;
+      });
+      var panelNo = 0;
+      Object.keys(faces).forEach(function(f){
+        var fb = faces[f];
+        var useX = (fb.maxX - fb.minX) >= (fb.maxZ - fb.minZ);
+        var lo = useX ? fb.minX : fb.minZ, hi = useX ? fb.maxX : fb.maxZ;
+        var span = hi - lo;
+        var n = Math.max(1, Math.ceil((span + 1e-6) / pw));
+        var bands = [];
+        fb.ms.forEach(function(e){
+          var t = (useX ? e.x : e.z) - lo;
+          var bi = Math.min(n - 1, Math.max(0, Math.floor(t / pw)));
+          (bands[bi] || (bands[bi] = [])).push(e.m);
+        });
+        for (var bi2 = 0; bi2 < n; bi2++) {
+          var grp2 = bands[bi2]; if (!grp2 || !grp2.length) continue;
+          panelNo++;
+          var mtp = (panelNo % 2) ? mB : mA;
+          grp2.forEach(function(mm){
+            _held.push({ mesh:mm, mat:mm.material, vis:mm.visible });
+            mm.visible = true; mm.material = mtp;
+          });
+          var top = grp2[0], ty2 = -Infinity;
+          grp2.forEach(function(mm){ var pp = measure(mm); if (pp.y > ty2) { ty2 = pp.y; top = mm; } });
+          label(top, null, panelNo);
+        }
+      });
+      if (!panelNo) { clear(); return { ok:false, reason:'none', label:entry.label }; }
+      try {
+        var gP = _grps();
+        (entry.groups||[]).forEach(function(nm){ if (gP && gP[nm]) gP[nm].visible = true; });
+      } catch(e){}
+      _active = entry.key;
+      return { ok:true, count:panelNo, label:entry.label, key:entry.key, where:entry.where,
+               lens:'', boardFt:entry.panel, members:meshes.length,
+               billed:(item && parseFloat(item.quantity)) || null, boards:true };
+    }
+
     // ── BOARD MODE ────────────────────────────────────────────────────────────
     // The clicked line names one board length. Members that ARE that board light
     // whole; members long enough to be cut from it are marked board by board. A
     // member that is neither is a different line's board and stays dark, so four
     // 22' gable posts light and the 12' ones beside them do not.
-    var L = skuLen(item && item.sku, entry.key);
+    var L = entry.panel ? entry.panel : skuLen(item && item.sku, entry.key);
     var sc1 = window._spSc || 0.1;
     var want = (item && parseFloat(item.quantity)) || 0;
     var lens = {}, shown = 0, lit = 0, segMode = false, noneOfLen = false;
@@ -7923,7 +8034,7 @@ window.SauceParts = window.SauceParts || (function(){
       // calculator's own rule, so that match is exact and is tried first. An
       // attachment post is bought under a different rule, so when the stamp finds
       // nothing the measured length is used instead rather than reporting nothing.
-      var isTrim = !!TRIMKEY[entry.key];
+      var isTrim = !!TRIMKEY[entry.key] || !!entry.panel;
       // An (O/H) purlin line is the outermost board at each end; the plain line
       // is the field fill between them.
       var _wantOH = /\(O\/H\)/i.test((item && item.description) || '');
@@ -13482,7 +13593,7 @@ function applyVoiceQuote(parsed, overlay) {
         // Trim lands in the same groups as the panels it sits on, so the group
         // cannot say what a piece is. Same trick as the framing: a block says what
         // it is building and everything added while that is set carries the stamp.
-        ['framing','walls','wallPanels','roof','trusses'].forEach(function(_gn){
+        ['framing','walls','wallPanels','roof','trusses','doors'].forEach(function(_gn){
           var _g = grps[_gn]; if (!_g) return;
           var _fa = _g.add.bind(_g);
           _g.add = function(o){
@@ -15055,7 +15166,10 @@ function applyVoiceQuote(parsed, overlay) {
         window._spPart = null; window._spUnit = null;
 
         // Doors (with trim-colored frames)
-        placed.forEach(d => {
+        placed.forEach((d, _dIx) => {
+            // One opening is one thing on the list, drawn as a frame, a panel and
+            // its trim, so it says which door it is.
+            window._spUnit = 'dr' + _dIx;
             const isG = (d.wall === 'front' || d.wall === 'back');
             const wLen = isG ? Q.w : Q.l;
             const dw = d.w * Sc, dh = d.h * Sc, center = ((-wLen / 2) + (d.offset || 0) + d.w / 2) * Sc;
@@ -15506,6 +15620,7 @@ function applyVoiceQuote(parsed, overlay) {
                 }
             }
         });
+        window._spUnit = null;
 
         // === WALK DOORS (3D rendering) ===
         // mWalkDoor is per-door now (see below); keep placeholder for Dutch door fallback
@@ -21689,6 +21804,9 @@ function applyVoiceQuote(parsed, overlay) {
         if (typeof _framingVisible !== 'undefined') {
           grps.framing.visible = _framingVisible;
         }
+        // A rebuild replaces every mesh, so anything still held by a highlight is
+        // gone. Let it go rather than leaving stale references behind.
+        try { if (window.SauceParts) window.SauceParts.clear(); } catch(e) {}
         try { window._shedRoleTag(grps); } catch(e) {}
         try { window._shedStudFrame(grps, Sc); } catch(e) {}
         try { window._postBuyTag(grps, Sc); } catch(e) {}
@@ -24579,7 +24697,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M59-1540';
+window.SAUCE_BUILD = 'M62-1133';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -35887,10 +36005,35 @@ window.SauceMaterials.calcEaveFascia = function(Q, WALLS, shedCfgs) {
   });
 };
 
+// ── GIRT LUMBER TABLE ────────────────────────────────────────────────────────
+// EDIT HERE to change how girt board lengths get picked. This is the ONLY place
+// the lengths live — both Sidewall Girts and Gable End Girts read it, main
+// building and side sheds alike. Nothing below hardcodes a board length.
+//
+//   GIRT_STOCK — lengths we actually stock, shortest first. A bay that isn't
+//                paired gets the shortest stocked length that reaches across it,
+//                waste accepted: a 7' bay ships a 10' board, because we don't
+//                stock 8's.
+//
+//   GIRT_PAIR  — post spacing (ft) → the stocked board that spans TWO of those
+//                bays. This is how we kill joints, cuts and waste: at 10'
+//                spacing we send 20' boards (one per two bays) instead of 10's,
+//                and at 8' spacing we send 16's. A leftover odd bay falls back
+//                to the single-bay length from GIRT_STOCK — so a 50' wall at 10'
+//                spacing is (2) 20' + (1) 10' per run.
+//
+//                To change the behavior: add an entry to pair a spacing
+//                (7:14 would pair 7' bays into 14' boards), or delete one to
+//                stop pairing that spacing and go back to one board per bay.
+//                12' and 14' spacing are deliberately absent — 24' and 28'
+//                aren't stocked, so those stay one board per bay.
+window.GIRT_STOCK = window.GIRT_STOCK || [10, 12, 14, 16, 18, 20];
+window.GIRT_PAIR  = window.GIRT_PAIR  || { 8: 16, 10: 20 };
+
 // ── ITEM 22: SIDEWALL GIRTS ──────────────────────────────────────────────────
 // All buildings. Enclosed eave walls only (main + side sheds).
 // Always SYP26xx. Rows = floor(wallHeight / 2). +10%.
-// 12' spacing → 12' boards. 10' spacing → 20' first then 10' fill.
+// Board lengths come from GIRT_STOCK / GIRT_PAIR above.
 
 window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
 
@@ -35900,15 +36043,23 @@ window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
   }
 
   function fillRuns(wallLen, ps) {
-    // Returns map of boardLen → count. Rule: each board must be LONGER than the bay
-    // (post spacing) but the SHORTEST stocked length that covers it — no spanning bays,
-    // no waste. 11' bay → 12' board, 10' → 10', 14' → 14', etc. This matches how eave
-    // lumber and trim are actually pulled: one piece per bay, sized up to stock.
-    var STOCK = [10, 12, 14, 16, 18, 20];
+    // Returns map of boardLen → count. See the GIRT_STOCK / GIRT_PAIR table above.
+    // If the spacing is in GIRT_PAIR, bays get paired onto one long board (10' bays
+    // → 20' boards, 8' bays → 16's) and any odd bay left over takes a single-bay
+    // board. Otherwise it's one board per bay: the shortest stocked length that
+    // covers the bay, waste accepted (11' bay → 12' board, 7' bay → 10' board).
+    var STOCK   = window.GIRT_STOCK || [10, 12, 14, 16, 18, 20];
+    var PAIR    = window.GIRT_PAIR  || {};
     var numBays = Math.max(1, Math.round(wallLen / ps));
-    var perBay = STOCK.find(function(l){ return l >= ps - 0.01; }) || 20;
+    var perBay  = STOCK.find(function(l){ return l >= ps - 0.01; }) || STOCK[STOCK.length - 1];
+    var pairLen = PAIR[ps];
     var out = {};
-    out[perBay] = numBays;
+    if (pairLen && numBays >= 2) {
+      out[pairLen] = Math.floor(numBays / 2);
+      if (numBays % 2) out[perBay] = (out[perBay] || 0) + 1;
+    } else {
+      out[perBay] = numBays;
+    }
     return out;
   }
 
@@ -35994,15 +36145,20 @@ window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
 window.SauceMaterials.calcGableGirts = function(Q, WALLS, shedCfgs) {
 
   function fillRuns(wallLen, ps) {
-    // 8' spacing — 16' boards for paired bays, 10' for final odd bay
+    // 8' spacing — paired bays get the GIRT_PAIR board (16'), final odd bay a 10'
     if (ps === 8) {
+      var pair8     = (window.GIRT_PAIR || {})[8];
       var bays8     = Math.floor(wallLen / 8);
       var rem8      = wallLen % 8;
-      var boards16  = Math.floor(bays8 / 2);
-      var oddBay    = bays8 % 2;
       var result8   = {};
-      if (boards16 > 0) result8[16] = boards16;
-      if (oddBay > 0 || rem8 > 0) result8[10] = (result8[10]||0) + 1;
+      if (pair8) {
+        var boards16  = Math.floor(bays8 / 2);
+        var oddBay    = bays8 % 2;
+        if (boards16 > 0) result8[pair8] = boards16;
+        if (oddBay > 0 || rem8 > 0) result8[10] = (result8[10]||0) + 1;
+      } else {
+        result8[10] = bays8 + ((rem8 > 0) ? 1 : 0);
+      }
       return result8;
     }
     // 12' spacing — full bays get 12' boards, remainder gets 10'
@@ -36016,17 +36172,23 @@ window.SauceMaterials.calcGableGirts = function(Q, WALLS, shedCfgs) {
     }
     // 11' (or any non-standard) — one board per bay, shortest stock that covers the bay.
     if (ps !== 10) {
-      var STOCKg = [10, 12, 14, 16, 18, 20];
+      var STOCKg = window.GIRT_STOCK || [10, 12, 14, 16, 18, 20];
       var nB = Math.max(1, Math.round(wallLen / ps));
-      var pB = STOCKg.find(function(l){ return l >= ps - 0.01; }) || 20;
+      var pB = STOCKg.find(function(l){ return l >= ps - 0.01; }) || STOCKg[STOCKg.length - 1];
       var og = {}; og[pB] = nB; return og;
     }
-    // 10' spacing (default) — full bays get 10' boards, remainder gets 10'
+    // 10' spacing (default) — paired bays get the GIRT_PAIR board (20'), odd bay a 10'
     var fullBays10 = Math.floor(wallLen / 10);
     var rem10      = wallLen % 10;
     var result10   = {};
     var totalBoards = fullBays10 + (rem10 > 0.01 ? 1 : 0);
-    if (totalBoards > 0) result10[10] = totalBoards;
+    var pair10 = (window.GIRT_PAIR || {})[10];
+    if (pair10 && totalBoards >= 2) {
+      result10[pair10] = Math.floor(totalBoards / 2);
+      if (totalBoards % 2) result10[10] = 1;
+    } else if (totalBoards > 0) {
+      result10[10] = totalBoards;
+    }
     return result10;
   }
 
@@ -50133,6 +50295,9 @@ async function generateChecklist() {
 window.closeMaterialsModal = function() {
   var m = document.getElementById('sauceMaterialsModal');
   if (m) m.remove();
+  // Close the list, drop the highlight with it — otherwise a lit line leaves the
+  // model coloured with no list open to say what the colour means.
+  try { if (window.SauceParts) window.SauceParts.clear(); } catch(e) {}
   window._sessionOverrides = {};
   if (window._undockPanel) window._undockPanel();
 };
@@ -53657,7 +53822,8 @@ window.openMaterialsModal = function(initialTab) {
             var r = window.SauceParts.highlight(captItem);
             if (!r.ok) {
               try { showToast(
-                r.reason === 'unmapped' ? 'No model parts mapped to this line yet'
+                r.reason === 'hardware' ? 'Fasteners and consumables — nothing on the model to point at'
+              : r.reason === 'unmapped' ? 'No model parts mapped to this line yet'
               : r.reason === 'nolen'    ? ('No ' + r.boardFt + "' board is drawn on " + (r.where||'the model')
                                             + (r.billed ? '  —  list buys ' + r.billed : ''))
               : 'Nothing of that kind is drawn there', 'warn'); } catch(e){}
