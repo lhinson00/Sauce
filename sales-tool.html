@@ -7276,6 +7276,16 @@ window._spMark = function(grp, from, part, unit){
   };
   // Single slope puts the whole building in that group, so it keeps the old
   // all-or-nothing behaviour.
+  // Below grade is only drawn through the ground when the walls are off.
+  window._footXray = function(on){
+    var ms = window._footMats; if (!ms) return;
+    ms.forEach(function(m){
+      if (!m) return;
+      if (m.depthTest === !on) return;
+      m.depthTest = !on; m.needsUpdate = true;
+    });
+  };
+
   window._shedRolesOff = function(){
     try { return ((window._Q || window.Q || {}).roofStyle === 'single'); } catch(e) { return false; }
   };
@@ -7289,8 +7299,8 @@ window._spMark = function(grp, from, part, unit){
   window._postBuyTag = function(grps, Sc){
     if (!grps || typeof THREE === 'undefined') return;
     var SM = window.SauceMaterials;
-    if (!SM || typeof SM.enforceMinPostLen !== 'function') return;
     var sc1 = Sc || window._spSc || 0.1;
+    var canBuy = !!(SM && typeof SM.enforceMinPostLen === 'function');
     var onTop = false;
     try { onTop = ((document.getElementById('st_postsOnTop')||{}).value === 'Yes'); } catch(e){}
     var ground = onTop ? 0 : 4;
@@ -7298,20 +7308,72 @@ window._spMark = function(grp, from, part, unit){
       var g = grps[gn]; if (!g) return;
       g.traverse(function(o){
         if (!o.isMesh || !o.geometry) return;
-        // Main building only. An attachment post is built at full length and then
-        // clamped to fit under its roof, so its drawn height is not its height,
-        // and it is bought under its own rule besides. Those keep the measured
-        // match, which already lands on the right board for them.
-        if (o.userData && o.userData.sIdx != null) return;
         var p = o.geometry.parameters;
         if (!p || typeof p.height !== 'number') return;
         var topY = o.position.y + (p.height * (o.scale ? o.scale.y : 1)) / 2;
         var aboveFt = topY / sc1;
         if (!(aboveFt > 1)) return;                     // pads, brackets, caps
-        var size = (p.width && p.width/sc1 > 0.6) ? '8x8' : '6x6';
         o.userData = o.userData || {};
+        if (o.userData.sPart == null) o.userData.sPart = 'post';
+        // The buy length is main building only. An attachment post is built at full
+        // length and then clamped to fit under its roof, so its drawn height is not
+        // its height, and it is bought under its own rule besides. Those keep the
+        // measured match, which already lands on the right board for them.
+        if (o.userData.sIdx != null || !canBuy) return;
+        var size = (p.width && p.width/sc1 > 0.6) ? '8x8' : '6x6';
         o.userData.sBuyFt = SM.enforceMinPostLen(size, aboveFt + ground);
       });
+    });
+  };
+
+  // In-ground posts stop at grade in the model, so a building that is quoted with
+  // posts in the ground looks like it is standing on the dirt. Each post now
+  // carries its buried length and the footing pad under it, ghosted the way a
+  // section on an engineered drawing shows what is below grade. The pads are also
+  // the first thing the Post Footing Pads line has ever had to point at.
+  window._postFootings = function(grps, Sc){
+    if (!grps || typeof THREE === 'undefined') return;
+    var onTop = false;
+    try { onTop = ((document.getElementById('st_postsOnTop')||{}).value === 'Yes'); } catch(e){}
+    if (onTop) return;
+    var sc1 = Sc || window._spSc || 0.1;
+    var BURY = 4 * sc1;                  // 4' embedment, the same the list buys for
+    var PADT = (2/12) * sc1;             // moulded plastic pad, about 2" thick
+    // Depth testing stays ON so these can never punch through a clad wall. The
+    // x-ray through the ground is switched on only with the walls hidden, which
+    // is the view the section is for.
+    var mBur = new THREE.MeshLambertMaterial({ color: 0x8a7a5c, transparent:true,
+                 opacity:0.55, side:THREE.DoubleSide });
+    var mPad = new THREE.MeshLambertMaterial({ color: 0x1c1c1c, transparent:true,
+                 opacity:0.85, side:THREE.DoubleSide });
+    window._footMats = [mBur, mPad];
+    ['posts','mainPosts'].forEach(function(gn){
+      var g = grps[gn]; if (!g) return;
+      var add = [];
+      g.traverse(function(o){
+        if (!o.isMesh || !o.geometry) return;
+        var _sp = o.userData && o.userData.sPart;
+        if (_sp === 'footingPad' || _sp === 'postBuried') return;
+        var p = o.geometry.parameters;
+        if (!p || typeof p.height !== 'number' || typeof p.width !== 'number') return;
+        var h = p.height * (o.scale ? o.scale.y : 1);
+        if (h / sc1 < 1) return;                             // pads, brackets, caps
+        var baseY = o.position.y - h/2;
+        if (baseY > 0.25 * sc1) return;                      // not sitting at grade
+        var padD = (p.width / sc1 > 0.6) ? (20/12)*sc1 : (16/12)*sc1;   // PBFP20 / PBFP16
+        var stub = new THREE.Mesh(new THREE.BoxGeometry(p.width, BURY, p.depth || p.width), mBur);
+        stub.position.set(o.position.x, baseY - BURY/2, o.position.z);
+        stub.renderOrder = -1;
+        stub.userData = { sPart:'postBuried', sIdx:(o.userData&&o.userData.sIdx!=null)?o.userData.sIdx:null };
+        add.push(stub);
+        // Round moulded pad, the post bearing straight down on it.
+        var pad = new THREE.Mesh(new THREE.CylinderGeometry(padD/2, padD/2, PADT, 24), mPad);
+        pad.position.set(o.position.x, baseY - BURY - PADT/2, o.position.z);
+        pad.renderOrder = -1;
+        pad.userData = { sPart:'footingPad', sIdx:(o.userData&&o.userData.sIdx!=null)?o.userData.sIdx:null };
+        add.push(pad);
+      });
+      add.forEach(function(m){ g.add(m); });
     });
   };
 
@@ -7472,6 +7534,7 @@ window.SauceParts = window.SauceParts || (function(){
     { key:'stud',   re:/\bstud(s)?\b/i,              groups:['framing'], label:'studs' },
     { key:'plate',  re:/\bplate(s)?\b/i,             groups:['framing'], label:'plates' },
     { key:'truss',  re:/truss/i,                     groups:['trusses'], label:'trusses' },
+    { key:'footingPad', re:/footing\s*pad|\bpad(s)?\b/i, groups:['posts','mainPosts'], label:'footing pads' },
     { key:'post',   re:/\bpost(s)?\b|column/i,       groups:['posts','mainPosts'], label:'posts' }
   ];
 
@@ -7481,7 +7544,7 @@ window.SauceParts = window.SauceParts || (function(){
                eaveTrim:0x8b5cf6, cornerTrim:0x14b8a6, baseTrim:0x84cc16,
                header:0xfb7185, trussBracing:0x2dd4bf, cornerBracing:0x0ea5e9,
                band:0xa3e635, flyRafter:0xfde047, fascia:0xf97316,
-               openingHeader:0xe879f9, jamb:0x60a5fa, _default:0xf472b6 };
+               openingHeader:0xe879f9, jamb:0x60a5fa, footingPad:0x94a3b8, _default:0xf472b6 };
 
   var _held = [];      // {mesh, mat} so the originals go back exactly as they were
   var _segs = [];      // board markers hung on their member, removed on clear
@@ -7492,7 +7555,7 @@ window.SauceParts = window.SauceParts || (function(){
   // Checked before the map, because a line like "Wood Truss Roof Purlins" names a
   // truss but is not one. Anything caught here reports as not mapped rather than
   // lighting the wrong members — a wrong highlight is worse than none.
-  var NOT_YET = /blocking|joist|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|soffit|flashing|concrete|sackcrete|footing|pad\b|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
+  var NOT_YET = /blocking|joist|sheathing|osb|screw|bolt|nail|hanger|bracket|closure|sealant|soffit|flashing|concrete|sackcrete|ceiling|insulation|\bvent|cupola|\bdoor|window|lag|anchor/i;
 
   // Which part of the building a line is talking about. The list names an
   // attachment three ways: by position ("Shed 2"), by the wall it sits on
@@ -7564,7 +7627,7 @@ window.SauceParts = window.SauceParts || (function(){
     var wanted = (entry.groups||[]).slice();
     // Members that live in a mixed group carry their own stamp instead.
     if (entry.key && wanted.indexOf('shed') < 0) wanted.push('shed');
-    var MIXED = { shed:1, framing:1, walls:1, wallPanels:1, roof:1 };
+    var MIXED = { shed:1, framing:1, walls:1, wallPanels:1, roof:1, posts:1, mainPosts:1 };
     wanted.forEach(function(name){
       var grp = g[name]; if (!grp) return;
       var mixed = !!MIXED[name];
@@ -10289,6 +10352,7 @@ function vpToggleWalls() {
   if (d.grps.shed && !(window._shedRolesOff && window._shedRolesOff())) {
     try { window._shedRoleApply(d.grps, _wallsVisible, _roofVisible); } catch(e){}
   }
+  try { window._footXray(!_wallsVisible); } catch(e){}
 
   var btn = document.getElementById('vpWallToggle');
   if (btn) {
@@ -21534,11 +21598,13 @@ function applyVoiceQuote(parsed, overlay) {
         try { window._shedRoleTag(grps); } catch(e) {}
         try { window._shedStudFrame(grps, Sc); } catch(e) {}
         try { window._postBuyTag(grps, Sc); } catch(e) {}
+        try { window._postFootings(grps, Sc); } catch(e) {}
         if (typeof _wallsVisible    !== 'undefined') { grps.wallPanels.visible = _wallsVisible; grps.walls.visible = _wallsVisible; grps.doors.visible = _wallsVisible; }
         if (typeof _roofVisible     !== 'undefined') {
           grps.roof.visible = _roofVisible;
           if (grps.shed && !isSingleSlope) grps.shed.visible = true;
         }
+        try { window._footXray(typeof _wallsVisible !== 'undefined' && !_wallsVisible); } catch(e) {}
         if (grps.shed && !isSingleSlope) {
           try { window._shedRoleApply(grps,
                   (typeof _wallsVisible === 'undefined') ? true : _wallsVisible,
@@ -24419,7 +24485,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M54-1230';
+window.SAUCE_BUILD = 'M56-1340';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
