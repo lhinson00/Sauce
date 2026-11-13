@@ -7422,6 +7422,11 @@ window._spMark = function(grp, from, part, unit){
     var buckets = {};
     grps.shed.traverse(function(o){
       if (!o.isMesh || !o.userData || o.userData.sRole !== 'wall') return;
+      // A stamped member is a known part — trim, a girt, a J-channel band — not
+      // wall cladding. A trim band is a vertical quad like a panel, so without
+      // this it joins the bucket for that wall and drags the derived wall height
+      // down to its own couple of inches, costing the wall studs and plates.
+      if (o.userData.sPart) return;
       var idx = o.userData.sIdx; if (idx == null) return;      // attachments only
       // Only the attachments the list bills studs for. A roof-only porch has no
       // stud wall, and its gable end cap must not be mistaken for one.
@@ -7551,7 +7556,9 @@ window.SauceParts = window.SauceParts || (function(){
     // and "Outside Corner" is a corner trim, not a post.
     { key:'ridgeCap',   re:/ridge\s*cap/i,            groups:['roof'],   label:'ridge cap' },
     { key:'rakeTrim',   re:/\brake\b|gable\s*trim/i,   groups:['roof','shed'], label:'rake trim' },
-    { key:'jChannel',   re:/j-?channel/i,             groups:['walls','wallPanels','shed'], label:'J-channel' },
+    // One J-Channel line covers the main building's openings and every attachment —
+    // it is never attachment-specific, so it must not be pinned to the main building.
+    { key:'jChannel',   re:/j-?channel/i,             groups:['walls','wallPanels','shed'], label:'J-channel', anyArea:true },
     { key:'valleyPanel', re:/valley\s*panel/i,        groups:['roof','shed'], label:'valley panels' },
     { key:'birdBox',    re:/bird\s*box/i,             groups:['walls','roof'], label:'bird box trim' },
     { key:'soffitTrim', re:/soffit\s*(f&j|f\s*&\s*j|trim)/i, groups:['walls','roof'], label:'soffit trim' },
@@ -7667,7 +7674,9 @@ window.SauceParts = window.SauceParts || (function(){
     var desc = (item.description || '');
     for (var i=0;i<MAP.length;i++) {
       if (MAP[i].reDesc ? MAP[i].reDesc.test(desc) : MAP[i].re.test(text)) {
-        var a = areaOf(text);
+        var a = MAP[i].anyArea
+          ? { label:'the building', test: function(){ return true; } }
+          : areaOf(text);
         // Length is read off the model, not off the line. The detail field carries
         // spacings, spans and pitches as well as stock lengths — "Every 2ft up wall"
         // is not a 2ft girt — so matching on it filtered out correct members.
@@ -18053,6 +18062,14 @@ function applyVoiceQuote(parsed, overlay) {
                       var _geRkF=function(p1,p2){grps.shed.add(mkQ([p1[0],p1[1],p1[2], p2[0],p2[1],p2[2], p2[0],p2[1]-_geRkH,p2[2], p1[0],p1[1]-_geRkH,p1[2]],_mGeRake));};
                       _geRkF([_geXo,_extEaveH,z1oh],[_geXo,extRidgeH,zMid]);   // front slope
                       _geRkF([_geXo,extRidgeH,zMid],[_geXo,_extEaveH,z2oh]);   // back slope
+                      // === J-CHANNEL — band across the BASE of this extension's upper gable
+                      // triangle, where the gable metal lands on the wall below. See the
+                      // gable-attached version for why.
+                      var _geJcHx = 0.0141;
+                      var _geJcMx = mkQ([_geXo,_extEaveH,z1oh, _geXo,_extEaveH,z2oh,
+                                         _geXo,_extEaveH-_geJcHx,z2oh, _geXo,_extEaveH-_geJcHx,z1oh], _mGeRake);
+                      _geJcMx.userData = _geJcMx.userData || {}; _geJcMx.userData.sPart = 'jChannel';
+                      grps.shed.add(_geJcMx);
                     }
 
                     // Ribs along the roof. Drawn whatever the frame is: timber framing
@@ -18371,6 +18388,17 @@ function applyVoiceQuote(parsed, overlay) {
                       var _geRkF2=function(p1,p2){grps.shed.add(mkQ([p1[0],p1[1],p1[2], p2[0],p2[1],p2[2], p2[0],p2[1]-_geRkH2,p2[2], p1[0],p1[1]-_geRkH2,p1[2]],_mGeRake2));};
                       _geRkF2([extX1,gblEaveH,_geZo],[extXmid,extRidgePeak,_geZo]);
                       _geRkF2([extXmid,extRidgePeak,_geZo],[extX2,gblEaveH,_geZo]);
+                      // === J-CHANNEL — trim-colour band across the BASE of the extension's
+                      // upper gable triangle, where the gable metal lands on the wall below.
+                      // The list has always bought it (ceil(gable width / 10) + 1 sticks) and
+                      // nothing drew it. Same band the lean-to end caps use.
+                      var _geJcH = 0.0141;
+                      var _geJcM = mkQ([extX1,gblEaveH,_geZo, extX2,gblEaveH,_geZo,
+                                        extX2,gblEaveH-_geJcH,_geZo, extX1,gblEaveH-_geJcH,_geZo], _mGeRake2);
+                      // grps.shed is not one of the ambiently stamped groups, so tag it here
+                      // or the J-Channel line on the list has nothing to point at.
+                      _geJcM.userData = _geJcM.userData || {}; _geJcM.userData.sPart = 'jChannel';
+                      grps.shed.add(_geJcM);
                     }
                     // Ribs along the roof — see above: the frame does not change the roof.
                     {
@@ -18461,6 +18489,25 @@ function applyVoiceQuote(parsed, overlay) {
                         const _gy1=Math.min(gblRoofY(_g1), extRidgePeak), _gy2=Math.min(gblRoofY(_g2), extRidgePeak);
                         grps.shed.add(mkQ([gx,gblEaveH,zf+dir*0.003, gx,yTopL,zf+dir*0.003, _g1,_gy1,zf+dir*0.003, _g1,gblEaveH,zf+dir*0.003], mWRi));
                         grps.shed.add(mkQ([_g1,gblEaveH,zf+dir*0.003, _g1,_gy1,zf+dir*0.003, _g2,_gy2,zf+dir*0.003, _g2,gblEaveH,zf+dir*0.003], mWRS));
+                      }
+                      // J-CHANNEL — trim-colour band closing the bottom edge of the upper
+                      // gable metal, the way a roof-and-upper-gable end is finished. The
+                      // list has always bought it for a gable extension; it was never drawn.
+                      // Sits proud of the ribs so it reads as a separate piece of trim.
+                      // Solid piece, not a floating face. It STRADDLES the bottom edge of
+                      // the metal and is centred on the panel plane, so the panel dies into
+                      // it the way it does on site. Hung below the edge as a flat quad it
+                      // read as two separate lines with daylight between them.
+                      { const _geJcH = 0.022;                     // ~2-1/2" face
+                        const _geJcD = 0.014;                     // depth, so it reads solid
+                        const _geJcMat = new THREE.MeshLambertMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
+                        const _spJcPrev = window._spPart; window._spPart = 'jChannel';
+                        const _geJc = new THREE.Mesh(
+                          new THREE.BoxGeometry(extHalfX*2, _geJcH, _geJcD), _geJcMat);
+                        _geJc.position.set(sco, gblEaveH, zf);
+                        _geJc.castShadow = true;
+                        grps.shed.add(_geJc);
+                        window._spPart = _spJcPrev;
                       }
                       // If dropped: fill the exposed band on the main gable wall between the
                       // extension's inner peak and the main building's ridge line
@@ -24950,7 +24997,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M69-1445';
+window.SAUCE_BUILD = 'M71-1512';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
