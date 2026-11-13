@@ -16957,14 +16957,15 @@ function applyVoiceQuote(parsed, overlay) {
                     var _frSz = 0.018;
                     var zMin = -sL/2 + _sco, zMax = sL/2 + _sco, zLen = (zMax - zMin), zCtr = (zMin + zMax)/2;
                     // Purlins — run in Z, stepped ~2' along the roof slope
+                    window._spPart = 'purlin';
                     var _slopeFt = Math.sqrt(Math.pow((aX-oX)/Sc,2) + Math.pow((attachH-outerH)/Sc,2));
-                    // The list pays for a purlin count off its own chart, keyed on shed
-                    // width. Drawing at a flat 2' spacing never agreed with it.
-                    var _chart = (window.SauceMaterials || {}).ssPurlinsPerRun;
-                    var _nPur = (_chart && _chart[sc.w]) ? _chart[sc.w]
-                                                         : Math.max(1, Math.round(_slopeFt / 2));
+                    // Purlins are 2' on centre, counted from the outer edge inward and
+                    // including both ends. The old loop stepped at roughly 2' and then
+                    // dropped the first and last, so it always came up short.
+                    var _nPur = Math.max(1, Math.floor(_slopeFt / 2) + 1);
                     for (var _pi = 0; _pi < _nPur; _pi++) {
-                      var _t = (_pi + 0.5)/_nPur;
+                      var _t = (_nPur > 1) ? (_pi * (2 / _slopeFt)) : 0.5;
+                      if (_t > 1) _t = 1;
                       var _pm = new THREE.Mesh(new THREE.BoxGeometry(_frSz, _frSz, zLen), _frMat);
                       _pm.position.set(oX + _t*(aX-oX), (outerH + _t*(attachH-outerH)) - _frSz, zCtr);
                       grps.framing.add(_pm);
@@ -17010,6 +17011,62 @@ function applyVoiceQuote(parsed, overlay) {
                     }
                   } catch(e) {}
                 }
+                // Mirror of the above for a lean-to on a gable wall. These had no framing
+                // at all — no purlins, no rafters, no girts — so every framing line on a
+                // front or back shed lit nothing.
+                function _ltFramingGable(oZ, aZ) {
+                  try {
+                    if (!_ltRake) return;
+                    var _frMat = new THREE.MeshLambertMaterial({ color: 0xC4A46A, side: THREE.DoubleSide });
+                    var _frSz = 0.018;
+                    var xMin = -sL/2 + _sco, xMax = sL/2 + _sco, xLen = (xMax - xMin), xCtr = (xMin + xMax)/2;
+                    window._spPart = 'purlin';
+                    var _slopeFtG = Math.sqrt(Math.pow((aZ-oZ)/Sc,2) + Math.pow((attachH-outerH)/Sc,2));
+                    var _nPurG = Math.max(1, Math.floor(_slopeFtG / 2) + 1);
+                    for (var _pg = 0; _pg < _nPurG; _pg++) {
+                      var _tg = (_nPurG > 1) ? (_pg * (2 / _slopeFtG)) : 0.5;
+                      if (_tg > 1) _tg = 1;
+                      var _pmg = new THREE.Mesh(new THREE.BoxGeometry(xLen, _frSz, _frSz), _frMat);
+                      _pmg.position.set(xCtr, (outerH + _tg*(attachH-outerH)) - _frSz, oZ + _tg*(aZ-oZ));
+                      grps.framing.add(_pmg);
+                    }
+                    window._spPart = 'rafter';
+                    var _rfLenG = Math.sqrt(Math.pow(aZ-oZ,2) + Math.pow(attachH-outerH,2));
+                    var _rfAngG = Math.atan2(-(attachH-outerH), aZ-oZ);
+                    var _nRafG  = Math.max(1, Math.floor((xLen/Sc)/2));
+                    for (var _rg = 0; _rg <= _nRafG; _rg++) {
+                      var _rmg = new THREE.Mesh(new THREE.BoxGeometry(_frSz, _frSz*1.5, _rfLenG), _frMat);
+                      _rmg.position.set(xMin + xLen*(_rg/_nRafG), (outerH+attachH)/2 - _frSz*2.2, (oZ+aZ)/2);
+                      _rmg.rotation.x = _rfAngG;
+                      _rmg.castShadow = true;
+                      grps.framing.add(_rmg);
+                    }
+                    var _enclG = sc && sc.encl === 'enclosed';
+                    var _ewG = (sc && sc.enclWalls) || [];
+                    window._spPart = 'girt';
+                    if (_enclG && _ewG.indexOf('outer') > -1) {
+                      for (var _gyg = 2*Sc; _gyg < outerH - 0.001; _gyg += 2*Sc) {
+                        var _gmg = new THREE.Mesh(new THREE.BoxGeometry(xLen, _frSz, _frSz), _frMat);
+                        _gmg.position.set(xCtr, _gyg, oZ); grps.framing.add(_gmg);
+                      }
+                    }
+                    if (_enclG) {
+                      [['gable1', xMin], ['gable2', xMax]].forEach(function(_gg) {
+                        if (_ewG.indexOf(_gg[0]) === -1) return;
+                        for (var _gy3 = 2*Sc; _gy3 < attachH - 0.001; _gy3 += 2*Sc) {
+                          var _zStart;
+                          if (_gy3 <= outerH) { _zStart = oZ; }
+                          else { var _fr3 = (_gy3 - outerH) / (attachH - outerH); _zStart = oZ + _fr3*(aZ-oZ); }
+                          var _d3 = Math.abs(aZ - _zStart);
+                          if (_d3 < 0.005) continue;
+                          var _gm3 = new THREE.Mesh(new THREE.BoxGeometry(_frSz, _frSz, _d3), _frMat);
+                          _gm3.position.set(_gg[1], _gy3, (_zStart + aZ)/2); grps.framing.add(_gm3);
+                        }
+                      });
+                    }
+                  } catch(e) {}
+                  window._spPart = null;
+                }
                 // For step-front shed, the attachment face is the far end of the step section
                 var _stepFaceZ = sc._isStepShed && stepCfg ? -(sl/2 + stepCfg.length * Sc) : null;
                 // The attach edge of a porch roof lands on the main eave at exactly the
@@ -17035,7 +17092,7 @@ function applyVoiceQuote(parsed, overlay) {
                     if (_ltRake) { _ltRkF([oX, outerH, -sL/2+_sco-ohL], [aX, attachH, -sL/2+_sco-ohL]); _ltRkF([oX, outerH, sL/2+_sco+ohL], [aX, attachH, sL/2+_sco+ohL]); }
                 } else if (wall === 'front') {
                     aZ = _stepFaceZ !== null ? _stepFaceZ : -sl / 2;
-                    oZ = aZ - sW - ohW;
+                    oZ = aZ - sW - ohW; _ltFramingGable(oZ, aZ);
                     grps.shed.add(mkQ([sL / 2 + _sco + ohL, outerH - .01, oZ, sL / 2 + _sco + ohL, attachH + _rLift, aZ + _rTuck, -sL / 2 + _sco - ohL, attachH + _rLift, aZ + _rTuck, -sL / 2 + _sco - ohL, outerH - .01, oZ], mSh));
                     addShedRoofRibs('front', null, null, oZ, aZ, outerH, attachH, sL, _sco, ohL, ohW, shedRoofHex, grps.shed);
                     grps.shed.add(mkL([new THREE.Vector3(-sL / 2 + _sco - ohL, outerH, oZ), new THREE.Vector3(sL / 2 + _sco + ohL, outerH, oZ)], mHip));
@@ -17043,7 +17100,7 @@ function applyVoiceQuote(parsed, overlay) {
                     grps.shed.add(mkL([new THREE.Vector3(sL / 2 + _sco + ohL, outerH, oZ), new THREE.Vector3(sL / 2 + _sco + ohL, attachH, aZ)], mHip));
                     if (_ltRake) { _ltRkF([-sL/2+_sco-ohL, outerH, oZ], [-sL/2+_sco-ohL, attachH, aZ]); _ltRkF([sL/2+_sco+ohL, outerH, oZ], [sL/2+_sco+ohL, attachH, aZ]); }
                 } else {
-                    oZ = sl / 2 + sW + ohW; aZ = sl / 2;
+                    oZ = sl / 2 + sW + ohW; aZ = sl / 2; _ltFramingGable(oZ, aZ);
                     grps.shed.add(mkQ([-sL / 2 + _sco - ohL, outerH - .01, oZ, -sL / 2 + _sco - ohL, attachH + _rLift, aZ - _rTuck, sL / 2 + _sco + ohL, attachH + _rLift, aZ - _rTuck, sL / 2 + _sco + ohL, outerH - .01, oZ], mSh));
                     addShedRoofRibs('back', null, null, oZ, aZ, outerH, attachH, sL, _sco, ohL, ohW, shedRoofHex, grps.shed);
                     grps.shed.add(mkL([new THREE.Vector3(-sL / 2 + _sco - ohL, outerH, oZ), new THREE.Vector3(sL / 2 + _sco + ohL, outerH, oZ)], mHip));
@@ -24522,7 +24579,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M58-1500';
+window.SAUCE_BUILD = 'M59-1540';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -35107,9 +35164,6 @@ window.SauceMaterials.calcWoodShedPurlins = function(Q, shedCfgs) {
     6:4, 8:5, 10:6, 12:7, 14:8, 16:9,
     18:10, 20:11, 22:12, 24:13, 26:14, 28:15, 30:16
   };
-  // Read-only export. The renderer drew purlins at a flat 2' spacing and so never
-  // matched this count; it reads the chart now. Nothing here is computed from it.
-  window.SauceMaterials.ssPurlinsPerRun = ssPurlinsPerRun;
 
   var trussSpacing = parseFloat((document.getElementById('st_trussSpacing')||{}).value || 5) || 5;
 
