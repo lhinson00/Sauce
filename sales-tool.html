@@ -7276,6 +7276,41 @@ window._spMark = function(grp, from, part){
     try { return ((window._Q || window.Q || {}).roofStyle === 'single'); } catch(e) { return false; }
   };
 
+  // A post is drawn from grade up, but it is bought long enough to bury. The list
+  // sells an 18' post for a 14' eave wall and the model draws 14', so matching a
+  // line's board length against what is drawn could never work. Rather than guess
+  // the difference, each post is stamped with the length the list would buy for it,
+  // worked out with the calculator's own enforceMinPostLen — so a PT6622 line and
+  // the four posts it pays for agree by construction, not by tolerance.
+  window._postBuyTag = function(grps, Sc){
+    if (!grps || typeof THREE === 'undefined') return;
+    var SM = window.SauceMaterials;
+    if (!SM || typeof SM.enforceMinPostLen !== 'function') return;
+    var sc1 = Sc || window._spSc || 0.1;
+    var onTop = false;
+    try { onTop = ((document.getElementById('st_postsOnTop')||{}).value === 'Yes'); } catch(e){}
+    var ground = onTop ? 0 : 4;
+    ['posts','mainPosts'].forEach(function(gn){
+      var g = grps[gn]; if (!g) return;
+      g.traverse(function(o){
+        if (!o.isMesh || !o.geometry) return;
+        // Main building only. An attachment post is built at full length and then
+        // clamped to fit under its roof, so its drawn height is not its height,
+        // and it is bought under its own rule besides. Those keep the measured
+        // match, which already lands on the right board for them.
+        if (o.userData && o.userData.sIdx != null) return;
+        var p = o.geometry.parameters;
+        if (!p || typeof p.height !== 'number') return;
+        var topY = o.position.y + (p.height * (o.scale ? o.scale.y : 1)) / 2;
+        var aboveFt = topY / sc1;
+        if (!(aboveFt > 1)) return;                     // pads, brackets, caps
+        var size = (p.width && p.width/sc1 > 0.6) ? '8x8' : '6x6';
+        o.userData = o.userData || {};
+        o.userData.sBuyFt = SM.enforceMinPostLen(size, aboveFt + ground);
+      });
+    });
+  };
+
   // Stud walls on attachments. The list bills "Shed N Wall Studs" for every
   // enclosed attachment and the model drew none of them, because the stud block
   // runs once over the four main walls and knows nothing about attachments.
@@ -7449,8 +7484,11 @@ window.SauceParts = window.SauceParts || (function(){
       ['left','right','front','back'].forEach(function(w){
         if (new RegExp('\\b' + w + '\\b', 'i').test(text)) mw.push(w);
       });
-      if (/\beave\b/i.test(text) && !mw.length) mw = ['left','right'];
-      if (/\bgable\b/i.test(text) && !mw.length) mw = ['front','back'];
+      // The list says "Sidewall Girts" where it means the two eave walls, and
+      // "Gable End Girts" for the other two. Without these a sidewall line
+      // matched no wall at all and lit every girt on the building.
+      if (!mw.length && /side\s*wall|sidewall|\beave\b/i.test(text)) mw = ['left','right'];
+      if (!mw.length && /gable\s*end|end\s*wall|endwall|\bgable\b/i.test(text)) mw = ['front','back'];
       return { label: 'the main building' + (mw.length ? ' — ' + mw.join(' & ') : ''),
                walls: mw.length ? mw : null,
                test: function(sc, idx){ return idx == null; } };
@@ -7570,10 +7608,50 @@ window.SauceParts = window.SauceParts || (function(){
   }
 
   function clear(){
-    _held.forEach(function(h){ try { h.mesh.material = h.mat; } catch(e){} });
+    _held.forEach(function(h){ try { h.mesh.material = h.mat;
+      if (h.vis != null) h.mesh.visible = h.vis; } catch(e){} });
     _held = [];
     _segs.forEach(function(s){ try { s.parent.remove(s); s.geometry.dispose(); } catch(e){} });
-    _segs = []; _active = null;
+    _segs = [];
+    _labels.forEach(function(s){ try { s.parent.remove(s); } catch(e){} });
+    _labels = []; _active = null;
+  }
+
+  // Numbered boards. Counting coloured blocks by eye stops working somewhere
+  // around a dozen, and the point of this is to be able to zoom in on board 37
+  // and say that is the 37th of the 93 the list bought. Sprites, so a number
+  // faces the camera from every angle, hung in the scene rather than on the
+  // member — a post that has been scaled to fit under a roof would squash a
+  // label parented to it.
+  var _labels = [], _labTex = {}, _labV = null;
+  function labTex(n){
+    var k = String(n);
+    if (_labTex[k]) return _labTex[k];
+    var c = document.createElement('canvas'); c.width = 96; c.height = 64;
+    var x = c.getContext('2d');
+    x.fillStyle = 'rgba(12,16,22,0.88)';
+    x.beginPath(); x.rect(0,0,96,64); x.fill();
+    x.fillStyle = '#ffffff'; x.font = 'bold 42px sans-serif';
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillText(k, 48, 34);
+    var t = new THREE.CanvasTexture(c);
+    t.minFilter = THREE.LinearFilter;
+    _labTex[k] = t; return t;
+  }
+  function label(member, localPos, n){
+    if (_labels.length >= 400) return;      // past this it is a wall of numbers
+    try {
+      var scene = window._3d && window._3d.scene; if (!scene) return;
+      if (!_labV) _labV = new THREE.Vector3();
+      if (localPos) { _labV.copy(localPos); member.localToWorld(_labV); }
+      else member.getWorldPosition(_labV);
+      var sp = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: labTex(n), depthTest:false, transparent:true, sizeAttenuation:true }));
+      sp.position.copy(_labV);
+      sp.scale.set(0.105, 0.07, 1);
+      sp.renderOrder = 1000;
+      scene.add(sp); _labels.push(sp);
+    } catch(e){}
   }
 
   // A member in the model is a whole run; the list counts the boards that run is
@@ -7624,25 +7702,40 @@ window.SauceParts = window.SauceParts || (function(){
     var L = skuLen(item && item.sku);
     var sc1 = window._spSc || 0.1;
     var want = (item && parseFloat(item.quantity)) || 0;
-    var lens = {}, shown = 0, lit = 0, segMode = false;
+    var lens = {}, shown = 0, lit = 0, segMode = false, noneOfLen = false;
     if (L) {
       var Lsc = L * sc1, tol = Math.max(0.5, L * 0.12);
-      var plan = [];
-      meshes.forEach(function(m){
-        var len = m.userData._spLen;
-        if (len != null && Math.abs(len - L) <= tol) { plan.push({ m:m, b:null }); return; }
-        if (len != null && len > L + tol) {
-          var b = boards(m, Lsc);
-          if (b) { plan.push({ m:m, b:b }); return; }
-        }
-      });
+      // A main post carries the length the list buys for it, worked out with the
+      // calculator's own rule, so that match is exact and is tried first. An
+      // attachment post is bought under a different rule, so when the stamp finds
+      // nothing the measured length is used instead rather than reporting nothing.
+      function build(useBuy){
+        var out = [];
+        meshes.forEach(function(m){
+          var buy = m.userData && m.userData.sBuyFt;
+          if (useBuy) { if (buy === L) out.push({ m:m, b:null }); return; }
+          var len = m.userData._spLen;
+          if (len != null && Math.abs(len - L) <= tol) { out.push({ m:m, b:null }); return; }
+          if (len != null && len > L + tol) {
+            var b = boards(m, Lsc);
+            if (b) out.push({ m:m, b:b });
+          }
+        });
+        return out;
+      }
+      var plan = build(true);
+      if (!plan.length) plan = build(false);
       if (plan.length) {
         segMode = true;
         plan.forEach(function(e){
           if (!e.b) {
-            _held.push({ mesh:e.m, mat:e.m.material });
+            // A part that is lit has to be on screen, or the line appears to
+            // match nothing. Posts sit hidden until Show Posts is on.
+            _held.push({ mesh:e.m, mat:e.m.material, vis:e.m.visible });
+            e.m.visible = true;
             e.m.material = (shown % 2) ? mB : mA;
             shown++; lit++;
+            label(e.m, null, shown);
             var r0 = Math.round((e.m.userData._spLen)*2)/2; lens[r0] = (lens[r0]||0)+1;
             return;
           }
@@ -7657,15 +7750,27 @@ window.SauceParts = window.SauceParts || (function(){
             var off = -half + Lsc*(i + 0.5);
             sg.position.set(b.axis==='x'?off:0, b.axis==='y'?off:0, b.axis==='z'?off:0);
             sg.renderOrder = 999;
+            if (!e.m.visible) { _held.push({ mesh:e.m, mat:e.m.material, vis:false }); e.m.visible = true; }
             e.m.add(sg); _segs.push(sg);
             shown++;
+            label(e.m, sg.position, shown);
             lens[L] = (lens[L]||0)+1;
           }
         });
+      } else {
+        // The line names a board length and nothing of that length is drawn here.
+        // Lighting every member instead would say the opposite of the truth.
+        noneOfLen = true;
       }
     }
+    if (noneOfLen) { clear(); return { ok:false, reason:'nolen', label:entry.label,
+                                       where:entry.where, boardFt:L, billed:want||null }; }
     if (!segMode) {
-      meshes.forEach(function(m, i){ _held.push({mesh:m, mat:m.material}); m.material = (i % 2) ? mB : mA; });
+      meshes.forEach(function(m, i){
+        _held.push({mesh:m, mat:m.material, vis:m.visible});
+        m.visible = true; m.material = (i % 2) ? mB : mA;
+        label(m, null, i+1);
+      });
       shown = meshes.length; lit = meshes.length;
       meshes.forEach(function(m){
         var L2 = m.userData._spLen;
@@ -21067,6 +21172,7 @@ function applyVoiceQuote(parsed, overlay) {
         }
         try { window._shedRoleTag(grps); } catch(e) {}
         try { window._shedStudFrame(grps, Sc); } catch(e) {}
+        try { window._postBuyTag(grps, Sc); } catch(e) {}
         if (typeof _wallsVisible    !== 'undefined') { grps.wallPanels.visible = _wallsVisible; grps.walls.visible = _wallsVisible; grps.doors.visible = _wallsVisible; }
         if (typeof _roofVisible     !== 'undefined') {
           grps.roof.visible = _roofVisible;
@@ -23952,7 +24058,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M47-0830';
+window.SAUCE_BUILD = 'M48-0915';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -53021,9 +53127,11 @@ window.openMaterialsModal = function(initialTab) {
             if (wasOn) { window.SauceParts.clear(); return; }
             var r = window.SauceParts.highlight(captItem);
             if (!r.ok) {
-              try { showToast(r.reason === 'unmapped'
-                ? 'No model parts mapped to this line yet'
-                : 'Nothing of that kind is drawn there', 'warn'); } catch(e){}
+              try { showToast(
+                r.reason === 'unmapped' ? 'No model parts mapped to this line yet'
+              : r.reason === 'nolen'    ? ('No ' + r.boardFt + "' board is drawn on " + (r.where||'the model')
+                                            + (r.billed ? '  —  list buys ' + r.billed : ''))
+              : 'Nothing of that kind is drawn there', 'warn'); } catch(e){}
               return;
             }
             captRow.setAttribute('data-sp-on','1');
