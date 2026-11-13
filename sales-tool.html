@@ -24882,7 +24882,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M64-1238';
+window.SAUCE_BUILD = 'M65-1222';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -36195,10 +36195,8 @@ window.SauceMaterials.calcEaveFascia = function(Q, WALLS, shedCfgs) {
 // the lengths live — both Sidewall Girts and Gable End Girts read it, main
 // building and side sheds alike. Nothing below hardcodes a board length.
 //
-//   GIRT_STOCK — lengths we actually stock, shortest first. A bay that isn't
-//                paired gets the shortest stocked length that reaches across it,
-//                waste accepted: a 7' bay ships a 10' board, because we don't
-//                stock 8's.
+//   GIRT_STOCK — the 2x6 lengths this program sends, shortest first. These are
+//                the only lengths that can ever come out of a girt line.
 //
 //   GIRT_PAIR  — post spacing (ft) → the stocked board that spans TWO of those
 //                bays. This is how we kill joints, cuts and waste: at 10'
@@ -36207,13 +36205,49 @@ window.SauceMaterials.calcEaveFascia = function(Q, WALLS, shedCfgs) {
 //                to the single-bay length from GIRT_STOCK — so a 50' wall at 10'
 //                spacing is (2) 20' + (1) 10' per run.
 //
-//                To change the behavior: add an entry to pair a spacing
-//                (7:14 would pair 7' bays into 14' boards), or delete one to
-//                stop pairing that spacing and go back to one board per bay.
-//                12' and 14' spacing are deliberately absent — 24' and 28'
-//                aren't stocked, so those stay one board per bay.
-window.GIRT_STOCK = window.GIRT_STOCK || [10, 12, 14, 16, 18, 20];
+//                To change the behavior: add an entry to pair a spacing, or
+//                delete one to stop pairing that spacing and go back to one
+//                board per bay. 12' and 14' spacing are deliberately absent —
+//                24' and 28' boards aren't sent, so those stay one per bay.
+//
+// THE BOARD HAS TO REACH. A wall shorter than one board is covered by the
+// shortest stocked length that spans it, never by the post spacing — a 12' wall
+// takes a 12' board, not a 10'. A wall too long for one board is filled with
+// stock and finishes on a board that reaches the end, so a run can never come
+// up short of the wall.
+window.GIRT_STOCK = window.GIRT_STOCK || [10, 12, 16, 20];
 window.GIRT_PAIR  = window.GIRT_PAIR  || { 8: 16, 10: 20 };
+
+// Boards for one wall run, as {length: count}. Used by both girt lines.
+// A girt can only be joined at a post — both ends of a board have to land on
+// something to nail to — so the plan is driven by the bay layout, never by the
+// raw wall length. Posts divide the wall into equal bays, and a board spans a
+// whole number of them: as many as our longest stocked board will reach.
+window.SauceMaterials.girtRuns = function(wallLen, ps) {
+  var STOCK = window.GIRT_STOCK || [10, 12, 16, 20];
+  var MAXB  = STOCK[STOCK.length - 1];
+  var fits  = function(L){ return STOCK.find(function(s){ return s >= L - 0.01; }); };
+  var out   = {};
+  var add   = function(L, n){ if (n > 0) out[L] = (out[L] || 0) + n; };
+
+  var bays = Math.max(1, Math.round(wallLen / ps));
+  var bayW = wallLen / bays;
+
+  // The most bays one stocked board can reach across.
+  var k = 0, kLen = null;
+  for (var t = bays; t >= 1; t--) {
+    var L = fits(t * bayW);
+    if (L) { k = t; kLen = L; break; }
+  }
+  // A bay wider than our longest board: send the longest and flag nothing —
+  // this only happens on spacings the tool does not offer.
+  if (!k) { k = 1; kLen = MAXB; }
+
+  add(kLen, Math.floor(bays / k));
+  var left = bays % k;
+  if (left > 0) add(fits(left * bayW) || MAXB, 1);
+  return out;
+};
 
 // ── ITEM 22: SIDEWALL GIRTS ──────────────────────────────────────────────────
 // All buildings. Enclosed eave walls only (main + side sheds).
@@ -36228,24 +36262,7 @@ window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
   }
 
   function fillRuns(wallLen, ps) {
-    // Returns map of boardLen → count. See the GIRT_STOCK / GIRT_PAIR table above.
-    // If the spacing is in GIRT_PAIR, bays get paired onto one long board (10' bays
-    // → 20' boards, 8' bays → 16's) and any odd bay left over takes a single-bay
-    // board. Otherwise it's one board per bay: the shortest stocked length that
-    // covers the bay, waste accepted (11' bay → 12' board, 7' bay → 10' board).
-    var STOCK   = window.GIRT_STOCK || [10, 12, 14, 16, 18, 20];
-    var PAIR    = window.GIRT_PAIR  || {};
-    var numBays = Math.max(1, Math.round(wallLen / ps));
-    var perBay  = STOCK.find(function(l){ return l >= ps - 0.01; }) || STOCK[STOCK.length - 1];
-    var pairLen = PAIR[ps];
-    var out = {};
-    if (pairLen && numBays >= 2) {
-      out[pairLen] = Math.floor(numBays / 2);
-      if (numBays % 2) out[perBay] = (out[perBay] || 0) + 1;
-    } else {
-      out[perBay] = numBays;
-    }
-    return out;
+    return window.SauceMaterials.girtRuns(wallLen, ps);
   }
 
   var groups = {};
@@ -36330,51 +36347,7 @@ window.SauceMaterials.calcSidewallGirts = function(Q, WALLS, shedCfgs) {
 window.SauceMaterials.calcGableGirts = function(Q, WALLS, shedCfgs) {
 
   function fillRuns(wallLen, ps) {
-    // 8' spacing — paired bays get the GIRT_PAIR board (16'), final odd bay a 10'
-    if (ps === 8) {
-      var pair8     = (window.GIRT_PAIR || {})[8];
-      var bays8     = Math.floor(wallLen / 8);
-      var rem8      = wallLen % 8;
-      var result8   = {};
-      if (pair8) {
-        var boards16  = Math.floor(bays8 / 2);
-        var oddBay    = bays8 % 2;
-        if (boards16 > 0) result8[pair8] = boards16;
-        if (oddBay > 0 || rem8 > 0) result8[10] = (result8[10]||0) + 1;
-      } else {
-        result8[10] = bays8 + ((rem8 > 0) ? 1 : 0);
-      }
-      return result8;
-    }
-    // 12' spacing — full bays get 12' boards, remainder gets 10'
-    if (ps === 12) {
-      var fullBays12 = Math.floor(wallLen / 12);
-      var rem12      = wallLen % 12;
-      var result12   = {};
-      if (fullBays12 > 0) result12[12] = fullBays12;
-      if (rem12 > 0.01)   result12[10] = (result12[10]||0) + 1;
-      return result12;
-    }
-    // 11' (or any non-standard) — one board per bay, shortest stock that covers the bay.
-    if (ps !== 10) {
-      var STOCKg = window.GIRT_STOCK || [10, 12, 14, 16, 18, 20];
-      var nB = Math.max(1, Math.round(wallLen / ps));
-      var pB = STOCKg.find(function(l){ return l >= ps - 0.01; }) || STOCKg[STOCKg.length - 1];
-      var og = {}; og[pB] = nB; return og;
-    }
-    // 10' spacing (default) — paired bays get the GIRT_PAIR board (20'), odd bay a 10'
-    var fullBays10 = Math.floor(wallLen / 10);
-    var rem10      = wallLen % 10;
-    var result10   = {};
-    var totalBoards = fullBays10 + (rem10 > 0.01 ? 1 : 0);
-    var pair10 = (window.GIRT_PAIR || {})[10];
-    if (pair10 && totalBoards >= 2) {
-      result10[pair10] = Math.floor(totalBoards / 2);
-      if (totalBoards % 2) result10[10] = 1;
-    } else if (totalBoards > 0) {
-      result10[10] = totalBoards;
-    }
-    return result10;
+    return window.SauceMaterials.girtRuns(wallLen, ps);
   }
 
   var groups = {};
