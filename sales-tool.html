@@ -16693,7 +16693,13 @@ function applyVoiceQuote(parsed, overlay) {
             function _setRibMats(wc){
               var cn=(wc&&wc.wallColor)||wallColorName;
               _ribHasW=(wc&&wc.wainscot!=null)?!!wc.wainscot:hasWainscot;
-              var wcn=(wc&&wc.wainscotColor)||(_ribHasW?roofColorName:cn);
+              // The wainscot ribs take the WAINSCOT colour, not the roof colour. Reading
+              // the roof here ignored the wainscot colour the customer actually picked,
+              // so a charcoal wainscot under a white roof came out charcoal panels with
+              // bright white striations. wainscotColorName already falls back to the roof
+              // colour on its own when no wainscot colour is set, which is all this line
+              // was ever reaching for. Side sheds have always done it this way.
+              var wcn=(wc&&wc.wainscotColor)||(_ribHasW?wainscotColorName:cn);
               var hx=pc(cn),r=(hx>>16)&0xff,g=(hx>>8)&0xff,b=hx&0xff;
               mRibHi=new THREE.MeshBasicMaterial({color:((Math.min(255,r+55)<<16)|(Math.min(255,g+55)<<8)|Math.min(255,b+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
               mRibSh=new THREE.MeshBasicMaterial({color:((Math.max(0,r-40)<<16)|(Math.max(0,g-40)<<8)|Math.max(0,b-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
@@ -17692,10 +17698,63 @@ function applyVoiceQuote(parsed, overlay) {
                         m.castShadow = true;
                         grps.trusses.add(m);
                     }
+                    // A steel-truss building gets steel extension trusses. The
+                    // extension carries the main building's truss type — it is the
+                    // same roof — so a red-iron barn no longer sprouts a wood-framed
+                    // extension. Same open-web profile the main building draws:
+                    // angle-iron chords, an inner chord 18" below the roof surface,
+                    // and X-webs between them.
+                    var _xSteel = (Q.truss === 'Steel');
+                    var _mSt = new THREE.MeshLambertMaterial({ color: 0x2a2a2a, side: THREE.DoubleSide });
+                    function _sBeam(s0, y0, s1, y1, rr, sz) {
+                        var ds = s1 - s0, dy = y1 - y0;
+                        var len = Math.sqrt(ds*ds + dy*dy);
+                        if (len < 0.0001) return;
+                        var m = new THREE.Mesh(new THREE.BoxGeometry(sz, sz, len), _mSt);
+                        var d3;
+                        if (repAxis === 'x') { m.position.set(rr, (y0+y1)/2, (s0+s1)/2); d3 = new THREE.Vector3(0, dy, ds); }
+                        else                 { m.position.set((s0+s1)/2, (y0+y1)/2, rr); d3 = new THREE.Vector3(ds, dy, 0); }
+                        m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1), d3.normalize());
+                        m.castShadow = true;
+                        grps.trusses.add(m);
+                    }
+                    function _steelProfile(rr) {
+                        var hw = Math.abs(sE2 - sE1) / 2;
+                        if (!(hw > 0.0001)) return;
+                        var depth   = 1.5 * Sc;                       // 18" frame depth
+                        var chordL  = Math.sqrt(hw*hw + (rh-eh)*(rh-eh));
+                        if (!(chordL > 0.0001)) return;
+                        var nS = (rh - eh) / chordL * depth;
+                        var nY = -(hw / chordL) * depth;
+                        var panels = 6, panelW = hw / panels;
+                        var chordSz = 0.025, webSz = 0.018;
+                        // u is measured from the ridge: -hw at one eave, +hw at the other.
+                        var sgn = (sE2 >= sE1) ? 1 : -1;
+                        function S(u){ return sMid + sgn * u; }
+                        function tP(p){ return { u:-hw + p*panelW, y: eh + p*(rh-eh)/panels }; }
+                        function iP(p){ var t = tP(p); return { u:t.u + nS, y:t.y + nY }; }
+                        _sBeam(S(-hw), eh, S(0), rh, rr, chordSz);
+                        _sBeam(S( hw), eh, S(0), rh, rr, chordSz);
+                        for (var p = 0; p < panels; p++) {
+                            var t0 = tP(p), t1 = tP(p+1), i0 = iP(p), i1 = iP(p+1);
+                            _sBeam(S(i0.u), i0.y, S(i1.u), i1.y, rr, chordSz);
+                            _sBeam(S(-i0.u), i0.y, S(-i1.u), i1.y, rr, chordSz);
+                            _sBeam(S(t0.u), t0.y, S(i1.u), i1.y, rr, webSz);
+                            _sBeam(S(i0.u), i0.y, S(t1.u), t1.y, rr, webSz);
+                            _sBeam(S(-t0.u), t0.y, S(-i1.u), i1.y, rr, webSz);
+                            _sBeam(S(-i0.u), i0.y, S(-t1.u), t1.y, rr, webSz);
+                            _sBeam(S(t0.u), t0.y, S(i0.u), i0.y, rr, webSz);
+                            _sBeam(S(-t0.u), t0.y, S(-i0.u), i0.y, rr, webSz);
+                        }
+                        var tL = tP(panels), iL = iP(panels);
+                        _sBeam(S(tL.u), tL.y, S(iL.u), iL.y, rr, webSz);
+                        _sBeam(S(-tL.u), tL.y, S(-iL.u), iL.y, rr, webSz);
+                    }
                     for (var _ti = 0; _ti <= _nT; _ti++) {
                         window._spUnit = 'xt' + (sc.id||'') + '-' + repAxis + _ti;
                         window._spPart = (_ti === _nT) ? 'gableTruss' : 'truss';
                         var _rr = r0 + (r1 - r0) * (_ti / _nT);
+                        if (_xSteel) { _steelProfile(_rr); continue; }
                         _tBeam(sE1, eh, sMid, rh, _rr, _tcSz, _mTC);
                         _tBeam(sMid, rh, sE2, eh, _rr, _tcSz, _mTC);
                         _tBeam(sE1, eh, sE2, eh, _rr, _tcSz, _mTC);
@@ -24882,7 +24941,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M65-1222';
+window.SAUCE_BUILD = 'M67-1427';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
