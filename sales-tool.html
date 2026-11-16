@@ -14797,23 +14797,30 @@ function applyVoiceQuote(parsed, overlay) {
               var z = (-Q.l / 2 + dv.atFt) * Sc;
               window._spUnit = 'dw-' + (dv.id != null ? dv.id : di);
 
-              // Metal, one skin per face.
+              // One face or two. A wall sheeted on one side only carries one
+              // skin, one set of girts behind it, and one pair of J-channel
+              // runs. The clad face is the low side, toward the start of the
+              // building, so a row of them reads the same way down the run.
+              var _one   = (dv.sides === 1);
+              var _signs = _one ? [-1] : [-1, 1];
+
+              // Metal, one skin per clad face.
               window._spPart = 'dividerMetal';
-              [-0.012, 0.012].forEach(function(off) {
+              _signs.forEach(function(sg) {
                 var pnl = new THREE.Mesh(new THREE.PlaneGeometry(sw, sh), mPanel);
-                pnl.position.set(0, postBase + sh / 2, z + off);
+                pnl.position.set(0, postBase + sh / 2, z + sg * 0.012);
                 grps.wallPanels.add(pnl);
               });
 
-              // Girts, every 2ft up, on both faces behind the metal.
+              // Girts, every 2ft up, behind the metal on each clad face.
               window._spPart = 'dividerGirt';
               var rows = Math.floor((Q.h || 0) / 2);
               for (var r = 1; r <= rows; r++) {
                 var gy = postBase + (r * 2) * Sc;
                 if (gy > topY + 0.01) break;      // the top row sits at the eave
-                [-0.030, 0.030].forEach(function(off) {
+                _signs.forEach(function(sg) {
                   var g = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.045, 0.022), mGirt);
-                  g.position.set(0, gy, z + off);
+                  g.position.set(0, gy, z + sg * 0.030);
                   grps.framing.add(g);
                 });
               }
@@ -14824,12 +14831,12 @@ function applyVoiceQuote(parsed, overlay) {
               bd.position.set(0, postBase + 0.028, z);
               grps.framing.add(bd);
 
-              // J-channel, top and bottom of each face.
+              // J-channel, top and bottom of each clad face.
               window._spPart = 'dividerJc';
-              [-0.020, 0.020].forEach(function(off) {
+              _signs.forEach(function(sg) {
                 [postBase + 0.012, topY - 0.012].forEach(function(jy) {
                   var jc = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.022, 0.014), mJc);
-                  jc.position.set(0, jy, z + off);
+                  jc.position.set(0, jy, z + sg * 0.020);
                   grps.wallPanels.add(jc);
                 });
               });
@@ -25581,7 +25588,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M90-1116';
+window.SAUCE_BUILD = 'M91-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -44177,10 +44184,11 @@ window.SauceMaterials.calcFinishedCeilingMetal = function(Q, shedCfgs) {
 // ── INTERIOR DIVIDER WALLS ───────────────────────────────────────────────────
 // A mini storage building is one shell cut into units. Each divider runs the
 // building's WIDTH, slab to the bottom of the truss — a flat wall at eave
-// height, not a gable, because the truss bottom chord is level. It is clad on
-// BOTH faces, so it takes two sets of girts, two sets of panels, and J-channel
-// top and bottom on each side. The posts are a toggle: a 30' run of girts needs
-// bearing, but a divider hung off existing framing does not buy its own.
+// height, not a gable, because the truss bottom chord is level. Each divider is
+// clad on both faces or on one, per wall: the girts are the nailer for the
+// metal, so they follow the clad sides, and J-channel runs top and bottom on
+// each clad face. The posts are a toggle: a 30' run of girts needs bearing, but
+// a divider hung off existing framing does not buy its own.
 window._dividerWalls = window._dividerWalls || [];
 var _nextDividerId = 1;
 
@@ -44190,7 +44198,7 @@ window.addDividerWall = function(atFt) {
     var ex = (window._dividerWalls || []).map(function(d){ return d.atFt; }).sort(function(a,b){return a-b;});
     atFt = ex.length ? Math.round(((ex[ex.length-1] + L) / 2) * 12) / 12 : Math.round((L/2) * 12) / 12;
   }
-  window._dividerWalls.push({ id: _nextDividerId++, atFt: atFt, posts: true, _open: false });
+  window._dividerWalls.push({ id: _nextDividerId++, atFt: atFt, posts: true, sides: 2, _open: false });
   renderDividerWalls();
   try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
 };
@@ -44203,6 +44211,7 @@ window.setDividerProp = function(id, prop, val) {
   var d = (window._dividerWalls || []).find(function(x){ return x.id === id; });
   if (!d) return;
   if (prop === 'posts') d.posts = !!val;
+  else if (prop === 'sides') d.sides = (parseInt(val, 10) === 1) ? 1 : 2;
   else { var n = parseFloat(val); if (!isNaN(n)) d.atFt = Math.max(0, Math.min(Q.l || 0, Math.round(n*12)/12)); }
   renderDividerWalls();
   try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
@@ -44234,7 +44243,7 @@ window.autoDividersBetweenDoors = function() {
     var gapB = (ds[i].offset || 0);
     if (gapB - gapA < 0.5) continue;                 // no room between these two
     window._dividerWalls.push({ id: _nextDividerId++,
-      atFt: Math.round(((gapA + gapB) / 2) * 12) / 12, posts: true, _open: false });
+      atFt: Math.round(((gapA + gapB) / 2) * 12) / 12, posts: true, sides: 2, _open: false });
   }
   renderDividerWalls();
   try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
@@ -44251,6 +44260,7 @@ window.renderDividerWalls = function() {
   el.innerHTML = list.map(function(d, i) {
     var prev = i === 0 ? 0 : list[i-1].atFt;
     var unit = Math.round((d.atFt - prev) * 10) / 10;
+    var dSides = (d.sides === 1) ? 1 : 2;
     return '<div class="shed-card"><div class="shed-card-hdr">'
       + '<span class="shed-card-icon">|</span>'
       + '<span class="shed-card-lbl">Divider ' + (i+1) + " &mdash; " + d.atFt + "'</span>"
@@ -44267,7 +44277,16 @@ window.renderDividerWalls = function() {
       +       '<input type="checkbox"' + (d.posts !== false ? ' checked' : '') + ' '
       +       'onchange="setDividerProp(' + d.id + ',\'posts\',this.checked)" style="accent-color:var(--gold);">Posts</label>'
       +   '</div>'
-      +   '<div style="font-size:9px;color:var(--muted);margin-top:4px;">Unit before: ' + unit + "'</div>"
+      +   '<div style="display:flex;gap:6px;align-items:center;margin-top:5px;">'
+      +     '<span style="font-size:9px;color:var(--muted);">Metal</span>'
+      +     '<select onchange="setDividerProp(' + d.id + ',\'sides\',this.value)" '
+      +       'style="flex:1;font-size:10px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:#f4f6f8;color:var(--navy);font-family:Outfit,sans-serif;font-weight:600;">'
+      +       '<option value="2"' + (dSides === 2 ? ' selected' : '') + '>Both sides</option>'
+      +       '<option value="1"' + (dSides === 1 ? ' selected' : '') + '>One side</option>'
+      +     '</select>'
+      +   '</div>'
+      +   '<div style="font-size:9px;color:var(--muted);margin-top:4px;">Unit before: ' + unit + "'  |  "
+      +     (dSides === 1 ? 'girts + J-channel one face' : 'girts + J-channel both faces') + '</div>'
       + '</div></div>';
   }).join('')
   + '<div style="font-size:9px;color:var(--muted);margin-top:5px;">'
@@ -44300,17 +44319,25 @@ window.SauceMaterials.calcDividerWalls = function(Q, WALLS, sf) {
   // ── Girts, both faces ──────────────────────────────────────────────────────
   // Same rule as a sidewall: a row every 2ft up, runs broken on the posts so the
   // joints land on bearing, and only the stock lengths this program carries.
+  // Faces clad across all the dividers. Girts follow the metal: they are what
+  // the panel screws to, so a wall sheeted on one side only needs one set.
+  var faces = list.reduce(function(t, d) { return t + ((d.sides === 1) ? 1 : 2); }, 0);
+  var oneSide = list.filter(function(d) { return d.sides === 1; }).length;
+  var facesTxt = oneSide === 0 ? 'both faces'
+               : oneSide === n ? 'one face'
+               : (n - oneSide) + ' both faces, ' + oneSide + ' one face';
+
   var rows = Math.floor(wallH / 2);
   if (rows > 0 && window.SauceMaterials.girtRuns) {
     var runs = window.SauceMaterials.girtRuns(wallLen, ps);
     var gg = {};
     Object.keys(runs).forEach(function(len) {
       var sku = 'SYP26' + len;
-      gg[sku] = (gg[sku] || 0) + Math.ceil(rows * runs[len]) * 2 * n;   // ×2 = both faces
+      gg[sku] = (gg[sku] || 0) + Math.ceil(rows * runs[len]) * faces;
     });
     Object.keys(gg).sort().forEach(function(sku) {
       items.push({ category:'Yard', description:'Divider Wall Girts', sku:sku, quantity:gg[sku],
-        detail: n + ' divider' + (n>1?'s':'') + '  |  ' + rows + ' rows, both faces  |  '
+        detail: n + ' divider' + (n>1?'s':'') + '  |  ' + rows + ' rows, ' + facesTxt + '  |  '
               + wallLen + "' wide" });
     });
   }
@@ -44356,16 +44383,16 @@ window.SauceMaterials.calcDividerWalls = function(Q, WALLS, sf) {
   var mPrefix = (typeof getColoredSkuPrefix === 'function')
               ? getColoredSkuPrefix(mType, 'wall') : ('T9' + wallCode);
   items.push({ category:'Sidewall Metal', description:'Divider Wall Metal',
-    sku: mPrefix, quantity: Math.ceil(wallLen / 3) * 2 * n,
+    sku: mPrefix, quantity: Math.ceil(wallLen / 3) * faces,
     length: wallH,
-    detail: n + ' divider' + (n>1?'s':'') + '  |  both faces  |  ' + wallH + "' panels" });
+    detail: n + ' divider' + (n>1?'s':'') + '  |  ' + facesTxt + '  |  ' + wallH + "' panels" });
 
   // ── J-channel, top and bottom, both faces ──────────────────────────────────
-  var jcLf  = wallLen * 4 * n;
+  var jcLf  = wallLen * 2 * faces;          // a top and a bottom run on each clad face
   var jcSku = 'JC9' + ((window._selectedColors || {}).trimCode || 'BK') + '10';
   items.push({ category:'Trim', description:'Divider Wall J-Channel', sku:jcSku,
     quantity: Math.ceil(jcLf / 10),
-    detail: 'top and bottom, both faces  |  ' + jcLf + " lf" });
+    detail: 'top and bottom, ' + facesTxt + '  |  ' + jcLf + " lf" });
 
   return items;
 };
