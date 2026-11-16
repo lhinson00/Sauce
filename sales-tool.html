@@ -2332,6 +2332,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div id="st_barjoistRow" style="display:none;">
           <div id="st_barjoistList" style="display:flex;flex-direction:column;gap:5px;margin-bottom:6px;"></div>
           <button onclick="addBarjoist()" style="width:100%;padding:5px;border-radius:6px;border:1px dashed rgba(var(--gold-rgb),.4);background:transparent;color:var(--gold);font-size:10px;font-weight:700;cursor:pointer;font-family:'Outfit',sans-serif;">+ Add Bar Joist</button>
+          <button onclick="bjOpenLayout()" style="width:100%;margin-top:5px;padding:6px;border-radius:6px;border:1px solid rgba(var(--gold-rgb),.55);background:rgba(var(--gold-rgb),.12);color:var(--gold);font-size:10px;font-weight:800;cursor:pointer;font-family:'Outfit',sans-serif;">Open Post Layout</button>
         </div>
         <div class="toggle-row" id="rowPitch612">
           <div class="toggle-info"><div class="toggle-lbl">6/12 Pitch</div></div>
@@ -9453,7 +9454,7 @@ function newQuoteSameCustomer(){
 function serializeConfig() {
   return {
     Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,steelGableOH:Q.steelGableOH||false,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,truss:Q.truss,frameType:Q.frameType,roofStyle:Q.roofStyle||'gable',ventGap:!!Q.ventGap},
-    walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,bayCount:w.bayCount,partialH:w.partialH,openLenFt:w.openLenFt,openStartFt:w.openStartFt,openPS:w.openPS,wallColor:w.wallColor||null,wainscot:(w.wainscot!=null?!!w.wainscot:null),wainscotColor:w.wainscotColor||null};}),
+    walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,bayCount:w.bayCount,partialH:w.partialH,openLenFt:w.openLenFt,openStartFt:w.openStartFt,openPS:w.openPS,wallColor:w.wallColor||null,wainscot:(w.wainscot!=null?!!w.wainscot:null),wainscotColor:w.wainscotColor||null,postsManual:(Array.isArray(w.postsManual)&&w.postsManual.length?w.postsManual.slice():null)};}),
     doors: allDoors,
     stallPosts: window._stallPosts || [],
     walkDoors: window._walkDoors,
@@ -24473,7 +24474,21 @@ function generatePostLayout() {
         return w+fs+'"';
     }
 
+    // The builder's sheet and the 3D model must show the same posts, so this
+    // asks the one generator everything else uses. It used to keep its own copy
+    // of the rules, which had drifted: no jamb upgrade on an existing post, and
+    // no handling of the inset notch or a custom open span. The old copy is kept
+    // below as a fallback for the case where the module has not loaded.
     function getWP(wid){
+        var SM = window.SauceMaterials;
+        if (SM && typeof SM.getPostsForWall === 'function') {
+            try { return SM.getPostsForWall(wid, Q, WALLS, allDoors) || []; }
+            catch(e) { console.warn('[PostPDF] shared generator failed, using the local copy:', e.message); }
+        }
+        return getWPLegacy(wid);
+    }
+
+    function getWPLegacy(wid){
         var wCfg=null,isE=(wid==='left'||wid==='right');
         for(var i=0;i<WALLS.length;i++)if(WALLS[i].id===wid)wCfg=WALLS[i];
         var wLen=isE?bl:bw,ps=wCfg?wCfg.postSpacing:(Q.postSpacing||10);
@@ -25292,7 +25307,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M76-1116';
+window.SAUCE_BUILD = 'M77-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -31295,11 +31310,484 @@ var BARJOIST_SKUS = [
   'TSBJ301010C','TSBJ301010E'
 ];
 
+// wall / startFt / endFt say WHERE the joist runs, so the editor can draw it
+// over the opening it carries and check its span against the gap. They are
+// optional: a quote saved before the editor existed loads with them unset and
+// behaves exactly as it did.
 function addBarjoist() {
-  window._barjoists.push({ sku: 'TSBJ2066C', qty: 1, removePost: false });
+  window._barjoists.push({ sku: 'TSBJ2066C', qty: 1, removePost: false,
+                           wall: '', startFt: null, endFt: null });
   renderBarjoists();
   scheduleBuild();
 }
+
+// The span a SKU is built for, and the post it bears on: TSBJ<span><bearing><C|E>[HD]
+// ═══ POST LAYOUT EDITOR — BAR JOISTS ════════════════════════════════════════
+// A top-down view of one wall. Posts can be moved or deleted, bar joists laid
+// across the gaps they carry. Whatever is set here is written to
+// wall.postsManual, which getPostsForWall returns verbatim — so the 3D model,
+// the post sheet the builder gets and every post-derived material line all
+// follow from the same edit.
+//
+// Steel truss only. Bar joists do not exist on a wood-truss building, and the
+// automatic post rules there already remove what they can.
+window._bjUI = { wall: 'right', sel: [], drag: null };
+
+window.bjWallLabel = function(id) {
+  return { left:'Left Eave', right:'Right Eave', front:'Front Gable', back:'Back Gable' }[id] || id;
+};
+window.bjWallLen = function(id) {
+  return (id === 'left' || id === 'right') ? (window._Q || Q).l : (window._Q || Q).w;
+};
+
+// The posts this wall currently has: the hand-set line if there is one,
+// otherwise whatever the automatic rules produce.
+window.bjPosts = function(wallId) {
+  var SM = window.SauceMaterials;
+  if (!SM || !SM.getPostsForWall) return [];
+  return SM.getPostsForWall(wallId, Q, WALLS, window._allDoors || []) || [];
+};
+window.bjWall = function(id) {
+  return (WALLS || []).find(function(w) { return w.id === id; }) || null;
+};
+
+// Write the line back. Storing it makes the wall manual from here on, so the
+// automatic spacing no longer overwrites what the salesman decided.
+window.bjCommit = function(wallId, feet) {
+  var w = window.bjWall(wallId);
+  if (!w) return;
+  w.postsManual = feet.slice().sort(function(a, b) { return a - b; });
+  try { scheduleBuild(); } catch(e) {}
+  try { updateStripFromLocalCalc(); } catch(e) {}
+  window.bjDraw();
+};
+window.bjResetWall = function() {
+  var w = window.bjWall(window._bjUI.wall);
+  if (!w) return;
+  delete w.postsManual;
+  window._bjUI.sel = [];
+  try { scheduleBuild(); } catch(e) {}
+  try { updateStripFromLocalCalc(); } catch(e) {}
+  window.bjDraw();
+};
+
+// Smallest stock joist that covers the gap, bearing on whatever the eave posts
+// are, end profile at a corner and centre profile anywhere else.
+// A bar joist wall is 8x8 at minimum — the same rule toggleBarjoist applies to
+// the post selects. The select alone is not reliable: on a screen where the
+// per-wall size control is not rendered the bump is a no-op.
+window.bjWallPostSize = function(wallId, sf) {
+  if (!sf) { try { sf = (typeof getStFields === 'function') ? getStFields() : {}; } catch(e) { sf = {}; } }
+  var size = (window.SauceMaterials && window.SauceMaterials.wallPostSizeFor)
+             ? window.SauceMaterials.wallPostSizeFor(wallId, sf) : '8x8';
+  var order = ['6x6', '8x8', '10x10', '12x12'];
+  return order.indexOf(size) < 1 ? '8x8' : size;
+};
+
+window.bjAutoSku = function(spanFt, atCorner) {
+  var span = [20, 24, 30].filter(function(s) { return s >= spanFt - 0.01; })[0];
+  if (!span) return null;
+  var size = window.bjWallPostSize(window._bjUI.wall);
+  var bear = (size === '10x10' || size === '12x12') ? '1010' : '88';
+  var sku = 'TSBJ' + span + bear + (atCorner ? 'E' : 'C');
+  // Fall back to the nearest listed SKU if that combination is not stocked.
+  if (BARJOIST_SKUS.indexOf(sku) === -1) {
+    sku = BARJOIST_SKUS.filter(function(s) {
+      var sp = window.barjoistSpec(s);
+      return sp && sp.span === span;
+    })[0] || null;
+  }
+  return sku;
+};
+
+// Lay a joist across the gap between the two selected posts.
+window.bjAddSpan = function() {
+  var U = window._bjUI;
+  if (U.sel.length !== 2) { alert('Pick the two posts the bar joist bears on.'); return; }
+  var a = Math.min(U.sel[0], U.sel[1]), b = Math.max(U.sel[0], U.sel[1]);
+  var span = b - a;
+  var wLen = window.bjWallLen(U.wall);
+  var atCorner = (a < 0.01 || Math.abs(b - wLen) < 0.01);
+
+  // Switch the feature on BEFORE choosing the SKU. toggleBarjoist raises the
+  // eave posts to 8x8, and the joist has to be the one that bears on what the
+  // wall ends up with — read first and it picks a 6x6 joist for an 8x8 wall.
+  var el = document.getElementById('st_barjoist');
+  if (el && !el.checked) { el.checked = true; try { toggleBarjoist(el); } catch(e) {} }
+
+  var sku = window.bjAutoSku(span, atCorner);
+  if (!sku) { alert('No stock bar joist spans ' + span + " ft. The longest is 30'."); return; }
+  window._barjoists = window._barjoists || [];
+  // Switching the toggle on seeds one blank row for the side panel. A joist
+  // placed here supersedes it, so drop any row that was never given a span —
+  // left in, it bills as a second joist nobody placed.
+  window._barjoists = window._barjoists.filter(function(x) {
+    return x && (x.startFt != null || x.wall);
+  });
+  window._barjoists.push({ sku: sku, qty: 1, removePost: false,
+                           wall: U.wall, startFt: a, endFt: b });
+  try { renderBarjoists(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  U.sel = [];
+  window.bjDraw();
+};
+
+window.bjDeleteSpan = function(i) {
+  (window._barjoists || []).splice(i, 1);
+  try { renderBarjoists(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  window.bjDraw();
+};
+window.bjSetSpanSku = function(i, sku) {
+  if (!window._barjoists[i]) return;
+  window._barjoists[i].sku = sku;
+  try { renderBarjoists(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  window.bjDraw();
+};
+
+// Delete the selected posts. A corner post is refused: the building has to
+// stand on its corners whatever the opening plan is.
+window.bjDeleteSelected = function() {
+  var U = window._bjUI;
+  if (!U.sel.length) { alert('Click a post first.'); return; }
+  var wLen = window.bjWallLen(U.wall);
+  var corner = U.sel.filter(function(f) { return f < 0.01 || Math.abs(f - wLen) < 0.01; });
+  if (corner.length) { alert('Corner posts cannot be removed.'); return; }
+  var cur = window.bjPosts(U.wall).map(function(p) { return p.ft; });
+  var keep = cur.filter(function(f) {
+    return !U.sel.some(function(s) { return Math.abs(s - f) < 0.01; });
+  });
+  U.sel = [];
+  window.bjCommit(U.wall, keep);
+};
+
+window.bjAddPostAt = function(ft) {
+  var U = window._bjUI;
+  var cur = window.bjPosts(U.wall).map(function(p) { return p.ft; });
+  if (cur.some(function(f) { return Math.abs(f - ft) < 0.26; })) return;
+  cur.push(ft);
+  window.bjCommit(U.wall, cur);
+};
+
+// Things worth saying out loud. None of them block: the salesman overrules.
+window.bjWarnings = function() {
+  var U = window._bjUI, out = [];
+  var wLen = window.bjWallLen(U.wall);
+  var posts = window.bjPosts(U.wall).map(function(p) { return p.ft; });
+  var doors = (window._allDoors || []).filter(function(d) { return d.wall === U.wall; });
+  var joists = (window._barjoists || []).filter(function(b) { return b.wall === U.wall; });
+  var sf = {};
+  try { sf = (typeof getStFields === 'function') ? getStFields() : {}; } catch(e) {}
+  var size = window.bjWallPostSize(U.wall, sf);
+  var postIn = parseFloat(String(size).split('x')[0]) || 8;
+
+  // Doors are checked by the BAY they share, not one at a time. Two 10' doors
+  // between posts 20' apart fit individually and do not fit together, and it is
+  // the pair that gets built.
+  for (var bi = 1; bi < posts.length; bi++) {
+    var L = posts[bi-1], R = posts[bi];
+    var inBay = doors.filter(function(d) {
+      var a = d.offset || 0, b = a + d.w;
+      return a >= L - 0.26 && b <= R + 0.26;
+    });
+    if (!inBay.length) continue;
+    var need  = inBay.reduce(function(s, d) { return s + d.w; }, 0);
+    var clear = (R - L) - (postIn / 12);
+    if (clear < need - 0.01) {
+      out.push({ bad: true, msg: (inBay.length > 1 ? inBay.length + ' doors' : "The " + inBay[0].w + "' door")
+        + ' between ' + L + "' and " + R + (inBay.length > 1 ? "' need " : "' needs ")
+        + (Math.round(need*100)/100)
+        + "', but the clear opening is " + (Math.round(clear*100)/100) + "'." });
+    }
+  }
+
+  // A gap wider than the post spacing needs something over it.
+  var ps = (window.bjWall(U.wall) || {}).postSpacing || Q.postSpacing || 10;
+  for (var i = 1; i < posts.length; i++) {
+    var g = posts[i] - posts[i-1];
+    if (g <= ps + 0.01) continue;
+    var covered = joists.some(function(b) {
+      return Math.abs((b.startFt || 0) - posts[i-1]) < 0.51 && Math.abs((b.endFt || 0) - posts[i]) < 0.51;
+    });
+    if (!covered) {
+      out.push({ bad: true, msg: 'The ' + g + "' gap from " + posts[i-1] + "' to " + posts[i]
+        + "' has no bar joist over it." });
+    }
+  }
+
+  // A joist has to be long enough for the gap it was put on.
+  joists.forEach(function(b) {
+    var sp = window.barjoistSpec(b.sku);
+    var need = (b.endFt || 0) - (b.startFt || 0);
+    if (!sp || !need) return;
+    if (sp.span < need - 0.01) {
+      out.push({ bad: true, msg: b.sku + " spans " + sp.span + "' but sits over a "
+        + (Math.round(need * 100) / 100) + "' gap." });
+    } else if (sp.span > need + 4.01) {
+      out.push({ bad: false, msg: b.sku + " is a " + sp.span + "' joist over a "
+        + (Math.round(need * 100) / 100) + "' gap." });
+    }
+    if (sp && sp.bearing !== size) {
+      out.push({ bad: false, msg: b.sku + ' bears on ' + sp.bearing + ' but this wall is '
+        + size + '.' });
+    }
+  });
+  return out;
+};
+
+// ── The modal ───────────────────────────────────────────────────────────────
+window.bjOpenLayout = function(wallId) {
+  if ((Q.truss || '') !== 'Steel') {
+    alert('Bar joists are for steel truss buildings. Switch the truss type to Steel first.');
+    return;
+  }
+  var U = window._bjUI;
+  // Open on a wall that actually has garage doors, since that is what the
+  // salesman came here to deal with.
+  if (!wallId) {
+    var withDoors = ['right','left','front','back'].filter(function(w) {
+      return (window._allDoors || []).some(function(d) { return d.wall === w && d.type === 'garage'; });
+    });
+    wallId = withDoors[0] || 'right';
+  }
+  U.wall = wallId; U.sel = [];
+
+  var m = document.getElementById('bjLayoutModal');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = 'bjLayoutModal';
+    m.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:rgba(5,8,16,.72);'
+                    + 'display:flex;align-items:center;justify-content:center;font-family:Outfit,sans-serif;';
+    m.innerHTML =
+      '<div style="background:#0b1020;border:1px solid rgba(var(--gold-rgb),.35);border-radius:14px;'
+    +      'width:min(1080px,94vw);max-height:92vh;overflow:auto;padding:18px 20px;color:#e2e8f0;">'
+    +   '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">'
+    +     '<div><div style="font-size:15px;font-weight:800;color:var(--gold);">Post Layout &mdash; Bar Joists</div>'
+    +     '<div id="bjSub" style="font-size:11px;color:#8a93a6;margin-top:2px;"></div></div>'
+    +     '<button onclick="bjCloseLayout()" style="background:none;border:none;color:#8a93a6;font-size:18px;cursor:pointer;">&#10005;</button>'
+    +   '</div>'
+    +   '<div id="bjTabs" style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;"></div>'
+    +   '<canvas id="bjCanvas" width="1020" height="190" style="width:100%;background:#070b14;'
+    +     'border:1px solid rgba(255,255,255,.08);border-radius:10px;cursor:pointer;display:block;"></canvas>'
+    +   '<div style="display:flex;gap:7px;margin:10px 0;flex-wrap:wrap;align-items:center;">'
+    +     '<button onclick="bjDeleteSelected()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(239,68,68,.5);background:rgba(239,68,68,.14);color:#f87171;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Delete Post</button>'
+    +     '<button onclick="bjAddSpan()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(var(--gold-rgb),.5);background:rgba(var(--gold-rgb),.14);color:var(--gold);font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Bar Joist Between</button>'
+    +     '<button onclick="bjResetWall()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#94a3b8;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Back to Automatic</button>'
+    +     '<div style="font-size:10px;color:#6b7280;margin-left:auto;">Click a post to select &middot; drag to move &middot; click the wall line to add &middot; snaps to 6&quot;</div>'
+    +   '</div>'
+    +   '<div id="bjSpanList" style="margin-bottom:10px;"></div>'
+    +   '<div id="bjWarn"></div>'
+    + '</div>';
+    document.body.appendChild(m);
+    var cv = m.querySelector('#bjCanvas');
+    cv.addEventListener('mousedown', window._bjDown);
+    cv.addEventListener('mousemove', window._bjMove);
+    window.addEventListener('mouseup', window._bjUp);
+  }
+  m.style.display = 'flex';
+  window.bjDraw();
+};
+window.bjCloseLayout = function() {
+  var m = document.getElementById('bjLayoutModal');
+  if (m) m.style.display = 'none';
+};
+
+// Canvas geometry, shared by the drawing and the hit testing.
+window._bjGeo = function(cv) {
+  var wLen = window.bjWallLen(window._bjUI.wall) || 1;
+  var padL = 46, padR = 46, y = 96;
+  return { wLen: wLen, padL: padL, y: y,
+           sc: (cv.width - padL - padR) / wLen,
+           X: function(ft) { return padL + ft * ((cv.width - padL - padR) / wLen); },
+           ft: function(px) { return (px - padL) / ((cv.width - padL - padR) / wLen); } };
+};
+window._bjAt = function(e) {
+  var cv = document.getElementById('bjCanvas');
+  var r = cv.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (cv.width / r.width),
+           y: (e.clientY - r.top)  * (cv.height / r.height), cv: cv };
+};
+window._bjSnap = function(ft) { return Math.round(ft * 2) / 2; };   // 6 inches
+
+window._bjDown = function(e) {
+  var p = window._bjAt(e), g = window._bjGeo(p.cv), U = window._bjUI;
+  var posts = window.bjPosts(U.wall);
+  var hit = null, best = 12;
+  posts.forEach(function(q) {
+    var d = Math.abs(g.X(q.ft) - p.x);
+    if (d < best && Math.abs(p.y - g.y) < 26) { best = d; hit = q; }
+  });
+  if (hit) {
+    var already = U.sel.some(function(f) { return Math.abs(f - hit.ft) < 0.01; });
+    if (e.shiftKey || U.sel.length < 2) {
+      if (already) U.sel = U.sel.filter(function(f) { return Math.abs(f - hit.ft) >= 0.01; });
+      else U.sel.push(hit.ft);
+    } else { U.sel = [hit.ft]; }
+    if (U.sel.length > 2) U.sel = U.sel.slice(-2);
+    U.drag = { from: hit.ft, corner: hit.corner };
+    window.bjDraw();
+    return;
+  }
+  // Empty spot on the wall line adds a post there.
+  if (Math.abs(p.y - g.y) < 20) {
+    var ft = window._bjSnap(g.ft(p.x));
+    if (ft > 0.4 && ft < g.wLen - 0.4) window.bjAddPostAt(ft);
+  }
+};
+window._bjMove = function(e) {
+  var U = window._bjUI;
+  if (!U.drag || U.drag.corner) return;
+  var p = window._bjAt(e), g = window._bjGeo(p.cv);
+  var to = window._bjSnap(g.ft(p.x));
+  if (to <= 0 || to >= g.wLen) return;
+  if (Math.abs(to - U.drag.from) < 0.01) return;
+  var cur = window.bjPosts(U.wall).map(function(q) { return q.ft; });
+  var moved = cur.map(function(f) { return Math.abs(f - U.drag.from) < 0.01 ? to : f; });
+  U.sel = U.sel.map(function(f) { return Math.abs(f - U.drag.from) < 0.01 ? to : f; });
+  U.drag.from = to;
+  window.bjCommit(U.wall, moved);
+};
+window._bjUp = function() { if (window._bjUI) window._bjUI.drag = null; };
+
+// ── Drawing ─────────────────────────────────────────────────────────────────
+window.bjDraw = function() {
+  var m = document.getElementById('bjLayoutModal');
+  if (!m || m.style.display === 'none') return;
+  var cv = document.getElementById('bjCanvas');
+  if (!cv) return;
+  var g = window._bjGeo(cv), U = window._bjUI;
+  var ctx = cv.getContext('2d');
+  var posts = window.bjPosts(U.wall);
+  var doors = (window._allDoors || []).filter(function(d) { return d.wall === U.wall; });
+  var joists = (window._barjoists || []).filter(function(b) { return b.wall === U.wall; });
+  var w = window.bjWall(U.wall) || {};
+
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = '#070b14'; ctx.fillRect(0, 0, cv.width, cv.height);
+
+  // Wall line
+  ctx.strokeStyle = 'rgba(255,255,255,.22)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(g.X(0), g.y); ctx.lineTo(g.X(g.wLen), g.y); ctx.stroke();
+
+  // Door openings
+  doors.forEach(function(d) {
+    var a = d.offset || 0, b = a + d.w;
+    ctx.fillStyle = d.type === 'garage' ? 'rgba(34,197,94,.20)' : 'rgba(96,165,250,.20)';
+    ctx.fillRect(g.X(a), g.y - 30, g.X(b) - g.X(a), 30);
+    ctx.strokeStyle = d.type === 'garage' ? '#22c55e' : '#60a5fa'; ctx.lineWidth = 2;
+    ctx.strokeRect(g.X(a), g.y - 30, g.X(b) - g.X(a), 30);
+    ctx.fillStyle = '#cbd5e1'; ctx.font = 'bold 10px Outfit, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(d.w + "x" + d.h, (g.X(a) + g.X(b)) / 2, g.y - 36);
+  });
+
+  // Bar joists, drawn under the wall where they carry
+  joists.forEach(function(b) {
+    if (b.startFt == null || b.endFt == null) return;
+    var y = g.y + 22;
+    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 5; ctx.lineCap = 'butt';
+    ctx.beginPath(); ctx.moveTo(g.X(b.startFt), y); ctx.lineTo(g.X(b.endFt), y); ctx.stroke();
+    ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 9px Outfit, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(b.sku, (g.X(b.startFt) + g.X(b.endFt)) / 2, y + 15);
+  });
+
+  // Bay dimensions
+  ctx.font = '10px Outfit, sans-serif'; ctx.textAlign = 'center';
+  for (var i = 1; i < posts.length; i++) {
+    var a = posts[i-1].ft, b2 = posts[i].ft, mid = (g.X(a) + g.X(b2)) / 2;
+    var gap = Math.round((b2 - a) * 100) / 100;
+    var ps = w.postSpacing || Q.postSpacing || 10;
+    ctx.strokeStyle = 'rgba(255,255,255,.14)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(g.X(a), g.y - 50); ctx.lineTo(g.X(b2), g.y - 50); ctx.stroke();
+    ctx.fillStyle = gap > ps + 0.01 ? '#fbbf24' : '#64748b';
+    ctx.fillText(gap + "'", mid, g.y - 54);
+  }
+
+  // Posts
+  posts.forEach(function(p) {
+    var x = g.X(p.ft);
+    var sel = U.sel.some(function(f) { return Math.abs(f - p.ft) < 0.01; });
+    ctx.fillStyle = sel ? '#fbbf24' : p.corner ? '#e2e8f0' : p.jamb ? '#ef4444' : '#94a3b8';
+    var s = p.corner ? 9 : 7;
+    ctx.fillRect(x - s/2, g.y - s/2, s, s);
+    if (sel) { ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2;
+               ctx.strokeRect(x - s/2 - 4, g.y - s/2 - 4, s + 8, s + 8); }
+    ctx.fillStyle = sel ? '#fbbf24' : '#475569';
+    ctx.font = '9px Outfit, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(p.ft + "'", x, g.y + 16);
+  });
+
+  // Legend
+  ctx.textAlign = 'left'; ctx.font = '9px Outfit, sans-serif'; ctx.fillStyle = '#475569';
+  ctx.fillText('corner', 10, 174); ctx.fillStyle = '#e2e8f0'; ctx.fillRect(48, 168, 7, 7);
+  ctx.fillStyle = '#475569'; ctx.fillText('jamb', 66, 174); ctx.fillStyle = '#ef4444'; ctx.fillRect(96, 168, 7, 7);
+  ctx.fillStyle = '#475569'; ctx.fillText('post', 114, 174); ctx.fillStyle = '#94a3b8'; ctx.fillRect(140, 168, 7, 7);
+
+  // Header
+  var sub = document.getElementById('bjSub');
+  if (sub) sub.textContent = window.bjWallLabel(U.wall) + '  ·  ' + g.wLen + "' ·  "
+    + posts.length + ' posts' + (Array.isArray(w.postsManual) ? '  ·  set by hand' : '  ·  automatic');
+
+  // Wall tabs
+  var tabs = document.getElementById('bjTabs');
+  if (tabs) {
+    tabs.innerHTML = ['right','left','front','back'].map(function(id) {
+      var on = (id === U.wall);
+      var nd = (window._allDoors || []).filter(function(d) { return d.wall === id; }).length;
+      var man = Array.isArray((window.bjWall(id) || {}).postsManual);
+      return '<button onclick="window._bjUI.wall=\'' + id + '\';window._bjUI.sel=[];bjDraw()" '
+        + 'style="padding:6px 11px;border-radius:7px;font-family:Outfit,sans-serif;font-size:11px;font-weight:800;cursor:pointer;'
+        + 'border:1px solid ' + (on ? 'rgba(var(--gold-rgb),.65)' : 'rgba(255,255,255,.12)') + ';'
+        + 'background:' + (on ? 'rgba(var(--gold-rgb),.16)' : 'transparent') + ';'
+        + 'color:' + (on ? 'var(--gold)' : '#94a3b8') + ';">'
+        + window.bjWallLabel(id) + (nd ? ' (' + nd + ')' : '') + (man ? ' •' : '') + '</button>';
+    }).join('');
+  }
+
+  // Bar joists on this wall, with the SKU still pickable
+  var sl = document.getElementById('bjSpanList');
+  if (sl) {
+    var all = window._barjoists || [];
+    var rows = all.map(function(b, i) { return { b: b, i: i }; })
+                  .filter(function(r) { return r.b.wall === U.wall; });
+    sl.innerHTML = rows.length
+      ? '<div style="font-size:10px;font-weight:800;color:#8a93a6;text-transform:uppercase;letter-spacing:1px;margin-bottom:5px;">Bar Joists on this wall</div>'
+        + rows.map(function(r) {
+            var opts = BARJOIST_SKUS.map(function(s) {
+              return '<option value="' + s + '"' + (s === r.b.sku ? ' selected' : '') + '>' + s + '</option>';
+            }).join('');
+            return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:11px;">'
+              + '<select onchange="bjSetSpanSku(' + r.i + ',this.value)" style="padding:5px 7px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:#111827;color:#e2e8f0;font-family:Outfit,sans-serif;font-size:11px;font-weight:700;">' + opts + '</select>'
+              + '<span style="color:#8a93a6;">' + (r.b.startFt) + "' to " + (r.b.endFt) + "' ("
+              + (Math.round(((r.b.endFt||0)-(r.b.startFt||0))*100)/100) + "')</span>"
+              + '<label style="display:flex;align-items:center;gap:4px;color:#94a3b8;font-size:10px;font-weight:700;cursor:pointer;">'
+              + '<input type="checkbox"' + (r.b.removePost ? ' checked' : '') + ' onchange="setBarjoist(' + r.i + ',\'removePost\',this.checked);bjDraw()" style="accent-color:var(--gold);">-Post</label>'
+              + '<button onclick="bjDeleteSpan(' + r.i + ')" style="margin-left:auto;padding:4px 9px;border-radius:5px;border:none;background:rgba(239,68,68,.16);color:#f87171;font-size:10px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Remove</button>'
+              + '</div>';
+          }).join('')
+      : '<div style="font-size:11px;color:#6b7280;">No bar joists on this wall yet. Select two posts and press Bar Joist Between.</div>';
+  }
+
+  // Warnings
+  var wd = document.getElementById('bjWarn');
+  if (wd) {
+    var ws = window.bjWarnings();
+    wd.innerHTML = ws.length
+      ? ws.map(function(x) {
+          return '<div style="font-size:11px;font-weight:600;margin-top:4px;color:'
+            + (x.bad ? '#f87171' : '#fbbf24') + ';">' + (x.bad ? 'Check: ' : 'Note: ') + x.msg + '</div>';
+        }).join('')
+      : '<div style="font-size:11px;color:#4ade80;font-weight:700;">Layout checks out.</div>';
+  }
+};
+
+window.barjoistSpec = function(sku) {
+  var m = String(sku || '').match(/^TSBJ(20|24|30)(1010|66|88)(C|E)(HD)?$/);
+  if (!m) return null;
+  return { span: parseInt(m[1], 10),
+           bearing: m[2] === '1010' ? '10x10' : m[2] === '88' ? '8x8' : '6x6',
+           end: m[3] === 'E', hd: !!m[4], sku: sku };
+};
 function removeBarjoist(idx) {
   window._barjoists.splice(idx, 1);
   renderBarjoists();
@@ -33201,6 +33689,43 @@ window.SauceMaterials.getPostsForWall = function(wallId, Q, WALLS, allDoors) {
 
   // Gable walls can carry an explicit bay COUNT (custom even spacing, e.g. 26' in 3 bays
   // = 8'-8"). When set it wins over postSpacing and divides the wall into exact equal bays.
+  // ── A LAYOUT SET BY HAND WINS ───────────────────────────────────────────────
+  // The bar joist editor writes the post line it was given straight onto the
+  // wall. Every post-derived figure in the building reads it from here — the
+  // 3D model, the post sheet the builder gets, post SKUs, footings, sackcrete,
+  // lag bolts, hurricane brackets, concrete — so deleting a post in the editor
+  // removes it from all of them at once. Steel truss only, which is the only
+  // frame that carries bar joists.
+  if (Q.truss === 'Steel' && wCfg && Array.isArray(wCfg.postsManual) && wCfg.postsManual.length) {
+    var _seen = {};
+    return wCfg.postsManual
+      .map(function(v) {
+        var f = parseFloat(v);
+        return isFinite(f) ? Math.max(0, Math.min(wLen, Math.round(f * 100) / 100)) : null;
+      })
+      .filter(function(f) {
+        if (f === null) return false;
+        var k = f.toFixed(2);
+        if (_seen[k]) return false;
+        _seen[k] = 1; return true;
+      })
+      .sort(function(a, b) { return a - b; })
+      .map(function(ft) {
+        var o = { ft: ft, jamb: false,
+                  corner: (ft < 0.01 || Math.abs(ft - wLen) < 0.01), manual: true };
+        // A post standing at a door edge is still a jamb, so it keeps getting
+        // single-sided brackets and the right jamb SKU.
+        wd.forEach(function(d) {
+          var a = d.offset || 0, b = a + d.w;
+          if (Math.abs(ft - a) < 0.26 || Math.abs(ft - b) < 0.26) {
+            o.jamb = true;
+            if (d.type === 'garage') o.doorType = 'garage';
+          }
+        });
+        return o;
+      });
+  }
+
   var _bc = (wCfg && wCfg.bayCount) ? Math.max(1, Math.round(wCfg.bayCount)) : 0;
   var posts = [], nB = _bc ? _bc : Math.floor(wLen / ps);
   var _step = _bc ? (wLen / _bc) : ps;
@@ -35270,17 +35795,28 @@ window.SauceMaterials.calcBarjoists = function(Q) {
   return results;
 };
 
-// Total bar joist qty — used by eave post reduction
-// Only reduces posts when spacing is 8/10/12 — at 16/20/24 the wider bays
-// already naturally have fewer posts so no reduction needed.
+// Total bar joist qty — used by eave post reduction.
+// Counts only rows where the salesman ticked "Remove Post": 1 post per unit of qty.
 window.SauceMaterials.getBarjoistPostReduction = function(Q) {
   if (Q.truss !== 'Steel') return 0;
   var bjEnabled = !!(document.getElementById('st_barjoist')||{}).checked;
   if (!bjEnabled) return 0;
-  // Only reduce posts for rows where the salesman explicitly checked "Remove Post"
-  // 1 post removed per bar joist unit (qty)
+
+  // A wall laid out by hand in the editor already states exactly which posts
+  // exist, and getPostsForWall returns that list, so its removed posts are
+  // gone from the count before this runs. Subtracting the joist as well would
+  // take the same post off twice.
+  var _W = window._WALLS || [];
+  function _manual(id) {
+    var w = _W.find(function(x) { return x.id === id; });
+    return !!(w && Array.isArray(w.postsManual) && w.postsManual.length);
+  }
+  var _anyEaveManual = _manual('left') || _manual('right');
+
   return (window._barjoists || []).reduce(function(sum, bj) {
-    return sum + (bj.removePost ? (parseInt(bj.qty) || 0) : 0);
+    if (!bj.removePost) return sum;
+    if (bj.wall ? _manual(bj.wall) : _anyEaveManual) return sum;
+    return sum + (parseInt(bj.qty) || 0);
   }, 0);
 };
 
