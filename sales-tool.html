@@ -2331,8 +2331,7 @@ body.customer-mode #stab_specs { display: block !important; }
         </div>
         <div id="st_barjoistRow" style="display:none;">
           <div id="st_barjoistList" style="display:flex;flex-direction:column;gap:5px;margin-bottom:6px;"></div>
-          <button onclick="addBarjoist()" style="width:100%;padding:5px;border-radius:6px;border:1px dashed rgba(var(--gold-rgb),.4);background:transparent;color:var(--gold);font-size:10px;font-weight:700;cursor:pointer;font-family:'Outfit',sans-serif;">+ Add Bar Joist</button>
-          <button onclick="bjOpenLayout()" style="width:100%;margin-top:5px;padding:6px;border-radius:6px;border:1px solid rgba(var(--gold-rgb),.55);background:rgba(var(--gold-rgb),.12);color:var(--gold);font-size:10px;font-weight:800;cursor:pointer;font-family:'Outfit',sans-serif;">Open Post Layout</button>
+          <button onclick="bjOpenLayout()" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(var(--gold-rgb),.55);background:rgba(var(--gold-rgb),.12);color:var(--gold);font-size:10px;font-weight:800;cursor:pointer;font-family:'Outfit',sans-serif;">+ Add Bar Joist &mdash; Open Post Layout</button>
         </div>
         <div class="toggle-row" id="rowPitch612">
           <div class="toggle-info"><div class="toggle-lbl">6/12 Pitch</div></div>
@@ -14643,6 +14642,78 @@ function applyVoiceQuote(parsed, overlay) {
             });
         }
 
+        // ── BAR JOISTS ──────────────────────────────────────────────────────
+        // The horizontal open-web girder that runs along the top of the wall
+        // between two posts. It is what lets a steel truss land mid-bay where
+        // no post stands under it, which is the whole reason a post gets pulled
+        // for a wide door. Drawn in the truss group, so it appears and hides
+        // with the trusses it carries.
+        (function _drawBarJoists() {
+          try {
+            if (Q.truss !== 'Steel') return;
+            if (!(document.getElementById('st_barjoist') || {}).checked) return;
+            var list = (window._barjoists || []).filter(function(b) {
+              // Eave walls only. A bar joist carries the trusses along the top of
+              // a side wall; it is never installed on a gable end.
+              return b && (b.wall === 'left' || b.wall === 'right')
+                     && b.startFt != null && b.endFt != null
+                     && Math.abs(b.endFt - b.startFt) > 0.01;
+            });
+            if (!list.length) return;
+
+            var mBJ = new THREE.MeshLambertMaterial({ color: 0x2a2a2a, side: THREE.DoubleSide });
+            var depth = 1.5 * Sc;                 // 18" deep, the same as the steel truss frame
+            var chordSz = 0.026, webSz = 0.018;
+
+            // A member between two points in the wall's own plane: u runs along
+            // the wall, y is height, and the wall's fixed coordinate is held.
+            function beam(axis, fixed, u0, y0, u1, y1, sz) {
+              var du = u1 - u0, dy = y1 - y0;
+              var len = Math.sqrt(du*du + dy*dy);
+              if (!(len > 0.0001)) return;
+              var m = new THREE.Mesh(new THREE.BoxGeometry(sz, sz, len), mBJ);
+              var d3;
+              if (axis === 'z') { m.position.set(fixed, (y0+y1)/2, (u0+u1)/2); d3 = new THREE.Vector3(0, dy, du); }
+              else              { m.position.set((u0+u1)/2, (y0+y1)/2, fixed); d3 = new THREE.Vector3(du, dy, 0); }
+              m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), d3.normalize());
+              m.castShadow = true;
+              grps.trusses.add(m);
+            }
+
+            list.forEach(function(bj, bi) {
+              var axis  = 'z';
+              var fixed = (bj.wall === 'left') ? -sw/2 : sw/2;
+              var span  = Q.l;
+              var u0 = (-span/2 + Math.min(bj.startFt, bj.endFt)) * Sc;
+              var u1 = (-span/2 + Math.max(bj.startFt, bj.endFt)) * Sc;
+              var runFt = Math.abs(bj.endFt - bj.startFt);
+
+              // Top chord at the bearing line, bottom chord 18" under it.
+              var yTop = postBase + sh;
+              var yBot = yTop - depth;
+
+              window._spUnit = 'barjoist-' + bj.wall + '-' + bi;
+              window._spPart = 'barJoist';
+
+              beam(axis, fixed, u0, yTop, u1, yTop, chordSz);
+              beam(axis, fixed, u0, yBot, u1, yBot, chordSz);
+              // End verticals, then a zig-zag web on roughly 3' panels.
+              beam(axis, fixed, u0, yBot, u0, yTop, chordSz);
+              beam(axis, fixed, u1, yBot, u1, yTop, chordSz);
+              var panels = Math.max(4, Math.round(runFt / 3));
+              var step = (u1 - u0) / panels;
+              for (var k = 0; k < panels; k++) {
+                var a = u0 + k * step, b = a + step;
+                // Alternate the diagonal so the web reads as a W, not a row of Zs.
+                if (k % 2 === 0) beam(axis, fixed, a, yTop, b, yBot, webSz);
+                else             beam(axis, fixed, a, yBot, b, yTop, webSz);
+                if (k > 0) beam(axis, fixed, a, yBot, a, yTop, webSz);
+              }
+              window._spPart = null; window._spUnit = null;
+            });
+          } catch(e) { try { console.warn('bar joist 3D skipped:', e); } catch(_) {} }
+        })();
+
         // Shed posts from config
         var _ssShedPostStart = grps.posts.children.length, _ssShedMainPostStart = grps.mainPosts.children.length;
         window._attEach(shedCfgs, grps, Sc, sc => {
@@ -25310,7 +25381,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M84-1116';
+window.SAUCE_BUILD = 'M86-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -31277,7 +31348,9 @@ window.syncInsulShedRoofRow = syncInsulShedRoofRow;
 function toggleBarjoist(el) {
   var row = document.getElementById('st_barjoistRow');
   if (row) row.style.display = el.checked ? '' : 'none';
-  if (el.checked && window._barjoists.length === 0) addBarjoist();
+  // Switching the feature on no longer seeds a blank row. A row with no wall
+  // and no span billed a joist that never appeared on the drawing; joists are
+  // created in the layout tool now, where they get a position.
 
   // Bar joist requires 8x8 minimum on eave walls — auto-set left and right eave posts
   var eaveWalls = ['left', 'right'];
@@ -31436,6 +31509,10 @@ window.bjAutoSku = function(spanFt, atCorner) {
 
 window.bjAddSpan = function() {
   var U = window._bjUI;
+  if (U.wall !== 'left' && U.wall !== 'right') {
+    alert('Bar joists go on the eave walls only \u2014 they are never installed on a gable end.');
+    return;
+  }
   if (U.sel.length !== 2) { alert('Pick the two posts the bar joist bears on.'); return; }
   var a = Math.min(U.sel[0], U.sel[1]), b = Math.max(U.sel[0], U.sel[1]);
   var span = Math.round((b - a) * 100) / 100;
@@ -31565,6 +31642,10 @@ window.bjWarnings = function() {
     }
   }
 
+  if (joists.length && U.wall !== 'left' && U.wall !== 'right') {
+    out.push({ bad: true, msg: joists.length + ' bar joist' + (joists.length > 1 ? 's are' : ' is')
+      + ' on this gable end. Bar joists belong on the eave walls, and these are not drawn.' });
+  }
   joists.forEach(function(b) {
     var sp = window.barjoistSpec(b.sku);
     var need = Math.round(((b.endFt || 0) - (b.startFt || 0)) * 100) / 100;
@@ -32029,7 +32110,8 @@ window.bjApplyJoistGrid = function() {
     return b.wall !== U.wall && (b.startFt != null || b.wall);
   });
   var ps = window.bjSpacing(U.wall), len = window.bjWallLen(U.wall);
-  for (var i = 1; i < posts.length; i++) {
+  var eaveOnly = (U.wall === 'left' || U.wall === 'right');
+  for (var i = 1; eaveOnly && i < posts.length; i++) {
     if (posts[i] - posts[i-1] <= ps + 0.01) continue;
     var atCorner = (posts[i-1] < 0.01 || Math.abs(posts[i] - len) < 0.01);
     var sku = window.bjAutoSku(posts[i] - posts[i-1], atCorner);
