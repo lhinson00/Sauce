@@ -3596,6 +3596,9 @@ function scheduleBuild() {
     triggerBuild();
     // Concrete modal, if open, re-prices off the new dimensions.
     try { if (window._concreteModalRefresh) window._concreteModalRefresh(); } catch(e) {}
+    // Post layout editor, if open, redraws off the new spacing, doors and size.
+    // Without this a change made in the side panel never reached the diagram.
+    try { if (window.bjDraw) window.bjDraw(); } catch(e) {}
   }, 320);
 }
 // Resize the WebGL canvas to its container without rebuilding geometry (used when docking the material list).
@@ -9454,7 +9457,7 @@ function newQuoteSameCustomer(){
 function serializeConfig() {
   return {
     Q: {w:Q.w,l:Q.l,h:Q.h,pitch:Q.pitch,oh:Q.oh,soffit:Q.soffit,steelGableOH:Q.steelGableOH||false,postSpacing:Q.postSpacing,eavePS:Q.eavePS,gablePS:Q.gablePS,truss:Q.truss,frameType:Q.frameType,roofStyle:Q.roofStyle||'gable',ventGap:!!Q.ventGap},
-    walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,bayCount:w.bayCount,partialH:w.partialH,openLenFt:w.openLenFt,openStartFt:w.openStartFt,openPS:w.openPS,wallColor:w.wallColor||null,wainscot:(w.wainscot!=null?!!w.wainscot:null),wainscotColor:w.wainscotColor||null,postsManual:(Array.isArray(w.postsManual)&&w.postsManual.length?w.postsManual.slice():null)};}),
+    walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,bayCount:w.bayCount,partialH:w.partialH,openLenFt:w.openLenFt,openStartFt:w.openStartFt,openPS:w.openPS,wallColor:w.wallColor||null,wainscot:(w.wainscot!=null?!!w.wainscot:null),wainscotColor:w.wainscotColor||null,postsManual:(Array.isArray(w.postsManual)&&w.postsManual.length?w.postsManual.slice():null),postsManualPs:(w.postsManualPs!=null?w.postsManualPs:null)};}),
     doors: allDoors,
     stallPosts: window._stallPosts || [],
     walkDoors: window._walkDoors,
@@ -25307,7 +25310,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M78-1116';
+window.SAUCE_BUILD = 'M79-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -31392,6 +31395,9 @@ window.bjCommit = function(wallId, feet) {
   if (!w) return;
   w.postsManual = feet.slice().map(function(f){ return Math.round(f*100)/100; })
                       .sort(function(a, b) { return a - b; });
+  // The spacing this line was laid out for. If the salesman changes spacing
+  // later the editor can say so rather than showing a stale layout.
+  w.postsManualPs = window.bjSpacing(wallId);
   try { scheduleBuild(); } catch(e) {}
   try { updateStripFromLocalCalc(); } catch(e) {}
   window.bjDraw();
@@ -31695,17 +31701,15 @@ window._bjPlanDown = function(e) {
     { id:'back',  v: Math.abs(p.x - g.x1), on: p.y > g.y0-14 && p.y < g.y1+14 }
   ].filter(function(r) { return r.on && r.v < 22; }).sort(function(a,b){ return a.v-b.v; })[0];
   if (d) { window._bjUI.wall = d.id; window._bjUI.sel = []; window._bjUI.selDoor = null;
-           window.bjSeed(d.id); window.bjDraw(); }
+           window.bjDraw(); }
 };
 
-// Opening a wall that carries doors puts the plain grid on it, so what the
-// editor shows is what the model and the builder's sheet will show. Without
-// this the editor displayed one thing and the building was built from another.
-window.bjSeed = function(wallId) {
-  var w = window.bjWall(wallId);
-  if (!w || Array.isArray(w.postsManual)) return;
-  var hasDoors = (window._allDoors || []).some(function(d) { return d.wall === wallId; });
-  if (!hasDoors) return;
+// Replace a hand-set line with the grid at the CURRENT spacing. Used when the
+// salesman changes post spacing after having edited a wall: the stored line was
+// laid out for the old spacing and no longer means anything.
+window.bjRegrid = function(wallId) {
+  wallId = wallId || window._bjUI.wall;
+  window._bjUI.sel = [];
   window.bjCommit(wallId, window.bjBaseGrid(wallId));
 };
 
@@ -31763,7 +31767,6 @@ window.bjOpenLayout = function(wallId) {
     window.addEventListener('mouseup', window._bjUp);
   }
   m.style.display = 'flex';
-  window.bjSeed(U.wall);
   window.bjDraw();
 };
 window.bjCloseLayout = function() {
@@ -32006,7 +32009,7 @@ window.bjDraw = function() {
       var on = (id === U.wall);
       var nd = (window._allDoors || []).filter(function(d) { return d.wall === id; }).length;
       var man = Array.isArray((window.bjWall(id) || {}).postsManual);
-      return '<button onclick="window._bjUI.wall=\'' + id + '\';window._bjUI.sel=[];window._bjUI.selDoor=null;bjSeed(\'' + id + '\');bjDraw()" '
+      return '<button onclick="window._bjUI.wall=\'' + id + '\';window._bjUI.sel=[];window._bjUI.selDoor=null;bjDraw()" '
         + 'style="padding:6px 11px;border-radius:7px;font-family:Outfit,sans-serif;font-size:11px;font-weight:800;cursor:pointer;'
         + 'border:1px solid ' + (on ? 'rgba(var(--gold-rgb),.65)' : 'rgba(255,255,255,.12)') + ';'
         + 'background:' + (on ? 'rgba(var(--gold-rgb),.16)' : 'transparent') + ';'
@@ -32040,13 +32043,26 @@ window.bjDraw = function() {
 
   var wd = document.getElementById('bjWarn');
   if (wd) {
+    var stale = '';
+    if (Array.isArray(w.postsManual) && w.postsManualPs != null
+        && Math.abs(w.postsManualPs - step) > 0.01) {
+      stale = '<div style="margin:6px 0 2px;padding:8px 11px;border-radius:7px;'
+            + 'background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.45);'
+            + 'font-size:11px;color:#fbbf24;font-weight:700;display:flex;align-items:center;gap:10px;">'
+            + "<span>Post spacing is now " + step + "', but this wall is still on a layout laid out at "
+            + w.postsManualPs + "'.</span>"
+            + '<button onclick="bjRegrid()" style="margin-left:auto;padding:5px 11px;border-radius:6px;'
+            + 'border:1px solid rgba(251,191,36,.6);background:rgba(251,191,36,.18);color:#fbbf24;'
+            + "font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;\">Rebuild at " + step + "'</button>"
+            + '</div>';
+    }
     var ws = window.bjWarnings();
-    wd.innerHTML = ws.length
+    wd.innerHTML = stale + (ws.length
       ? ws.map(function(x) {
           return '<div style="font-size:11px;font-weight:600;margin-top:4px;color:'
             + (x.bad ? '#f87171' : '#fbbf24') + ';">' + (x.bad ? 'Check: ' : 'Note: ') + x.msg + '</div>';
         }).join('')
-      : '<div style="font-size:11px;color:#4ade80;font-weight:700;">Layout checks out.</div>';
+      : '<div style="font-size:11px;color:#4ade80;font-weight:700;">Layout checks out.</div>');
   }
 };
 
