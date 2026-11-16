@@ -25310,7 +25310,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M81-1116';
+window.SAUCE_BUILD = 'M83-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -31882,6 +31882,22 @@ window.bjOpenLayout = function(wallId) {
     +     '<button onclick="bjSave()" style="padding:7px 16px;border-radius:7px;border:1px solid rgba(74,222,128,.5);background:rgba(74,222,128,.16);color:#4ade80;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Save Layout</button>'
     +     '<div style="font-size:10px;color:#6b7280;margin-left:auto;text-align:right;">Drag a door to slide it &middot; click a post to select &middot; drag a post to move<br>click a bar joist to select it &middot; everything snaps to 1&quot;</div>'
     +   '</div>'
+    +   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 12px;'
+    +     'border-radius:8px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);margin-bottom:10px;">'
+    +     '<span style="font-size:10px;font-weight:800;color:var(--gold);text-transform:uppercase;letter-spacing:1px;">1. Joist grid</span>'
+    +     '<button onclick="bjApplyJoistGrid()" style="padding:5px 11px;border-radius:6px;border:1px solid rgba(var(--gold-rgb),.5);background:rgba(var(--gold-rgb),.14);color:var(--gold);font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Set Posts &amp; Joists</button>'
+    +     '<span id="bjGridNote" style="font-size:10px;color:#6b7280;"></span>'
+    +     '<span style="width:1px;height:22px;background:rgba(255,255,255,.12);margin:0 4px;"></span>'
+    +     '<span style="font-size:10px;font-weight:800;color:var(--gold);text-transform:uppercase;letter-spacing:1px;">2. Doors</span>'
+    +     '<input id="bjCorner" value="8" style="width:58px;padding:5px 8px;border-radius:6px;'
+    +       'border:1px solid rgba(255,255,255,.18);background:#111827;color:#e2e8f0;'
+    +       'font-family:Outfit,sans-serif;font-size:11px;font-weight:700;text-align:center;">'
+    +     '<span style="font-size:11px;color:#8a93a6;">ft off the</span>'
+    +     '<button onclick="bjFitDoorsToBays(document.getElementById(\'bjCorner\').value,false)" style="padding:5px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.04);color:#cbd5e1;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">left corner</button>'
+    +     '<button onclick="bjFitDoorsToBays(document.getElementById(\'bjCorner\').value,true)" style="padding:5px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.04);color:#cbd5e1;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">right corner</button>'
+    +     '<span style="font-size:10px;color:#6b7280;">fitted inside the bays, nothing crosses a post</span>'
+    +   '</div>'
+    +   '<div id="bjOptions" style="margin-bottom:10px;"></div>'
     +   '<div id="bjSelBar" style="margin-bottom:10px;"></div>'
     +   '<div id="bjSpanList" style="margin-bottom:10px;"></div>'
     +   '<div id="bjWarn"></div>'
@@ -31950,6 +31966,234 @@ window.bjClearJoists = function() {
   try { renderBarjoists(); } catch(e) {}
   try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
   window.bjDraw();
+};
+
+// ── Lay the doors out from a corner ─────────────────────────────────────────
+// The usual way a customer asks for this: "four 10x10s, about 8 foot off the
+// corner". Give it the setback and it drops the doors in with the slack shared
+// evenly between the remaining gaps.
+window.bjSpaceFromCorner = function(txt, fromRight) {
+  var U = window._bjUI;
+  var len = window.bjWallLen(U.wall);
+  var doors = (window._allDoors || []).filter(function(d) { return d.wall === U.wall; })
+                .sort(function(a, b) { return (a.offset||0) - (b.offset||0); });
+  if (!doors.length) { alert('No doors on this wall yet.'); return; }
+  var m = String(txt).trim().match(/^(-?\d+(?:\.\d+)?)\s*(?:'|ft)?\s*[-\s]?\s*(\d+(?:\.\d+)?)?\s*(?:"|in)?$/i);
+  if (!m) { alert('Enter the setback in feet, e.g. 8 or 8\'-6".'); return; }
+  var start = parseFloat(m[1]) + (m[2] ? parseFloat(m[2])/12 : 0);
+  var totalW = doors.reduce(function(a, d) { return a + d.w; }, 0);
+  var slack = len - start - totalW;
+  if (slack < 0) { alert('That setback leaves no room: ' + doors.length + ' doors need '
+    + totalW + "' plus the " + start + "' setback on a " + len + "' wall."); return; }
+  var gap = slack / doors.length;      // the gaps after each door, the far corner included
+  var c = start;
+  (fromRight ? doors.slice().reverse() : doors).forEach(function(d) {
+    d.offset = Math.round(c * 12) / 12;
+    c += d.w + gap;
+  });
+  if (fromRight) {
+    // Mirror: the setback was measured from the far corner.
+    doors.forEach(function(d) { d.offset = Math.round((len - d.offset - d.w) * 12) / 12; });
+  }
+  try { renderGarageDoors(); } catch(e) {}
+  try { renderWalkDoors(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  U.selDoor = null;
+  window.bjDraw();
+};
+
+// ── The structure comes first ───────────────────────────────────────────────
+// A bar joist can only span so far, so the column line is settled before any
+// door is drawn: a 60' wall is two 30' runs to a centre post, and that centre
+// post is structural — it does not move and it does not come out. Doors are
+// then fitted into what each bay has left. This is the opposite of working out
+// post positions from where the doors happen to fall.
+window.bjMaxJoist = 30;
+
+window.bjJoistGrid = function(wallId) {
+  wallId = wallId || window._bjUI.wall;
+  var len = window.bjWallLen(wallId);
+  var bays = Math.max(1, Math.ceil(len / window.bjMaxJoist - 0.001));
+  var out = [];
+  for (var i = 0; i <= bays; i++) out.push(Math.round((i * len / bays) * 12) / 12);
+  return out;
+};
+
+// Lay the column line down and put a joist over every bay that needs one.
+window.bjApplyJoistGrid = function() {
+  var U = window._bjUI;
+  var posts = window.bjJoistGrid(U.wall);
+  var el = document.getElementById('st_barjoist');
+  if (el && !el.checked) { el.checked = true; try { toggleBarjoist(el); } catch(e) {} }
+  window._barjoists = (window._barjoists || []).filter(function(b) {
+    return b.wall !== U.wall && (b.startFt != null || b.wall);
+  });
+  var ps = window.bjSpacing(U.wall), len = window.bjWallLen(U.wall);
+  for (var i = 1; i < posts.length; i++) {
+    if (posts[i] - posts[i-1] <= ps + 0.01) continue;
+    var atCorner = (posts[i-1] < 0.01 || Math.abs(posts[i] - len) < 0.01);
+    var sku = window.bjAutoSku(posts[i] - posts[i-1], atCorner);
+    if (sku) window._barjoists.push({ sku: sku, qty: 1, removePost: false,
+                                      wall: U.wall, startFt: posts[i-1], endFt: posts[i] });
+  }
+  U.sel = []; U.selDoor = null; U.selJoist = null;
+  try { renderBarjoists(); } catch(e) {}
+  window.bjCommit(U.wall, posts);
+};
+
+// Fit the doors into the bays the posts already define. No door may cross a
+// post, so each bay takes as many as its clear width allows and they are spread
+// evenly inside it. The setback is taken out of whichever bay holds that
+// corner, which is what "dedicate 8' of one of the 30' bays" means.
+window.bjFitDoorsToBays = function(setbackTxt, fromRight) {
+  var U = window._bjUI;
+  var len = window.bjWallLen(U.wall);
+  var doors = (window._allDoors || []).filter(function(d) { return d.wall === U.wall; })
+                .sort(function(a, b) { return (a.offset||0) - (b.offset||0); });
+  if (!doors.length) { alert('No doors on this wall yet.'); return; }
+  var posts = window.bjWorkingPosts(U.wall);
+  if (posts.length < 2) { alert('Set the joist grid first.'); return; }
+
+  var m = String(setbackTxt || '0').trim()
+            .match(/^(-?\d+(?:\.\d+)?)\s*(?:'|ft)?\s*[-\s]?\s*(\d+(?:\.\d+)?)?\s*(?:"|in)?$/i);
+  var back = m ? parseFloat(m[1]) + (m[2] ? parseFloat(m[2])/12 : 0) : 0;
+  var half = (parseFloat(String(window.bjWallPostSize(U.wall)).split('x')[0]) || 8) / 24;
+
+  // Every bay's clear run, corner to post face or post face to post face.
+  var bays = [];
+  for (var i = 1; i < posts.length; i++) {
+    var a = posts[i-1] + (posts[i-1] < 0.01 ? 0 : half);
+    var b = posts[i]   - (Math.abs(posts[i] - len) < 0.01 ? 0 : half);
+    bays.push({ a: a, b: b });
+  }
+  // The setback comes off the near end of the bay holding that corner.
+  if (back > 0) {
+    if (fromRight) bays[bays.length-1].b -= back;
+    else           bays[0].a += back;
+  }
+
+  // Hand the doors out in order, each bay taking what it can hold.
+  var qi = 0, plan = [];
+  bays.forEach(function(bay) {
+    var room = bay.b - bay.a, take = [];
+    while (qi < doors.length && (take.reduce(function(t,d){ return t+d.w; }, 0) + doors[qi].w) <= room + 0.01) {
+      take.push(doors[qi]); qi++;
+    }
+    plan.push({ bay: bay, doors: take });
+  });
+  if (qi < doors.length) {
+    alert((doors.length - qi) + ' of the ' + doors.length + ' doors will not fit.\n\n'
+      + 'The bays hold ' + plan.map(function(p){ return p.doors.length; }).join(' and ')
+      + '. Reduce the setback, widen the building, or use fewer doors.');
+  }
+  // Even gaps inside each bay.
+  plan.forEach(function(pl) {
+    if (!pl.doors.length) return;
+    var w = pl.doors.reduce(function(t, d) { return t + d.w; }, 0);
+    var gap = ((pl.bay.b - pl.bay.a) - w) / (pl.doors.length + 1);
+    var c = pl.bay.a + gap;
+    pl.doors.forEach(function(d) { d.offset = Math.round(c * 12) / 12; c += d.w + gap; });
+  });
+  try { renderGarageDoors(); } catch(e) {}
+  try { renderWalkDoors(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  U.selDoor = null;
+  window.bjDraw();
+  window._bjLastPlan = plan.map(function(pl) {
+    return { from: pl.bay.a, to: pl.bay.b, n: pl.doors.length,
+             gap: pl.doors.length ? ((pl.bay.b - pl.bay.a)
+                   - pl.doors.reduce(function(t,d){return t+d.w;},0)) / (pl.doors.length+1) : 0 };
+  });
+};
+
+// ── Work out the posts and joists ───────────────────────────────────────────
+// Posts can only stand in the gaps between doors. Everything else follows:
+// a bay can be no longer than the longest joist we stock, and the doors inside
+// a bay have to fit its clear width. That leaves few enough combinations to
+// try them all and keep the cheapest — fewest posts, then fewest joists, then
+// the least joist length.
+window.bjSolve = function(wallId) {
+  wallId = wallId || window._bjUI.wall;
+  var len = window.bjWallLen(wallId);
+  var doors = (window._allDoors || []).filter(function(d) { return d.wall === wallId; })
+                .sort(function(a, b) { return (a.offset||0) - (b.offset||0); })
+                .map(function(d) { return [d.offset || 0, (d.offset || 0) + d.w]; });
+  if (!doors.length) return [];
+  var size = window.bjWallPostSize(wallId);
+  var postFt = (parseFloat(String(size).split('x')[0]) || 8) / 12;
+  var spans = [20, 24, 30], maxJ = 30;
+  var ps = window.bjSpacing(wallId);
+
+  // Somewhere a post could stand: the middle of every gap, corners aside.
+  var cand = [];
+  var edges = [0].concat(doors.map(function(d) { return d[1]; }));
+  var rights = doors.map(function(d) { return d[0]; }).concat([len]);
+  for (var i = 0; i < edges.length; i++) {
+    var a = edges[i], b = rights[i];
+    if (b - a < postFt + 0.02) continue;            // no room for a post
+    var mid = Math.round(((a + b) / 2) * 12) / 12;
+    if (mid > 0.01 && mid < len - 0.01) cand.push(mid);
+  }
+  if (cand.length > 14) cand = cand.slice(0, 14);   // keep the search finite
+
+  var out = [];
+  for (var m = 0; m < (1 << cand.length); m++) {
+    var posts = [0];
+    for (var k = 0; k < cand.length; k++) if (m & (1 << k)) posts.push(cand[k]);
+    posts.push(len);
+    posts.sort(function(x, y) { return x - y; });
+    var ok = true, joists = [];
+    for (var j = 1; j < posts.length; j++) {
+      var span = Math.round((posts[j] - posts[j-1]) * 100) / 100;
+      if (span > maxJ + 0.01) { ok = false; break; }
+      var inBay = doors.filter(function(d) { return d[0] >= posts[j-1] - 0.02 && d[1] <= posts[j] + 0.02; });
+      var need = inBay.reduce(function(t, d) { return t + (d[1] - d[0]); }, 0);
+      if (need > 0 && (span - postFt) < need - 0.01) { ok = false; break; }
+      if (span > ps + 0.01) {
+        var st = spans.filter(function(v) { return v >= span - 0.01; })[0];
+        if (!st) { ok = false; break; }
+        joists.push({ start: posts[j-1], end: posts[j], span: st });
+      }
+    }
+    // Every door has to end up inside some bay.
+    if (ok) {
+      ok = doors.every(function(d) {
+        for (var j2 = 1; j2 < posts.length; j2++)
+          if (d[0] >= posts[j2-1] - 0.02 && d[1] <= posts[j2] + 0.02) return true;
+        return false;
+      });
+    }
+    if (ok) out.push({ posts: posts, joists: joists });
+  }
+  out.sort(function(a, b) {
+    return a.posts.length - b.posts.length
+        || a.joists.length - b.joists.length
+        || a.joists.reduce(function(t, j) { return t + j.span; }, 0)
+         - b.joists.reduce(function(t, j) { return t + j.span; }, 0);
+  });
+  return out.slice(0, 4);
+};
+
+// Put the best answer on the wall.
+window.bjApplySolution = function(idx) {
+  var U = window._bjUI;
+  var sols = window.bjSolve(U.wall);
+  if (!sols.length) { alert('No layout works with the doors where they are. Move a door and try again.'); return; }
+  var sol = sols[idx || 0];
+  var el = document.getElementById('st_barjoist');
+  if (el && !el.checked) { el.checked = true; try { toggleBarjoist(el); } catch(e) {} }
+  window._barjoists = (window._barjoists || []).filter(function(b) {
+    return b.wall !== U.wall && (b.startFt != null || b.wall);
+  });
+  sol.joists.forEach(function(j) {
+    var atCorner = (j.start < 0.01 || Math.abs(j.end - window.bjWallLen(U.wall)) < 0.01);
+    var sku = window.bjAutoSku(j.end - j.start, atCorner);
+    if (sku) window._barjoists.push({ sku: sku, qty: 1, removePost: false,
+                                      wall: U.wall, startFt: j.start, endFt: j.end });
+  });
+  U.sel = []; U.selDoor = null; U.selJoist = null;
+  try { renderBarjoists(); } catch(e) {}
+  window.bjCommit(U.wall, sol.posts);
 };
 
 window.bjSetSpacing = function(ft) {
@@ -32225,6 +32469,73 @@ window.bjDraw = function() {
         + 'color:' + (on ? 'var(--gold)' : '#94a3b8') + ';">'
         + window.bjWallLabel(id) + (nd ? ' (' + nd + ')' : '') + (man ? ' •' : '') + '</button>';
     }).join('');
+  }
+
+  var gn = document.getElementById('bjGridNote');
+  if (gn) {
+    var gp = window.bjJoistGrid(U.wall), nb = gp.length - 1;
+    gn.textContent = nb + (nb === 1 ? ' bay of ' : ' bays of ') + window.bjFtIn(g.wLen / nb)
+      + '  (longest joist ' + window.bjMaxJoist + "')";
+  }
+
+  // What each bay ended up holding — the sheet a builder reads.
+  var optEl = document.getElementById('bjOptions');
+  if (optEl) {
+    var pp = window.bjPosts(U.wall).map(function(q) { return q.ft; });
+    var dd = (window._allDoors || []).filter(function(d) { return d.wall === U.wall; })
+               .sort(function(a, b) { return (a.offset||0) - (b.offset||0); });
+    var halfP = (parseFloat(String(window.bjWallPostSize(U.wall)).split('x')[0]) || 8) / 24;
+    var rows = [];
+    for (var bi2 = 1; bi2 < pp.length; bi2++) {
+      var L2 = pp[bi2-1], R2 = pp[bi2];
+      var mine = dd.filter(function(d) {
+        var a = d.offset || 0, b2 = a + d.w;
+        return a >= L2 - 0.02 && b2 <= R2 + 0.02;
+      });
+      var jo = (window._barjoists || []).filter(function(b2) {
+        return b2.wall === U.wall && Math.abs((b2.startFt||0) - L2) < 0.51
+                                  && Math.abs((b2.endFt||0) - R2) < 0.51;
+      })[0];
+      // The number that matters is the tightest gap in the bay, not the total
+      // slack: on a bay carrying a corner setback most of the slack is already
+      // spoken for, and reading it as spare space is misleading.
+      var cA = L2 + (L2 < 0.01 ? 0 : halfP), cB = R2 - (Math.abs(R2 - g.wLen) < 0.01 ? 0 : halfP);
+      var gaps = [], cur = cA;
+      mine.forEach(function(d) { gaps.push((d.offset || 0) - cur); cur = (d.offset || 0) + d.w; });
+      gaps.push(cB - cur);
+      var free = gaps.length ? Math.min.apply(null, gaps) : (cB - cA);
+      rows.push('<div style="display:flex;align-items:center;gap:12px;margin-bottom:4px;font-size:11px;'
+        + 'padding:7px 11px;border-radius:7px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.02);">'
+        + '<span style="font-weight:800;color:#cbd5e1;min-width:118px;">'
+        +   window.bjFtIn(L2) + ' to ' + window.bjFtIn(R2) + '</span>'
+        + '<span style="color:#8a93a6;min-width:74px;">' + window.bjFtIn(R2 - L2) + ' bay</span>'
+        + '<span style="color:' + (jo ? '#fbbf24' : '#475569') + ';min-width:104px;">'
+        +   (jo ? jo.sku : 'no joist') + '</span>'
+        + '<span style="color:#8a93a6;min-width:62px;">' + mine.length
+        +   (mine.length === 1 ? ' door' : ' doors') + '</span>'
+        + '<span style="color:#64748b;">' + (mine.length
+            ? mine.map(function(d) { return window.bjFtIn(d.offset) + '-' + window.bjFtIn(d.offset + d.w); }).join('   ')
+            : '\u2014') + '</span>'
+        + '<span style="margin-left:auto;color:' + (free < -0.01 ? '#f87171' : '#4ade80') + ';font-weight:700;">'
+        +   (mine.length ? window.bjFtIn(Math.abs(free)) + (free < -0.01 ? ' short' : ' tightest gap')
+                          : window.bjFtIn(cB - cA) + ' open') + '</span>'
+        + '</div>');
+    }
+    var stray = dd.filter(function(d) {
+      var a = d.offset || 0, b2 = a + d.w;
+      for (var k2 = 1; k2 < pp.length; k2++) if (a >= pp[k2-1] - 0.02 && b2 <= pp[k2] + 0.02) return false;
+      return true;
+    });
+    if (stray.length) {
+      rows.push('<div style="font-size:11px;font-weight:700;color:#f87171;padding:6px 11px;">'
+        + stray.length + (stray.length === 1 ? ' door crosses a post: ' : ' doors cross a post: ')
+        + stray.map(function(d) { return window.bjFtIn(d.offset) + '-' + window.bjFtIn(d.offset + d.w); }).join(', ')
+        + '</div>');
+    }
+    optEl.innerHTML = rows.length
+      ? '<div style="font-size:10px;font-weight:800;color:#8a93a6;text-transform:uppercase;letter-spacing:1px;margin-bottom:5px;">Bay by bay</div>'
+        + rows.join('')
+      : '';
   }
 
   var selBar = document.getElementById('bjSelBar');
