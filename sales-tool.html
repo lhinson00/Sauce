@@ -25307,7 +25307,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M77-1116';
+window.SAUCE_BUILD = 'M78-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -31337,26 +31337,61 @@ window.bjWallLabel = function(id) {
   return { left:'Left Eave', right:'Right Eave', front:'Front Gable', back:'Back Gable' }[id] || id;
 };
 window.bjWallLen = function(id) {
-  return (id === 'left' || id === 'right') ? (window._Q || Q).l : (window._Q || Q).w;
-};
-
-// The posts this wall currently has: the hand-set line if there is one,
-// otherwise whatever the automatic rules produce.
-window.bjPosts = function(wallId) {
-  var SM = window.SauceMaterials;
-  if (!SM || !SM.getPostsForWall) return [];
-  return SM.getPostsForWall(wallId, Q, WALLS, window._allDoors || []) || [];
+  return (id === 'left' || id === 'right') ? Q.l : Q.w;
 };
 window.bjWall = function(id) {
   return (WALLS || []).find(function(w) { return w.id === id; }) || null;
 };
+window.bjSpacing = function(id) {
+  var w = window.bjWall(id) || {};
+  var len = window.bjWallLen(id);
+  if (w.bayCount) return len / Math.max(1, Math.round(w.bayCount));
+  return w.postSpacing || Q.postSpacing || 10;
+};
 
-// Write the line back. Storing it makes the wall manual from here on, so the
-// automatic spacing no longer overwrites what the salesman decided.
+// The post line the wall would have if no door had ever been placed on it.
+// This is what the editor opens on: a salesman needs to see the real column
+// grid to judge which posts a door is sitting on. The automatic list hides that
+// — it has already pulled posts and added jambs at the door edges, which is how
+// a 60' wall ends up reading 4' / 26' / 12' / 4' / 10' / 4'.
+window.bjBaseGrid = function(wallId) {
+  var len = window.bjWallLen(wallId), step = window.bjSpacing(wallId);
+  var out = [], n = Math.floor(len / step + 0.001);
+  for (var i = 0; i <= n; i++) out.push(Math.round(i * step * 100) / 100);
+  if (out[out.length - 1] < len - 0.01) out.push(Math.round(len * 100) / 100);
+  return out;
+};
+
+// What the editor is working on: the hand-set line if there is one, otherwise
+// the plain grid.
+window.bjWorkingPosts = function(wallId) {
+  var w = window.bjWall(wallId);
+  if (w && Array.isArray(w.postsManual) && w.postsManual.length) return w.postsManual.slice();
+  return window.bjBaseGrid(wallId);
+};
+
+// Posts for drawing, each tagged with what it is. A post standing inside a door
+// opening is a conflict: it has to come out before that door can be hung.
+window.bjPosts = function(wallId) {
+  var len = window.bjWallLen(wallId);
+  var doors = (window._allDoors || []).filter(function(d) { return d.wall === wallId; });
+  return window.bjWorkingPosts(wallId).map(function(ft) {
+    var o = { ft: ft, corner: (ft < 0.01 || Math.abs(ft - len) < 0.01),
+              jamb: false, conflict: false, door: null };
+    doors.forEach(function(d) {
+      var a = d.offset || 0, b = a + d.w;
+      if (ft > a + 0.26 && ft < b - 0.26) { o.conflict = true; o.door = d; }
+      else if (Math.abs(ft - a) < 0.26 || Math.abs(ft - b) < 0.26) { o.jamb = true; }
+    });
+    return o;
+  });
+};
+
 window.bjCommit = function(wallId, feet) {
   var w = window.bjWall(wallId);
   if (!w) return;
-  w.postsManual = feet.slice().sort(function(a, b) { return a - b; });
+  w.postsManual = feet.slice().map(function(f){ return Math.round(f*100)/100; })
+                      .sort(function(a, b) { return a - b; });
   try { scheduleBuild(); } catch(e) {}
   try { updateStripFromLocalCalc(); } catch(e) {}
   window.bjDraw();
@@ -31371,11 +31406,6 @@ window.bjResetWall = function() {
   window.bjDraw();
 };
 
-// Smallest stock joist that covers the gap, bearing on whatever the eave posts
-// are, end profile at a corner and centre profile anywhere else.
-// A bar joist wall is 8x8 at minimum — the same rule toggleBarjoist applies to
-// the post selects. The select alone is not reliable: on a screen where the
-// per-wall size control is not rendered the bump is a no-op.
 window.bjWallPostSize = function(wallId, sf) {
   if (!sf) { try { sf = (typeof getStFields === 'function') ? getStFields() : {}; } catch(e) { sf = {}; } }
   var size = (window.SauceMaterials && window.SauceMaterials.wallPostSizeFor)
@@ -31390,37 +31420,32 @@ window.bjAutoSku = function(spanFt, atCorner) {
   var size = window.bjWallPostSize(window._bjUI.wall);
   var bear = (size === '10x10' || size === '12x12') ? '1010' : '88';
   var sku = 'TSBJ' + span + bear + (atCorner ? 'E' : 'C');
-  // Fall back to the nearest listed SKU if that combination is not stocked.
   if (BARJOIST_SKUS.indexOf(sku) === -1) {
     sku = BARJOIST_SKUS.filter(function(s) {
-      var sp = window.barjoistSpec(s);
-      return sp && sp.span === span;
+      var sp = window.barjoistSpec(s); return sp && sp.span === span;
     })[0] || null;
   }
   return sku;
 };
 
-// Lay a joist across the gap between the two selected posts.
 window.bjAddSpan = function() {
   var U = window._bjUI;
   if (U.sel.length !== 2) { alert('Pick the two posts the bar joist bears on.'); return; }
   var a = Math.min(U.sel[0], U.sel[1]), b = Math.max(U.sel[0], U.sel[1]);
-  var span = b - a;
+  var span = Math.round((b - a) * 100) / 100;
   var wLen = window.bjWallLen(U.wall);
   var atCorner = (a < 0.01 || Math.abs(b - wLen) < 0.01);
 
-  // Switch the feature on BEFORE choosing the SKU. toggleBarjoist raises the
-  // eave posts to 8x8, and the joist has to be the one that bears on what the
-  // wall ends up with — read first and it picks a 6x6 joist for an 8x8 wall.
+  // Switch the feature on BEFORE choosing the SKU: toggleBarjoist raises the
+  // eave posts to 8x8, and the joist has to bear on what the wall ends up with.
   var el = document.getElementById('st_barjoist');
   if (el && !el.checked) { el.checked = true; try { toggleBarjoist(el); } catch(e) {} }
 
   var sku = window.bjAutoSku(span, atCorner);
   if (!sku) { alert('No stock bar joist spans ' + span + " ft. The longest is 30'."); return; }
   window._barjoists = window._barjoists || [];
-  // Switching the toggle on seeds one blank row for the side panel. A joist
-  // placed here supersedes it, so drop any row that was never given a span —
-  // left in, it bills as a second joist nobody placed.
+  // Switching the toggle on seeds a blank row for the side panel; a joist placed
+  // here supersedes it. Left in, it bills as a second joist nobody placed.
   window._barjoists = window._barjoists.filter(function(x) {
     return x && (x.startFt != null || x.wall);
   });
@@ -31446,17 +31471,28 @@ window.bjSetSpanSku = function(i, sku) {
   window.bjDraw();
 };
 
-// Delete the selected posts. A corner post is refused: the building has to
-// stand on its corners whatever the opening plan is.
 window.bjDeleteSelected = function() {
   var U = window._bjUI;
   if (!U.sel.length) { alert('Click a post first.'); return; }
   var wLen = window.bjWallLen(U.wall);
-  var corner = U.sel.filter(function(f) { return f < 0.01 || Math.abs(f - wLen) < 0.01; });
-  if (corner.length) { alert('Corner posts cannot be removed.'); return; }
-  var cur = window.bjPosts(U.wall).map(function(p) { return p.ft; });
-  var keep = cur.filter(function(f) {
+  if (U.sel.some(function(f) { return f < 0.01 || Math.abs(f - wLen) < 0.01; })) {
+    alert('Corner posts cannot be removed.'); return;
+  }
+  var keep = window.bjWorkingPosts(U.wall).filter(function(f) {
     return !U.sel.some(function(s) { return Math.abs(s - f) < 0.01; });
+  });
+  U.sel = [];
+  window.bjCommit(U.wall, keep);
+};
+
+// One press clears every post standing in a doorway on this wall.
+window.bjClearDoorways = function() {
+  var U = window._bjUI;
+  var hit = window.bjPosts(U.wall).filter(function(p) { return p.conflict && !p.corner; });
+  if (!hit.length) { alert('No posts are standing in a doorway on this wall.'); return; }
+  var drop = hit.map(function(p) { return p.ft; });
+  var keep = window.bjWorkingPosts(U.wall).filter(function(f) {
+    return !drop.some(function(s) { return Math.abs(s - f) < 0.01; });
   });
   U.sel = [];
   window.bjCommit(U.wall, keep);
@@ -31464,23 +31500,30 @@ window.bjDeleteSelected = function() {
 
 window.bjAddPostAt = function(ft) {
   var U = window._bjUI;
-  var cur = window.bjPosts(U.wall).map(function(p) { return p.ft; });
+  var cur = window.bjWorkingPosts(U.wall);
   if (cur.some(function(f) { return Math.abs(f - ft) < 0.26; })) return;
   cur.push(ft);
   window.bjCommit(U.wall, cur);
 };
 
-// Things worth saying out loud. None of them block: the salesman overrules.
+// ── Warnings ────────────────────────────────────────────────────────────────
 window.bjWarnings = function() {
   var U = window._bjUI, out = [];
   var wLen = window.bjWallLen(U.wall);
-  var posts = window.bjPosts(U.wall).map(function(p) { return p.ft; });
+  var pAll = window.bjPosts(U.wall);
+  var posts = pAll.map(function(p) { return p.ft; });
   var doors = (window._allDoors || []).filter(function(d) { return d.wall === U.wall; });
   var joists = (window._barjoists || []).filter(function(b) { return b.wall === U.wall; });
-  var sf = {};
-  try { sf = (typeof getStFields === 'function') ? getStFields() : {}; } catch(e) {}
-  var size = window.bjWallPostSize(U.wall, sf);
+  var size = window.bjWallPostSize(U.wall);
   var postIn = parseFloat(String(size).split('x')[0]) || 8;
+
+  // Posts standing in a doorway — the thing to fix first.
+  var clash = pAll.filter(function(p) { return p.conflict; });
+  if (clash.length) {
+    out.push({ bad: true, msg: clash.length + (clash.length === 1 ? ' post stands' : ' posts stand')
+      + ' in a doorway (' + clash.map(function(p){ return p.ft + "'"; }).join(', ')
+      + '). Delete, then span with a bar joist.' });
+  }
 
   // Doors are checked by the BAY they share, not one at a time. Two 10' doors
   // between posts 20' apart fit individually and do not fit together, and it is
@@ -31502,10 +31545,10 @@ window.bjWarnings = function() {
     }
   }
 
-  // A gap wider than the post spacing needs something over it.
-  var ps = (window.bjWall(U.wall) || {}).postSpacing || Q.postSpacing || 10;
+  // A gap wider than the spacing needs something over it.
+  var ps = window.bjSpacing(U.wall);
   for (var i = 1; i < posts.length; i++) {
-    var g = posts[i] - posts[i-1];
+    var g = Math.round((posts[i] - posts[i-1]) * 100) / 100;
     if (g <= ps + 0.01) continue;
     var covered = joists.some(function(b) {
       return Math.abs((b.startFt || 0) - posts[i-1]) < 0.51 && Math.abs((b.endFt || 0) - posts[i]) < 0.51;
@@ -31516,24 +31559,154 @@ window.bjWarnings = function() {
     }
   }
 
-  // A joist has to be long enough for the gap it was put on.
   joists.forEach(function(b) {
     var sp = window.barjoistSpec(b.sku);
-    var need = (b.endFt || 0) - (b.startFt || 0);
+    var need = Math.round(((b.endFt || 0) - (b.startFt || 0)) * 100) / 100;
     if (!sp || !need) return;
     if (sp.span < need - 0.01) {
-      out.push({ bad: true, msg: b.sku + " spans " + sp.span + "' but sits over a "
-        + (Math.round(need * 100) / 100) + "' gap." });
+      out.push({ bad: true, msg: b.sku + " spans " + sp.span + "' but sits over a " + need + "' gap." });
     } else if (sp.span > need + 4.01) {
-      out.push({ bad: false, msg: b.sku + " is a " + sp.span + "' joist over a "
-        + (Math.round(need * 100) / 100) + "' gap." });
-    }
-    if (sp && sp.bearing !== size) {
-      out.push({ bad: false, msg: b.sku + ' bears on ' + sp.bearing + ' but this wall is '
-        + size + '.' });
+      out.push({ bad: false, msg: b.sku + " is a " + sp.span + "' joist over a " + need + "' gap." });
     }
   });
   return out;
+};
+
+// ── Geometry ────────────────────────────────────────────────────────────────
+// The detail strip: one wall drawn end to end.
+window._bjGeo = function(cv) {
+  var wLen = window.bjWallLen(window._bjUI.wall) || 1;
+  var padL = 52, padR = 52, y = 108;
+  var sc = (cv.width - padL - padR) / wLen;
+  return { wLen: wLen, padL: padL, y: y, sc: sc,
+           X: function(ft) { return padL + ft * sc; },
+           ft: function(px) { return (px - padL) / sc; } };
+};
+// The plan: the whole building to scale, so the four walls can be read against
+// one another.
+window._bjPlan = function(cv) {
+  var bw = Q.w || 1, bl = Q.l || 1, pad = 42;
+  var sc = Math.min((cv.width - pad*2) / bl, (cv.height - pad*2) / bw);
+  var ox = (cv.width  - bl*sc) / 2, oy = (cv.height - bw*sc) / 2;
+  return { bw: bw, bl: bl, sc: sc,
+           X: function(ft) { return ox + ft * sc; },
+           Y: function(ft) { return oy + ft * sc; },
+           x0: ox, y0: oy, x1: ox + bl*sc, y1: oy + bw*sc };
+};
+window._bjAt = function(e, id) {
+  var cv = document.getElementById(id || 'bjCanvas');
+  var r = cv.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (cv.width / r.width),
+           y: (e.clientY - r.top)  * (cv.height / r.height), cv: cv };
+};
+window._bjSnap = function(ft) { return Math.round(ft * 2) / 2; };   // 6 inches
+
+// ── Interaction on the detail strip ─────────────────────────────────────────
+// Doors sit in a band above the wall line and are dragged along it. Posts sit
+// on the line. Doors are tested first because they are the bigger target and
+// the thing most often being moved.
+window._bjDown = function(e) {
+  var p = window._bjAt(e), g = window._bjGeo(p.cv), U = window._bjUI;
+  var doors = (window._allDoors || []).filter(function(d) { return d.wall === U.wall; });
+
+  if (p.y > g.y - 46 && p.y < g.y - 8) {
+    var hitD = null;
+    doors.forEach(function(d) {
+      var a = g.X(d.offset || 0), b = g.X((d.offset || 0) + d.w);
+      if (p.x >= a && p.x <= b) hitD = d;
+    });
+    if (hitD) {
+      U.drag = { kind: 'door', id: hitD.id, grab: g.ft(p.x) - (hitD.offset || 0) };
+      U.selDoor = hitD.id;
+      window.bjDraw();
+      return;
+    }
+  }
+
+  var hit = null, best = 14;
+  window.bjPosts(U.wall).forEach(function(q) {
+    var d = Math.abs(g.X(q.ft) - p.x);
+    if (d < best && Math.abs(p.y - g.y) < 24) { best = d; hit = q; }
+  });
+  if (hit) {
+    U.selDoor = null;
+    var already = U.sel.some(function(f) { return Math.abs(f - hit.ft) < 0.01; });
+    if (already) U.sel = U.sel.filter(function(f) { return Math.abs(f - hit.ft) >= 0.01; });
+    else U.sel.push(hit.ft);
+    if (U.sel.length > 2) U.sel = U.sel.slice(-2);
+    U.drag = { kind: 'post', from: hit.ft, corner: hit.corner };
+    window.bjDraw();
+    return;
+  }
+
+  if (Math.abs(p.y - g.y) < 18) {
+    var ft = window._bjSnap(g.ft(p.x));
+    if (ft > 0.4 && ft < g.wLen - 0.4) window.bjAddPostAt(ft);
+  }
+};
+
+window._bjMove = function(e) {
+  var U = window._bjUI;
+  if (!U.drag) return;
+  var p = window._bjAt(e), g = window._bjGeo(p.cv);
+
+  if (U.drag.kind === 'door') {
+    var d = (window._allDoors || []).find(function(x) { return x.id === U.drag.id; });
+    if (!d) return;
+    var to = window._bjSnap(g.ft(p.x) - U.drag.grab);
+    to = Math.max(0, Math.min(g.wLen - d.w, to));
+    if (Math.abs(to - (d.offset || 0)) < 0.01) return;
+    d.offset = to;
+    try { renderGarageDoors(); } catch(e2) {}
+    try { renderWalkDoors(); } catch(e2) {}
+    try { scheduleBuild(); } catch(e2) {}
+    window.bjDraw();
+    return;
+  }
+
+  if (U.drag.corner) return;
+  var to2 = window._bjSnap(g.ft(p.x));
+  if (to2 <= 0 || to2 >= g.wLen) return;
+  if (Math.abs(to2 - U.drag.from) < 0.01) return;
+  var moved = window.bjWorkingPosts(U.wall).map(function(f) {
+    return Math.abs(f - U.drag.from) < 0.01 ? to2 : f;
+  });
+  U.sel = U.sel.map(function(f) { return Math.abs(f - U.drag.from) < 0.01 ? to2 : f; });
+  U.drag.from = to2;
+  window.bjCommit(U.wall, moved);
+};
+
+window._bjUp = function() {
+  var U = window._bjUI;
+  if (!U) return;
+  if (U.drag && U.drag.kind === 'door') {
+    try { updateStripFromLocalCalc(); } catch(e) {}
+  }
+  U.drag = null;
+};
+
+// Clicking a wall on the plan selects it.
+window._bjPlanDown = function(e) {
+  var p = window._bjAt(e, 'bjPlan'), g = window._bjPlan(p.cv);
+  var d = [
+    { id:'right', v: Math.abs(p.y - g.y0), on: p.x > g.x0-14 && p.x < g.x1+14 },
+    { id:'left',  v: Math.abs(p.y - g.y1), on: p.x > g.x0-14 && p.x < g.x1+14 },
+    { id:'front', v: Math.abs(p.x - g.x0), on: p.y > g.y0-14 && p.y < g.y1+14 },
+    { id:'back',  v: Math.abs(p.x - g.x1), on: p.y > g.y0-14 && p.y < g.y1+14 }
+  ].filter(function(r) { return r.on && r.v < 22; }).sort(function(a,b){ return a.v-b.v; })[0];
+  if (d) { window._bjUI.wall = d.id; window._bjUI.sel = []; window._bjUI.selDoor = null;
+           window.bjSeed(d.id); window.bjDraw(); }
+};
+
+// Opening a wall that carries doors puts the plain grid on it, so what the
+// editor shows is what the model and the builder's sheet will show. Without
+// this the editor displayed one thing and the building was built from another.
+window.bjSeed = function(wallId) {
+  var w = window.bjWall(wallId);
+  if (!w || Array.isArray(w.postsManual)) return;
+  var hasDoors = (window._allDoors || []).some(function(d) { return d.wall === wallId; });
+  if (!hasDoors) return;
+  window.bjCommit(wallId, window.bjBaseGrid(wallId));
 };
 
 // ── The modal ───────────────────────────────────────────────────────────────
@@ -31543,38 +31716,41 @@ window.bjOpenLayout = function(wallId) {
     return;
   }
   var U = window._bjUI;
-  // Open on a wall that actually has garage doors, since that is what the
-  // salesman came here to deal with.
   if (!wallId) {
     var withDoors = ['right','left','front','back'].filter(function(w) {
       return (window._allDoors || []).some(function(d) { return d.wall === w && d.type === 'garage'; });
     });
     wallId = withDoors[0] || 'right';
   }
-  U.wall = wallId; U.sel = [];
+  U.wall = wallId; U.sel = []; U.selDoor = null;
 
   var m = document.getElementById('bjLayoutModal');
   if (!m) {
     m = document.createElement('div');
     m.id = 'bjLayoutModal';
-    m.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:rgba(5,8,16,.72);'
+    m.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:rgba(5,8,16,.74);'
                     + 'display:flex;align-items:center;justify-content:center;font-family:Outfit,sans-serif;';
     m.innerHTML =
       '<div style="background:#0b1020;border:1px solid rgba(var(--gold-rgb),.35);border-radius:14px;'
-    +      'width:min(1080px,94vw);max-height:92vh;overflow:auto;padding:18px 20px;color:#e2e8f0;">'
-    +   '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">'
+    +      'width:min(1160px,96vw);max-height:94vh;overflow:auto;padding:16px 20px 18px;color:#e2e8f0;">'
+    +   '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">'
     +     '<div><div style="font-size:15px;font-weight:800;color:var(--gold);">Post Layout &mdash; Bar Joists</div>'
     +     '<div id="bjSub" style="font-size:11px;color:#8a93a6;margin-top:2px;"></div></div>'
     +     '<button onclick="bjCloseLayout()" style="background:none;border:none;color:#8a93a6;font-size:18px;cursor:pointer;">&#10005;</button>'
     +   '</div>'
-    +   '<div id="bjTabs" style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;"></div>'
-    +   '<canvas id="bjCanvas" width="1020" height="190" style="width:100%;background:#070b14;'
-    +     'border:1px solid rgba(255,255,255,.08);border-radius:10px;cursor:pointer;display:block;"></canvas>'
+    +   '<div style="display:grid;grid-template-columns:1fr;gap:10px;">'
+    +     '<canvas id="bjPlan" width="1100" height="430" style="width:100%;background:#070b14;'
+    +       'border:1px solid rgba(255,255,255,.08);border-radius:10px;cursor:pointer;display:block;"></canvas>'
+    +     '<div id="bjTabs" style="display:flex;gap:6px;flex-wrap:wrap;"></div>'
+    +     '<canvas id="bjCanvas" width="1100" height="200" style="width:100%;background:#070b14;'
+    +       'border:1px solid rgba(255,255,255,.08);border-radius:10px;cursor:pointer;display:block;"></canvas>'
+    +   '</div>'
     +   '<div style="display:flex;gap:7px;margin:10px 0;flex-wrap:wrap;align-items:center;">'
-    +     '<button onclick="bjDeleteSelected()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(239,68,68,.5);background:rgba(239,68,68,.14);color:#f87171;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Delete Post</button>'
+    +     '<button onclick="bjClearDoorways()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(239,68,68,.5);background:rgba(239,68,68,.16);color:#f87171;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Delete Posts in Doorways</button>'
+    +     '<button onclick="bjDeleteSelected()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#cbd5e1;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Delete Selected</button>'
     +     '<button onclick="bjAddSpan()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(var(--gold-rgb),.5);background:rgba(var(--gold-rgb),.14);color:var(--gold);font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Bar Joist Between</button>'
     +     '<button onclick="bjResetWall()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#94a3b8;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Back to Automatic</button>'
-    +     '<div style="font-size:10px;color:#6b7280;margin-left:auto;">Click a post to select &middot; drag to move &middot; click the wall line to add &middot; snaps to 6&quot;</div>'
+    +     '<div style="font-size:10px;color:#6b7280;margin-left:auto;text-align:right;">Drag a door to slide it &middot; click a post to select &middot; drag a post to move<br>click the wall line to add a post &middot; everything snaps to 6&quot;</div>'
     +   '</div>'
     +   '<div id="bjSpanList" style="margin-bottom:10px;"></div>'
     +   '<div id="bjWarn"></div>'
@@ -31583,9 +31759,11 @@ window.bjOpenLayout = function(wallId) {
     var cv = m.querySelector('#bjCanvas');
     cv.addEventListener('mousedown', window._bjDown);
     cv.addEventListener('mousemove', window._bjMove);
+    m.querySelector('#bjPlan').addEventListener('mousedown', window._bjPlanDown);
     window.addEventListener('mouseup', window._bjUp);
   }
   m.style.display = 'flex';
+  window.bjSeed(U.wall);
   window.bjDraw();
 };
 window.bjCloseLayout = function() {
@@ -31593,140 +31771,233 @@ window.bjCloseLayout = function() {
   if (m) m.style.display = 'none';
 };
 
-// Canvas geometry, shared by the drawing and the hit testing.
-window._bjGeo = function(cv) {
-  var wLen = window.bjWallLen(window._bjUI.wall) || 1;
-  var padL = 46, padR = 46, y = 96;
-  return { wLen: wLen, padL: padL, y: y,
-           sc: (cv.width - padL - padR) / wLen,
-           X: function(ft) { return padL + ft * ((cv.width - padL - padR) / wLen); },
-           ft: function(px) { return (px - padL) / ((cv.width - padL - padR) / wLen); } };
-};
-window._bjAt = function(e) {
-  var cv = document.getElementById('bjCanvas');
-  var r = cv.getBoundingClientRect();
-  return { x: (e.clientX - r.left) * (cv.width / r.width),
-           y: (e.clientY - r.top)  * (cv.height / r.height), cv: cv };
-};
-window._bjSnap = function(ft) { return Math.round(ft * 2) / 2; };   // 6 inches
+// ── Drawing: the whole building, so the four walls can be read together ─────
+window.bjDrawPlan = function() {
+  var cv = document.getElementById('bjPlan');
+  if (!cv) return;
+  // Shape the box to the building so a long narrow barn does not sit in the
+  // middle of an empty field.
+  var want = Math.round(cv.width * ((Q.w || 1) / (Q.l || 1))) + 96;
+  var h = Math.max(230, Math.min(470, want));
+  if (cv.height !== h) cv.height = h;
+  var g = window._bjPlan(cv), ctx = cv.getContext('2d'), U = window._bjUI;
+  ctx.fillStyle = '#070b14'; ctx.fillRect(0, 0, cv.width, cv.height);
 
-window._bjDown = function(e) {
-  var p = window._bjAt(e), g = window._bjGeo(p.cv), U = window._bjUI;
-  var posts = window.bjPosts(U.wall);
-  var hit = null, best = 12;
-  posts.forEach(function(q) {
-    var d = Math.abs(g.X(q.ft) - p.x);
-    if (d < best && Math.abs(p.y - g.y) < 26) { best = d; hit = q; }
+  var WIDE = { right: { horiz:true, y:g.y0 }, left: { horiz:true, y:g.y1 },
+               front: { horiz:false, x:g.x0 }, back: { horiz:false, x:g.x1 } };
+
+  // Slab
+  ctx.fillStyle = 'rgba(255,255,255,.035)';
+  ctx.fillRect(g.x0, g.y0, g.x1-g.x0, g.y1-g.y0);
+
+  // Column lines across the building, so eave posts can be read against the
+  // posts opposite. This is the "is everything lining up" check.
+  var rp = window.bjPosts('right'), lp = window.bjPosts('left');
+  ctx.strokeStyle = 'rgba(255,255,255,.07)'; ctx.lineWidth = 1;
+  rp.forEach(function(p) {
+    var x = g.X(p.ft);
+    ctx.beginPath(); ctx.moveTo(x, g.y0); ctx.lineTo(x, g.y1); ctx.stroke();
   });
-  if (hit) {
-    var already = U.sel.some(function(f) { return Math.abs(f - hit.ft) < 0.01; });
-    if (e.shiftKey || U.sel.length < 2) {
-      if (already) U.sel = U.sel.filter(function(f) { return Math.abs(f - hit.ft) >= 0.01; });
-      else U.sel.push(hit.ft);
-    } else { U.sel = [hit.ft]; }
-    if (U.sel.length > 2) U.sel = U.sel.slice(-2);
-    U.drag = { from: hit.ft, corner: hit.corner };
-    window.bjDraw();
-    return;
-  }
-  // Empty spot on the wall line adds a post there.
-  if (Math.abs(p.y - g.y) < 20) {
-    var ft = window._bjSnap(g.ft(p.x));
-    if (ft > 0.4 && ft < g.wLen - 0.4) window.bjAddPostAt(ft);
-  }
-};
-window._bjMove = function(e) {
-  var U = window._bjUI;
-  if (!U.drag || U.drag.corner) return;
-  var p = window._bjAt(e), g = window._bjGeo(p.cv);
-  var to = window._bjSnap(g.ft(p.x));
-  if (to <= 0 || to >= g.wLen) return;
-  if (Math.abs(to - U.drag.from) < 0.01) return;
-  var cur = window.bjPosts(U.wall).map(function(q) { return q.ft; });
-  var moved = cur.map(function(f) { return Math.abs(f - U.drag.from) < 0.01 ? to : f; });
-  U.sel = U.sel.map(function(f) { return Math.abs(f - U.drag.from) < 0.01 ? to : f; });
-  U.drag.from = to;
-  window.bjCommit(U.wall, moved);
-};
-window._bjUp = function() { if (window._bjUI) window._bjUI.drag = null; };
+  // Where a left-eave post has no partner opposite, mark the line amber.
+  lp.forEach(function(p) {
+    if (rp.some(function(q){ return Math.abs(q.ft - p.ft) < 0.26; })) return;
+    var x = g.X(p.ft);
+    ctx.strokeStyle = 'rgba(251,191,36,.28)';
+    ctx.beginPath(); ctx.moveTo(x, g.y0); ctx.lineTo(x, g.y1); ctx.stroke();
+  });
 
-// ── Drawing ─────────────────────────────────────────────────────────────────
+  // Walls
+  ['right','left','front','back'].forEach(function(id) {
+    var on = (id === U.wall), w = WIDE[id];
+    ctx.strokeStyle = on ? 'var(--gold)' : 'rgba(255,255,255,.3)';
+    ctx.strokeStyle = on ? '#fbbf24' : 'rgba(255,255,255,.3)';
+    ctx.lineWidth = on ? 3 : 1.5;
+    ctx.beginPath();
+    if (w.horiz) { ctx.moveTo(g.x0, w.y); ctx.lineTo(g.x1, w.y); }
+    else { ctx.moveTo(w.x, g.y0); ctx.lineTo(w.x, g.y1); }
+    ctx.stroke();
+  });
+
+  // Doors on every wall
+  (window._allDoors || []).forEach(function(d) {
+    var a = d.offset || 0, b = a + d.w, w = WIDE[d.wall];
+    if (!w) return;
+    var col = d.type === 'garage' ? '#22c55e' : '#60a5fa';
+    ctx.strokeStyle = col; ctx.lineWidth = 6; ctx.lineCap = 'butt';
+    ctx.beginPath();
+    if (w.horiz) { ctx.moveTo(g.X(a), w.y); ctx.lineTo(g.X(b), w.y); }
+    else { ctx.moveTo(w.x, g.Y(a)); ctx.lineTo(w.x, g.Y(b)); }
+    ctx.stroke();
+  });
+
+  // Bar joists, just inside the wall they carry
+  (window._barjoists || []).forEach(function(bj) {
+    if (bj.startFt == null || bj.endFt == null) return;
+    var w = WIDE[bj.wall]; if (!w) return;
+    var off = 7;
+    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 3;
+    ctx.beginPath();
+    if (w.horiz) { var yy = w.y + (bj.wall === 'right' ? off : -off);
+      ctx.moveTo(g.X(bj.startFt), yy); ctx.lineTo(g.X(bj.endFt), yy); }
+    else { var xx = w.x + (bj.wall === 'front' ? off : -off);
+      ctx.moveTo(xx, g.Y(bj.startFt)); ctx.lineTo(xx, g.Y(bj.endFt)); }
+    ctx.stroke();
+  });
+
+  // Posts on all four walls
+  ['right','left','front','back'].forEach(function(id) {
+    var w = WIDE[id];
+    window.bjPosts(id).forEach(function(p) {
+      var x, y;
+      if (w.horiz) { x = g.X(p.ft); y = w.y; } else { x = w.x; y = g.Y(p.ft); }
+      var s = p.corner ? 8 : 6;
+      ctx.fillStyle = p.conflict ? '#ef4444' : p.corner ? '#e2e8f0' : p.jamb ? '#f59e0b' : '#94a3b8';
+      ctx.fillRect(x - s/2, y - s/2, s, s);
+      if (p.conflict) {
+        ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(x-6, y-6); ctx.lineTo(x+6, y+6);
+        ctx.moveTo(x+6, y-6); ctx.lineTo(x-6, y+6);
+        ctx.stroke();
+      }
+    });
+  });
+
+  // Overall dimensions and the spacing on each wall
+  ctx.fillStyle = '#64748b'; ctx.font = '11px Outfit, sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(g.bl + "'", (g.x0+g.x1)/2, g.y0 - 30);
+  ctx.save(); ctx.translate(g.x0 - 20, (g.y0+g.y1)/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText(g.bw + "'", 0, 0); ctx.restore();
+
+  ctx.font = 'bold 10px Outfit, sans-serif';
+  ctx.fillStyle = U.wall === 'right' ? '#fbbf24' : '#475569';
+  ctx.fillText('RIGHT EAVE  ' + window.bjSpacing('right') + "' o.c.", (g.x0+g.x1)/2, g.y0 - 16);
+  ctx.fillStyle = U.wall === 'left' ? '#fbbf24' : '#475569';
+  ctx.fillText('LEFT EAVE  ' + window.bjSpacing('left') + "' o.c.", (g.x0+g.x1)/2, g.y1 + 24);
+  ctx.save(); ctx.translate(g.x0 - 6, (g.y0+g.y1)/2); ctx.rotate(-Math.PI/2);
+  ctx.fillStyle = U.wall === 'front' ? '#fbbf24' : '#475569';
+  ctx.fillText('FRONT GABLE  ' + window.bjSpacing('front') + "' o.c.", 0, 0); ctx.restore();
+  ctx.save(); ctx.translate(g.x1 + 14, (g.y0+g.y1)/2); ctx.rotate(-Math.PI/2);
+  ctx.fillStyle = U.wall === 'back' ? '#fbbf24' : '#475569';
+  ctx.fillText('BACK GABLE  ' + window.bjSpacing('back') + "' o.c.", 0, 0); ctx.restore();
+
+  ctx.textAlign = 'left'; ctx.font = '9px Outfit, sans-serif'; ctx.fillStyle = '#475569';
+  ctx.fillText('Click a wall to work on it', 12, cv.height - 12);
+};
+
+// ── Drawing: the detail strip for the wall being worked on ─────────────────
 window.bjDraw = function() {
   var m = document.getElementById('bjLayoutModal');
   if (!m || m.style.display === 'none') return;
+  window.bjDrawPlan();
+
   var cv = document.getElementById('bjCanvas');
   if (!cv) return;
-  var g = window._bjGeo(cv), U = window._bjUI;
-  var ctx = cv.getContext('2d');
-  var posts = window.bjPosts(U.wall);
-  var doors = (window._allDoors || []).filter(function(d) { return d.wall === U.wall; });
+  var g = window._bjGeo(cv), U = window._bjUI, ctx = cv.getContext('2d');
+  var posts  = window.bjPosts(U.wall);
+  var doors  = (window._allDoors || []).filter(function(d) { return d.wall === U.wall; });
   var joists = (window._barjoists || []).filter(function(b) { return b.wall === U.wall; });
   var w = window.bjWall(U.wall) || {};
+  var step = window.bjSpacing(U.wall);
 
-  ctx.clearRect(0, 0, cv.width, cv.height);
   ctx.fillStyle = '#070b14'; ctx.fillRect(0, 0, cv.width, cv.height);
 
-  // Wall line
-  ctx.strokeStyle = 'rgba(255,255,255,.22)'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(g.X(0), g.y); ctx.lineTo(g.X(g.wLen), g.y); ctx.stroke();
-
-  // Door openings
-  doors.forEach(function(d) {
-    var a = d.offset || 0, b = a + d.w;
-    ctx.fillStyle = d.type === 'garage' ? 'rgba(34,197,94,.20)' : 'rgba(96,165,250,.20)';
-    ctx.fillRect(g.X(a), g.y - 30, g.X(b) - g.X(a), 30);
-    ctx.strokeStyle = d.type === 'garage' ? '#22c55e' : '#60a5fa'; ctx.lineWidth = 2;
-    ctx.strokeRect(g.X(a), g.y - 30, g.X(b) - g.X(a), 30);
-    ctx.fillStyle = '#cbd5e1'; ctx.font = 'bold 10px Outfit, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(d.w + "x" + d.h, (g.X(a) + g.X(b)) / 2, g.y - 36);
+  // The nominal grid, faint, behind everything: where posts land at this
+  // spacing before any door is considered.
+  ctx.strokeStyle = 'rgba(255,255,255,.07)'; ctx.lineWidth = 1;
+  window.bjBaseGrid(U.wall).forEach(function(ft) {
+    ctx.beginPath(); ctx.moveTo(g.X(ft), 28); ctx.lineTo(g.X(ft), g.y + 54); ctx.stroke();
   });
 
-  // Bar joists, drawn under the wall where they carry
+  // Wall line
+  ctx.strokeStyle = 'rgba(255,255,255,.26)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(g.X(0), g.y); ctx.lineTo(g.X(g.wLen), g.y); ctx.stroke();
+
+  // Doors — draggable, drawn in a band above the wall
+  doors.forEach(function(d) {
+    var a = d.offset || 0, b = a + d.w;
+    var sel = (U.selDoor === d.id);
+    var col = d.type === 'garage' ? '#22c55e' : '#60a5fa';
+    ctx.fillStyle = d.type === 'garage' ? 'rgba(34,197,94,.22)' : 'rgba(96,165,250,.22)';
+    ctx.fillRect(g.X(a), g.y - 44, g.X(b) - g.X(a), 36);
+    ctx.strokeStyle = sel ? '#fbbf24' : col; ctx.lineWidth = sel ? 3 : 2;
+    ctx.strokeRect(g.X(a), g.y - 44, g.X(b) - g.X(a), 36);
+    ctx.fillStyle = '#e2e8f0'; ctx.font = 'bold 11px Outfit, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(d.w + 'x' + d.h, (g.X(a) + g.X(b)) / 2, g.y - 27);
+    ctx.fillStyle = '#94a3b8'; ctx.font = '9px Outfit, sans-serif';
+    ctx.fillText(a + "' to " + Math.round(b*100)/100 + "'", (g.X(a) + g.X(b)) / 2, g.y - 14);
+    // grip
+    ctx.fillStyle = sel ? '#fbbf24' : 'rgba(255,255,255,.28)';
+    for (var k = -1; k <= 1; k++) ctx.fillRect((g.X(a)+g.X(b))/2 + k*4 - 1, g.y - 40, 2, 6);
+  });
+
+  // Bar joists below the wall
   joists.forEach(function(b) {
     if (b.startFt == null || b.endFt == null) return;
-    var y = g.y + 22;
-    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 5; ctx.lineCap = 'butt';
+    var y = g.y + 26;
+    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 6; ctx.lineCap = 'butt';
     ctx.beginPath(); ctx.moveTo(g.X(b.startFt), y); ctx.lineTo(g.X(b.endFt), y); ctx.stroke();
     ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 9px Outfit, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(b.sku, (g.X(b.startFt) + g.X(b.endFt)) / 2, y + 15);
+    ctx.fillText(b.sku, (g.X(b.startFt) + g.X(b.endFt)) / 2, y + 16);
   });
 
   // Bay dimensions
   ctx.font = '10px Outfit, sans-serif'; ctx.textAlign = 'center';
   for (var i = 1; i < posts.length; i++) {
-    var a = posts[i-1].ft, b2 = posts[i].ft, mid = (g.X(a) + g.X(b2)) / 2;
-    var gap = Math.round((b2 - a) * 100) / 100;
-    var ps = w.postSpacing || Q.postSpacing || 10;
-    ctx.strokeStyle = 'rgba(255,255,255,.14)'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(g.X(a), g.y - 50); ctx.lineTo(g.X(b2), g.y - 50); ctx.stroke();
-    ctx.fillStyle = gap > ps + 0.01 ? '#fbbf24' : '#64748b';
-    ctx.fillText(gap + "'", mid, g.y - 54);
+    var a2 = posts[i-1].ft, b2 = posts[i].ft, mid = (g.X(a2) + g.X(b2)) / 2;
+    var gap = Math.round((b2 - a2) * 100) / 100;
+    ctx.strokeStyle = 'rgba(255,255,255,.16)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(g.X(a2), 58); ctx.lineTo(g.X(b2), 58); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(g.X(a2), 54); ctx.lineTo(g.X(a2), 62);
+    ctx.moveTo(g.X(b2), 54); ctx.lineTo(g.X(b2), 62); ctx.stroke();
+    ctx.fillStyle = gap > step + 0.01 ? '#fbbf24' : '#64748b';
+    ctx.fillText(gap + "'", mid, 50);
   }
 
   // Posts
   posts.forEach(function(p) {
     var x = g.X(p.ft);
     var sel = U.sel.some(function(f) { return Math.abs(f - p.ft) < 0.01; });
-    ctx.fillStyle = sel ? '#fbbf24' : p.corner ? '#e2e8f0' : p.jamb ? '#ef4444' : '#94a3b8';
-    var s = p.corner ? 9 : 7;
+    var s = p.corner ? 11 : 9;
+    ctx.fillStyle = p.conflict ? '#ef4444' : p.corner ? '#e2e8f0' : p.jamb ? '#f59e0b' : '#94a3b8';
     ctx.fillRect(x - s/2, g.y - s/2, s, s);
+    if (p.conflict) {
+      ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x-9, g.y-9); ctx.lineTo(x+9, g.y+9);
+      ctx.moveTo(x+9, g.y-9); ctx.lineTo(x-9, g.y+9);
+      ctx.stroke();
+    }
     if (sel) { ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2;
-               ctx.strokeRect(x - s/2 - 4, g.y - s/2 - 4, s + 8, s + 8); }
-    ctx.fillStyle = sel ? '#fbbf24' : '#475569';
+               ctx.strokeRect(x - s/2 - 5, g.y - s/2 - 5, s + 10, s + 10); }
+    ctx.fillStyle = sel ? '#fbbf24' : p.conflict ? '#ef4444' : '#64748b';
     ctx.font = '9px Outfit, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(p.ft + "'", x, g.y + 16);
+    ctx.fillText(p.ft + "'", x, g.y + 18);
   });
 
   // Legend
-  ctx.textAlign = 'left'; ctx.font = '9px Outfit, sans-serif'; ctx.fillStyle = '#475569';
-  ctx.fillText('corner', 10, 174); ctx.fillStyle = '#e2e8f0'; ctx.fillRect(48, 168, 7, 7);
-  ctx.fillStyle = '#475569'; ctx.fillText('jamb', 66, 174); ctx.fillStyle = '#ef4444'; ctx.fillRect(96, 168, 7, 7);
-  ctx.fillStyle = '#475569'; ctx.fillText('post', 114, 174); ctx.fillStyle = '#94a3b8'; ctx.fillRect(140, 168, 7, 7);
+  ctx.textAlign = 'left'; ctx.font = '9px Outfit, sans-serif';
+  var lx = 12, ly = cv.height - 10;
+  function key(label, col) {
+    ctx.fillStyle = col; ctx.fillRect(lx, ly - 7, 7, 7);
+    ctx.fillStyle = '#475569'; ctx.fillText(label, lx + 11, ly);
+    lx += 11 + ctx.measureText(label).width + 14;
+  }
+  key('corner', '#e2e8f0'); key('post', '#94a3b8');
+  key('at a door edge', '#f59e0b'); key('in a doorway - delete', '#ef4444');
 
   // Header
   var sub = document.getElementById('bjSub');
-  if (sub) sub.textContent = window.bjWallLabel(U.wall) + '  ·  ' + g.wLen + "' ·  "
-    + posts.length + ' posts' + (Array.isArray(w.postsManual) ? '  ·  set by hand' : '  ·  automatic');
+  if (sub) sub.textContent = window.bjWallLabel(U.wall) + '  ·  ' + g.wLen + "'  ·  "
+    + step + "' o.c.  ·  " + posts.length + ' posts'
+    + (function() {
+        if (!Array.isArray(w.postsManual)) return '  ·  automatic';
+        var base = window.bjBaseGrid(U.wall);
+        var same = base.length === w.postsManual.length && base.every(function(f, i) {
+          return Math.abs(f - w.postsManual[i]) < 0.01;
+        });
+        return same ? "  ·  grid at " + step + "'" : '  ·  edited';
+      })();
 
   // Wall tabs
   var tabs = document.getElementById('bjTabs');
@@ -31735,7 +32006,7 @@ window.bjDraw = function() {
       var on = (id === U.wall);
       var nd = (window._allDoors || []).filter(function(d) { return d.wall === id; }).length;
       var man = Array.isArray((window.bjWall(id) || {}).postsManual);
-      return '<button onclick="window._bjUI.wall=\'' + id + '\';window._bjUI.sel=[];bjDraw()" '
+      return '<button onclick="window._bjUI.wall=\'' + id + '\';window._bjUI.sel=[];window._bjUI.selDoor=null;bjSeed(\'' + id + '\');bjDraw()" '
         + 'style="padding:6px 11px;border-radius:7px;font-family:Outfit,sans-serif;font-size:11px;font-weight:800;cursor:pointer;'
         + 'border:1px solid ' + (on ? 'rgba(var(--gold-rgb),.65)' : 'rgba(255,255,255,.12)') + ';'
         + 'background:' + (on ? 'rgba(var(--gold-rgb),.16)' : 'transparent') + ';'
@@ -31744,12 +32015,11 @@ window.bjDraw = function() {
     }).join('');
   }
 
-  // Bar joists on this wall, with the SKU still pickable
+  // Bar joists on this wall, SKU still pickable
   var sl = document.getElementById('bjSpanList');
   if (sl) {
-    var all = window._barjoists || [];
-    var rows = all.map(function(b, i) { return { b: b, i: i }; })
-                  .filter(function(r) { return r.b.wall === U.wall; });
+    var rows = (window._barjoists || []).map(function(b, i) { return { b: b, i: i }; })
+                 .filter(function(r) { return r.b.wall === U.wall; });
     sl.innerHTML = rows.length
       ? '<div style="font-size:10px;font-weight:800;color:#8a93a6;text-transform:uppercase;letter-spacing:1px;margin-bottom:5px;">Bar Joists on this wall</div>'
         + rows.map(function(r) {
@@ -31758,7 +32028,7 @@ window.bjDraw = function() {
             }).join('');
             return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:11px;">'
               + '<select onchange="bjSetSpanSku(' + r.i + ',this.value)" style="padding:5px 7px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:#111827;color:#e2e8f0;font-family:Outfit,sans-serif;font-size:11px;font-weight:700;">' + opts + '</select>'
-              + '<span style="color:#8a93a6;">' + (r.b.startFt) + "' to " + (r.b.endFt) + "' ("
+              + '<span style="color:#8a93a6;">' + r.b.startFt + "' to " + r.b.endFt + "' ("
               + (Math.round(((r.b.endFt||0)-(r.b.startFt||0))*100)/100) + "')</span>"
               + '<label style="display:flex;align-items:center;gap:4px;color:#94a3b8;font-size:10px;font-weight:700;cursor:pointer;">'
               + '<input type="checkbox"' + (r.b.removePost ? ' checked' : '') + ' onchange="setBarjoist(' + r.i + ',\'removePost\',this.checked);bjDraw()" style="accent-color:var(--gold);">-Post</label>'
@@ -31768,7 +32038,6 @@ window.bjDraw = function() {
       : '<div style="font-size:11px;color:#6b7280;">No bar joists on this wall yet. Select two posts and press Bar Joist Between.</div>';
   }
 
-  // Warnings
   var wd = document.getElementById('bjWarn');
   if (wd) {
     var ws = window.bjWarnings();
