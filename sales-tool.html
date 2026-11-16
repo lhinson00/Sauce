@@ -8288,6 +8288,32 @@ window.SauceParts = window.SauceParts || (function(){
     return out;
   }
 
+  // Where the boards of a girt run actually fall. Without this the highlight
+  // chops the run into equal pieces of the SKU length, so a 30' run lit three
+  // 10' pieces for the 10' line — the whole run — and the 20' line lit it too.
+  // girtRuns is what the material list bills off, so laying the boards out in
+  // the order it returns them makes each SKU light only its own stick.
+  function girtPlan(runFt, m){
+    try {
+      var SM = window.SauceMaterials;
+      if (!SM || !SM.girtRuns) return null;
+      var Qq = window._Q || {};
+      var ev = (window._WALLS || []).filter(function(x){ return x.id === 'left'; })[0];
+      var ps = ev ? (ev.postSpacing || Qq.postSpacing || 10) : (Qq.postSpacing || 10);
+      var runs = SM.girtRuns(runFt, ps);
+      if (!runs) return null;
+      var lens = Object.keys(runs).map(parseFloat).sort(function(a, b){ return b - a; });
+      var out = [], at = 0;
+      lens.forEach(function(L){
+        for (var i = 0; i < runs[L]; i++) {
+          out.push({ at:at, len:Math.min(L, Math.max(0, runFt - at)), nom:L, end:false });
+          at += L;
+        }
+      });
+      return out.length ? out : null;
+    } catch(e) { return null; }
+  }
+
   function boards(m, Lsc, planFn, wantEnd, runsHint){
     var g = m.geometry;
     var p = g && g.parameters;
@@ -8569,9 +8595,12 @@ window.SauceParts = window.SauceParts || (function(){
             else out.push({ m:m, b:null });
             return;
           }
-          if (Math.abs(len - L) <= tol && entry.key !== 'purlin') { out.push({ m:m, b:null }); return; }
+          var _planned = (entry.key === 'purlin' || entry.key === 'dividerGirt');
+          if (Math.abs(len - L) <= tol && !_planned) { out.push({ m:m, b:null }); return; }
           if (len > L - 0.01) {
-            var b = boards(m, Lsc, entry.key === 'purlin' ? purlinPlan : null,
+            var b = boards(m, Lsc,
+                           entry.key === 'purlin' ? purlinPlan
+                         : entry.key === 'dividerGirt' ? girtPlan : null,
                            entry.key === 'purlin' ? _wantOH : null,
                            entry.key === 'purlin' ? _runsHint : null);
             if (b) out.push({ m:m, b:b });
@@ -25619,7 +25648,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M98-1116';
+window.SAUCE_BUILD = 'M100-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -43818,7 +43847,7 @@ window.SauceMaterials.calcScrewsMRSWB = function(Q, shedCfgs) {
 // Trim: always 2 boxes, listed separately.
 // PBR metal → MRSZXL1.5PW. All others → MRSWB1.5PW.
 
-window.SauceMaterials.calcMetalScrews = function(Q, WALLS, shedCfgs) {
+window.SauceMaterials.calcMetalScrews = function(Q, WALLS, shedCfgs, sf) {
   var metalType   = normalizeMetalType((document.getElementById('st_roofMetal')||{}).value || 'Tuff-Rib 29ga');
   var isPBR       = metalType === 'PBR';
   var zxlRoof     = isPBR || !!(document.getElementById('st_zxlRoof') || {}).checked;
@@ -43880,6 +43909,25 @@ window.SauceMaterials.calcMetalScrews = function(Q, WALLS, shedCfgs) {
     quantity:    boxes(wallLF),
     detail:      Math.round(wallLF) + ' ln ft × 1.25 ÷ 100'
   });
+
+  // Divider wall metal, on its own line rather than folded into the wall screws,
+  // so the yard can see what the partitions cost on their own. Same rule and the
+  // same SKU: linear feet of panel × 1.25 ÷ 100. The linear feet already count
+  // every clad face, so a wall sheeted one side buys half the screws.
+  if (SM.calcDividerWalls) {
+    try {
+      var dwMetal = (SM.calcDividerWalls(Q, WALLS, sf || {}) || [])
+        .filter(function(it) { return /Divider Wall Metal/.test(it.description || ''); });
+      var dwLF = linFt(dwMetal);
+      if (dwLF > 0) results.push({
+        category:    'Hardware',
+        description: 'Screws — Divider Wall Metal',
+        sku:         wallSku,
+        quantity:    boxes(dwLF),
+        detail:      Math.round(dwLF) + ' ln ft × 1.25 ÷ 100'
+      });
+    } catch(e) { try { console.warn('divider screws skipped:', e); } catch(_) {} }
+  }
 
   // Trim: always 2 boxes
   results.push({
@@ -44380,7 +44428,23 @@ window.renderDividerWalls = function() {
   + (acrossCount === list.length
       ? (list.length + 1) + ' units'
       : list.length + ' divider' + (list.length > 1 ? 's' : ''))
-  + '</div>';
+  + '</div>'
+  // A rate left at zero does not bill, which is right, but silent: a profile
+  // saved before these rates existed has them at zero and nothing says so.
+  // Walls on the quote with no labor against them is worth a word here.
+  + (function() {
+      try {
+        var R = window.SauceRates; if (!R) return '';
+        var miss = [];
+        if (!(R.v('labor.interior.dividerPerSqft') > 0)) miss.push('metal ($/sqft)');
+        if (!(R.v('labor.posts.stall') > 0))             miss.push('posts (each)');
+        if (!miss.length) return '';
+        return '<div style="font-size:9px;line-height:1.45;color:#b45309;background:rgba(251,191,36,.12);'
+             + 'border:1px solid rgba(251,191,36,.45);border-radius:6px;padding:5px 7px;margin-top:6px;">'
+             + 'No labor is billing for these walls &mdash; ' + miss.join(' and ') + ' not set.<br>'
+             + 'Pricing &rarr; Labor &rarr; Interior divider walls / Posts.</div>';
+      } catch(e) { return ''; }
+    })();
 };
 
 // Post frame only — a stud building partitions with the Interior Walls section.
@@ -44487,14 +44551,17 @@ window.SauceMaterials.calcDividerWalls = function(Q, WALLS, sf) {
   var bandLf = 0;
   segs.forEach(function(g) {
     if (!g.faces) return;
-    bandLf += g.len;
+    // One band per clad face, the same way the girts go: a wall sheeted both
+    // sides takes a PT board at the bottom of each side, not one between them.
+    bandLf += g.len * g.faces;
     var bandLen = (g.len % 12 === 0 && g.len % 10 !== 0) ? 12 : 10;
     var bandSku = bandLen === 12 ? 'PT261260CCA' : 'PT261060CCA';
-    bb[bandSku] = (bb[bandSku] || 0) + Math.ceil(g.len / bandLen);
+    bb[bandSku] = (bb[bandSku] || 0) + Math.ceil(g.len / bandLen) * g.faces;
   });
   Object.keys(bb).sort().forEach(function(sku) {
     items.push({ category:'Yard', description:'Divider Wall Bottom Band (PT)', sku:sku,
-      quantity: bb[sku], detail: nClad + ' sheeted  |  ' + Math.round(bandLf) + ' lf' });
+      quantity: bb[sku], detail: nClad + ' sheeted  |  ' + facesTxt + '  |  '
+              + Math.round(bandLf) + ' lf' });
   });
 
   // ── Posts ──────────────────────────────────────────────────────────────────
@@ -44543,9 +44610,16 @@ window.SauceMaterials.calcDividerWalls = function(Q, WALLS, sf) {
     var mType = (document.getElementById('st_wallMetal') || {}).value || 'Tuff-Rib 29ga';
     var mPrefix = (typeof getColoredSkuPrefix === 'function')
                 ? getColoredSkuPrefix(mType, 'wall') : ('T9' + wallCode);
+    // Priced by the linear foot, like every other metal line, and the price
+    // engine reads the panel length off metalLength as a formatted string.
+    // Carrying it as "length" instead billed 140 panels at the per-foot rate
+    // rather than 140 x 10ft, which came out a tenth of the real figure.
+    var _pf = Math.floor(wallH + 1e-6), _pi2 = Math.round((wallH - _pf) * 12);
+    if (_pi2 === 12) { _pf += 1; _pi2 = 0; }
+    var panelLenTxt = _pf + "'" + (_pi2 ? ' ' + _pi2 + '"' : '');
     items.push({ category:'Sidewall Metal', description:'Divider Wall Metal',
-      sku: mPrefix, quantity: mQty, length: wallH,
-      detail: runTxt + '  |  ' + facesTxt + '  |  ' + wallH + "' panels" });
+      sku: mPrefix, quantity: mQty, metalLength: panelLenTxt,
+      detail: runTxt + '  |  ' + facesTxt + "  |  3' wide panels" });
 
     // ── J-channel, top and bottom of each clad face ──────────────────────────
     var jcLf  = cladLf * 2;
@@ -45621,7 +45695,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     // Hardware — minimal set
     SM.calcOutsideSolidClosure(Q, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcInsulation(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
-    SM.calcMetalScrews(Q, WALLS, shedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcMetalScrews(Q, WALLS, shedCfgs, sf).forEach(function(item) { items.push(item); });
     SM.calcAwnings().forEach(function(item) { items.push(item); });
     SM.calcGutters(Q, shedCfgs).forEach(function(item) { items.push(item); });
     SM.calcWidowsPeak(forcedType).forEach(function(item) { items.push(item); });
@@ -45783,7 +45857,7 @@ window.SauceMaterials.calculate = function(forcedType) {
     SM.calcOutsideSolidClosure(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcHurricaneBrackets(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcJoistHangers(sfQ, sfShedCfgs).forEach(function(item) { items.push(item); });
-    SM.calcMetalScrews(sfQ, WALLS, sfShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcMetalScrews(sfQ, WALLS, sfShedCfgs, sf).forEach(function(item) { items.push(item); });
     // Roofing sealant same as Wood OH
     items.push({ category:'Hardware', description:'Roofing Sealant', sku:'RS00', quantity:1, detail:'1 per quote' });
 
@@ -45909,7 +45983,7 @@ window.SauceMaterials.calculate = function(forcedType) {
 
     // ── Hardware ──
     SM.calcHurricaneBrackets(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
-    SM.calcMetalScrews(bbQ, WALLS, bbShedCfgs).forEach(function(item) { items.push(item); });
+    SM.calcMetalScrews(bbQ, WALLS, bbShedCfgs, sf).forEach(function(item) { items.push(item); });
     SM.calcAwnings().forEach(function(item) { items.push(item); });
     SM.calcGutters(bbQ, bbShedCfgs).forEach(function(item) { items.push(item); });
     SM.calcWidowsPeak(forcedType).forEach(function(item) { items.push(item); });
