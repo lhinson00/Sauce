@@ -25310,7 +25310,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M80-1116';
+window.SAUCE_BUILD = 'M81-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -31605,7 +31605,14 @@ window._bjAt = function(e, id) {
   return { x: (e.clientX - r.left) * (cv.width / r.width),
            y: (e.clientY - r.top)  * (cv.height / r.height), cv: cv };
 };
-window._bjSnap = function(ft) { return Math.round(ft * 2) / 2; };   // 6 inches
+window._bjSnap = function(ft) { return Math.round(ft * 12) / 12; };   // 1 inch
+// Feet and inches, for the readouts.
+window.bjFtIn = function(v) {
+  var neg = v < 0; v = Math.abs(v);
+  var f = Math.floor(v + 1e-6), i = Math.round((v - f) * 12);
+  if (i === 12) { f++; i = 0; }
+  return (neg ? '-' : '') + f + "'-" + i + '"';
+};
 
 // ── Interaction on the detail strip ─────────────────────────────────────────
 // Doors sit in a band above the wall line and are dragged along it. Posts sit
@@ -31623,7 +31630,22 @@ window._bjDown = function(e) {
     });
     if (hitD) {
       U.drag = { kind: 'door', id: hitD.id, grab: g.ft(p.x) - (hitD.offset || 0) };
-      U.selDoor = hitD.id;
+      U.selDoor = hitD.id; U.selJoist = null;
+      window.bjDraw();
+      return;
+    }
+  }
+
+  // Bar joists sit in a band below the wall.
+  if (p.y > g.y + 14 && p.y < g.y + 40) {
+    var hitJ = null;
+    (window._barjoists || []).forEach(function(bj, i) {
+      if (bj.wall !== U.wall || bj.startFt == null) return;
+      if (p.x >= g.X(bj.startFt) - 3 && p.x <= g.X(bj.endFt) + 3) hitJ = i;
+    });
+    if (hitJ !== null) {
+      U.selJoist = (U.selJoist === hitJ) ? null : hitJ;
+      U.selDoor = null;
       window.bjDraw();
       return;
     }
@@ -31635,7 +31657,7 @@ window._bjDown = function(e) {
     if (d < best && Math.abs(p.y - g.y) < 24) { best = d; hit = q; }
   });
   if (hit) {
-    U.selDoor = null;
+    U.selDoor = null; U.selJoist = null;
     var already = U.sel.some(function(f) { return Math.abs(f - hit.ft) < 0.01; });
     if (already) U.sel = U.sel.filter(function(f) { return Math.abs(f - hit.ft) >= 0.01; });
     else U.sel.push(hit.ft);
@@ -31853,12 +31875,14 @@ window.bjOpenLayout = function(wallId) {
     +     '<button onclick="bjClearDoorways()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(239,68,68,.5);background:rgba(239,68,68,.16);color:#f87171;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Delete Posts in Doorways</button>'
     +     '<button onclick="bjDeleteSelected()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#cbd5e1;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Delete Selected</button>'
     +     '<button onclick="bjAddSpan()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(var(--gold-rgb),.5);background:rgba(var(--gold-rgb),.14);color:var(--gold);font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Bar Joist Between</button>'
+    +     '<button onclick="bjClearJoists()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(239,68,68,.4);background:transparent;color:#f87171;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Clear Bar Joists</button>'
     +     '<button onclick="bjResetWall()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#94a3b8;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Back to Automatic</button>'
     +     '<span style="width:1px;height:22px;background:rgba(255,255,255,.12);"></span>'
     +     '<button onclick="bjDiscard()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#94a3b8;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Discard Changes</button>'
     +     '<button onclick="bjSave()" style="padding:7px 16px;border-radius:7px;border:1px solid rgba(74,222,128,.5);background:rgba(74,222,128,.16);color:#4ade80;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Save Layout</button>'
-    +     '<div style="font-size:10px;color:#6b7280;margin-left:auto;text-align:right;">Drag a door to slide it &middot; click a post to select &middot; drag a post to move<br>click the wall line to add a post &middot; everything snaps to 6&quot;</div>'
+    +     '<div style="font-size:10px;color:#6b7280;margin-left:auto;text-align:right;">Drag a door to slide it &middot; click a post to select &middot; drag a post to move<br>click a bar joist to select it &middot; everything snaps to 1&quot;</div>'
     +   '</div>'
+    +   '<div id="bjSelBar" style="margin-bottom:10px;"></div>'
     +   '<div id="bjSpanList" style="margin-bottom:10px;"></div>'
     +   '<div id="bjWarn"></div>'
     + '</div>';
@@ -31873,6 +31897,61 @@ window.bjOpenLayout = function(wallId) {
   window.bjSnapshot();
   window.bjDraw();
 };
+// Move the selected door by a whole number of inches.
+window.bjNudgeDoor = function(inches) {
+  var U = window._bjUI;
+  var d = (window._allDoors || []).find(function(x) { return x.id === U.selDoor; });
+  if (!d) return;
+  var len = window.bjWallLen(U.wall);
+  var to = Math.round(((d.offset || 0) + inches / 12) * 12) / 12;
+  d.offset = Math.max(0, Math.min(len - d.w, to));
+  try { renderGarageDoors(); } catch(e) {}
+  try { renderWalkDoors(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  window.bjDraw();
+};
+// Accepts 14.83, 14'10", 14-10 or 14 10.
+window.bjSetDoorOffset = function(txt) {
+  var U = window._bjUI;
+  var d = (window._allDoors || []).find(function(x) { return x.id === U.selDoor; });
+  if (!d) return;
+  var t = String(txt).trim();
+  var m = t.match(/^(-?\d+(?:\.\d+)?)\s*(?:'|ft|feet)?\s*[-\s]?\s*(\d+(?:\.\d+)?)?\s*(?:"|in|inch(?:es)?)?$/i);
+  var ft = null;
+  if (m) ft = parseFloat(m[1]) + (m[2] ? parseFloat(m[2]) / 12 : 0);
+  if (ft === null || !isFinite(ft)) return;
+  var len = window.bjWallLen(U.wall);
+  d.offset = Math.max(0, Math.min(len - d.w, Math.round(ft * 12) / 12));
+  try { renderGarageDoors(); } catch(e) {}
+  try { renderWalkDoors(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  window.bjDraw();
+};
+
+// 3. Bar joists are selectable on the diagram and removable from there, so a
+//    joist dropped on the wrong pair of posts is one click to undo.
+window.bjDeleteSelJoist = function() {
+  var U = window._bjUI;
+  if (U.selJoist == null) { alert('Click a bar joist on the diagram first.'); return; }
+  (window._barjoists || []).splice(U.selJoist, 1);
+  U.selJoist = null;
+  try { renderBarjoists(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  window.bjDraw();
+};
+window.bjClearJoists = function() {
+  var U = window._bjUI;
+  var n = (window._barjoists || []).filter(function(b) { return b.wall === U.wall; }).length;
+  if (!n) { alert('No bar joists on this wall.'); return; }
+  if (!confirm('Remove all ' + n + ' bar joist' + (n > 1 ? 's' : '') + ' on the '
+               + window.bjWallLabel(U.wall) + '?')) return;
+  window._barjoists = (window._barjoists || []).filter(function(b) { return b.wall !== U.wall; });
+  U.selJoist = null;
+  try { renderBarjoists(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  window.bjDraw();
+};
+
 window.bjSetSpacing = function(ft) {
   ft = parseInt(ft, 10);
   Q.postSpacing = ft; Q.eavePS = ft;
@@ -32056,7 +32135,7 @@ window.bjDraw = function() {
     ctx.fillStyle = '#e2e8f0'; ctx.font = 'bold 11px Outfit, sans-serif'; ctx.textAlign = 'center';
     ctx.fillText(d.w + 'x' + d.h, (g.X(a) + g.X(b)) / 2, g.y - 27);
     ctx.fillStyle = '#94a3b8'; ctx.font = '9px Outfit, sans-serif';
-    ctx.fillText(a + "' to " + Math.round(b*100)/100 + "'", (g.X(a) + g.X(b)) / 2, g.y - 14);
+    ctx.fillText(window.bjFtIn(a) + ' to ' + window.bjFtIn(b), (g.X(a) + g.X(b)) / 2, g.y - 14);
     // grip
     ctx.fillStyle = sel ? '#fbbf24' : 'rgba(255,255,255,.28)';
     for (var k = -1; k <= 1; k++) ctx.fillRect((g.X(a)+g.X(b))/2 + k*4 - 1, g.y - 40, 2, 6);
@@ -32066,7 +32145,9 @@ window.bjDraw = function() {
   joists.forEach(function(b) {
     if (b.startFt == null || b.endFt == null) return;
     var y = g.y + 26;
-    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 6; ctx.lineCap = 'butt';
+    var jSel = (window._barjoists || [])[U.selJoist] === b;
+    ctx.strokeStyle = jSel ? '#ffffff' : '#fbbf24';
+    ctx.lineWidth = jSel ? 9 : 6; ctx.lineCap = 'butt';
     ctx.beginPath(); ctx.moveTo(g.X(b.startFt), y); ctx.lineTo(g.X(b.endFt), y); ctx.stroke();
     ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 9px Outfit, sans-serif'; ctx.textAlign = 'center';
     ctx.fillText(b.sku, (g.X(b.startFt) + g.X(b.endFt)) / 2, y + 16);
@@ -32146,6 +32227,56 @@ window.bjDraw = function() {
     }).join('');
   }
 
+  var selBar = document.getElementById('bjSelBar');
+  if (selBar) {
+    var selD = (window._allDoors || []).find(function(x) { return x.id === U.selDoor; });
+    var selJ = (U.selJoist != null) ? (window._barjoists || [])[U.selJoist] : null;
+    var btn = function(lbl, fn, wide) {
+      return '<button onclick="' + fn + '" style="padding:5px ' + (wide ? '10' : '9')
+        + 'px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.04);'
+        + 'color:#cbd5e1;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">'
+        + lbl + '</button>';
+    };
+    if (selD) {
+      var end = (selD.offset || 0) + selD.w;
+      selBar.innerHTML =
+        '<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:9px 12px;'
+      +   'border-radius:8px;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);">'
+      +   '<span style="font-size:11px;font-weight:800;color:#4ade80;">'
+      +     selD.w + 'x' + selD.h + ' ' + (selD.type === 'garage' ? 'garage door' : 'door') + '</span>'
+      +   '<span style="font-size:11px;color:#8a93a6;">' + window.bjFtIn(selD.offset || 0)
+      +     ' to ' + window.bjFtIn(end) + '</span>'
+      +   btn('&laquo; 1\'', 'bjNudgeDoor(-12)') + btn('&lsaquo; 1&quot;', 'bjNudgeDoor(-1)')
+      +   btn('1&quot; &rsaquo;', 'bjNudgeDoor(1)') + btn('1\' &raquo;', 'bjNudgeDoor(12)')
+      +   '<span style="font-size:10px;color:#6b7280;margin-left:4px;">from the left corner</span>'
+      +   '<input id="bjDoorOff" value="' + window.bjFtIn(selD.offset || 0) + '" '
+      +     'onchange="bjSetDoorOffset(this.value)" '
+      +     'onkeydown="if(event.key===\'Enter\'){bjSetDoorOffset(this.value);this.blur();}" '
+      +     'style="width:86px;padding:5px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.18);'
+      +     'background:#111827;color:#e2e8f0;font-family:Outfit,sans-serif;font-size:11px;font-weight:700;text-align:center;">'
+      +   '<button onclick="window._bjUI.selDoor=null;bjDraw()" style="margin-left:auto;background:none;border:none;color:#6b7280;font-size:14px;cursor:pointer;">&#10005;</button>'
+      + '</div>';
+    } else if (selJ) {
+      var spn = window.barjoistSpec(selJ.sku);
+      selBar.innerHTML =
+        '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:9px 12px;'
+      +   'border-radius:8px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.32);">'
+      +   '<span style="font-size:11px;font-weight:800;color:#fbbf24;">' + selJ.sku + '</span>'
+      +   '<span style="font-size:11px;color:#8a93a6;">' + window.bjFtIn(selJ.startFt)
+      +     ' to ' + window.bjFtIn(selJ.endFt) + '  ('
+      +     (Math.round(((selJ.endFt||0)-(selJ.startFt||0))*100)/100) + "')"
+      +     (spn ? '  \u00b7  ' + spn.span + "' stock, bears on " + spn.bearing : '') + '</span>'
+      +   '<button onclick="bjDeleteSelJoist()" style="margin-left:auto;padding:5px 12px;border-radius:6px;'
+      +     'border:1px solid rgba(239,68,68,.5);background:rgba(239,68,68,.16);color:#f87171;'
+      +     'font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Delete Bar Joist</button>'
+      +   '<button onclick="window._bjUI.selJoist=null;bjDraw()" style="background:none;border:none;color:#6b7280;font-size:14px;cursor:pointer;">&#10005;</button>'
+      + '</div>';
+    } else {
+      selBar.innerHTML = '<div style="font-size:10px;color:#6b7280;">'
+        + 'Click a door to nudge it by the inch, or a bar joist to remove it.</div>';
+    }
+  }
+
   var psEl = document.getElementById('bjPs');
   if (psEl) {
     psEl.innerHTML = [8,10,12,14,16,20].map(function(v) {
@@ -32171,8 +32302,8 @@ window.bjDraw = function() {
             }).join('');
             return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:11px;">'
               + '<select onchange="bjSetSpanSku(' + r.i + ',this.value)" style="padding:5px 7px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:#111827;color:#e2e8f0;font-family:Outfit,sans-serif;font-size:11px;font-weight:700;">' + opts + '</select>'
-              + '<span style="color:#8a93a6;">' + r.b.startFt + "' to " + r.b.endFt + "' ("
-              + (Math.round(((r.b.endFt||0)-(r.b.startFt||0))*100)/100) + "')</span>"
+              + '<span style="color:#8a93a6;">' + window.bjFtIn(r.b.startFt) + ' to ' + window.bjFtIn(r.b.endFt)
+              + '  (' + (Math.round(((r.b.endFt||0)-(r.b.startFt||0))*100)/100) + "')</span>"
               + '<label style="display:flex;align-items:center;gap:4px;color:#94a3b8;font-size:10px;font-weight:700;cursor:pointer;">'
               + '<input type="checkbox"' + (r.b.removePost ? ' checked' : '') + ' onchange="setBarjoist(' + r.i + ',\'removePost\',this.checked);bjDraw()" style="accent-color:var(--gold);">-Post</label>'
               + '<button onclick="bjDeleteSpan(' + r.i + ')" style="margin-left:auto;padding:4px 9px;border-radius:5px;border:none;background:rgba(239,68,68,.16);color:#f87171;font-size:10px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Remove</button>'
