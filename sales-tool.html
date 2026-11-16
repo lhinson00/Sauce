@@ -2935,6 +2935,67 @@ window._importWall = function(w, fallback) {
   return window._IMPORT_WALL_MAP[k] || fallback || null;
 };
 
+// The instructions that used to live in the Apps Script deployment. They are
+// built here now so the import runs on the same Supabase function everything
+// else uses. The field names and value sets below must stay in step with
+// _applyFieldsInner — that is the only consumer of this JSON.
+window._buildPdfImportPrompt = function(pdfText, haveElev) {
+  var colors = Object.keys(window.COLOR_HEX || {}).join(', ');
+  var P = [];
+  P.push('You are reading a metal building quote and turning it into JSON for a configurator.');
+  P.push('');
+  P.push('Return ONE JSON object and nothing else. No prose, no code fences.');
+  P.push('Omit any key you cannot determine. Never guess a price. Never invent a dimension.');
+  P.push('');
+  P.push('KEYS (omit what is not in the document):');
+  P.push('  custName, custPhone, custEmail, custAddress   strings');
+  P.push('  width, length, height                          numbers, feet');
+  P.push('  pitch                                          one of 4, 6, 8, 10 (the rise of x/12)');
+  P.push('  truss                                          "Wood" | "Steel" | "Stud" | "Cypress" | "MetalBB"');
+  P.push('  soffit                                         true/false');
+  P.push('  trussSpacing                                   "5" | "4" | "2"');
+  P.push('  eavePS                                         post spacing in feet, a number');
+  P.push('  postsOnTop                                     true if posts sit on concrete, false if in-ground');
+  P.push('  roofMetal, wallMetal                           roof: "Tuff-Rib 29ga" | "Tuff-Rib 26ga" | "PBR 26ga" | "Standing Seam 26ga"');
+  P.push('                                                 wall: "Tuff-Rib 29ga" | "Tuff-Rib 26ga" | "PBR 26ga" | "Board & Batten 26ga"');
+  P.push('  roofColor, wallColor, trimColor, wainscotColor one of: ' + colors);
+  P.push('  wainscot, standingSeam                         true/false');
+  P.push('  insulation                                     "None" | "Double Bubble Foil" | "Double Bubble White" | "Therma Guard" | "2 Vinyl Back" | "3 Vinyl Back" | "Solar Eclipse"');
+  P.push('  insulRoof, insulWalls                          true/false — which surfaces are insulated');
+  P.push('  concrete                                       "4" or "6" (slab thickness in inches); omit if no slab');
+  P.push('  concretePSI, concreteRebar, concreteWire, concreteFooters, concreteMetalLedge, concreteStamped');
+  P.push('  gutters (true/false), gutterType               "Standard" | "Copper Metallic" | "Real Copper" | "Galvalume"');
+  P.push('  farmTax, materialOnly, craneFee, esd, postProtectors, postWraps   true/false');
+  P.push('  cupolaSize (24|30|36|48), cupolaQty            numbers');
+  P.push('  enclosure   { "front":"enclosed"|"open", "back":..., "left":..., "right":... }');
+  P.push('  garageDoors [ { wall, qty, w, h, insulated, fullView, color, placement } ]');
+  P.push('  barnDoors   [ { wall, qty, w, h, split, color, placement } ]');
+  P.push('  walkDoors   [ { wall, qty, type } ]            type: "solid" | "half-glass" | "french"');
+  P.push('  windows     [ { wall, qty, type, grids, frameColor } ]  type is a code like VW33, VW34, VW36');
+  P.push('  sheds       [ { wall, w, l, encl, ltPitch, dropFt } ]   encl: "roofonly" | "enclosed"');
+  P.push('');
+  P.push('WALLS. Every wall value is one of: "front", "back", "left", "right".');
+  P.push('  front = the front gable end (lettered A)   back = the back gable end (lettered C)');
+  P.push('  left  = the left eave side  (lettered B)   right = the right eave side (lettered D)');
+  P.push('  Use the letter only if the document gives no plainer name.');
+  P.push('  If a door or window is listed with no wall at all, omit the wall key for it');
+  P.push('  rather than guessing — the tool will let the salesman place it.');
+  P.push('  placement: "center" for a single centered opening, "spaced" to spread evenly.');
+  if (haveElev) {
+    P.push('');
+    P.push('An image accompanies this text: a 2x2 grid of perspective renders of the');
+    P.push('building, each quadrant overlaid in red with the wall it shows —');
+    P.push('TOP-LEFT FRONT GABLE (A), TOP-RIGHT LEFT EAVE (B),');
+    P.push('BOTTOM-LEFT BACK GABLE (C), BOTTOM-RIGHT RIGHT EAVE (D).');
+    P.push('Trust those red overlays over any other cue for deciding which wall an');
+    P.push('opening sits on. A render showing a blank wall means no opening on it.');
+  }
+  P.push('');
+  P.push('QUOTE TEXT:');
+  P.push(String(pdfText || '').slice(0, 14000));
+  return P.join('\n');
+};
+
 var cfgTruss = 'Wood';
 var currentFrameType = 'post';
 var rrx = null;
@@ -6064,38 +6125,49 @@ async function importCompetitorPDF(input) {
 
     // Route through GAS (required — browser can't call api.anthropic.com directly due to CORS)
     // Text-only payload is ~5KB vs ~500KB for base64 PDF — eliminates overload errors
+    // This used to post to Apps Script. That deployment is gone - SAUCE_ENDPOINTS.gas
+    // is empty, so the request went to the page itself, got the tool's own HTML back,
+    // failed to parse as JSON, and reported "Parse failed" for every PDF ever tried.
+    // It now runs on the same Supabase function the rest of the tool uses.
+    //
+    // The function's shape is not assumed. The richest payload is tried first and each
+    // fallback drops what a simpler function would not understand, so the import works
+    // whether or not the server can take images. The last shape is the one the function
+    // is known to accept, so it is the only one worth retrying.
+    var _prompt = window._buildPdfImportPrompt(pdfText, !!elevImg);
+    var _imgs = [];
+    if (elevImg) _imgs.push(elevImg);
+    if (planImg) _imgs.push(planImg);
+    var _shapes = [
+      { action:'parsePdfText', pdfText: pdfText.slice(0, 14000),
+        planImage: planImg, elevationImage: elevImg,
+        prompt: _prompt, maxTokens: 4000 },
+      { action:'parse', prompt: _prompt, images: _imgs, maxTokens: 4000 },
+      { action:'parse', prompt: _prompt, maxTokens: 4000 }
+    ];
+
     var data = null;
     var lastErr = '';
-    for (var _attempt = 0; _attempt < 3; _attempt++) {
-      if (_attempt > 0) {
-        btn.textContent = '⏳ Retrying (' + _attempt + '/2)...';
-        await new Promise(function(r){ setTimeout(r, _attempt * 3000); });
-      }
-      var resp = await fetchWithTimeout(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ action: 'parsePdfText', token: getToken(), pdfText: pdfText.slice(0, 8000), planImage: planImg, elevationImage: elevImg, elevationLegend: 'A=front gable, B=left eave, C=back gable, D=right eave. The elevation image is a 2x2 grid of perspective renders and their POSITION identifies the wall — TOP-LEFT=A=front gable, TOP-RIGHT=B=left eave, BOTTOM-LEFT=C=back gable, BOTTOM-RIGHT=D=right eave. Each quadrant has been overlaid with its wall name in red; trust that overlay over any other cue' })
-      }, 45000);
-      data = await safeJson(resp);
-      if (data.success) break;
-      // Session rejections go through the SAME guard as every other GAS call. This path
-      // used to throw the raw error straight to the banner, which is why an import was
-      // the one action that could tell a salesman to log in again mid-quote while his
-      // client-side session was still perfectly valid.
-      if (data && (data.sessionExpired || /session/i.test(data.error || ''))) {
-        if (!checkTokenResponse(data)) {
-          // Client login still good -> server-side token blip, not a real expiry.
-          lastErr = 'Server session hiccup while parsing. Retrying...';
-          continue;
+    var _usedShape = -1;
+    for (var _si = 0; _si < _shapes.length && _usedShape < 0; _si++) {
+      var _tries = (_si === _shapes.length - 1) ? 3 : 1;
+      for (var _attempt = 0; _attempt < _tries; _attempt++) {
+        if (_attempt > 0) {
+          btn.textContent = '⏳ Retrying (' + _attempt + '/2)...';
+          await new Promise(function(r){ setTimeout(r, _attempt * 3000); });
         }
-        lastErr = 'Session expired \u2014 please log in again.';
-        break;
+        data = await sbFunction('tool-services', _shapes[_si], 90000);
+        if (data && data.success && data.result) { _usedShape = _si; break; }
+        lastErr = (data && data.error) || 'Parse failed';
+        // Overload is the one error worth sitting out. Anything else means this
+        // shape is wrong, so move to the next rather than burn the clock on it.
+        if (lastErr.toLowerCase().indexOf('overload') === -1 &&
+            lastErr.toLowerCase().indexOf('529') === -1) break;
       }
-      lastErr = data.error || 'Parse failed';
-      if (lastErr.toLowerCase().indexOf('overload') === -1 &&
-          lastErr.toLowerCase().indexOf('529') === -1) break;
     }
     if (!data || !data.success) throw new Error(lastErr || 'Parse failed');
+    console.log('[Import] parsed via tool-services, shape ' + _usedShape +
+                (_usedShape === 2 ? ' (text only - openings rely on the quote wording)' : ''));
     var raw = data.result || '';
     console.log('[Import] Claude returned:', raw);
     raw = raw.replace(/```json|```/g,'').trim();
@@ -12186,13 +12258,11 @@ async function applyVoiceChunk(chunk, overlay, statusEl, micBtn, onDone) {
   var prompt = window._buildVoicePromptFn(chunk, colorList);
 
   try {
-    var _vj = await sbFunction('tool-services', { action: 'parse', prompt: prompt, maxTokens: 1500 }, 60000);
-    var resp = { json: function() { return Promise.resolve(_vj); } };
-    if (!resp.ok) throw new Error('Server ' + resp.status);
-    var txt = await resp.text();
-    var data;
-    try { data = JSON.parse(txt); } catch(e) { throw new Error('Bad server response'); }
-    if (!data.success) throw new Error(data.error || 'GAS error — check deployment');
+    // sbFunction returns the parsed object already. The lines that used to sit
+    // here still treated it as a raw fetch Response, so resp.ok was undefined and
+    // every attempt threw "Server undefined" before the answer was ever read.
+    var data = await sbFunction('tool-services', { action: 'parse', prompt: prompt, maxTokens: 1500 }, 60000);
+    if (!data || !data.success) throw new Error((data && data.error) || 'Parse failed');
     var raw = (data.result || '').replace(/```json|```/g, '').trim();
     // If Claude returned conversational text instead of JSON, extract just the name/phone if present
     var parsed;
@@ -25010,7 +25080,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M74-1116';
+window.SAUCE_BUILD = 'M75-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
