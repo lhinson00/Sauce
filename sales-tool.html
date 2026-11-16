@@ -7867,6 +7867,12 @@ window.SauceParts = window.SauceParts || (function(){
     { key:'plate',  re:/\bplate(s)?\b/i,             groups:['framing'], label:'plates' },
     { key:'gableTruss', re:/gable\s*(end\s*)?truss|gable\s*ext[^|]*gable\s*truss/i, groups:['trusses'], label:'gable trusses' },
     { key:'truss',  re:/truss/i,                     groups:['trusses'], label:'trusses' },
+    // Walk door posts are field located, so there is no post in the model to
+    // light. What a salesman needs to see is WHICH doors they belong to, so
+    // this lights the walk doors themselves. It must sit above the general door
+    // rule, which otherwise claims the line and lights every garage door.
+    { key:'walkDoorPost', re:/walk\s*door\s*post|\bPT4610\b/i,
+      groups:['doors'], role:'walkDoor', label:'walk doors' },
     { key:'door',    re:/garage\s*door|barn\s*door|walk\s*door|drum\s*door|overhead\s*door/i,
       groups:['doors'], label:'doors' },
     { key:'footingPad', re:/footing\s*pad|\bpad(s)?\b/i, groups:['posts','mainPosts'], label:'footing pads' },
@@ -8421,7 +8427,12 @@ window.SauceParts = window.SauceParts || (function(){
     // whole; members long enough to be cut from it are marked board by board. A
     // member that is neither is a different line's board and stays dark, so four
     // 22' gable posts light and the 12' ones beside them do not.
-    var L = entry.panel ? entry.panel : skuLen(item && item.sku, entry.key);
+    // A field-located line has no member in the model to measure. Lighting the
+    // walk doors is showing WHERE the posts go, so the board-length match is
+    // skipped — PT4610 reads as a 10' board and nothing on a door is 10' long,
+    // which reported "no 10' board is drawn" and lit nothing.
+    var L = entry.panel ? entry.panel
+          : (entry.key === 'walkDoorPost' ? null : skuLen(item && item.sku, entry.key));
     var sc1 = window._spSc || 0.1;
     var want = (item && parseFloat(item.quantity)) || 0;
     var lens = {}, shown = 0, lit = 0, segMode = false, noneOfLen = false;
@@ -16173,6 +16184,10 @@ function applyVoiceQuote(parsed, overlay) {
         // === WALK DOORS (3D rendering) ===
         // mWalkDoor is per-door now (see below); keep placeholder for Dutch door fallback
         const mDutchDoor = new THREE.MeshBasicMaterial({ color: 0xd4a574, side: THREE.DoubleSide }); // warm wood tone
+        // Walk doors are tagged as they are built so the material list can light
+        // the walk doors alone. "Walk Door Posts (Field Located)" used to match
+        // the general door rule and light every garage door on the building.
+        var _wdTagFrom = grps.doors.children.length;
         if (window._walkDoorsFieldLocated === false) window._walkDoors.forEach(wd => {
             const isG = (wd.wall === 'front' || wd.wall === 'back');
             const wLen = isG ? Q.w : Q.l;
@@ -16381,6 +16396,12 @@ function applyVoiceQuote(parsed, overlay) {
                 grps.doors.add(dbMesh2);
             }
         });
+        for (var _wdK = _wdTagFrom; _wdK < grps.doors.children.length; _wdK++) {
+            var _wdO = grps.doors.children[_wdK];
+            if (!_wdO) continue;
+            _wdO.userData = _wdO.userData || {};
+            if (!_wdO.userData.sRole) _wdO.userData.sRole = 'walkDoor';
+        }
 
         // ═══════════════════════════════════════════════════════════
         //  RED IRON — clear-span rigid steel frame (2/12), 20'/25' bays
@@ -24798,8 +24819,27 @@ function generatePostLayout() {
     });
 
     var D=20;
-    function dimH(posts,wallY,dir){
-        var y=wallY+dir*D;
+    // A post-to-post chain tells a builder where to set the columns. It does not
+    // tell him where the openings go, so each wall carrying doors gets a second
+    // chain further out with the door edges folded in: corner to jamb, jamb to
+    // jamb, jamb to post, all the way along.
+    function _chainWith(wallId, posts, mirror) {
+        var pts = posts.map(function(p){ return p.ft; });
+        (allDoors||[]).filter(function(d){ return d.wall===wallId; }).forEach(function(d){
+            var a = d.offset||0, b = a + d.w;
+            pts.push(mirror ? (bw - b) : a);
+            pts.push(mirror ? (bw - a) : b);
+        });
+        var seen={}, out=[];
+        pts.forEach(function(f){
+            var k = Math.round(f*100)/100;
+            if (seen[k]) return; seen[k]=1; out.push({ ft:k, jamb:false });
+        });
+        out.sort(function(x,y){ return x.ft-y.ft; });
+        return out;
+    }
+    function dimH(posts,wallY,dir,off){
+        var y=wallY+dir*(off||D);
         doc.setLineWidth(0.3);doc.setDrawColor(0);
         if(posts.length>1)doc.line(TX(posts[0].ft*12),y,TX(posts[posts.length-1].ft*12),y);
         for(var i=0;i<posts.length;i++){var px=TX(posts[i].ft*12);doc.setLineWidth(0.4);doc.line(px,y-2,px,y+2);}
@@ -24809,8 +24849,8 @@ function generatePostLayout() {
             doc.text(F((posts[i+1].ft-posts[i].ft)*12),(x1+x2)/2,y+dir*(-7),{align:'center'});
         }
     }
-    function dimV(posts,wallX,dir){
-        var x=wallX+dir*D;
+    function dimV(posts,wallX,dir,off){
+        var x=wallX+dir*(off||D);
         doc.setLineWidth(0.3);doc.setDrawColor(0);
         if(posts.length>1)doc.line(x,TY(posts[0].ft*12),x,TY(posts[posts.length-1].ft*12));
         for(var i=0;i<posts.length;i++){var py=TY(posts[i].ft*12);doc.setLineWidth(0.4);doc.line(x-2,py,x+2,py);}
@@ -24821,10 +24861,20 @@ function generatePostLayout() {
             else doc.text(F((posts[i+1].ft-posts[i].ft)*12),x+5,(y1+y2)/2,{align:'center',angle:270});
         }
     }
+    var D2 = D + 18;
     if(wp.left.length>1)dimH(wp.left,TY(bwIn),1);
     if(wp.right.length>1)dimH(wp.right,TY(0),-1);
     if(wp.front.length>1)dimV(wp.front.map(function(p){return{ft:bw-p.ft,jamb:p.jamb};}).sort(function(a,b){return a.ft-b.ft;}),TX(0),-1);
     if(wp.back.length>1)dimV(wp.back.map(function(p){return{ft:bw-p.ft,jamb:p.jamb};}).sort(function(a,b){return a.ft-b.ft;}),TX(blIn),1);
+    // Opening chains, one row further out, only where a wall actually has doors.
+    (function(){
+        var cl = _chainWith('left',  wp.left,  false); if (cl.length > wp.left.length)  dimH(cl, TY(bwIn), 1, D2);
+        var cr = _chainWith('right', wp.right, false); if (cr.length > wp.right.length) dimH(cr, TY(0),   -1, D2);
+        var fB = wp.front.map(function(p){return{ft:bw-p.ft,jamb:p.jamb};}).sort(function(a,b){return a.ft-b.ft;});
+        var cf = _chainWith('front', fB, true);  if (cf.length > fB.length) dimV(cf, TX(0),    -1, D2);
+        var bB = wp.back.map(function(p){return{ft:bw-p.ft,jamb:p.jamb};}).sort(function(a,b){return a.ft-b.ft;});
+        var cb = _chainWith('back',  bB, true);  if (cb.length > bB.length) dimV(cb, TX(blIn),  1, D2);
+    })();
     shedDims.forEach(function(d){if(d.posts.length>1){if(d.kind==='H')dimH(d.posts,TY(d.coord),d.dir);else dimV(d.posts,TX(d.coord),d.dir);}});
 
     var lgY=PH-MG+2;
@@ -25381,7 +25431,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M86-1116';
+window.SAUCE_BUILD = 'M88-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -31663,7 +31713,7 @@ window.bjWarnings = function() {
 // The detail strip: one wall drawn end to end.
 window._bjGeo = function(cv) {
   var wLen = window.bjWallLen(window._bjUI.wall) || 1;
-  var padL = 52, padR = 52, y = 108;
+  var padL = 52, padR = 52, y = 120;
   var sc = (cv.width - padL - padR) / wLen;
   return { wLen: wLen, padL: padL, y: y, sc: sc,
            X: function(ft) { return padL + ft * sc; },
@@ -31949,7 +31999,7 @@ window.bjOpenLayout = function(wallId) {
     +         '<div id="bjPs" style="display:flex;gap:4px;"></div>'
     +       '</div>'
     +     '</div>'
-    +     '<canvas id="bjCanvas" width="1100" height="200" style="width:100%;background:#070b14;'
+    +     '<canvas id="bjCanvas" width="1100" height="216" style="width:100%;background:#070b14;'
     +       'border:1px solid rgba(255,255,255,.08);border-radius:10px;cursor:pointer;display:block;"></canvas>'
     +   '</div>'
     +   '<div style="display:flex;gap:7px;margin:10px 0;flex-wrap:wrap;align-items:center;">'
@@ -32521,7 +32571,7 @@ window.bjDraw = function() {
   // spacing before any door is considered.
   ctx.strokeStyle = 'rgba(255,255,255,.07)'; ctx.lineWidth = 1;
   window.bjBaseGrid(U.wall).forEach(function(ft) {
-    ctx.beginPath(); ctx.moveTo(g.X(ft), 28); ctx.lineTo(g.X(ft), g.y + 54); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(g.X(ft), 20); ctx.lineTo(g.X(ft), g.y + 54); ctx.stroke();
   });
 
   // Wall line
@@ -32558,18 +32608,36 @@ window.bjDraw = function() {
     ctx.fillText(b.sku, (g.X(b.startFt) + g.X(b.endFt)) / 2, y + 16);
   });
 
-  // Bay dimensions
-  ctx.font = '10px Outfit, sans-serif'; ctx.textAlign = 'center';
-  for (var i = 1; i < posts.length; i++) {
-    var a2 = posts[i-1].ft, b2 = posts[i].ft, mid = (g.X(a2) + g.X(b2)) / 2;
-    var gap = Math.round((b2 - a2) * 100) / 100;
+  // Dimensions. Two chains, the way the builder's sheet reads them: post to post
+  // on the inner line, then every opening edge folded in on the outer line, so
+  // the distance from a corner to a jamb and from jamb to jamb is on the drawing
+  // and not left to be worked out from door positions.
+  function chain(pts, y, col, warnOver) {
     ctx.strokeStyle = 'rgba(255,255,255,.16)'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(g.X(a2), 58); ctx.lineTo(g.X(b2), 58); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(g.X(a2), 54); ctx.lineTo(g.X(a2), 62);
-    ctx.moveTo(g.X(b2), 54); ctx.lineTo(g.X(b2), 62); ctx.stroke();
-    ctx.fillStyle = gap > step + 0.01 ? '#fbbf24' : '#64748b';
-    ctx.fillText(gap + "'", mid, 50);
+    ctx.font = '10px Outfit, sans-serif'; ctx.textAlign = 'center';
+    for (var i = 1; i < pts.length; i++) {
+      var xa = g.X(pts[i-1]), xb = g.X(pts[i]);
+      ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(xa, y-4); ctx.lineTo(xa, y+4);
+      ctx.moveTo(xb, y-4); ctx.lineTo(xb, y+4); ctx.stroke();
+      var d = pts[i] - pts[i-1];
+      if (xb - xa < 16) continue;                       // too narrow to label
+      ctx.fillStyle = (warnOver && d > step + 0.01) ? '#fbbf24' : col;
+      ctx.fillText(window.bjFtIn(d), (xa + xb) / 2, y - 7);
+    }
   }
+  var postFt = posts.map(function(q) { return q.ft; });
+  chain(postFt, 62, '#64748b', true);
+
+  var openFt = postFt.slice();
+  doors.forEach(function(d) { openFt.push(d.offset || 0); openFt.push((d.offset || 0) + d.w); });
+  var _sn = {}, merged = [];
+  openFt.forEach(function(f) {
+    var k = Math.round(f * 100) / 100;
+    if (_sn[k]) return; _sn[k] = 1; merged.push(k);
+  });
+  merged.sort(function(a, b) { return a - b; });
+  if (merged.length > postFt.length) chain(merged, 30, '#94a3b8', false);
 
   // Posts
   posts.forEach(function(p) {
@@ -56068,6 +56136,12 @@ window.openMaterialsModal = function(initialTab) {
                 // overage and by corner and jack pieces, and seeing both is the point.
                 msg = r.count + ' × ' + r.boardFt + "' " + r.label + ' on ' + r.where;
                 if (r.billed) msg += '  —  list buys ' + r.billed;
+              } else if (r.key === 'walkDoorPost') {
+                // The doors are lit to show where the posts go, so the readout
+                // counts doors and names the posts. The measured lengths here
+                // are door heights, which mean nothing on this line.
+                msg = r.count + ' ' + r.label + ' on ' + r.where
+                    + (r.billed ? '  —  ' + r.billed + ' posts, field located' : '');
               } else {
                 msg = r.count + ' ' + r.label + ' on ' + r.where
                     + (r.lens ? '  —  ' + r.lens : '');
