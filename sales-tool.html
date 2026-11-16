@@ -25310,7 +25310,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M79-1116';
+window.SAUCE_BUILD = 'M80-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -31704,13 +31704,107 @@ window._bjPlanDown = function(e) {
            window.bjDraw(); }
 };
 
-// Replace a hand-set line with the grid at the CURRENT spacing. Used when the
-// salesman changes post spacing after having edited a wall: the stored line was
-// laid out for the old spacing and no longer means anything.
 window.bjRegrid = function(wallId) {
   wallId = wallId || window._bjUI.wall;
   window._bjUI.sel = [];
   window.bjCommit(wallId, window.bjBaseGrid(wallId));
+};
+
+// Changing post spacing throws away the layout for that wall and lays the new
+// grid down. A line drawn for 10' bays says nothing about a building on 12'
+// bays, and the salesman is changing spacing precisely to see that building —
+// so it resets rather than asking. The scratchpad below is what makes this
+// safe: nothing here is kept unless Save is pressed.
+window.bjSyncSpacing = function() {
+  if (window._bjSyncing) return false;
+  var changed = false;
+  (WALLS || []).forEach(function(w) {
+    if (!Array.isArray(w.postsManual) || w.postsManualPs == null) return;
+    var now = window.bjSpacing(w.id);
+    if (Math.abs(now - w.postsManualPs) < 0.01) return;
+    window._bjSyncing = true;
+    w.postsManual   = window.bjBaseGrid(w.id);
+    w.postsManualPs = now;
+    window._bjSyncing = false;
+    changed = true;
+  });
+  return changed;
+};
+
+// ── Scratchpad ──────────────────────────────────────────────────────────────
+// The editor works on the real building so the 3D model and the prices move
+// while the salesman tries layouts. What makes that safe to experiment in is
+// this snapshot, taken when the editor opens: Discard puts everything back
+// exactly as it was.
+window.bjSnapshot = function() {
+  window._bjUI.orig = {
+    walls: (WALLS || []).map(function(w) {
+      return { id: w.id,
+               pm: Array.isArray(w.postsManual) ? w.postsManual.slice() : null,
+               ps: (w.postsManualPs != null ? w.postsManualPs : null) };
+    }),
+    ps:     (Q.postSpacing || 10),
+    doors:  (window._allDoors || []).map(function(d) { return { id: d.id, offset: d.offset || 0 }; }),
+    joists: JSON.parse(JSON.stringify(window._barjoists || [])),
+    bjOn:   !!(document.getElementById('st_barjoist') || {}).checked
+  };
+};
+window.bjDirty = function() {
+  var o = window._bjUI.orig;
+  if (!o) return false;
+  var diff = false;
+  o.walls.forEach(function(r) {
+    var w = window.bjWall(r.id); if (!w) return;
+    var cur = Array.isArray(w.postsManual) ? w.postsManual.join(',') : '';
+    if (cur === (r.pm ? r.pm.join(',') : '')) return;
+    // A wall that was automatic and now sits on the plain grid has not been
+    // edited — that is just what changing the spacing left behind. Counting it
+    // meant merely looking at 12' asked to save on the way out.
+    if (!r.pm && Array.isArray(w.postsManual)
+        && w.postsManual.join(',') === window.bjBaseGrid(r.id).join(',')) return;
+    diff = true;
+  });
+  if (Math.abs((Q.postSpacing || 10) - o.ps) > 0.01) diff = true;
+  o.doors.forEach(function(r) {
+    var d = (window._allDoors || []).find(function(x) { return x.id === r.id; });
+    if (d && Math.abs((d.offset || 0) - r.offset) > 0.01) diff = true;
+  });
+  if (JSON.stringify(window._barjoists || []) !== JSON.stringify(o.joists)) diff = true;
+  return diff;
+};
+window.bjDiscard = function(quiet) {
+  var o = window._bjUI.orig;
+  if (!o) { window.bjCloseLayout(true); return; }
+  if (!quiet && window.bjDirty() &&
+      !confirm('Discard the layout changes and put this building back the way it was?')) return;
+  window._bjSyncing = true;
+  Q.postSpacing = o.ps; Q.eavePS = o.ps;
+  o.walls.forEach(function(r) {
+    var w = window.bjWall(r.id); if (!w) return;
+    w.postSpacing = o.ps;
+    if (r.pm) { w.postsManual = r.pm.slice(); w.postsManualPs = r.ps; }
+    else { delete w.postsManual; delete w.postsManualPs; }
+  });
+  window._bjSyncing = false;
+  try { buildPSChips(); } catch(e) {}
+  o.doors.forEach(function(r) {
+    var d = (window._allDoors || []).find(function(x) { return x.id === r.id; });
+    if (d) d.offset = r.offset;
+  });
+  window._barjoists = JSON.parse(JSON.stringify(o.joists));
+  var el = document.getElementById('st_barjoist');
+  if (el && el.checked !== o.bjOn) { el.checked = o.bjOn; try { toggleBarjoist(el); } catch(e) {} }
+  window._bjUI.sel = []; window._bjUI.selDoor = null;
+  try { renderBarjoists(); } catch(e) {}
+  try { renderGarageDoors(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  window.bjSnapshot();
+  window.bjDraw();
+};
+window.bjSave = function() {
+  window.bjSnapshot();          // what is on the building now becomes the baseline
+  window.bjCloseLayout(true);
+  try { toast('Post layout saved', 'ok'); } catch(e) {}
 };
 
 // ── The modal ───────────────────────────────────────────────────────────────
@@ -31745,7 +31839,13 @@ window.bjOpenLayout = function(wallId) {
     +   '<div style="display:grid;grid-template-columns:1fr;gap:10px;">'
     +     '<canvas id="bjPlan" width="1100" height="430" style="width:100%;background:#070b14;'
     +       'border:1px solid rgba(255,255,255,.08);border-radius:10px;cursor:pointer;display:block;"></canvas>'
-    +     '<div id="bjTabs" style="display:flex;gap:6px;flex-wrap:wrap;"></div>'
+    +     '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">'
+    +       '<div id="bjTabs" style="display:flex;gap:6px;flex-wrap:wrap;"></div>'
+    +       '<div style="display:flex;gap:6px;align-items:center;margin-left:auto;">'
+    +         '<span style="font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Post spacing</span>'
+    +         '<div id="bjPs" style="display:flex;gap:4px;"></div>'
+    +       '</div>'
+    +     '</div>'
     +     '<canvas id="bjCanvas" width="1100" height="200" style="width:100%;background:#070b14;'
     +       'border:1px solid rgba(255,255,255,.08);border-radius:10px;cursor:pointer;display:block;"></canvas>'
     +   '</div>'
@@ -31754,6 +31854,9 @@ window.bjOpenLayout = function(wallId) {
     +     '<button onclick="bjDeleteSelected()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#cbd5e1;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Delete Selected</button>'
     +     '<button onclick="bjAddSpan()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(var(--gold-rgb),.5);background:rgba(var(--gold-rgb),.14);color:var(--gold);font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Bar Joist Between</button>'
     +     '<button onclick="bjResetWall()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#94a3b8;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Back to Automatic</button>'
+    +     '<span style="width:1px;height:22px;background:rgba(255,255,255,.12);"></span>'
+    +     '<button onclick="bjDiscard()" style="padding:7px 12px;border-radius:7px;border:1px solid rgba(255,255,255,.18);background:transparent;color:#94a3b8;font-size:11px;font-weight:700;cursor:pointer;font-family:Outfit,sans-serif;">Discard Changes</button>'
+    +     '<button onclick="bjSave()" style="padding:7px 16px;border-radius:7px;border:1px solid rgba(74,222,128,.5);background:rgba(74,222,128,.16);color:#4ade80;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">Save Layout</button>'
     +     '<div style="font-size:10px;color:#6b7280;margin-left:auto;text-align:right;">Drag a door to slide it &middot; click a post to select &middot; drag a post to move<br>click the wall line to add a post &middot; everything snaps to 6&quot;</div>'
     +   '</div>'
     +   '<div id="bjSpanList" style="margin-bottom:10px;"></div>'
@@ -31767,9 +31870,28 @@ window.bjOpenLayout = function(wallId) {
     window.addEventListener('mouseup', window._bjUp);
   }
   m.style.display = 'flex';
+  window.bjSnapshot();
   window.bjDraw();
 };
-window.bjCloseLayout = function() {
+window.bjSetSpacing = function(ft) {
+  ft = parseInt(ft, 10);
+  Q.postSpacing = ft; Q.eavePS = ft;
+  (WALLS || []).forEach(function(w) { w.postSpacing = ft; });
+  try { buildPSChips(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  window._bjUI.sel = []; window._bjUI.selDoor = null;
+  window.bjDraw();
+};
+
+window.bjCloseLayout = function(force) {
+  if (!force && window.bjDirty()) {
+    // Closing on unsaved work is the one place this can quietly lose a layout.
+    if (!confirm('Keep the layout changes?\n\nOK keeps them. Cancel puts the building back the way it was.')) {
+      window.bjDiscard(true);
+    } else {
+      window.bjSnapshot();
+    }
+  }
   var m = document.getElementById('bjLayoutModal');
   if (m) m.style.display = 'none';
 };
@@ -31892,6 +32014,12 @@ window.bjDrawPlan = function() {
 window.bjDraw = function() {
   var m = document.getElementById('bjLayoutModal');
   if (!m || m.style.display === 'none') return;
+  // Post spacing may have moved while the editor was open or shut. Lay the new
+  // grid before drawing anything, so the diagram is always the building the
+  // current settings describe.
+  if (window.bjSyncSpacing()) {
+    try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  }
   window.bjDrawPlan();
 
   var cv = document.getElementById('bjCanvas');
@@ -32018,6 +32146,18 @@ window.bjDraw = function() {
     }).join('');
   }
 
+  var psEl = document.getElementById('bjPs');
+  if (psEl) {
+    psEl.innerHTML = [8,10,12,14,16,20].map(function(v) {
+      var on = Math.abs(v - (Q.postSpacing || 10)) < 0.01;
+      return '<button onclick="bjSetSpacing(' + v + ')" style="padding:4px 9px;border-radius:6px;'
+        + 'font-family:Outfit,sans-serif;font-size:10px;font-weight:800;cursor:pointer;'
+        + 'border:1px solid ' + (on ? 'rgba(var(--gold-rgb),.65)' : 'rgba(255,255,255,.12)') + ';'
+        + 'background:' + (on ? 'rgba(var(--gold-rgb),.16)' : 'transparent') + ';'
+        + 'color:' + (on ? 'var(--gold)' : '#94a3b8') + ';">' + v + "'</button>";
+    }).join('');
+  }
+
   // Bar joists on this wall, SKU still pickable
   var sl = document.getElementById('bjSpanList');
   if (sl) {
@@ -32043,21 +32183,8 @@ window.bjDraw = function() {
 
   var wd = document.getElementById('bjWarn');
   if (wd) {
-    var stale = '';
-    if (Array.isArray(w.postsManual) && w.postsManualPs != null
-        && Math.abs(w.postsManualPs - step) > 0.01) {
-      stale = '<div style="margin:6px 0 2px;padding:8px 11px;border-radius:7px;'
-            + 'background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.45);'
-            + 'font-size:11px;color:#fbbf24;font-weight:700;display:flex;align-items:center;gap:10px;">'
-            + "<span>Post spacing is now " + step + "', but this wall is still on a layout laid out at "
-            + w.postsManualPs + "'.</span>"
-            + '<button onclick="bjRegrid()" style="margin-left:auto;padding:5px 11px;border-radius:6px;'
-            + 'border:1px solid rgba(251,191,36,.6);background:rgba(251,191,36,.18);color:#fbbf24;'
-            + "font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;\">Rebuild at " + step + "'</button>"
-            + '</div>';
-    }
     var ws = window.bjWarnings();
-    wd.innerHTML = stale + (ws.length
+    wd.innerHTML = (ws.length
       ? ws.map(function(x) {
           return '<div style="font-size:11px;font-weight:600;margin-top:4px;color:'
             + (x.bad ? '#f87171' : '#fbbf24') + ';">' + (x.bad ? 'Check: ' : 'Note: ') + x.msg + '</div>';
