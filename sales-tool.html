@@ -25010,7 +25010,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M73-0820';
+window.SAUCE_BUILD = 'M74-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -64846,31 +64846,52 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         var doc = new J({ orientation:'portrait', unit:'pt', format:'letter' });
         var W = 612, H = 792, margin = 32, y = margin;
 
-        // Color palette — matches generateQuotePDF exactly
+        // The accent is resolved the same way the comparison EMAIL resolves
+        // it, so the attachment and the message it arrives with are the same
+        // colour. _brandRGB reads the --gold CSS variable, which is the tool's
+        // UI theme and not the company's chosen document accent: using it here
+        // printed an orange PDF under a red email.
+        var _cmpBrandC = window._companySettings || {};
+        var ACC_HEX = (window.SaucePdfAccent && window.SaucePdfAccent.get())
+                    || (/^#[0-9a-fA-F]{6}$/.test(String(_cmpBrandC.accentColor || '')) ? _cmpBrandC.accentColor : '')
+                    || (window._brandHex ? window._brandHex() : '#c8102e');
+        function _hexRGB(hex) {
+          var h = String(hex).replace('#','');
+          return [parseInt(h.substr(0,2),16), parseInt(h.substr(2,2),16), parseInt(h.substr(4,2),16)];
+        }
+        function _shade(hex, mult) {
+          return _hexRGB(hex).map(function(v){ return Math.max(0, Math.round(v * mult)); });
+        }
+        function _tintRGB(hex, pct) {
+          return _hexRGB(hex).map(function(v){ return Math.round(v + (255 - v) * pct); });
+        }
+        var ACC_RGB  = _hexRGB(ACC_HEX);
+        var ACC_TINT = _tintRGB(ACC_HEX, 0.92);   // the email's _mix(ACC, 0.92)
+
+        // Color palette — matches the comparison email
         var COL = {
-          header:    [75,75,75],      // #4B4B4B dark grey header
-          orange:    _brandRGB(1),    // the company's accent
-          darkOrange:_brandRGB(0.8),  // the same, darker
+          header:    [75,75,75],      // #4B4B4B dark grey header, same as the email
+          orange:    ACC_RGB,         // the company's document accent
+          darkOrange:_shade(ACC_HEX, 0.8),
           white:     [255,255,255],
           lightGray: [235,235,235],   // #ebebeb
           midGray:   [224,224,224],   // #e0e0e0
           text:      [51,51,51],      // #333333
           muted:     [102,102,102],   // #666666
+          ink:       [26,29,35],      // #1a1d23 — the email's INK
           rowAlt:    [250,250,250],
           sectionBg: [245,245,245],
+          green:     [21,128,61],     // #15803d, the email's "costs less" green
         };
 
-        // Slot accent colors — still differentiate slots but in orange family
-        var slotAccentColors = [
-          _brandRGB(1),    // Option A
-          _brandRGB(0.8),  // Option B — darker
-          _brandRGB(0.6),  // Option C — darker still
-        ];
-        var slotHeaderBgs = [
-          [255,240,220],  // Option A — light orange tint
-          [245,225,195],  // Option B — slightly deeper
-          [235,210,170],  // Option C — deeper still
-        ];
+        // Option names and prices read black, and only a value that DIFFERS
+        // from the first option is marked — and only from the second option
+        // on. Column A can never equal a previous column, so accenting it too
+        // made every cell in it look like a difference. Mirrors the email's
+        // slotColors / slotAccent / slotBgs.
+        var slotAccentColors = [null, ACC_RGB, ACC_RGB];
+        var slotLabelColors  = [COL.ink, COL.ink, COL.ink];
+        var slotHeaderBgs    = [ACC_TINT, ACC_TINT, ACC_TINT];
 
         var colW = W - margin*2;
         var labelW = 148;
@@ -64879,10 +64900,24 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         function setRGB(arr){ doc.setTextColor(arr[0],arr[1],arr[2]); }
         function setBG(arr){ doc.setFillColor(arr[0],arr[1],arr[2]); }
 
+        // ── Brand band. The email arrives under the company wordmark on an
+        // accent bar; without it the attachment looked like it came from
+        // somewhere else.
+        var _cmpCoName = String(_cmpBrandC.brandName
+                           || (typeof currentCompanyName === 'function' ? currentCompanyName() : '')
+                           || cu.company || cu.companyName || '').trim();
+        if (_cmpCoName) {
+          setBG(COL.orange);
+          doc.rect(margin, y, colW, 34, 'F');
+          doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(15);
+          doc.text(_cmpCoName.toUpperCase(), margin+colW/2, y+22, {align:'center', charSpace:1.2});
+          y += 34;
+        }
+
         // ── Dark grey header bar (matches #4B4B4B quote PDF header)
         setBG(COL.header);
         doc.rect(margin, y, colW, 42, 'F');
-        // Orange accent line under header
+        // Accent line under header
         setBG(COL.orange);
         doc.rect(margin, y+38, colW, 4, 'F');
         doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(14);
@@ -64891,29 +64926,88 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         doc.text(slots.length+' options  ·  '+custName+'  ·  '+new Date().toLocaleDateString(), margin+10, y+35);
         y += 50;
 
-        // ── Slot header row
-        var hH = 44;
-        // Empty label cell
-        setBG(COL.lightGray);
-        doc.rect(margin, y, labelW, hH, 'F');
-        // Slot columns
-        slots.forEach(function(s, i) {
-          var x = margin + labelW + slotW*i;
-          setBG(slotHeaderBgs[i]||[255,240,220]);
-          doc.rect(x, y, slotW, hH, 'F');
+        // ── Slot header row. Three lines, same as the email: option name,
+        // the truss/build types priced, then the dimensions.
+        // Every column carries the same list, so it is only worth a line when
+        // it fits whole. With all seven build types priced it truncated to
+        // "Wood Truss w/ 12" Soffit / Wood Truss…" in all three columns, which
+        // told the customer nothing the price rows below don't already label.
+        var _cmpTypeLine = (function(){
+          var seen = {}, out = [];
+          (activeTypes||[]).forEach(function(k){
+            var l = (typeLabels||{})[k] || k;
+            if (!seen[l]) { seen[l] = true; out.push(l); }
+          });
+          var line = out.join(' / ');
+          if (!line) return '';
+          doc.setFont('helvetica','normal'); doc.setFontSize(7);
+          return (doc.getTextWidth(line) <= slotW - 10) ? line : '';
+        })();
+        var hH = _cmpTypeLine ? 54 : 44;
+        function drawSlotHeader() {
+          // Empty label cell
+          setBG(COL.lightGray);
+          doc.rect(margin, y, labelW, hH, 'F');
+          // Slot columns
+          slots.forEach(function(s, i) {
+            var x = margin + labelW + slotW*i;
+            setBG(slotHeaderBgs[i]||ACC_TINT);
+            doc.rect(x, y, slotW, hH, 'F');
+            doc.setDrawColor(COL.midGray[0],COL.midGray[1],COL.midGray[2]); doc.setLineWidth(0.5);
+            doc.line(x, y, x, y+hH);
+            var ty = y+17;
+            setRGB(slotLabelColors[i]||COL.ink); doc.setFont('helvetica','bold'); doc.setFontSize(11);
+            doc.text(s.label||('Option '+String.fromCharCode(65+i)), x+slotW/2, ty, {align:'center'});
+            ty += 12;
+            if (_cmpTypeLine) {
+              doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(85,85,85);
+              doc.text(_cmpTypeLine, x+slotW/2, ty, {align:'center'});
+              ty += 11;
+            }
+            doc.setFont('helvetica','normal'); doc.setFontSize(8); setRGB(COL.muted);
+            if (s.dims) doc.text(s.dims, x+slotW/2, ty, {align:'center'});
+          });
           doc.setDrawColor(COL.midGray[0],COL.midGray[1],COL.midGray[2]); doc.setLineWidth(0.5);
-          doc.line(x, y, x, y+hH);
-          setRGB(slotAccentColors[i]||COL.orange); doc.setFont('helvetica','bold'); doc.setFontSize(11);
-          doc.text(s.label||('Option '+String.fromCharCode(65+i)), x+slotW/2, y+18, {align:'center'});
-          doc.setFont('helvetica','normal'); doc.setFontSize(8); setRGB(COL.muted);
-          if (s.dims) doc.text(s.dims, x+slotW/2, y+30, {align:'center'});
-        });
-        doc.setDrawColor(COL.midGray[0],COL.midGray[1],COL.midGray[2]); doc.setLineWidth(0.5);
-        doc.line(margin, y+hH, margin+colW, y+hH);
-        y += hH;
+          doc.line(margin, y+hH, margin+colW, y+hH);
+          y += hH;
+        }
+        drawSlotHeader();
+
+        // The signature is measured before any row is placed, because it fixes
+        // the floor every row has to clear. Nothing below the table used to
+        // check it, so a long comparison ran its notes straight through the
+        // footer and its price rows off the bottom of the page.
+        var _sigPdf = [];
+        if (String(cu.signature || '').trim()) {
+          _sigPdf = String(cu.signature).split(/\r?\n/)
+                      .map(function(l){ return l.trim(); })
+                      .filter(function(l){ return l; });
+        } else {
+          if (cu.fullName || cu.username) _sigPdf.push(cu.fullName || cu.username);
+          if (cu.phone) _sigPdf.push('Office: ' + cu.phone);
+          if (cu.cell)  _sigPdf.push('Cell: ' + cu.cell);
+          if (cu.email) _sigPdf.push('Email: ' + cu.email);
+          if (_cmpCoName) _sigPdf.push(_cmpCoName);
+        }
+        if (!_sigPdf.length) _sigPdf = [''];
+        var _sigLH  = 10;
+        var footTop = H - margin - (_sigPdf.length - 1) * _sigLH - 24;
+
+        // need = the height about to be drawn; withHdr repeats the option
+        // columns after a break so the rows stay readable.
+        function _room(need, withHdr) {
+          if (y + need <= footTop - 8) return false;
+          doc.addPage();
+          y = margin;
+          if (withHdr) drawSlotHeader();
+          return true;
+        }
 
         // ── Section header helper
         function sectionRow(title) {
+          // Never strand a heading at the foot of a page: reserve the heading
+          // plus a full-height row, which is the 30pt a price row takes.
+          _room(20 + 30, true);
           setBG(COL.sectionBg);
           doc.rect(margin, y, colW, 20, 'F');
           // Orange left accent bar
@@ -64928,11 +65022,15 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
         // ── Data row helper
         var rowCount = 0;
         function dataRow(label, vals, bold) {
-          var rH = 22;
+          // A row carrying a delta under its price needs two lines, the same
+          // stacking the email uses.
+          var hasSub = vals.some(function(v){ return v && v.sub; });
+          var rH = hasSub ? 30 : 22;
+          _room(rH, true);
           setBG(rowCount%2===0 ? COL.white : COL.rowAlt);
           doc.rect(margin, y, colW, rH, 'F');
           doc.setFont('helvetica','normal'); doc.setFontSize(8); setRGB(COL.muted);
-          doc.text(label, margin+8, y+rH/2+2.5);
+          doc.text(label, margin+8, y+(hasSub ? 13 : rH/2+2.5));
           vals.forEach(function(v, i) {
             var x = margin + labelW + slotW*i;
             doc.setDrawColor(COL.lightGray[0],COL.lightGray[1],COL.lightGray[2]); doc.setLineWidth(0.3);
@@ -64940,7 +65038,12 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
             if (v.accent) { setRGB(v.accent); } else { setRGB(COL.text); }
             doc.setFont('helvetica', (bold||v.bold) ? 'bold' : 'normal');
             doc.setFontSize(bold||v.bold ? 10 : 8.5);
-            doc.text(v.text||'—', x+slotW/2, y+rH/2+2.5, {align:'center'});
+            doc.text(v.text||'—', x+slotW/2, y+(hasSub ? 13 : rH/2+2.5), {align:'center'});
+            if (v.sub) {
+              setRGB(v.subColor || COL.muted);
+              doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+              doc.text(v.sub, x+slotW/2, y+24, {align:'center'});
+            }
           });
           doc.setDrawColor(COL.lightGray[0],COL.lightGray[1],COL.lightGray[2]); doc.setLineWidth(0.3);
           doc.line(margin, y+rH, margin+colW, y+rH);
@@ -65038,41 +65141,67 @@ document.addEventListener('DOMContentLoaded', function(){ populateColorDropdowns
           var label = typeLabels[k]||k;
           dataRow(label, slots.map(function(s, i) {
             var t=(s.totals||{})[k];
-            if (!t||!t.total) return {text:'—', accent:null};
-            var delta='';
+            if (!t||!t.total) return {text:'—', accent:[187,187,187]};
+            // Price reads black; only the difference from Option A is
+            // coloured, on its own line — accent when it costs more, green
+            // when it costs less. Same as the email.
+            var sub='', subColor=null;
             if (i>0 && slots[0].totals && slots[0].totals[k]) {
               var d=t.total-slots[0].totals[k].total;
-              if (d>0)      delta=' (+$'+Math.round(Math.abs(d)).toLocaleString('en-US')+')';
-              else if (d<0) delta=' (-$'+Math.round(Math.abs(d)).toLocaleString('en-US')+')';
+              if (d>0)      { sub='+$'+Math.round(Math.abs(d)).toLocaleString('en-US'); subColor=ACC_RGB; }
+              else if (d<0) { sub='−$'+Math.round(Math.abs(d)).toLocaleString('en-US'); subColor=COL.green; }
             }
-            return {text:'$'+Math.round(t.total).toLocaleString('en-US')+delta, accent:slotAccentColors[i], bold:true};
+            return {text:'$'+Math.round(t.total).toLocaleString('en-US'),
+                    accent:slotLabelColors[i]||COL.ink, bold:true, sub:sub, subColor:subColor};
           }));
         });
 
-        y += 10;
+        // ── Same promise the email makes, in the same words, placed with the
+        // prices it applies to.
+        y += 14;
+        _room(12, false);
+        doc.setFont('helvetica','italic'); doc.setFontSize(8); doc.setTextColor(119,119,119);
+        doc.text('Pricing valid for 7 days from '
+               + new Date().toLocaleDateString('en-US', { month:'long', day:'numeric', year:'numeric' })
+               + '.', W/2, y, {align:'center'});
+        doc.setFont('helvetica','normal');
+        y += 12;
 
-        // ── NOTES
-        if (notes && y < H-80) {
+        // ── NOTES. The tint follows the accent, the same as the email's
+        // notes callout, instead of a fixed cream that clashed with a red
+        // or blue brand.
+        if (notes) {
           var noteLines = doc.splitTextToSize(notes, colW-20);
           var noteH = noteLines.length*12+24;
-          doc.setFillColor(255,248,225);
+          _room(noteH, false);
+          setBG(_tintRGB(ACC_HEX, 0.92));
           doc.rect(margin, y, colW, noteH, 'F');
           setBG(COL.orange); doc.rect(margin, y, 3, noteH, 'F');
-          doc.setFont('helvetica','bold'); doc.setFontSize(7); setRGB(COL.darkOrange);
+          doc.setFont('helvetica','bold'); doc.setFontSize(7); setRGB(COL.orange);
           doc.text('NOTES', margin+8, y+13);
-          doc.setFont('helvetica','normal'); doc.setFontSize(8.5); setRGB(COL.text);
+          doc.setFont('helvetica','normal'); doc.setFontSize(8.5); setRGB([68,68,68]);
           doc.text(noteLines, margin+8, y+24);
           y += noteH+10;
         }
 
-        // ── FOOTER — orange accent line then grey text, matches quote PDF
-        var footY = H - margin;
-        setBG(COL.orange);
-        doc.rect(margin, footY-22, colW, 2, 'F');
-        doc.setFont('helvetica','normal'); doc.setFontSize(7.5); setRGB(COL.muted);
-        var _footCo = cu.company || cu.companyName || '';
-        var footLine = [(cu.fullName||cu.username||''), _footCo, (cu.phone||'')].filter(Boolean).join(' · ');
-        doc.text(footLine, W/2, footY-8, {align:'center'});
+        // ── FOOTER — the salesman's full signature block, built by the same
+        // rules as the comparison email: a saved signature verbatim,
+        // otherwise his own contact fields. The one-line version here left
+        // the customer without an email address to reply to. It is stamped on
+        // every page so a comparison that runs long still carries it.
+        var _pages = doc.getNumberOfPages();
+        for (var _p = 1; _p <= _pages; _p++) {
+          doc.setPage(_p);
+          var footY = H - margin - (_sigPdf.length - 1) * _sigLH;
+          setBG(COL.orange);
+          doc.rect(margin, footY-22, colW, 2, 'F');
+          doc.setFontSize(7.5);
+          _sigPdf.forEach(function(line, i) {
+            doc.setFont('helvetica', i === 0 ? 'bold' : 'normal');
+            setRGB(i === 0 ? COL.text : COL.muted);
+            doc.text(line, W/2, footY-10+i*_sigLH, {align:'center'});
+          });
+        }
 
         resolve(doc.output('blob'));
       } catch(e) {
