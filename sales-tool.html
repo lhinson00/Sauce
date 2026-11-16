@@ -2038,6 +2038,17 @@ body.customer-mode #stab_specs { display: block !important; }
         <button class="opening-add-btn" id="addLoftBtn" onclick="addLoft()">+ Add Loft</button>
       </div>
 
+      <!-- DIVIDER WALLS (post frame) -->
+      <div class="sec" id="secDividerWalls" style="display:none;">
+        <div class="sec-title">Divider Walls</div>
+        <div style="font-size:9px;color:var(--muted);margin-bottom:6px;">
+          Runs the building width, slab to truss bottom. Clad both faces.
+        </div>
+        <button class="act-btn secondary" style="width:100%;margin-bottom:5px;" onclick="autoDividersBetweenDoors()">Place Between Doors</button>
+        <button class="act-btn secondary" style="width:100%;margin-bottom:6px;" onclick="addDividerWall()">+ Add Divider</button>
+        <div id="dividerWallList"></div>
+      </div>
+
       <!-- INTERIOR WALLS (stud frame only) -->
       <div class="sec" id="secInteriorWalls" style="display:none;">
         <div class="sec-title">Interior Walls</div>
@@ -4400,6 +4411,8 @@ function buildFrameChips(){
       var _riRow = document.getElementById('redIronRow'); if(_riRow) _riRow.style.display = (v==='redIron') ? '' : 'none';
       try { window._syncTrussSpacingLock(); } catch(e){}
       _iwShowHide();
+    try { window._dividerShowHide && window._dividerShowHide(); } catch(e) {}
+      try { window._dividerShowHide && window._dividerShowHide(); } catch(e) {}
       if(window._customerMode) custUpdateConcreteOptions();
       applyRouteUI();
       scheduleBuild();
@@ -7822,6 +7835,14 @@ window.SauceParts = window.SauceParts || (function(){
   // Order matters — the first rule that matches wins, so the more specific
   // wording goes first. "Wood Truss Roof Purlins" is a purlin, not a truss.
   var MAP = [
+    // Divider walls first: their lines read as girts, bands, metal and
+    // J-channel, so the general rules would claim them and light the whole
+    // building's framing instead of the partitions.
+    { key:'dividerGirt',  re:/divider\s*wall\s*girt/i,           groups:['framing'],    label:'divider girts' },
+    { key:'dividerBand',  re:/divider\s*wall\s*bottom\s*band/i,  groups:['framing'],    label:'divider bottom bands' },
+    { key:'dividerPost',  re:/divider\s*wall\s*post/i,           groups:['mainPosts'],  label:'divider posts' },
+    { key:'dividerMetal', re:/divider\s*wall\s*metal/i,          groups:['wallPanels'], label:'divider metal' },
+    { key:'dividerJc',    re:/divider\s*wall\s*j-?channel/i,     groups:['wallPanels'], label:'divider J-channel' },
     // Metal panels. These are surfaces, not sticks, so they are picked by what the
     // surface is rather than by a part name, and counted in 3' panel widths.
     { key:'roofMetal', re:/roof\s*metal/i,
@@ -7865,6 +7886,14 @@ window.SauceParts = window.SauceParts || (function(){
     { key:'rafter', re:/rafter/i,                    groups:['framing'], label:'rafters' },
     { key:'stud',   re:/\bstud(s)?\b/i,              groups:['framing'], label:'studs' },
     { key:'plate',  re:/\bplate(s)?\b/i,             groups:['framing'], label:'plates' },
+    // A steel building bills every truss on one line, gable ends included, so
+    // that line lights all of them. Shed trusses are their own line and their
+    // own stamp. These must sit above the plain truss rules, which would
+    // otherwise claim the text and light only the interior trusses.
+    { key:'shedTruss', keys:['shedTruss'], re:/(side\s*shed|shed)\s*truss/i,
+      groups:['trusses'], label:'shed trusses' },
+    { key:'steelTruss', keys:['truss','gableTruss'], re:/steel\s*truss(es)?\b/i,
+      groups:['trusses'], label:'steel trusses' },
     { key:'gableTruss', re:/gable\s*(end\s*)?truss|gable\s*ext[^|]*gable\s*truss/i, groups:['trusses'], label:'gable trusses' },
     { key:'truss',  re:/truss/i,                     groups:['trusses'], label:'trusses' },
     // Walk door posts are field located, so there is no post in the model to
@@ -7880,6 +7909,8 @@ window.SauceParts = window.SauceParts || (function(){
   ];
 
   // One colour per kind, so a part always lights the same colour.
+  var _NO_BOARD_MATCH = { walkDoorPost:1, dividerPost:1 };
+
   var COLOR = { truss:0x22d3ee, post:0xfacc15, purlin:0x4ade80, girt:0xfb923c, rafter:0xa78bfa,
                stud:0x38bdf8, plate:0xf59e0b, ridgeCap:0xf43f5e, rakeTrim:0xec4899,
                eaveTrim:0x8b5cf6, cornerTrim:0x14b8a6, baseTrim:0x84cc16,
@@ -7973,7 +8004,7 @@ window.SauceParts = window.SauceParts || (function(){
         // Length is read off the model, not off the line. The detail field carries
         // spacings, spans and pitches as well as stock lengths — "Every 2ft up wall"
         // is not a 2ft girt — so matching on it filtered out correct members.
-        return { key: MAP[i].key, groups: MAP[i].groups, label: MAP[i].label,
+        return { key: MAP[i].key, keys: MAP[i].keys, groups: MAP[i].groups, label: MAP[i].label,
                  role: MAP[i].role, panel: MAP[i].panel,
                  area: a, where: a.label };
       }
@@ -7997,7 +8028,14 @@ window.SauceParts = window.SauceParts || (function(){
         if (o.userData && o.userData.notAPart) return;
         if (entry.role) {
           if (!(o.userData && o.userData.sRole === entry.role)) return;
-        } else if (mixed && !(o.userData && o.userData.sPart === entry.key)) return;
+        } else if (mixed) {
+          // A line can cover more than one stamped part: a steel building bills
+          // its gable trusses and its interior trusses on one line, so both have
+          // to light from it.
+          var _sp = o.userData && o.userData.sPart;
+          if (entry.keys) { if (entry.keys.indexOf(_sp) < 0) return; }
+          else if (_sp !== entry.key) return;
+        }
         var idx = (o.userData && o.userData.sIdx != null) ? o.userData.sIdx : null;
         if (entry.area && !entry.area.test(idx == null ? null : cfgs[idx], idx)) return;
         var info = measure(o);
@@ -8427,12 +8465,16 @@ window.SauceParts = window.SauceParts || (function(){
     // whole; members long enough to be cut from it are marked board by board. A
     // member that is neither is a different line's board and stays dark, so four
     // 22' gable posts light and the 12' ones beside them do not.
+    // These lines name a bought length that is not what stands in the model: a
+    // field-located post is not drawn at all, and a divider post is drawn at its
+    // exposed height while the list buys it with the burial added. Matching on
+    // board length reports "no such board is drawn" and lights nothing.
     // A field-located line has no member in the model to measure. Lighting the
     // walk doors is showing WHERE the posts go, so the board-length match is
     // skipped — PT4610 reads as a 10' board and nothing on a door is 10' long,
     // which reported "no 10' board is drawn" and lit nothing.
     var L = entry.panel ? entry.panel
-          : (entry.key === 'walkDoorPost' ? null : skuLen(item && item.sku, entry.key));
+          : (_NO_BOARD_MATCH[entry.key] ? null : skuLen(item && item.sku, entry.key));
     var sc1 = window._spSc || 0.1;
     var want = (item && parseFloat(item.quantity)) || 0;
     var lens = {}, shown = 0, lit = 0, segMode = false, noneOfLen = false;
@@ -9470,6 +9512,7 @@ function serializeConfig() {
     walls: WALLS.map(function(w){return {id:w.id,encl:w.encl,gableType:w.gableType,postSpacing:w.postSpacing,bayCount:w.bayCount,partialH:w.partialH,openLenFt:w.openLenFt,openStartFt:w.openStartFt,openPS:w.openPS,wallColor:w.wallColor||null,wainscot:(w.wainscot!=null?!!w.wainscot:null),wainscotColor:w.wainscotColor||null,postsManual:(Array.isArray(w.postsManual)&&w.postsManual.length?w.postsManual.slice():null),postsManualPs:(w.postsManualPs!=null?w.postsManualPs:null)};}),
     doors: allDoors,
     stallPosts: window._stallPosts || [],
+    dividerWalls: window._dividerWalls || [],
     walkDoors: window._walkDoors,
     windows: window._windows,
     awnings: window._awnings,
@@ -9696,6 +9739,8 @@ function restoreConfig(cfg) {
     renderLofts();
     window._interiorWalls = cfg.interiorWalls || [];
     window._stallPosts = cfg.stallPosts || [];
+    window._dividerWalls = cfg.dividerWalls || [];
+    try { _nextDividerId = (window._dividerWalls).reduce(function(mx,d){ return Math.max(mx,(d.id||0)+1); }, 1); } catch(e) {}
     _nextIWallId = (window._interiorWalls).reduce(function(mx,w){ return Math.max(mx,(w.id||0)+1); }, 1);
     window._levelConfigs = cfg.levelConfigs || [];
     _nextLevelId = (window._levelConfigs).reduce(function(mx,l){ return Math.max(mx,(l.id||0)+1); }, 1);
@@ -14723,6 +14768,93 @@ function applyVoiceQuote(parsed, overlay) {
               window._spPart = null; window._spUnit = null;
             });
           } catch(e) { try { console.warn('bar joist 3D skipped:', e); } catch(_) {} }
+        })();
+
+        // ── INTERIOR DIVIDER WALLS ──────────────────────────────────────────
+        // One flat wall across the building at each divider, slab to the truss
+        // bottom. Clad both faces, so the girts, the J-channel and the panels
+        // are all drawn twice — once per side — which is what the material list
+        // is buying.
+        (function _drawDividerWalls() {
+          try {
+            var list = (window._dividerWalls || []).filter(function(d) {
+              return d && d.atFt != null && !d.disabled;
+            });
+            if (!list.length) return;
+
+            var mPanel = new THREE.MeshLambertMaterial({ color: pc(wallColorName), side: THREE.DoubleSide });
+            var mGirt  = new THREE.MeshLambertMaterial({ color: 0xC8A165 });
+            var mBand  = new THREE.MeshLambertMaterial({ color: 0x6E7B52 });
+            var mJc    = new THREE.MeshLambertMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
+            var mPost  = new THREE.MeshLambertMaterial({ color: 0x9B7040 });
+
+            var eaveW = (wallCfgs || []).find(function(w){ return w.id === 'left'; });
+            var dPS   = eaveW ? (eaveW.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+            var halfW = sw / 2;
+            var topY  = postBase + sh;
+
+            list.forEach(function(dv, di) {
+              var z = (-Q.l / 2 + dv.atFt) * Sc;
+              window._spUnit = 'dw-' + (dv.id != null ? dv.id : di);
+
+              // Metal, one skin per face.
+              window._spPart = 'dividerMetal';
+              [-0.012, 0.012].forEach(function(off) {
+                var pnl = new THREE.Mesh(new THREE.PlaneGeometry(sw, sh), mPanel);
+                pnl.position.set(0, postBase + sh / 2, z + off);
+                grps.wallPanels.add(pnl);
+              });
+
+              // Girts, every 2ft up, on both faces behind the metal.
+              window._spPart = 'dividerGirt';
+              var rows = Math.floor((Q.h || 0) / 2);
+              for (var r = 1; r <= rows; r++) {
+                var gy = postBase + (r * 2) * Sc;
+                if (gy > topY + 0.01) break;      // the top row sits at the eave
+                [-0.030, 0.030].forEach(function(off) {
+                  var g = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.045, 0.022), mGirt);
+                  g.position.set(0, gy, z + off);
+                  grps.framing.add(g);
+                });
+              }
+
+              // Pressure treated bottom band.
+              window._spPart = 'dividerBand';
+              var bd = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.055, 0.075), mBand);
+              bd.position.set(0, postBase + 0.028, z);
+              grps.framing.add(bd);
+
+              // J-channel, top and bottom of each face.
+              window._spPart = 'dividerJc';
+              [-0.020, 0.020].forEach(function(off) {
+                [postBase + 0.012, topY - 0.012].forEach(function(jy) {
+                  var jc = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.022, 0.014), mJc);
+                  jc.position.set(0, jy, z + off);
+                  grps.wallPanels.add(jc);
+                });
+              });
+
+              // Interior posts. The two ends land on sidewall posts the building
+              // already has, so only the ones between them are drawn.
+              if (dv.posts !== false) {
+                window._spPart = 'dividerPost';
+                var bays = Math.max(1, Math.round((Q.w || 0) / dPS));
+                for (var b2 = 1; b2 < bays; b2++) {
+                  var px = -halfW + (b2 / bays) * sw;
+                  var pm = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mPost);
+                  pm.position.set(px, postBase + sh / 2, z);
+                  pm.castShadow = true;
+                  // Stamped here rather than left to the ambient part, which does
+                  // not reach this group — without it the post line lit nothing.
+                  pm.userData = pm.userData || {};
+                  pm.userData.sPart = 'dividerPost';
+                  pm.userData.sUnit = 'dwp-' + (dv.id != null ? dv.id : di) + '-' + b2;
+                  grps.mainPosts.add(pm);
+                }
+              }
+              window._spPart = null; window._spUnit = null;
+            });
+          } catch(e) { try { console.warn('divider wall 3D skipped:', e); } catch(_) {} }
         })();
 
         // Shed posts from config
@@ -21799,6 +21931,17 @@ function applyVoiceQuote(parsed, overlay) {
               var tZ0 = -sl/2;
               var tCount = Math.round(Q.l / sPS);
               for (var ti = 0; ti <= tCount; ti++) {
+                // Stamp each shed truss as its own unit. Unstamped, these never
+                // lit from the material list: the "Steel Side Shed Trusses" line
+                // found nothing to highlight because nothing in the model said
+                // what it was.
+                window._spPart = 'shedTruss';
+                window._spUnit = 'sst-' + (sc.id != null ? sc.id : '') + '-' + ti;
+                // Built outside the attachment wrapper, so they never picked up
+                // the shed's index either -- and a "Side Shed" line is scoped to
+                // its shed, so without it the line still matched nothing.
+                var _stStart = grps.trusses.children.length;
+                var _stIdx = (window._shedConfigs || []).indexOf(sc);
                 var zp = tZ0 + ti * sPS * Sc;
                 // Only render if within shed Z extents
                 var shedZmin = shedCOff - ssl/2 - 0.01;
@@ -21850,6 +21993,13 @@ function applyVoiceQuote(parsed, overlay) {
                   sSb(tx02,ty02,zp, ix02,iy02,zp, webSz, sSteelMat, grps.trusses);
                 }
                 sSb(bx,outerH,zp, bx+nX2,outerH+nY2,zp, webSz, sSteelMat, grps.trusses);
+                for (var _stK = _stStart; _stK < grps.trusses.children.length; _stK++) {
+                  var _stO = grps.trusses.children[_stK];
+                  if (!_stO) continue;
+                  _stO.userData = _stO.userData || {};
+                  if (_stO.userData.sIdx == null && _stIdx >= 0) _stO.userData.sIdx = _stIdx;
+                }
+                window._spPart = null; window._spUnit = null;
               }
             }
 
@@ -25431,7 +25581,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M88-1116';
+window.SAUCE_BUILD = 'M90-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -37066,10 +37216,17 @@ window.SauceMaterials.calcSteelShedTrusses = function(Q, WALLS, shedCfgs) {
   var trussItems = Object.keys(groups).sort().map(function(sku) {
     return {
       category:    'Yard',
-      description: 'Steel Side Shed Trusses',
+      // A gable extension is billed here too, but its trusses are the main
+      // building's (TSGT...), not shed trusses (TSST...). Calling them "Side
+      // Shed Trusses" hid them: a salesman looking for the extension's trusses
+      // found only shed lines and concluded they were missing.
+      description: /^TSGT/.test(sku) ? 'Gable Extension Steel Trusses'
+                                     : 'Steel Side Shed Trusses',
       sku:         sku,
       quantity:    groups[sku],
-      detail:      spacing + "' spacing  |  structural posts only"
+      detail:      /^TSGT/.test(sku)
+                     ? spacing + "' spacing  |  main-building truss, shared truss at the attach line not counted"
+                     : spacing + "' spacing  |  structural posts only"
     };
   });
 
@@ -44017,6 +44174,202 @@ window.SauceMaterials.calcFinishedCeilingMetal = function(Q, shedCfgs) {
 };
 
 
+// ── INTERIOR DIVIDER WALLS ───────────────────────────────────────────────────
+// A mini storage building is one shell cut into units. Each divider runs the
+// building's WIDTH, slab to the bottom of the truss — a flat wall at eave
+// height, not a gable, because the truss bottom chord is level. It is clad on
+// BOTH faces, so it takes two sets of girts, two sets of panels, and J-channel
+// top and bottom on each side. The posts are a toggle: a 30' run of girts needs
+// bearing, but a divider hung off existing framing does not buy its own.
+window._dividerWalls = window._dividerWalls || [];
+var _nextDividerId = 1;
+
+window.addDividerWall = function(atFt) {
+  var L = Q.l || 0;
+  if (atFt == null) {
+    var ex = (window._dividerWalls || []).map(function(d){ return d.atFt; }).sort(function(a,b){return a-b;});
+    atFt = ex.length ? Math.round(((ex[ex.length-1] + L) / 2) * 12) / 12 : Math.round((L/2) * 12) / 12;
+  }
+  window._dividerWalls.push({ id: _nextDividerId++, atFt: atFt, posts: true, _open: false });
+  renderDividerWalls();
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+};
+window.removeDividerWall = function(id) {
+  window._dividerWalls = (window._dividerWalls || []).filter(function(d){ return d.id !== id; });
+  renderDividerWalls();
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+};
+window.setDividerProp = function(id, prop, val) {
+  var d = (window._dividerWalls || []).find(function(x){ return x.id === id; });
+  if (!d) return;
+  if (prop === 'posts') d.posts = !!val;
+  else { var n = parseFloat(val); if (!isNaN(n)) d.atFt = Math.max(0, Math.min(Q.l || 0, Math.round(n*12)/12)); }
+  renderDividerWalls();
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+};
+
+// A storage building is laid out from the doors: one divider in each gap
+// between them, so every unit gets exactly one door and no divider ever lands
+// across an opening.
+window.autoDividersBetweenDoors = function() {
+  var L = Q.l || 0;
+  var best = null;
+  ['left','right','front','back'].forEach(function(w) {
+    var ds = (window._allDoors || []).filter(function(d){ return d.wall === w; });
+    if (!best || ds.length > best.doors.length) best = { wall: w, doors: ds };
+  });
+  if (!best || best.doors.length < 2) {
+    alert('Put the doors on a wall first — this drops a divider between each pair of them.');
+    return;
+  }
+  var isEave = (best.wall === 'left' || best.wall === 'right');
+  if (!isEave) {
+    alert('The doors are on a gable end. Dividers run the building width, so they only split a wall that runs the length.');
+    return;
+  }
+  var ds = best.doors.slice().sort(function(a,b){ return (a.offset||0) - (b.offset||0); });
+  window._dividerWalls = [];
+  for (var i = 1; i < ds.length; i++) {
+    var gapA = (ds[i-1].offset || 0) + ds[i-1].w;
+    var gapB = (ds[i].offset || 0);
+    if (gapB - gapA < 0.5) continue;                 // no room between these two
+    window._dividerWalls.push({ id: _nextDividerId++,
+      atFt: Math.round(((gapA + gapB) / 2) * 12) / 12, posts: true, _open: false });
+  }
+  renderDividerWalls();
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  try { toast(window._dividerWalls.length + ' dividers placed — '
+            + (window._dividerWalls.length + 1) + ' units', 'ok'); } catch(e) {}
+};
+
+window.renderDividerWalls = function() {
+  var el = document.getElementById('dividerWallList');
+  if (!el) return;
+  var list = (window._dividerWalls || []).slice().sort(function(a,b){ return a.atFt - b.atFt; });
+  if (!list.length) { el.innerHTML = '<div style="font-size:9px;color:var(--muted);">No dividers.</div>'; return; }
+  var L = Q.l || 0;
+  el.innerHTML = list.map(function(d, i) {
+    var prev = i === 0 ? 0 : list[i-1].atFt;
+    var unit = Math.round((d.atFt - prev) * 10) / 10;
+    return '<div class="shed-card"><div class="shed-card-hdr">'
+      + '<span class="shed-card-icon">|</span>'
+      + '<span class="shed-card-lbl">Divider ' + (i+1) + " &mdash; " + d.atFt + "'</span>"
+      + '<button class="shed-card-rm" onclick="removeDividerWall(' + d.id + ')">&#10005;</button>'
+      + '</div>'
+      + '<div class="shed-body open" style="padding:6px 8px;">'
+      +   '<div style="display:flex;gap:6px;align-items:center;">'
+      +     '<span style="font-size:9px;color:var(--muted);">At</span>'
+      +     '<input type="number" step="0.5" min="0" max="' + L + '" value="' + d.atFt + '" '
+      +       'onchange="setDividerProp(' + d.id + ',\'atFt\',this.value)" '
+      +       'style="width:62px;font-size:10px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:#f4f6f8;color:var(--navy);font-family:Outfit,sans-serif;font-weight:600;">'
+      +     '<span style="font-size:9px;color:var(--muted);">ft</span>'
+      +     '<label style="display:flex;align-items:center;gap:3px;font-size:9px;color:var(--muted);cursor:pointer;margin-left:auto;">'
+      +       '<input type="checkbox"' + (d.posts !== false ? ' checked' : '') + ' '
+      +       'onchange="setDividerProp(' + d.id + ',\'posts\',this.checked)" style="accent-color:var(--gold);">Posts</label>'
+      +   '</div>'
+      +   '<div style="font-size:9px;color:var(--muted);margin-top:4px;">Unit before: ' + unit + "'</div>"
+      + '</div></div>';
+  }).join('')
+  + '<div style="font-size:9px;color:var(--muted);margin-top:5px;">'
+  + (list.length + 1) + ' units  |  last unit '
+  + (Math.round((L - list[list.length-1].atFt) * 10) / 10) + "'</div>";
+};
+
+// Post frame only — a stud building partitions with the Interior Walls section.
+window._dividerShowHide = function() {
+  var sec = document.getElementById('secDividerWalls');
+  if (sec) sec.style.display = (typeof currentFrameType !== 'undefined' && currentFrameType === 'stud') ? 'none' : '';
+  try { renderDividerWalls(); } catch(e) {}
+};
+
+window.SauceMaterials.calcDividerWalls = function(Q, WALLS, sf) {
+  var list = (window._dividerWalls || []).filter(function(d) {
+    return d && d.atFt != null && !d.disabled;
+  });
+  if (!list.length) return [];
+
+  var n       = list.length;
+  var wallLen = Q.w || 0;                       // across the building
+  var wallH   = Q.h || 0;                       // slab to truss bottom
+  if (!(wallLen > 0 && wallH > 0)) return [];
+  var eave = (WALLS || []).find(function(w) { return w.id === 'left'; });
+  var ps   = eave ? (eave.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
+
+  var items = [];
+
+  // ── Girts, both faces ──────────────────────────────────────────────────────
+  // Same rule as a sidewall: a row every 2ft up, runs broken on the posts so the
+  // joints land on bearing, and only the stock lengths this program carries.
+  var rows = Math.floor(wallH / 2);
+  if (rows > 0 && window.SauceMaterials.girtRuns) {
+    var runs = window.SauceMaterials.girtRuns(wallLen, ps);
+    var gg = {};
+    Object.keys(runs).forEach(function(len) {
+      var sku = 'SYP26' + len;
+      gg[sku] = (gg[sku] || 0) + Math.ceil(rows * runs[len]) * 2 * n;   // ×2 = both faces
+    });
+    Object.keys(gg).sort().forEach(function(sku) {
+      items.push({ category:'Yard', description:'Divider Wall Girts', sku:sku, quantity:gg[sku],
+        detail: n + ' divider' + (n>1?'s':'') + '  |  ' + rows + ' rows, both faces  |  '
+              + wallLen + "' wide" });
+    });
+  }
+
+  // ── Pressure treated bottom band ───────────────────────────────────────────
+  var bandLen = (wallLen % 12 === 0 && wallLen % 10 !== 0) ? 12 : 10;
+  var bandSku = bandLen === 12 ? 'PT261260CCA' : 'PT261060CCA';
+  var bandQty = Math.ceil(wallLen / bandLen) * n;
+  items.push({ category:'Yard', description:'Divider Wall Bottom Band (PT)', sku:bandSku,
+    quantity:bandQty, detail: n + ' divider' + (n>1?'s':'') + '  |  ' + wallLen + "' each" });
+
+  // ── Posts ──────────────────────────────────────────────────────────────────
+  // Only the interior ones: each end of the divider lands on a sidewall post
+  // that the building already buys.
+  var postsOn = list.filter(function(d) { return d.posts !== false; }).length;
+  if (postsOn > 0) {
+    var perWall = Math.max(0, Math.round(wallLen / ps) - 1);
+    if (perWall > 0) {
+      var size   = (sf && sf.mbPostSize === '8x8') ? '8x8' : '6x6';
+      var pmap   = { '6x6':'PT66', '8x8':'PT88' }, fmap = { '6x6':'PBFP16', '8x8':'PBFP20' };
+      var rawLen = Math.ceil((wallH + 4) / 2) * 2;
+      var pLen   = window.SauceMaterials.enforceMinPostLen
+                 ? window.SauceMaterials.enforceMinPostLen(size, rawLen) : rawLen;
+      var cnt    = perWall * postsOn;
+      items.push({ category:'Yard', description:'Divider Wall Posts (' + size + ')',
+        sku: pmap[size] + pLen, quantity: cnt,
+        // "eave" in this text scoped the line to the eave walls, and a divider
+        // post stands in the middle of the building, so the line lit nothing.
+        detail: wallH + "' wall + 4' burial  |  " + perWall + ' per divider' });
+      items.push({ category:'Yard', description:'Divider Wall Post Footing Pads',
+        sku: fmap[size], quantity: cnt, detail: '1 per post' });
+      items.push({ category:'Yard', description:'Divider Wall Post Sackcrete',
+        sku: 'QCR', quantity: cnt * ((size === '8x8') ? 3 : 2),
+        detail: ((size === '8x8') ? '3' : '2') + ' bags per post' });
+    }
+  }
+
+  // ── Metal, both faces ──────────────────────────────────────────────────────
+  // Panel length is the sidewall height, because the wall stops at the truss
+  // bottom chord, which is level with the eave.
+  var wallCode = (window._selectedColors || {}).wallCode || 'CC';
+  var mType = (document.getElementById('st_wallMetal') || {}).value || 'Tuff-Rib 29ga';
+  var mPrefix = (typeof getColoredSkuPrefix === 'function')
+              ? getColoredSkuPrefix(mType, 'wall') : ('T9' + wallCode);
+  items.push({ category:'Sidewall Metal', description:'Divider Wall Metal',
+    sku: mPrefix, quantity: Math.ceil(wallLen / 3) * 2 * n,
+    length: wallH,
+    detail: n + ' divider' + (n>1?'s':'') + '  |  both faces  |  ' + wallH + "' panels" });
+
+  // ── J-channel, top and bottom, both faces ──────────────────────────────────
+  var jcLf  = wallLen * 4 * n;
+  var jcSku = 'JC9' + ((window._selectedColors || {}).trimCode || 'BK') + '10';
+  items.push({ category:'Trim', description:'Divider Wall J-Channel', sku:jcSku,
+    quantity: Math.ceil(jcLf / 10),
+    detail: 'top and bottom, both faces  |  ' + jcLf + " lf" });
+
+  return items;
+};
+
 window.SauceMaterials.calcRockWainscot = function(Q, WALLS, shedCfgs) {
   var on = !!(document.getElementById('st_rockWainscot')||{}).checked;
   if (!on) return [];
@@ -45552,6 +45905,11 @@ window.SauceMaterials.calculate = function(forcedType) {
         detail: '2 bags per post  |  ' + cnt + ' posts' });
     });
     } catch(e) { try{ console.warn('stall post materials skipped:', e); }catch(_){} }
+  })();
+  // Interior divider walls
+  (function() {
+    try { (SM.calcDividerWalls(Q, WALLS, sf) || []).forEach(function(it){ items.push(it); }); }
+    catch(e) { try { console.warn('divider wall materials skipped:', e); } catch(_) {} }
   })();
   // LAG5
   (function() {
