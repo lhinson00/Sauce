@@ -2042,10 +2042,12 @@ body.customer-mode #stab_specs { display: block !important; }
       <div class="sec" id="secDividerWalls" style="display:none;">
         <div class="sec-title">Divider Walls</div>
         <div style="font-size:9px;color:var(--muted);margin-bottom:6px;">
-          Runs the building width, slab to truss bottom. Metal one side or both, per wall.
+          Slab to truss bottom. Draw any line on the blueprint, or drop one straight
+          across. Metal both sides, one side, or none for posts only.
 </div>
+        <button class="act-btn secondary" style="width:100%;margin-bottom:5px;" onclick="openDividerDrawTool()">Draw on Blueprint</button>
         <button class="act-btn secondary" style="width:100%;margin-bottom:5px;" onclick="autoDividersBetweenDoors()">Place Between Doors</button>
-        <button class="act-btn secondary" style="width:100%;margin-bottom:6px;" onclick="addDividerWall()">+ Add Divider</button>
+        <button class="act-btn secondary" style="width:100%;margin-bottom:6px;" onclick="addDividerWall()">+ Add Divider Across</button>
         <div id="dividerWallList"></div>
       </div>
 
@@ -4411,7 +4413,6 @@ function buildFrameChips(){
       var _riRow = document.getElementById('redIronRow'); if(_riRow) _riRow.style.display = (v==='redIron') ? '' : 'none';
       try { window._syncTrussSpacingLock(); } catch(e){}
       _iwShowHide();
-    try { window._dividerShowHide && window._dividerShowHide(); } catch(e) {}
       try { window._dividerShowHide && window._dividerShowHide(); } catch(e) {}
       if(window._customerMode) custUpdateConcreteOptions();
       applyRouteUI();
@@ -9749,6 +9750,7 @@ function restoreConfig(cfg) {
     renderInteriorWalls();
     renderLevelManager();
     _iwShowHide();
+    try { window._dividerShowHide && window._dividerShowHide(); } catch(e) {}
     if(cfg.comparisonSlots && cfg.comparisonSlots.length && window.CMP) {
       CMP.slots = JSON.parse(JSON.stringify(cfg.comparisonSlots));
       if(typeof updateBtn === 'function') try { updateBtn(); } catch(e) {}
@@ -11405,6 +11407,7 @@ function renderInteriorWalls() {
   try { buildFrameChips(); } catch(e) { console.error('buildFrameChips',e); }
   try { buildRedIronChips(); } catch(e) { console.error('buildRedIronChips',e); }
   try { _iwShowHide(); } catch(e) {}
+  try { window._dividerShowHide && window._dividerShowHide(); } catch(e) {}
   try { renderLevelManager(); } catch(e) {}
   try { buildPSChips(); } catch(e) { console.error('buildPSChips',e); }
   try { buildWallGrid(); } catch(e) { console.error('buildWallGrid',e); }
@@ -14778,7 +14781,7 @@ function applyVoiceQuote(parsed, overlay) {
         (function _drawDividerWalls() {
           try {
             var list = (window._dividerWalls || []).filter(function(d) {
-              return d && d.atFt != null && !d.disabled;
+              return d && !d.disabled && window._dwSeg(d) && window._dwSeg(d).len > 0.5;
             });
             if (!list.length) return;
 
@@ -14790,25 +14793,38 @@ function applyVoiceQuote(parsed, overlay) {
 
             var eaveW = (wallCfgs || []).find(function(w){ return w.id === 'left'; });
             var dPS   = eaveW ? (eaveW.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
-            var halfW = sw / 2;
             var topY  = postBase + sh;
+            var _qw = Q.w || 0, _ql = Q.l || 0;
 
             list.forEach(function(dv, di) {
-              var z = (-Q.l / 2 + dv.atFt) * Sc;
+              var g = window._dwSeg(dv);
+              var faces = window._dwFaces(dv);
+              // Scene coordinates for the two ends, and the angle the wall runs
+              // at, so a divider drawn on any line stands on that line.
+              var ax = (g.x1 - _qw/2) * Sc, az = (g.y1 - _ql/2) * Sc;
+              var bx = (g.x2 - _qw/2) * Sc, bz = (g.y2 - _ql/2) * Sc;
+              var mx = (ax + bx) / 2,       mz = (az + bz) / 2;
+              var runL = Math.sqrt((bx-ax)*(bx-ax) + (bz-az)*(bz-az));
+              if (!(runL > 0)) return;
+              var rotY = Math.atan2(bx - ax, bz - az);   // 0 when the wall runs along z
               window._spUnit = 'dw-' + (dv.id != null ? dv.id : di);
 
-              // One face or two. A wall sheeted on one side only carries one
-              // skin, one set of girts behind it, and one pair of J-channel
-              // runs. The clad face is the low side, toward the start of the
-              // building, so a row of them reads the same way down the run.
-              var _one   = (dv.sides === 1);
-              var _signs = _one ? [-1] : [-1, 1];
+              // One face or two. A wall sheeted on one side carries one skin,
+              // one set of girts behind it, and one pair of J-channel runs.
+              var _signs = (faces === 2) ? [-1, 1] : (faces === 1) ? [-1] : [];
+
+              function place(o, off, y) {
+                // off is the offset off the wall's own centre line, which has to
+                // be rotated with it or a wall drawn on an angle sheets sideways.
+                o.position.set(mx + Math.cos(rotY) * off, y, mz - Math.sin(rotY) * off);
+                o.rotation.y = rotY;
+              }
 
               // Metal, one skin per clad face.
               window._spPart = 'dividerMetal';
               _signs.forEach(function(sg) {
-                var pnl = new THREE.Mesh(new THREE.PlaneGeometry(sw, sh), mPanel);
-                pnl.position.set(0, postBase + sh / 2, z + sg * 0.012);
+                var pnl = new THREE.Mesh(new THREE.PlaneGeometry(runL, sh), mPanel);
+                place(pnl, sg * 0.012, postBase + sh / 2);
                 grps.wallPanels.add(pnl);
               });
 
@@ -14819,45 +14835,48 @@ function applyVoiceQuote(parsed, overlay) {
                 var gy = postBase + (r * 2) * Sc;
                 if (gy > topY + 0.01) break;      // the top row sits at the eave
                 _signs.forEach(function(sg) {
-                  var g = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.045, 0.022), mGirt);
-                  g.position.set(0, gy, z + sg * 0.030);
-                  grps.framing.add(g);
+                  var gm = new THREE.Mesh(new THREE.BoxGeometry(runL, 0.045, 0.022), mGirt);
+                  place(gm, sg * 0.030, gy);
+                  grps.framing.add(gm);
                 });
               }
 
-              // Pressure treated bottom band.
-              window._spPart = 'dividerBand';
-              var bd = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.055, 0.075), mBand);
-              bd.position.set(0, postBase + 0.028, z);
-              grps.framing.add(bd);
+              // Pressure treated bottom band — only under a sheeted wall.
+              if (faces > 0) {
+                window._spPart = 'dividerBand';
+                var bd = new THREE.Mesh(new THREE.BoxGeometry(runL, 0.055, 0.075), mBand);
+                place(bd, 0, postBase + 0.028);
+                grps.framing.add(bd);
+              }
 
               // J-channel, top and bottom of each clad face.
               window._spPart = 'dividerJc';
               _signs.forEach(function(sg) {
                 [postBase + 0.012, topY - 0.012].forEach(function(jy) {
-                  var jc = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.022, 0.014), mJc);
-                  jc.position.set(0, jy, z + sg * 0.020);
+                  var jc = new THREE.Mesh(new THREE.BoxGeometry(runL, 0.022, 0.014), mJc);
+                  place(jc, sg * 0.020, jy);
                   grps.wallPanels.add(jc);
                 });
               });
 
-              // Interior posts. The two ends land on sidewall posts the building
-              // already has, so only the ones between them are drawn.
+              // Posts: evenly down the run, plus one at each end where the
+              // divider ties into whatever it meets.
               if (dv.posts !== false) {
                 window._spPart = 'dividerPost';
-                var bays = Math.max(1, Math.round((Q.w || 0) / dPS));
-                for (var b2 = 1; b2 < bays; b2++) {
-                  var px = -halfW + (b2 / bays) * sw;
+                var bays = Math.max(1, Math.round(g.len / dPS));
+                var ts = [0, 1];
+                for (var b2 = 1; b2 < bays; b2++) ts.push(b2 / bays);
+                ts.forEach(function(t, pi) {
                   var pm = new THREE.Mesh(new THREE.BoxGeometry(ps, sh, ps), mPost);
-                  pm.position.set(px, postBase + sh / 2, z);
+                  pm.position.set(ax + (bx - ax) * t, postBase + sh / 2, az + (bz - az) * t);
                   pm.castShadow = true;
                   // Stamped here rather than left to the ambient part, which does
                   // not reach this group — without it the post line lit nothing.
                   pm.userData = pm.userData || {};
                   pm.userData.sPart = 'dividerPost';
-                  pm.userData.sUnit = 'dwp-' + (dv.id != null ? dv.id : di) + '-' + b2;
+                  pm.userData.sUnit = 'dwp-' + (dv.id != null ? dv.id : di) + '-' + pi;
                   grps.mainPosts.add(pm);
-                }
+                });
               }
               window._spPart = null; window._spUnit = null;
             });
@@ -25588,7 +25607,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M93-1116';
+window.SAUCE_BUILD = 'M97-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -44198,7 +44217,8 @@ window.addDividerWall = function(atFt) {
     var ex = (window._dividerWalls || []).map(function(d){ return d.atFt; }).sort(function(a,b){return a-b;});
     atFt = ex.length ? Math.round(((ex[ex.length-1] + L) / 2) * 12) / 12 : Math.round((L/2) * 12) / 12;
   }
-  window._dividerWalls.push({ id: _nextDividerId++, atFt: atFt, posts: true, sides: 2, _open: false });
+  window._dividerWalls.push({ id: _nextDividerId++, atFt: atFt, posts: true, sides: 2,
+    x1: 0, y1: atFt, x2: (Q.w || 0), y2: atFt, _open: false });
   renderDividerWalls();
   try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
 };
@@ -44211,8 +44231,24 @@ window.setDividerProp = function(id, prop, val) {
   var d = (window._dividerWalls || []).find(function(x){ return x.id === id; });
   if (!d) return;
   if (prop === 'posts') d.posts = !!val;
-  else if (prop === 'sides') d.sides = (parseInt(val, 10) === 1) ? 1 : 2;
-  else { var n = parseFloat(val); if (!isNaN(n)) d.atFt = Math.max(0, Math.min(Q.l || 0, Math.round(n*12)/12)); }
+  else if (prop === 'sides') {
+    var sv = parseInt(val, 10);
+    d.sides = (sv === 0 || sv === 1) ? sv : 2;
+  }
+  else {
+    var n = parseFloat(val);
+    if (!isNaN(n)) {
+      var at = Math.max(0, Math.min(Q.l || 0, Math.round(n*12)/12));
+      // The At box moves a wall that runs straight across. A wall drawn on the
+      // blueprint has its own two ends, so it is moved there, not here.
+      var g = window._dwSeg(d);
+      if (g && Math.abs(g.y1 - g.y2) < 0.01) {
+        var dy = at - g.y1;
+        d.y1 = g.y1 + dy; d.y2 = g.y2 + dy;
+      }
+      d.atFt = at;
+    }
+  }
   renderDividerWalls();
   try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
 };
@@ -44242,8 +44278,9 @@ window.autoDividersBetweenDoors = function() {
     var gapA = (ds[i-1].offset || 0) + ds[i-1].w;
     var gapB = (ds[i].offset || 0);
     if (gapB - gapA < 0.5) continue;                 // no room between these two
-    window._dividerWalls.push({ id: _nextDividerId++,
-      atFt: Math.round(((gapA + gapB) / 2) * 12) / 12, posts: true, sides: 2, _open: false });
+    var _at = Math.round(((gapA + gapB) / 2) * 12) / 12;
+    window._dividerWalls.push({ id: _nextDividerId++, atFt: _at, posts: true, sides: 2,
+      x1: 0, y1: _at, x2: (Q.l ? (Q.w || 0) : 0), y2: _at, _open: false });
   }
   renderDividerWalls();
   try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
@@ -44254,32 +44291,58 @@ window.autoDividersBetweenDoors = function() {
 window.renderDividerWalls = function() {
   var el = document.getElementById('dividerWallList');
   if (!el) return;
-  var list = (window._dividerWalls || []).slice().sort(function(a,b){ return a.atFt - b.atFt; });
-  if (!list.length) { el.innerHTML = '<div style="font-size:9px;color:var(--muted);">No dividers.</div>'; return; }
+  var raw = (window._dividerWalls || []).slice();
+  // Sorted by where each wall starts down the length, so the list reads in the
+  // order you walk the building.
+  var list = raw.sort(function(a, b) {
+    var ga = window._dwSeg(a), gb = window._dwSeg(b);
+    return (ga ? Math.min(ga.y1, ga.y2) : 0) - (gb ? Math.min(gb.y1, gb.y2) : 0);
+  });
+  if (!list.length) {
+    el.innerHTML = '<div style="font-size:9px;color:var(--muted);">No dividers. '
+                 + 'Draw them on the blueprint, or drop one straight across.</div>';
+    return;
+  }
   var L = Q.l || 0;
+  var acrossCount = 0;
+
+  function ftIn(v) {
+    var f = Math.floor(v + 1e-6), i = Math.round((v - f) * 12);
+    if (i === 12) { f += 1; i = 0; }
+    return f + "'" + (i ? ' ' + i + '"' : '');
+  }
+
   el.innerHTML = list.map(function(d, i) {
-    var prev = i === 0 ? 0 : list[i-1].atFt;
-    var unit = Math.round((d.atFt - prev) * 10) / 10;
-    var dSides = (d.sides === 1) ? 1 : 2;
-    // Auto placement lands on thirds of a foot, so show feet and inches rather
-    // than 13.333333333333334.
-    var _ft = Math.floor(d.atFt + 1e-6);
-    var _in = Math.round((d.atFt - _ft) * 12);
-    if (_in === 12) { _ft += 1; _in = 0; }
-    var atTxt = _ft + "'" + (_in ? ' ' + _in + '"' : '');
-    var atVal = Math.round(d.atFt * 100) / 100;
+    var g = window._dwSeg(d) || { x1:0, y1:0, x2:0, y2:0, len:0 };
+    var sides = window._dwFaces(d);
+    // A wall that runs straight across the building can still be nudged with a
+    // number. Anything drawn on an angle, or down the length, is moved on the
+    // blueprint where it was drawn.
+    var across = Math.abs(g.y1 - g.y2) < 0.01;
+    var along  = Math.abs(g.x1 - g.x2) < 0.01;
+    if (across) acrossCount++;
+    var dirTxt = across ? 'across, at ' + ftIn(g.y1)
+               : along  ? 'down the length, at ' + ftIn(g.x1)
+               : 'drawn  ' + ftIn(g.x1) + ',' + ftIn(g.y1) + ' to ' + ftIn(g.x2) + ',' + ftIn(g.y2);
+    var cladTxt = sides === 0 ? 'posts only, no girts or band'
+                : sides === 1 ? 'girts + J-channel one face'
+                : 'girts + J-channel both faces';
+
     return '<div class="shed-card"><div class="shed-card-hdr">'
       + '<span class="shed-card-icon">|</span>'
-      + '<span class="shed-card-lbl">Divider ' + (i+1) + ' &mdash; ' + atTxt + '</span>'
+      + '<span class="shed-card-lbl">Divider ' + (i+1) + ' &mdash; ' + ftIn(g.len) + '</span>'
       + '<button class="shed-card-rm" onclick="removeDividerWall(' + d.id + ')">&#10005;</button>'
       + '</div>'
       + '<div class="shed-body open" style="padding:6px 8px;">'
       +   '<div style="display:flex;gap:6px;align-items:center;">'
-      +     '<span style="font-size:9px;color:var(--muted);">At</span>'
-      +     '<input type="number" step="0.5" min="0" max="' + L + '" value="' + atVal + '" '
-      +       'onchange="setDividerProp(' + d.id + ',\'atFt\',this.value)" '
-      +       'style="width:62px;font-size:10px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:#f4f6f8;color:var(--navy);font-family:Outfit,sans-serif;font-weight:600;">'
-      +     '<span style="font-size:9px;color:var(--muted);">ft</span>'
+      +     (across
+          ? '<span style="font-size:9px;color:var(--muted);">At</span>'
+            + '<input type="number" step="0.5" min="0" max="' + L + '" value="'
+            + (Math.round(g.y1 * 100) / 100) + '" '
+            + 'onchange="setDividerProp(' + d.id + ',\'atFt\',this.value)" '
+            + 'style="width:62px;font-size:10px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:#f4f6f8;color:var(--navy);font-family:Outfit,sans-serif;font-weight:600;">'
+            + '<span style="font-size:9px;color:var(--muted);">ft</span>'
+          : '<span style="font-size:9px;color:var(--muted);">' + dirTxt + '</span>')
       +     '<label style="display:flex;align-items:center;gap:3px;font-size:9px;color:var(--muted);cursor:pointer;margin-left:auto;">'
       +       '<input type="checkbox"' + (d.posts !== false ? ' checked' : '') + ' '
       +       'onchange="setDividerProp(' + d.id + ',\'posts\',this.checked)" style="accent-color:var(--gold);">Posts</label>'
@@ -44288,17 +44351,24 @@ window.renderDividerWalls = function() {
       +     '<span style="font-size:9px;color:var(--muted);">Metal</span>'
       +     '<select onchange="setDividerProp(' + d.id + ',\'sides\',this.value)" '
       +       'style="flex:1;font-size:10px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:#f4f6f8;color:var(--navy);font-family:Outfit,sans-serif;font-weight:600;">'
-      +       '<option value="2"' + (dSides === 2 ? ' selected' : '') + '>Both sides</option>'
-      +       '<option value="1"' + (dSides === 1 ? ' selected' : '') + '>One side</option>'
+      +       '<option value="2"' + (sides === 2 ? ' selected' : '') + '>Both sides</option>'
+      +       '<option value="1"' + (sides === 1 ? ' selected' : '') + '>One side</option>'
+      +       '<option value="0"' + (sides === 0 ? ' selected' : '') + '>None (posts only)</option>'
       +     '</select>'
       +   '</div>'
-      +   '<div style="font-size:9px;color:var(--muted);margin-top:4px;">Unit before: ' + unit + "'  |  "
-      +     (dSides === 1 ? 'girts + J-channel one face' : 'girts + J-channel both faces') + '</div>'
+      +   '<div style="font-size:9px;color:var(--muted);margin-top:4px;">'
+      +     (across ? 'Runs across  |  ' : along ? 'Runs down the length  |  ' : 'Drawn line  |  ')
+      +     cladTxt + '</div>'
       + '</div></div>';
   }).join('')
+  // The unit count only means something when every divider cuts straight across
+  // the building. Once one is drawn on an angle the building is not a row of
+  // bays any more, so the footer just counts the walls.
   + '<div style="font-size:9px;color:var(--muted);margin-top:5px;">'
-  + (list.length + 1) + ' units  |  last unit '
-  + (Math.round((L - list[list.length-1].atFt) * 10) / 10) + "'</div>";
+  + (acrossCount === list.length
+      ? (list.length + 1) + ' units'
+      : list.length + ' divider' + (list.length > 1 ? 's' : ''))
+  + '</div>';
 };
 
 // Post frame only — a stud building partitions with the Interior Walls section.
@@ -44307,99 +44377,171 @@ window._dividerShowHide = function() {
   if (sec) sec.style.display = (typeof currentFrameType !== 'undefined' && currentFrameType === 'stud') ? 'none' : '';
   try { renderDividerWalls(); } catch(e) {}
 };
+// The section's markup ships hidden, and the page init runs in an earlier
+// script block than this one, so its call finds nothing to call. Unhide here,
+// where the function exists and the markup is already parsed, or a fresh load
+// never shows the section at all.
+try { window._dividerShowHide(); } catch(e) {}
+try { document.addEventListener('DOMContentLoaded', function() {
+  try { window._dividerShowHide(); } catch(e) {}
+}); } catch(e) {}
+
+// A divider is a line on the floor plan: two points in building feet, where x
+// runs 0..Q.w across and y runs 0..Q.l down the length. Older saved quotes hold
+// only atFt, a wall straight across the building at that distance down it, so
+// those read as a full-width segment and nothing has to be migrated.
+window._dwSeg = function(d) {
+  var W = (window._Q || window.Q || {}).w || 0;
+  if (!d) return null;
+  var x1, y1, x2, y2;
+  if (d.x1 != null && d.x2 != null && d.y1 != null && d.y2 != null) {
+    x1 = +d.x1; y1 = +d.y1; x2 = +d.x2; y2 = +d.y2;
+  } else if (d.atFt != null) {
+    x1 = 0; y1 = +d.atFt; x2 = W; y2 = +d.atFt;
+  } else {
+    return null;
+  }
+  var len = Math.sqrt((x2-x1)*(x2-x1) + (y2-y1)*(y2-y1));
+  return { x1:x1, y1:y1, x2:x2, y2:y2, len: Math.round(len * 12) / 12 };
+};
+
+// How many faces this divider is sheeted on. 2 both, 1 one side, 0 posts only.
+window._dwFaces = function(d) {
+  var s = (d && d.sides != null) ? parseInt(d.sides, 10) : 2;
+  return (s === 0 || s === 1) ? s : 2;
+};
 
 window.SauceMaterials.calcDividerWalls = function(Q, WALLS, sf) {
   var list = (window._dividerWalls || []).filter(function(d) {
-    return d && d.atFt != null && !d.disabled;
+    return d && !d.disabled && window._dwSeg(d) && window._dwSeg(d).len > 0.5;
   });
   if (!list.length) return [];
 
-  var n       = list.length;
-  var wallLen = Q.w || 0;                       // across the building
-  var wallH   = Q.h || 0;                       // slab to truss bottom
-  if (!(wallLen > 0 && wallH > 0)) return [];
+  var wallH = Q.h || 0;                          // slab to truss bottom
+  if (!(wallH > 0)) return [];
   var eave = (WALLS || []).find(function(w) { return w.id === 'left'; });
   var ps   = eave ? (eave.postSpacing || Q.postSpacing || 10) : (Q.postSpacing || 10);
 
+  var n     = list.length;
   var items = [];
 
-  // ── Girts, both faces ──────────────────────────────────────────────────────
+  // Walls are measured one at a time, because each is drawn to its own length
+  // and sheeted its own way, then the SKUs are added up across all of them.
+  var segs = list.map(function(d) {
+    var g = window._dwSeg(d);
+    g.faces = window._dwFaces(d);
+    g.posts = (d.posts !== false);
+    return g;
+  });
+
+  var faces   = segs.reduce(function(t, g) { return t + g.faces; }, 0);
+  var cladLf  = segs.reduce(function(t, g) { return t + g.len * g.faces; }, 0);
+  var nClad   = segs.filter(function(g) { return g.faces > 0; }).length;
+  var oneSide = segs.filter(function(g) { return g.faces === 1; }).length;
+  var bothSide= segs.filter(function(g) { return g.faces === 2; }).length;
+  var postOnly= segs.filter(function(g) { return g.faces === 0; }).length;
+
+  var facesTxt = (oneSide && bothSide) ? (bothSide + ' both faces, ' + oneSide + ' one face')
+               : bothSide ? 'both faces'
+               : oneSide  ? 'one face' : '';
+  var runTxt = n + ' divider' + (n > 1 ? 's' : '')
+             + (postOnly ? '  |  ' + postOnly + ' posts only' : '');
+
+  // ── Girts ──────────────────────────────────────────────────────────────────
   // Same rule as a sidewall: a row every 2ft up, runs broken on the posts so the
   // joints land on bearing, and only the stock lengths this program carries.
-  // Faces clad across all the dividers. Girts follow the metal: they are what
-  // the panel screws to, so a wall sheeted on one side only needs one set.
-  var faces = list.reduce(function(t, d) { return t + ((d.sides === 1) ? 1 : 2); }, 0);
-  var oneSide = list.filter(function(d) { return d.sides === 1; }).length;
-  var facesTxt = oneSide === 0 ? 'both faces'
-               : oneSide === n ? 'one face'
-               : (n - oneSide) + ' both faces, ' + oneSide + ' one face';
-
+  // Girts follow the metal: they are what the panel screws to, so a wall
+  // sheeted on one side only needs one set, and a posts-only wall needs none.
   var rows = Math.floor(wallH / 2);
   if (rows > 0 && window.SauceMaterials.girtRuns) {
-    var runs = window.SauceMaterials.girtRuns(wallLen, ps);
     var gg = {};
-    Object.keys(runs).forEach(function(len) {
-      var sku = 'SYP26' + len;
-      gg[sku] = (gg[sku] || 0) + Math.ceil(rows * runs[len]) * faces;
+    segs.forEach(function(g) {
+      if (!g.faces) return;
+      var runs = window.SauceMaterials.girtRuns(g.len, ps);
+      Object.keys(runs).forEach(function(len) {
+        var sku = 'SYP26' + len;
+        gg[sku] = (gg[sku] || 0) + Math.ceil(rows * runs[len]) * g.faces;
+      });
     });
     Object.keys(gg).sort().forEach(function(sku) {
       items.push({ category:'Yard', description:'Divider Wall Girts', sku:sku, quantity:gg[sku],
-        detail: n + ' divider' + (n>1?'s':'') + '  |  ' + rows + ' rows, ' + facesTxt + '  |  '
-              + wallLen + "' wide" });
+        detail: nClad + ' sheeted  |  ' + rows + ' rows, ' + facesTxt });
     });
   }
 
   // ── Pressure treated bottom band ───────────────────────────────────────────
-  var bandLen = (wallLen % 12 === 0 && wallLen % 10 !== 0) ? 12 : 10;
-  var bandSku = bandLen === 12 ? 'PT261260CCA' : 'PT261060CCA';
-  var bandQty = Math.ceil(wallLen / bandLen) * n;
-  items.push({ category:'Yard', description:'Divider Wall Bottom Band (PT)', sku:bandSku,
-    quantity:bandQty, detail: n + ' divider' + (n>1?'s':'') + '  |  ' + wallLen + "' each" });
+  // A posts-only divider has nothing to band, so it does not buy one.
+  var bb = {};
+  var bandLf = 0;
+  segs.forEach(function(g) {
+    if (!g.faces) return;
+    bandLf += g.len;
+    var bandLen = (g.len % 12 === 0 && g.len % 10 !== 0) ? 12 : 10;
+    var bandSku = bandLen === 12 ? 'PT261260CCA' : 'PT261060CCA';
+    bb[bandSku] = (bb[bandSku] || 0) + Math.ceil(g.len / bandLen);
+  });
+  Object.keys(bb).sort().forEach(function(sku) {
+    items.push({ category:'Yard', description:'Divider Wall Bottom Band (PT)', sku:sku,
+      quantity: bb[sku], detail: nClad + ' sheeted  |  ' + Math.round(bandLf) + ' lf' });
+  });
 
   // ── Posts ──────────────────────────────────────────────────────────────────
-  // Only the interior ones: each end of the divider lands on a sidewall post
-  // that the building already buys.
-  var postsOn = list.filter(function(d) { return d.posts !== false; }).length;
-  if (postsOn > 0) {
-    var perWall = Math.max(0, Math.round(wallLen / ps) - 1);
-    if (perWall > 0) {
-      var size   = (sf && sf.mbPostSize === '8x8') ? '8x8' : '6x6';
-      var pmap   = { '6x6':'PT66', '8x8':'PT88' }, fmap = { '6x6':'PBFP16', '8x8':'PBFP20' };
-      var rawLen = Math.ceil((wallH + 4) / 2) * 2;
-      var pLen   = window.SauceMaterials.enforceMinPostLen
-                 ? window.SauceMaterials.enforceMinPostLen(size, rawLen) : rawLen;
-      var cnt    = perWall * postsOn;
-      items.push({ category:'Yard', description:'Divider Wall Posts (' + size + ')',
-        sku: pmap[size] + pLen, quantity: cnt,
-        // "eave" in this text scoped the line to the eave walls, and a divider
-        // post stands in the middle of the building, so the line lit nothing.
-        detail: wallH + "' wall + 4' burial  |  " + perWall + ' per divider' });
-      items.push({ category:'Yard', description:'Divider Wall Post Footing Pads',
-        sku: fmap[size], quantity: cnt, detail: '1 per post' });
-      items.push({ category:'Yard', description:'Divider Wall Post Sackcrete',
-        sku: 'QCR', quantity: cnt * ((size === '8x8') ? 3 : 2),
-        detail: ((size === '8x8') ? '3' : '2') + ' bags per post' });
-    }
+  // Interior posts down the run, plus one at each end. A divider lands wherever
+  // the unit layout puts it, which is almost never on an existing post, so each
+  // end buys its own: post, pad, concrete and lags into whatever it ties to.
+  var interior = 0, ends = 0;
+  segs.forEach(function(g) {
+    if (!g.posts) return;
+    interior += Math.max(0, Math.round(g.len / ps) - 1);
+    ends     += 2;
+  });
+  var cnt = interior + ends;
+  if (cnt > 0) {
+    var size   = (sf && sf.mbPostSize === '8x8') ? '8x8' : '6x6';
+    var pmap   = { '6x6':'PT66', '8x8':'PT88' }, fmap = { '6x6':'PBFP16', '8x8':'PBFP20' };
+    var rawLen = Math.ceil((wallH + 4) / 2) * 2;
+    var pLen   = window.SauceMaterials.enforceMinPostLen
+               ? window.SauceMaterials.enforceMinPostLen(size, rawLen) : rawLen;
+    var bags   = (size === '8x8') ? 3 : 2;
+    // areaOf() reads this text to decide which walls a line is about, so the
+    // words "eave", "sidewall", "gable" and the wall names are off limits here:
+    // with them in, the line lit only the end posts and dropped the interior
+    // ones. "wall connections" says the same thing and scopes to the building.
+    var mix    = interior + ' interior + ' + ends + ' at the wall connections';
+    items.push({ category:'Yard', description:'Divider Wall Posts (' + size + ')',
+      sku: pmap[size] + pLen, quantity: cnt,
+      detail: wallH + "' wall + 4' burial  |  " + mix });
+    items.push({ category:'Yard', description:'Divider Wall Post Footing Pads',
+      sku: fmap[size], quantity: cnt, detail: '1 per post  |  ' + mix });
+    items.push({ category:'Yard', description:'Divider Wall Post Sackcrete',
+      sku: 'QCR', quantity: cnt * bags, detail: bags + ' bags per post  |  ' + mix });
+    items.push({ category:'Hardware', description:'Divider Wall Lag Bolts',
+      sku: 'LAG5', quantity: cnt * 2,
+      detail: cnt + ' posts  |  2 per post  |  ' + mix });
   }
 
-  // ── Metal, both faces ──────────────────────────────────────────────────────
-  // Panel length is the sidewall height, because the wall stops at the truss
-  // bottom chord, which is level with the eave.
-  var wallCode = (window._selectedColors || {}).wallCode || 'CC';
-  var mType = (document.getElementById('st_wallMetal') || {}).value || 'Tuff-Rib 29ga';
-  var mPrefix = (typeof getColoredSkuPrefix === 'function')
-              ? getColoredSkuPrefix(mType, 'wall') : ('T9' + wallCode);
-  items.push({ category:'Sidewall Metal', description:'Divider Wall Metal',
-    sku: mPrefix, quantity: Math.ceil(wallLen / 3) * faces,
-    length: wallH,
-    detail: n + ' divider' + (n>1?'s':'') + '  |  ' + facesTxt + '  |  ' + wallH + "' panels" });
+  if (faces > 0) {
+    // ── Metal ────────────────────────────────────────────────────────────────
+    // Panel length is the sidewall height, because the wall stops at the truss
+    // bottom chord, which is level with the eave.
+    var mQty = segs.reduce(function(t, g) {
+      return t + (g.faces ? Math.ceil(g.len / 3) * g.faces : 0);
+    }, 0);
+    var wallCode = (window._selectedColors || {}).wallCode || 'CC';
+    var mType = (document.getElementById('st_wallMetal') || {}).value || 'Tuff-Rib 29ga';
+    var mPrefix = (typeof getColoredSkuPrefix === 'function')
+                ? getColoredSkuPrefix(mType, 'wall') : ('T9' + wallCode);
+    items.push({ category:'Sidewall Metal', description:'Divider Wall Metal',
+      sku: mPrefix, quantity: mQty, length: wallH,
+      detail: runTxt + '  |  ' + facesTxt + '  |  ' + wallH + "' panels" });
 
-  // ── J-channel, top and bottom, both faces ──────────────────────────────────
-  var jcLf  = wallLen * 2 * faces;          // a top and a bottom run on each clad face
-  var jcSku = 'JC9' + ((window._selectedColors || {}).trimCode || 'BK') + '10';
-  items.push({ category:'Trim', description:'Divider Wall J-Channel', sku:jcSku,
-    quantity: Math.ceil(jcLf / 10),
-    detail: 'top and bottom, ' + facesTxt + '  |  ' + jcLf + " lf" });
+    // ── J-channel, top and bottom of each clad face ──────────────────────────
+    var jcLf  = cladLf * 2;
+    var jcSku = 'JC9' + ((window._selectedColors || {}).trimCode || 'BK') + '10';
+    items.push({ category:'Trim', description:'Divider Wall J-Channel', sku:jcSku,
+      quantity: Math.ceil(jcLf / 10),
+      detail: 'top and bottom, ' + facesTxt + '  |  ' + Math.round(jcLf) + " lf" });
+  }
 
   return items;
 };
@@ -51121,6 +51263,26 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
     lines.push({ label: 'Interior/Stall Posts  |  ' + _stallP.length + ' posts @ ' + _$(stallRate), amount: _stallP.length * stallRate });
   }
 
+  // Divider wall posts — interior posts plus the two that tie each divider into
+  // the eave walls. Same rate as any other extra post. The count is read off
+  // the material line rather than worked out again here, so labor and materials
+  // can never disagree about how many posts there are.
+  if (SM && SM.calcDividerWalls) {
+    try {
+      var _dwPosts = 0;
+      (SM.calcDividerWalls(Q, WALLS, sf) || []).forEach(function(it) {
+        if (/^Divider Wall Posts/.test(it.description || '')) _dwPosts += (it.quantity || 0);
+      });
+      if (_dwPosts > 0) {
+        var _dwRate = _R.v('labor.posts.stall');
+        if (_dwRate > 0) {
+          lines.push({ label: 'Divider Wall Posts  |  ' + _dwPosts + ' posts @ ' + _$(_dwRate),
+                       amount: _dwPosts * _dwRate });
+        }
+      }
+    } catch(e) { try { console.warn('divider post labor skipped:', e); } catch(_) {} }
+  }
+
   // Post Protectors labor — $10 per protector
   var postProtOn = !!(document.getElementById('st_postProtectors')||{}).checked;
   if (postProtOn && SM && SM.calcPostProtectors) {
@@ -51216,16 +51378,27 @@ window.SauceLabor.calcExtras = function(Q, WALLS, shedCfgs, sf, buildingType) {
   // wall sheeted on one side bills half of one sheeted on both. Width x wall
   // height is one face; the sides setting says how many faces each wall has.
   (function() {
+    if (!window._dwSeg) return;
+    // Each wall is measured on the line it was drawn, not on the building
+    // width: a 15' stub and a 40' run down the length bill what they are.
     var dws = (window._dividerWalls || []).filter(function(d) {
-      return d && d.atFt != null && !d.disabled;
+      if (!d || d.disabled) return false;
+      var g = window._dwSeg(d);
+      return g && g.len > 0.5 && window._dwFaces(d) > 0;
     });
     if (!dws.length) return;
     var dRate = _R.v('labor.interior.dividerPerSqft');
     if (!(dRate > 0)) return;
-    var faceSf = (Q.w || 0) * (Q.h || 0);
-    if (!(faceSf > 0)) return;
-    var dFaces = dws.reduce(function(t, d) { return t + ((d.sides === 1) ? 1 : 2); }, 0);
-    var dSf    = faceSf * dFaces;
+    var wallH = Q.h || 0;
+    if (!(wallH > 0)) return;
+    var dFaces = 0, dSf = 0;
+    dws.forEach(function(d) {
+      var f = window._dwFaces(d);
+      dFaces += f;
+      dSf    += window._dwSeg(d).len * wallH * f;
+    });
+    dSf = Math.round(dSf);
+    if (!(dSf > 0)) return;
     lines.push({
       label: 'Interior Divider Walls  |  ' + dws.length + ' wall' + (dws.length > 1 ? 's' : '')
            + ', ' + dFaces + ' clad face' + (dFaces > 1 ? 's' : '')
@@ -54303,6 +54476,9 @@ window.openGalleryModal = function() {
 // FLOOR PLAN MODAL — interior wall designer
 // ═══════════════════════════════════════════════════════
 window.openStallPostTool = function(){ window.openFloorPlanModal(null, 'post'); };
+// Same blueprint, opened straight onto the Wall tool, which on post frame draws
+// divider walls.
+window.openDividerDrawTool = function(){ window.openFloorPlanModal(null, 'wall'); };
 window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
   var existing = document.getElementById('floorPlanModal');
   if (existing) existing.remove();
@@ -54313,7 +54489,12 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
   var SNAP = 1;
   // If called from "Draw Zone" button, switch to that level and activate zone tool
   var activeLevelId = drawZoneLevelId || (window._levelConfigs[0]||{}).id || 1;
-  var _initialTool = _fpIsStud ? (startTool || (drawZoneLevelId ? 'zone' : 'wall')) : 'post';
+  // Post frame used to have only the Posts tool, so it forced 'post' and
+  // ignored what the caller asked for. It now has the Wall tool too, which is
+  // how divider walls are drawn, so honour the requested tool on both.
+  var _initialTool = _fpIsStud
+    ? (startTool || (drawZoneLevelId ? 'zone' : 'wall'))
+    : ((startTool === 'wall' || startTool === 'post') ? startTool : 'post');
 
   (window._interiorWalls||[]).forEach(function(iw){
     if(!iw.openings) iw.openings=[];
@@ -54370,6 +54551,15 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
   modeBar.style.cssText = 'display:flex;gap:6px;align-items:center;flex-shrink:0;flex-wrap:wrap;';
   var drawState = { tool: _initialTool, startFt: null, zonePt1: null };
   var selectedIdx = -1;
+  // On post frame the Wall tool draws divider walls, not stud walls: a line
+  // drawn here becomes a post-frame partition with girts, band and metal.
+  var _fpDivMode = !_fpIsStud;
+  var _selDiv = -1;
+  function _divList() { return window._dividerWalls || (window._dividerWalls = []); }
+  function _divSegs() {
+    return _divList().map(function(d) { var g = window._dwSeg(d); if (g) g._d = d; return g; })
+                     .filter(Boolean);
+  }
   var _selectedStairIdx = -1;
   var _draggingStair = false;
   var _dragStairOffsetX = 0, _dragStairOffsetY = 0;
@@ -54399,16 +54589,37 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
   var instEl = document.createElement('div');
   instEl.style.cssText = 'font-size:10px;color:#64748b;flex:1;';
 
+  // Cycles the selected divider through both faces / one face / posts only.
+  var divMetalBtn = mkTool('divmetal', 'Metal: Both', '#60a5fa', function() {
+    var L = _divList();
+    if (_selDiv < 0 || !L[_selDiv]) { instEl.textContent = 'Click a divider wall first, then set its metal.'; return; }
+    var cur = window._dwFaces(L[_selDiv]);
+    L[_selDiv].sides = (cur === 2) ? 1 : (cur === 1) ? 0 : 2;
+    _syncDivMetalBtn();
+    try { renderDividerWalls(); } catch(e) {}
+    scheduleBuild(); redraw(lastMouse);
+  });
+  function _syncDivMetalBtn() {
+    var L = _divList(), txt = 'Metal: \u2014';
+    if (_selDiv >= 0 && L[_selDiv]) {
+      var f = window._dwFaces(L[_selDiv]);
+      txt = 'Metal: ' + (f === 2 ? 'Both' : f === 1 ? 'One' : 'None');
+    }
+    divMetalBtn.textContent = txt;
+  }
+
   var _fpTools = _fpIsStud
     ? [wallToolBtn, doorToolBtn, bearToolBtn, drainToolBtn, zoneToolBtn, stairToolBtn, postToolBtn, postSizeBtn, instEl]
-    : [postToolBtn, postSizeBtn, instEl];
+    : [wallToolBtn, divMetalBtn, postToolBtn, postSizeBtn, instEl];
   _fpTools.forEach(function(el){ modeBar.appendChild(el); });
   panel.appendChild(modeBar);
 
   function setTool(t) {
     drawState.tool=t; drawState.startFt=null; drawState.zonePt1=null; selectedIdx=-1; selectedZoneId=-1;
     var instMap = {
-      wall:'Click start → click end to draw wall on active level',
+      wall: _fpDivMode
+            ? 'Click start \u2192 click end to draw a divider wall  |  Click a wall to select it, then set its metal'
+            : 'Click start \u2192 click end to draw wall on active level',
       door:'Click a wall to add a door opening  |  Click an existing door to remove it',
       bearing:'Click a wall to toggle load-bearing (double top plate)',
       drain:'Click to place a fixture  |  Click an existing fixture to remove it',
@@ -54423,6 +54634,7 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
     if(ctx) redraw(null);
   }
   setTool(_initialTool);
+  try { if (_fpDivMode) _syncDivMetalBtn(); } catch(e) {}
 
   // Canvas — enlarged for better precision
   var PAD = 44;
@@ -54730,6 +54942,62 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
       });
     })();
     ctx.restore();
+
+    // ── DIVIDER WALLS on canvas ───────────────────────────────────────────
+    // Drawn as a thick line with its length on it, the sheeted faces hatched
+    // either side, so one look says which walls are metal and which way.
+    if (_fpDivMode) {
+      ctx.save();
+      _divSegs().forEach(function(g, gi) {
+        var a = ftToCanvas(g.x1, g.y1), b = ftToCanvas(g.x2, g.y2);
+        var faces = window._dwFaces(g._d);
+        var isSel = (gi === _selDiv);
+        var col = faces === 0 ? '#fb923c' : '#60a5fa';
+        var ang = Math.atan2(b.y - a.y, b.x - a.x);
+        var px = -Math.sin(ang), py = Math.cos(ang);
+
+        // The clad faces, as a band just off the wall line.
+        var signs = faces === 2 ? [-1, 1] : faces === 1 ? [-1] : [];
+        ctx.strokeStyle = 'rgba(96,165,250,.45)';
+        ctx.lineWidth = 5;
+        signs.forEach(function(sg) {
+          ctx.beginPath();
+          ctx.moveTo(a.x + px*sg*5, a.y + py*sg*5);
+          ctx.lineTo(b.x + px*sg*5, b.y + py*sg*5);
+          ctx.stroke();
+        });
+
+        ctx.strokeStyle = isSel ? '#ef4444' : col;
+        ctx.lineWidth = isSel ? 4 : 3;
+        if (faces === 0) ctx.setLineDash([7, 5]);
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        ctx.setLineDash([]);
+
+        [a, b].forEach(function(pt) {
+          ctx.fillStyle = isSel ? '#ef4444' : col;
+          ctx.beginPath(); ctx.arc(pt.x, pt.y, 4, 0, Math.PI*2); ctx.fill();
+        });
+
+        var mx = (a.x + b.x)/2, my = (a.y + b.y)/2;
+        var lab = 'D' + (gi+1);
+        ctx.font = 'bold 11px Outfit,sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        var tw = ctx.measureText(lab).width + 10;
+        ctx.fillStyle = 'rgba(15,23,42,.85)';
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(mx + px*16 - tw/2, my + py*16 - 9, tw, 18, 4);
+        else ctx.rect(mx + px*16 - tw/2, my + py*16 - 9, tw, 18);
+        ctx.fill();
+        ctx.fillStyle = col;
+        ctx.fillText(lab, mx + px*16, my + py*16);
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '9px Outfit,sans-serif';
+        ctx.fillText((Math.round(g.len*10)/10) + "'  "
+          + (faces === 2 ? '2 side' : faces === 1 ? '1 side' : 'posts'),
+          mx + px*16, my + py*16 + 13);
+      });
+      ctx.restore();
+    }
 
     // ── STAIRS on canvas ──────────────────────────────────────────────────
     window._stairBtns = [];
@@ -55086,6 +55354,43 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
       return;
     }
 
+    // Wall tool — on post frame this draws divider walls instead of stud walls.
+    if(_fpDivMode){
+      if(!drawState.startFt){
+        // Select the nearest divider if the click landed on one.
+        var dsegs=_divSegs(), dBest=-1, dDist=999;
+        dsegs.forEach(function(g,gi){
+          var a=ftToCanvas(g.x1,g.y1), b=ftToCanvas(g.x2,g.y2);
+          var ddx=b.x-a.x, ddy=b.y-a.y, l2=ddx*ddx+ddy*ddy;
+          if(!l2) return;
+          var t=Math.max(0,Math.min(1,((cx2-a.x)*ddx+(cy2-a.y)*ddy)/l2));
+          var qx=a.x+t*ddx-cx2, qy=a.y+t*ddy-cy2;
+          var dd=Math.sqrt(qx*qx+qy*qy);
+          if(dd<dDist){dDist=dd;dBest=gi;}
+        });
+        if(dBest>=0 && dDist<10){
+          _selDiv=(_selDiv===dBest)?-1:dBest;
+          _syncDivMetalBtn(); redraw(lastMouse); return;
+        }
+        _selDiv=-1; _syncDivMetalBtn();
+        drawState.startFt=ft;
+      } else {
+        var ddx2=ft.x-drawState.startFt.x, ddy2=ft.y-drawState.startFt.y;
+        if(Math.sqrt(ddx2*ddx2+ddy2*ddy2)>0.5){
+          _divList().push({ id:_nextDividerId++,
+            x1:drawState.startFt.x, y1:drawState.startFt.y, x2:ft.x, y2:ft.y,
+            atFt: Math.round(((drawState.startFt.y+ft.y)/2)*12)/12,
+            posts:true, sides:2, _open:false });
+          _selDiv=_divList().length-1; _syncDivMetalBtn();
+          try { renderDividerWalls(); } catch(e) {}
+          scheduleBuild();
+        }
+        drawState.startFt=null;
+      }
+      redraw(lastMouse);
+      return;
+    }
+
     // Wall tool
     if(!drawState.startFt){
       // Try select on active level first
@@ -55117,7 +55422,12 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
       if(drawState.startFt){drawState.startFt=null;redraw(lastMouse);}
       else{overlay.remove();document.removeEventListener('keydown',escH);}
     }
-    if((e.key==='Delete'||e.key==='Backspace')&&selectedIdx>=0){
+    if((e.key==='Delete'||e.key==='Backspace')&&_fpDivMode&&_selDiv>=0){
+      _divList().splice(_selDiv,1);_selDiv=-1;_syncDivMetalBtn();
+      try { renderDividerWalls(); } catch(e) {}
+      scheduleBuild();redraw(lastMouse);
+    }
+    if((e.key==='Delete'||e.key==='Backspace')&&!_fpDivMode&&selectedIdx>=0){
       window._interiorWalls.splice(selectedIdx,1);selectedIdx=-1;
       renderInteriorWalls();scheduleBuild();redraw(lastMouse);
     }
@@ -55146,11 +55456,23 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
     b.onclick=fn;return b;
   }
   toolbar.appendChild(mkBtn2('Delete Wall','#ef4444',function(){
+    if(_fpDivMode){
+      if(_selDiv<0){ instEl.textContent='Select a divider first (click it), then delete.'; return; }
+      _divList().splice(_selDiv,1); _selDiv=-1; _syncDivMetalBtn();
+      try { renderDividerWalls(); } catch(e) {}
+      scheduleBuild();redraw(lastMouse); return;
+    }
     if(selectedIdx<0){ instEl.textContent='Select a wall first (click it), then delete.'; return; }
     window._interiorWalls.splice(selectedIdx,1);selectedIdx=-1;
     renderInteriorWalls();scheduleBuild();redraw(lastMouse);
   }));
   toolbar.appendChild(mkBtn2('Clear All','#64748b',function(){
+    if(_fpDivMode){
+      if(!confirm('Clear all divider walls and interior posts?'))return;
+      window._dividerWalls=[];window._stallPosts=[];_selDiv=-1;_syncDivMetalBtn();
+      try { renderDividerWalls(); } catch(e) {}
+      scheduleBuild();redraw(lastMouse); return;
+    }
     if(!confirm('Clear all interior walls and drains?'))return;
     window._interiorWalls=[];window._floorDrains=[];window._stairObjects=[];selectedIdx=-1;
     renderInteriorWalls();scheduleBuild();redraw(lastMouse);
