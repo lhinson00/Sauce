@@ -2939,6 +2939,190 @@ window._importWall = function(w, fallback) {
 // built here now so the import runs on the same Supabase function everything
 // else uses. The field names and value sets below must stay in step with
 // _applyFieldsInner — that is the only consumer of this JSON.
+// ── OUR OWN ESTIMATE PDFs ───────────────────────────────────────────────────
+// The estimate the website emails a customer is a fixed "Label: Value" sheet,
+// so it does not need a model to read it — and should not need one. Reading it
+// here means importing our own quote back in works with no server call at all:
+// instant, free, and unaffected by whether a function is deployed.
+// Returns null for anything that is not one of ours, so competitor PDFs fall
+// through to the parser as before.
+window._parseSummertownEstimate = function(rawText) {
+  // pdf.js flattens a page to one line and keeps typographic ligatures, so
+  // "Soffit" arrives as "So<ffi>t" and never matches. Normalise first.
+  var T = String(rawText || '')
+    .replace(/ﬀ/g,'ff').replace(/ﬁ/g,'fi').replace(/ﬂ/g,'fl')
+    .replace(/ﬃ/g,'ffi').replace(/ﬄ/g,'ffl')
+    .replace(/’/g,"'").replace(/[–—]/g,'-')
+    .replace(/\s+/g,' ');
+
+  // Only ours. Two independent markers so a renamed heading alone can't
+  // misroute a competitor's quote into this parser.
+  var looksOurs = /Building Estimate/i.test(T) &&
+                  /Building Type\s*:/i.test(T) &&
+                  /Truss Type\s*:/i.test(T);
+  if (!looksOurs) return null;
+
+  var P = {}, notes = [];
+  function num(re)  { var m = T.match(re); return m ? parseInt(m[1], 10) : null; }
+  function pick(label, vocab) {
+    var m = T.match(new RegExp(label + '\\s*:\\s*(' + vocab + ')', 'i'));
+    return m ? m[1].trim() : '';
+  }
+  // Capture free text by anchoring on the label that follows it — the only
+  // reliable way to find the end of a value on a flattened line. The value is
+  // barred from containing a colon, which keeps a match from running through an
+  // intervening label: "Does the Building Have Insulation:" sits before
+  // "Insulation:", and a greedy capture swallowed the first into the second.
+  function between(label, nextLabel) {
+    var m = T.match(new RegExp(label + '\\s*:\\s*([^:]+?)\\s+' + nextLabel + '\\s*:', 'i'));
+    return m ? m[1].trim() : '';
+  }
+  function yes(label) {
+    var v = pick(label, 'Yes|No');
+    return v ? /^yes$/i.test(v) : undefined;
+  }
+
+  // ── Customer
+  var nm = between('Name', 'Phone Number'); if (nm) P.custName = nm;
+  var ph = T.match(/Phone Number\s*:\s*(\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4})/i);
+  if (ph) P.custPhone = ph[1].trim();
+  var em = T.match(/Email\s*:\s*([^\s@]+@[^\s@]+\.[A-Za-z]{2,})/i);
+  if (em) P.custEmail = em[1].trim();
+  var ad = between('Address', 'City');
+  var ct = between('City', 'State');
+  var st = pick('State', '[A-Z]{2}');
+  var zp = T.match(/Zip Code\s*:\s*(\d{5})/i);
+  if (ad) P.custAddress = [ad, ct, (st || '') + (zp ? ' ' + zp[1] : '')]
+                            .map(function(s){ return String(s).trim(); })
+                            .filter(Boolean).join(', ');
+
+  // ── Size
+  var w = num(/\bWidth\s*:\s*(\d+)/i);   if (w) P.width  = w;
+  var l = num(/\bLength\s*:\s*(\d+)/i);  if (l) P.length = l;
+  var h = num(/\bHeight\s*:\s*(\d+)/i);  if (h) P.height = h;
+
+  // ── Structure
+  var pitch = num(/Roof Pitch\s*:\s*(\d+)\s*\/\s*12/i);
+  if (pitch) { if ([4,6,8,10].indexOf(pitch) !== -1) P.pitch = pitch;
+               else notes.push('Roof pitch ' + pitch + '/12'); }
+
+  var tt = pick('Truss Type', 'Steel|Wood');
+  if (tt) P.truss = /steel/i.test(tt) ? 'Steel' : 'Wood';
+
+  // The estimator writes truss spacing in feet. Only 5, 4 and 2 exist here, so
+  // anything else is reported rather than forced into the dropdown — setting a
+  // value the select does not carry silently blanks it.
+  var ts = num(/Truss Spacing\s*:\s*(\d+)/i);
+  if (ts) { if ([5,4,2].indexOf(ts) !== -1) P.trussSpacing = String(ts);
+            else notes.push('Truss spacing ' + ts + " ft (tool offers 5, 4, 2)"); }
+
+  var eps = num(/Eave Post Spacing\s*:\s*(\d+)/i);  if (eps) P.eavePS  = eps;
+  var gps = num(/Gable Post Spacing\s*:\s*(\d+)/i); if (gps) P.gablePS = gps;
+
+  var inground = pick('Post In-?ground or Above', 'In-?Ground|Above');
+  if (inground) P.postsOnTop = /above/i.test(inground);
+
+  var so = yes('Soffit');     if (so !== undefined) P.soffit   = so;
+  var wn = yes('Wainscoting');if (wn !== undefined) P.wainscot = wn;
+
+  // ── Enclosure
+  var bt = pick('Building Type', 'Enclosed|Partially Enclosed|Open|Roof Only');
+  if (/^enclosed$/i.test(bt)) {
+    P.enclosure = { front:'enclosed', back:'enclosed', left:'enclosed', right:'enclosed' };
+  } else if (/open|roof only/i.test(bt)) {
+    P.openBuilding = true;
+  } else if (bt) { notes.push('Building type "' + bt + '"'); }
+
+  // ── Metal and colour. Gauge decides the panel; the colour names are matched
+  // against the tool's own list so a name it does not carry is reported, never
+  // swapped for a near match.
+  function gauge(label, key, bbOk) {
+    var g = num(new RegExp(label + '\\s*:\\s*(\\d{2})\\s*Gauge', 'i'));
+    if (!g) {
+      if (/Standing Seam/i.test(T) && key === 'roofMetal') P.roofMetal = 'Standing Seam 26ga';
+      return;
+    }
+    if (g === 29) P[key] = 'Tuff-Rib 29ga';
+    else if (g === 26) P[key] = bbOk && /Board\s*&?\s*Batten/i.test(T)
+                                ? 'Board & Batten 26ga' : 'Tuff-Rib 26ga';
+    else notes.push(label + ' ' + g + ' gauge');
+  }
+  gauge('Roof Metal Type', 'roofMetal', false);
+  gauge('Wall Metal Type', 'wallMetal', true);
+  if (/Standing Seam/i.test(T)) P.standingSeam = true;
+
+  var known = Object.keys(window.COLOR_HEX || {});
+  var vocab = known.map(function(c){ return c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); })
+                   .sort(function(a,b){ return b.length - a.length; }).join('|');
+  [['Roof Metal Color','roofColor'], ['Wall Metal Color','wallColor'],
+   ['Trim Color','trimColor'], ['Wainscot Color','wainscotColor']].forEach(function(pair) {
+    if (!vocab) return;
+    var v = pick(pair[0], vocab);
+    if (v) P[pair[1]] = v;
+    else if (new RegExp(pair[0] + '\\s*:', 'i').test(T)) {
+      var any = T.match(new RegExp(pair[0] + '\\s*:\\s*([A-Za-z][A-Za-z ]{2,24})', 'i'));
+      if (any) notes.push(pair[0] + ' "' + any[1].trim() + '"');
+    }
+  });
+
+  // ── Insulation. "Full Building" says which surfaces; the product name is a
+  // separate line and our estimator's names are not the tool's, so an unknown
+  // one is reported for the salesman to set.
+  var cov = pick('Does the Building Have Insulation', 'Full Building|Roof Only|Walls Only|Yes|No');
+  if (cov && !/^no$/i.test(cov)) {
+    P.insulRoof  = !/walls only/i.test(cov);
+    P.insulWalls = !/roof only/i.test(cov);
+    var prod = between('Insulation', 'Concrete') ||
+               pick('Insulation', '[A-Za-z][A-Za-z0-9" ]{2,30}');
+    var validI = ['None','Double Bubble Foil','Double Bubble White','Therma Guard',
+                  '2 Vinyl Back','3 Vinyl Back','Solar Eclipse'];
+    var hit = validI.filter(function(v){
+      return prod && v.toLowerCase().replace(/[^a-z0-9]/g,'') ===
+                     prod.toLowerCase().replace(/[^a-z0-9]/g,'');
+    })[0];
+    if (hit) P.insulation = hit;
+    else if (prod) notes.push('Insulation "' + prod + '"');
+  }
+
+  // ── Concrete
+  var cd = num(/Concrete Depth\s*:\s*(\d+)/i) || num(/Concrete\s*:\s*Yes,\s*(\d+)/i);
+  if (cd) { if (cd === 4 || cd === 6) P.concrete = String(cd);
+            else notes.push('Concrete depth ' + cd + ' in'); }
+
+  // ── Openings. The estimate gives quantities and a product code but never a
+  // wall, so no wall is set: the tool leaves them field-located for placing.
+  var wins = [], m1, reWin = /Quantity of Windows\s*\(([A-Z0-9]+)\)\s*:\s*(\d+)/gi;
+  while ((m1 = reWin.exec(T))) { if (+m1[2] > 0) wins.push({ qty:+m1[2], type:m1[1] }); }
+  if (wins.length) P.windows = wins;
+
+  var wds = [], m2, reWD = /Quantity of Walk-?in[^:(]*(?:\(([A-Z0-9]+)\))?\s*:\s*(\d+)/gi;
+  while ((m2 = reWD.exec(T))) {
+    if (+m2[2] > 0) {
+      var tline = m2[1] ? (T.match(new RegExp('Type of Walk-?in Doors?\\s*\\(' + m2[1] + '\\)\\s*:\\s*([^:]{3,60})', 'i')) || [])[1] : '';
+      var dt = /french/i.test(tline || '') ? 'french'
+             : /glass/i.test(tline || '')  ? 'half-glass' : 'solid';
+      wds.push({ qty:+m2[2], type:dt });
+    }
+  }
+  if (wds.length) P.walkDoors = wds;
+
+  var gds = [], m3, reGD = /Quantity of (?:Garage|Overhead|Roll-?up)[^:(]*(?:\(([A-Z0-9]+)\))?\s*:\s*(\d+)/gi;
+  while ((m3 = reGD.exec(T))) {
+    if (+m3[2] > 0) {
+      var sz = T.match(/(?:Garage|Overhead|Roll-?up)[^:]*Size[^:]*:\s*(\d+)\s*[xX'’\s]+(\d+)/i);
+      gds.push({ qty:+m3[2], w: sz ? +sz[1] : 12, h: sz ? +sz[2] : 12,
+                 placement: (+m3[2] === 1 ? 'center' : 'spaced') });
+    }
+  }
+  if (gds.length) { P.garageDoors = gds; notes.push('Garage door wall not stated - placed on the back gable'); }
+
+  // ── Flags
+  if (/Farm Exemption\?\s*:?\s*Yes/i.test(T)) P.farmTax = true;
+  if (/Gutters?\s*:\s*Yes/i.test(T))          P.gutters = true;
+
+  return { parsed: P, notes: notes };
+};
+
 window._buildPdfImportPrompt = function(pdfText, haveElev) {
   var colors = Object.keys(window.COLOR_HEX || {}).join(', ');
   var P = [];
@@ -5982,6 +6166,22 @@ async function importCompetitorPDF(input) {
     }
     if (!pdfText.trim()) throw new Error('Could not extract text from PDF. Make sure it is a text-based PDF, not a scanned image.');
 
+    // Read our own estimate here, before anything is rendered. The sheet is a
+    // fixed Label: Value layout, so no model is needed and no page image is
+    // either - rendering the elevation and plan at full resolution costs about
+    // 25 seconds, and for one of ours it buys nothing.
+    window._importLocalNotes = [];
+    var _local = null;
+    try { _local = window._parseSummertownEstimate(pdfText); }
+    catch(e) { console.warn('[Import] local read failed, using the parser:', e.message); }
+    var _localOK = !!(_local && _local.parsed && Object.keys(_local.parsed).length > 3);
+    if (_localOK) {
+      window._importLocalNotes = _local.notes || [];
+      console.log('[Import] read locally from our own estimate - no server call, no page render');
+      if (window._importLocalNotes.length)
+        console.log('[Import] left for you to set: ' + window._importLocalNotes.join(' | '));
+    }
+
     // Render the two pages the parser needs as images:
     //  - PLAN page ("Sketches"): top-down floor plan. AUTHORITATIVE for which wall each
     //    opening is on -- a top-down view is unambiguous.
@@ -6072,7 +6272,7 @@ async function importCompetitorPDF(input) {
     }
 
     try {
-      if (window.pdfjsLib && typeof pdf !== 'undefined' && pdf) {
+      if (!_localOK && window.pdfjsLib && typeof pdf !== 'undefined' && pdf) {
         // Page detection by IMAGE COUNT, which is the only reliable signal here.
         // Why not text:
         //   - the post tags (PostA13, PostB03...) that the wall rule depends on are
@@ -6149,25 +6349,32 @@ async function importCompetitorPDF(input) {
     var data = null;
     var lastErr = '';
     var _usedShape = -1;
-    for (var _si = 0; _si < _shapes.length && _usedShape < 0; _si++) {
-      var _tries = (_si === _shapes.length - 1) ? 3 : 1;
-      for (var _attempt = 0; _attempt < _tries; _attempt++) {
-        if (_attempt > 0) {
-          btn.textContent = '⏳ Retrying (' + _attempt + '/2)...';
-          await new Promise(function(r){ setTimeout(r, _attempt * 3000); });
+
+    // One of ours was already read above, before any page was rendered.
+    // Everything else goes to the parser below.
+    if (_localOK) data = { success: true, result: JSON.stringify(_local.parsed) };
+
+    if (!data) {
+      for (var _si = 0; _si < _shapes.length && _usedShape < 0; _si++) {
+        var _tries = (_si === _shapes.length - 1) ? 3 : 1;
+        for (var _attempt = 0; _attempt < _tries; _attempt++) {
+          if (_attempt > 0) {
+            btn.textContent = '⏳ Retrying (' + _attempt + '/2)...';
+            await new Promise(function(r){ setTimeout(r, _attempt * 3000); });
+          }
+          data = await sbFunction('tool-services', _shapes[_si], 90000);
+          if (data && data.success && data.result) { _usedShape = _si; break; }
+          lastErr = (data && data.error) || 'Parse failed';
+          // Overload is the one error worth sitting out. Anything else means this
+          // shape is wrong, so move to the next rather than burn the clock on it.
+          if (lastErr.toLowerCase().indexOf('overload') === -1 &&
+              lastErr.toLowerCase().indexOf('529') === -1) break;
         }
-        data = await sbFunction('tool-services', _shapes[_si], 90000);
-        if (data && data.success && data.result) { _usedShape = _si; break; }
-        lastErr = (data && data.error) || 'Parse failed';
-        // Overload is the one error worth sitting out. Anything else means this
-        // shape is wrong, so move to the next rather than burn the clock on it.
-        if (lastErr.toLowerCase().indexOf('overload') === -1 &&
-            lastErr.toLowerCase().indexOf('529') === -1) break;
       }
+      if (!data || !data.success) throw new Error(lastErr || 'Parse failed');
+      console.log('[Import] parsed via tool-services, shape ' + _usedShape +
+                  (_usedShape === 2 ? ' (text only - openings rely on the quote wording)' : ''));
     }
-    if (!data || !data.success) throw new Error(lastErr || 'Parse failed');
-    console.log('[Import] parsed via tool-services, shape ' + _usedShape +
-                (_usedShape === 2 ? ' (text only - openings rely on the quote wording)' : ''));
     var raw = data.result || '';
     console.log('[Import] Claude returned:', raw);
     raw = raw.replace(/```json|```/g,'').trim();
@@ -6554,7 +6761,12 @@ async function importCompetitorPDF(input) {
     scheduleBuild();
     setTimeout(function(){ updateStripFromLocalCalc(); }, 400);
 
-    // Show result banner
+    // Show result banner. Anything our own estimate stated but the tool has no
+    // option for is listed with the rest, so it is set deliberately rather than
+    // left at a default the salesman never saw.
+    (window._importLocalNotes || []).forEach(function(n) {
+      if (skipped.indexOf(n) === -1) skipped.push(n);
+    });
     showImportBanner(filled, skipped);
 
   } catch(e) {
@@ -25080,7 +25292,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M75-1116';
+window.SAUCE_BUILD = 'M76-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
