@@ -25310,7 +25310,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M83-1116';
+window.SAUCE_BUILD = 'M84-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
@@ -31893,9 +31893,9 @@ window.bjOpenLayout = function(wallId) {
     +       'border:1px solid rgba(255,255,255,.18);background:#111827;color:#e2e8f0;'
     +       'font-family:Outfit,sans-serif;font-size:11px;font-weight:700;text-align:center;">'
     +     '<span style="font-size:11px;color:#8a93a6;">ft off the</span>'
-    +     '<button onclick="bjFitDoorsToBays(document.getElementById(\'bjCorner\').value,false)" style="padding:5px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.04);color:#cbd5e1;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">left corner</button>'
-    +     '<button onclick="bjFitDoorsToBays(document.getElementById(\'bjCorner\').value,true)" style="padding:5px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.04);color:#cbd5e1;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">right corner</button>'
-    +     '<span style="font-size:10px;color:#6b7280;">fitted inside the bays, nothing crosses a post</span>'
+    +     '<button onclick="bjSpaceEven(document.getElementById(\'bjCorner\').value,false)" style="padding:5px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.04);color:#cbd5e1;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">left corner</button>'
+    +     '<button onclick="bjSpaceEven(document.getElementById(\'bjCorner\').value,true)" style="padding:5px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.04);color:#cbd5e1;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">right corner</button>'
+    +     '<span style="font-size:10px;color:#6b7280;">one even rhythm, held clear of the posts</span>'
     +   '</div>'
     +   '<div id="bjOptions" style="margin-bottom:10px;"></div>'
     +   '<div id="bjSelBar" style="margin-bottom:10px;"></div>'
@@ -32039,6 +32039,85 @@ window.bjApplyJoistGrid = function() {
   U.sel = []; U.selDoor = null; U.selJoist = null;
   try { renderBarjoists(); } catch(e) {}
   window.bjCommit(U.wall, posts);
+};
+
+// Space every door evenly along the whole wall and keep them off the
+// structural posts. The two pull against each other: one even rhythm is fixed
+// by the setback, and a post is wherever the joists put it, so most setbacks
+// drop a door straight onto a column. This walks the setback an inch at a time
+// and returns the one nearest what was asked for that actually clears.
+window.bjMinPostClear = 3 / 12;      // framing room each side of a post
+
+window.bjEvenOptions = function(wallId, fromRight) {
+  wallId = wallId || window._bjUI.wall;
+  var len = window.bjWallLen(wallId);
+  var doors = (window._allDoors || []).filter(function(d) { return d.wall === wallId; })
+                .sort(function(a, b) { return (a.offset||0) - (b.offset||0); });
+  if (!doors.length) return [];
+  var widths = doors.map(function(d) { return d.w; });
+  if (fromRight) widths.reverse();
+  var total = widths.reduce(function(a, b) { return a + b; }, 0);
+  var posts = window.bjWorkingPosts(wallId).filter(function(f) {
+    return f > 0.01 && f < len - 0.01;              // corners never block a door
+  });
+  var half = (parseFloat(String(window.bjWallPostSize(wallId)).split('x')[0]) || 8) / 24;
+  var clr = half + window.bjMinPostClear;
+  var out = [];
+  for (var st = 0; st <= Math.round((len - total) * 12); st++) {
+    var sb = st / 12;
+    var gap = (len - sb - total) / widths.length;   // gaps after each door, far corner included
+    if (gap < -0.001) continue;
+    var spans = [], c = sb, okAll = true;
+    for (var i = 0; i < widths.length; i++) { spans.push([c, c + widths[i]]); c += widths[i] + gap; }
+    for (var pi = 0; pi < posts.length && okAll; pi++) {
+      for (var di = 0; di < spans.length; di++) {
+        if (spans[di][1] > posts[pi] - clr + 1e-9 && spans[di][0] < posts[pi] + clr - 1e-9) { okAll = false; break; }
+      }
+    }
+    if (!okAll) continue;
+    // How close the nearest door comes to a post, for reporting.
+    var near = 99;
+    posts.forEach(function(pp) {
+      spans.forEach(function(sp) {
+        near = Math.min(near, Math.abs(pp - half - sp[1]), Math.abs(sp[0] - (pp + half)));
+      });
+    });
+    out.push({ setback: sb, gap: gap, spans: spans, clear: (posts.length ? near : null) });
+  }
+  return out;
+};
+
+window.bjSpaceEven = function(targetTxt, fromRight) {
+  var U = window._bjUI;
+  var len = window.bjWallLen(U.wall);
+  var doors = (window._allDoors || []).filter(function(d) { return d.wall === U.wall; })
+                .sort(function(a, b) { return (a.offset||0) - (b.offset||0); });
+  if (!doors.length) { alert('No doors on this wall yet.'); return; }
+  var m = String(targetTxt || '0').trim()
+            .match(/^(-?\d+(?:\.\d+)?)\s*(?:'|ft)?\s*[-\s]?\s*(\d+(?:\.\d+)?)?\s*(?:"|in)?$/i);
+  var want = m ? parseFloat(m[1]) + (m[2] ? parseFloat(m[2])/12 : 0) : 0;
+
+  var opts = window.bjEvenOptions(U.wall, fromRight);
+  if (!opts.length) {
+    alert('No even spacing clears the posts on this wall.\n\n'
+      + 'The doors need ' + doors.reduce(function(t,d){return t+d.w;},0) + "' of a " + len
+      + "' wall. Move a post, use fewer doors, or fit them bay by bay instead.");
+    return;
+  }
+  opts.sort(function(a, b) { return Math.abs(a.setback - want) - Math.abs(b.setback - want); });
+  var pick = opts[0];
+  var ordered = fromRight ? doors.slice().reverse() : doors.slice();
+  ordered.forEach(function(d, i) {
+    var sp = pick.spans[i];
+    d.offset = Math.round((fromRight ? (len - sp[1]) : sp[0]) * 12) / 12;
+  });
+  try { renderGarageDoors(); } catch(e) {}
+  try { renderWalkDoors(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+  U.selDoor = null;
+  window._bjEvenNote = { want: want, got: pick.setback, gap: pick.gap, clear: pick.clear,
+                         best: Math.max.apply(null, opts.map(function(o) { return o.setback; })) };
+  window.bjDraw();
 };
 
 // Fit the doors into the bays the posts already define. No door may cross a
@@ -32478,6 +32557,25 @@ window.bjDraw = function() {
       + '  (longest joist ' + window.bjMaxJoist + "')";
   }
 
+  var en = window._bjEvenNote;
+  var evenNote = '';
+  if (en) {
+    var moved = Math.abs(en.got - en.want) > 0.02;
+    evenNote = '<div style="margin-bottom:8px;padding:8px 12px;border-radius:7px;font-size:11px;font-weight:700;'
+      + 'background:' + (moved ? 'rgba(251,191,36,.10)' : 'rgba(74,222,128,.08)') + ';'
+      + 'border:1px solid ' + (moved ? 'rgba(251,191,36,.4)' : 'rgba(74,222,128,.35)') + ';'
+      + 'color:' + (moved ? '#fbbf24' : '#4ade80') + ';">'
+      + (moved
+          ? 'Asked for ' + window.bjFtIn(en.want) + ' off the corner, used '
+            + window.bjFtIn(en.got) + '. At ' + window.bjFtIn(en.want)
+            + ' a door lands on a post. The most this wall allows, evenly spaced, is '
+            + window.bjFtIn(en.best) + '.'
+          : window.bjFtIn(en.got) + ' off the corner, ' + window.bjFtIn(en.gap)
+            + ' between every door.')
+      + (en.clear != null ? '  Nearest door to a post: ' + window.bjFtIn(en.clear) + '.' : '')
+      + '</div>';
+  }
+
   // What each bay ended up holding — the sheet a builder reads.
   var optEl = document.getElementById('bjOptions');
   if (optEl) {
@@ -32532,10 +32630,10 @@ window.bjDraw = function() {
         + stray.map(function(d) { return window.bjFtIn(d.offset) + '-' + window.bjFtIn(d.offset + d.w); }).join(', ')
         + '</div>');
     }
-    optEl.innerHTML = rows.length
+    optEl.innerHTML = evenNote + (rows.length
       ? '<div style="font-size:10px;font-weight:800;color:#8a93a6;text-transform:uppercase;letter-spacing:1px;margin-bottom:5px;">Bay by bay</div>'
         + rows.join('')
-      : '';
+      : '');
   }
 
   var selBar = document.getElementById('bjSelBar');
