@@ -2768,6 +2768,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <button id="vpImportBtn"   onclick="document.getElementById('pdfImportInput').click()" style="padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(var(--gold-rgb),.5);border-radius:8px;color:var(--gold);font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Import Quote</button>
         <button id="vpActivityBtn" onclick="openActivityLog()"     style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(var(--gold-rgb),.5);border-radius:8px;color:var(--gold);font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Activity Log</button>
         <button id="vpHardRefreshBtn" onclick="hardRefreshApp()" title="Force-reload the newest build (bypasses cache, same as Ctrl+Shift+R)" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(96,165,250,.55);border-radius:8px;color:#93c5fd;font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Hard Refresh</button>
+        <button id="vpExportJobBtn" onclick="exportQuoteJson()" title="Download this exact job as a .json file — every dimension, door, wall, post and option. Attach it to a bug report and the whole building can be rebuilt from it." style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(var(--gold-rgb),.5);border-radius:8px;color:var(--gold);font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Export Job</button>
         <button id="vpUsersBtn" onclick="openAdminModal()" title="Users, roles and company setup" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(var(--gold-rgb),.5);border-radius:8px;color:var(--gold);font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Users</button>
         <button id="vpRatesBtn" onclick="openPricingHub()" title="Materials, labor, concrete and shipping prices — your own or the company's" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(var(--gold-rgb),.5);border-radius:8px;color:var(--gold);font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Pricing</button>
         <button id="vpBrandBtn" onclick="openBrandingModal()" title="Logo, colours and features for a company" style="display:none;padding:6px 10px;background:rgba(40,40,55,.92);border:1px solid rgba(var(--gold-rgb),.5);border-radius:8px;color:var(--gold);font-size:11px;font-weight:700;font-family:'Outfit',sans-serif;cursor:pointer;text-align:center;">Branding</button>
@@ -10782,7 +10783,7 @@ document.addEventListener('DOMContentLoaded', initMobileViewport);
 // Basic mode strips the toolbar to the three things a salesman needs to quote.
 // It runs at the END of refreshAccountButtons, because that function reveals
 // buttons by role — anything hiding them has to have the last word.
-window.SAUCE_BASIC_KEEP = ['vpLoadBtn','vpNewQuoteBtn','vpHardRefreshBtn','vpDimToggle'];
+window.SAUCE_BASIC_KEEP = ['vpLoadBtn','vpNewQuoteBtn','vpHardRefreshBtn','vpDimToggle','vpExportJobBtn'];
 window.SAUCE_BASIC_HIDE = ['vpLeadsBtn','vpKitsBtn','vpGalleryBtn','vpImportBtn','vpActivityBtn',
                            'vpUsersBtn','vpRatesBtn','vpBrandBtn','vpPreviewBtn','vpPromoBtn',
                            // texting a quote is not part of a basic salesman's job
@@ -10913,6 +10914,7 @@ window.refreshAccountButtons = function() {
   } catch(e) {}
   var admin = (typeof isCompanyAdminUser === 'function') ? isCompanyAdminUser() : false;
   [['vpActivityBtn', admin], ['vpHardRefreshBtn', admin], ['vpPromoBtn', admin], ['vpUsersBtn', admin],
+   ['vpExportJobBtn', true],                  // anyone can hand their job over for a look
    ['vpRatesBtn', true]                       // everyone may see their own rates
   ].forEach(function(pair) {
     var el = document.getElementById(pair[0]);
@@ -25691,7 +25693,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M106-1117';
+window.SAUCE_BUILD = 'M107-1117';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -25723,6 +25725,51 @@ try { window._dividerRateRepair(); } catch(e) {}
 try { document.addEventListener('DOMContentLoaded', function(){
   try { window._dividerRateRepair(); } catch(e) {}
 }); } catch(e) {}
+
+// The whole job as a file. serializeConfig() is what Save already writes to the
+// server, so this is the same record, on disk, where it can be attached to a
+// bug report and loaded straight back with restoreConfig(). Much faster than
+// describing a building in words and hoping it is rebuilt the same way.
+window.exportQuoteJson = function() {
+  try {
+    var cfg = serializeConfig();
+    var payload = {
+      _build:  window.SAUCE_BUILD || '?',
+      _savedAt: new Date().toISOString(),
+      _customer: (document.getElementById('st_name') || {}).value || '',
+      config: cfg
+    };
+    var name = (payload._customer || 'quote').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    var stamp = new Date().toISOString().slice(0, 10);
+    var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'job-' + (name || 'quote') + '-' + stamp + '.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ try { URL.revokeObjectURL(url); } catch(e) {} }, 2000);
+    try { toast('Job exported \u2014 attach the .json file', 'ok'); } catch(e) {}
+  } catch(e) {
+    try { alert('Could not export this job: ' + e.message); } catch(_) {}
+  }
+};
+
+// Load a job file back in. Used by the test rig to rebuild a reported building
+// exactly as it was on the salesman's screen.
+window.importQuoteJson = function(payload) {
+  try {
+    var cfg = (payload && payload.config) ? payload.config : payload;
+    if (!cfg) return false;
+    restoreConfig(cfg);
+    try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+    return true;
+  } catch(e) {
+    try { console.warn('importQuoteJson failed:', e); } catch(_) {}
+    return false;
+  }
+};
 
 window._stampBuild = function() {
   try {
