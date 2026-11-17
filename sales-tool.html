@@ -7852,6 +7852,15 @@ window.SauceParts = window.SauceParts || (function(){
     { key:'cornerBracing', re:/corner\s*brac/i,      groups:['framing'], label:'corner bracing' },
     { key:'trussBracing',  re:/bracing|\bbrace(s)?\b/i, groups:['framing'], label:'truss bracing' },
     { key:'openingHeader', re:/(door|window|opening)\s*header/i, groups:['framing'], label:'opening headers' },
+    // A framed opening's own jamb posts and header are drawn with the opening,
+    // in the doors group, so they show without Framing being switched on. They
+    // get their own rules above the generic ones: otherwise the ordinary
+    // "Door Jacks" line reached into the doors group and lit them too, and a
+    // jack and a framed-opening jamb are not the same member.
+    { key:'jamb',    re:/jamb.*framed\s*opening|framed\s*opening.*jamb/i,
+      groups:['doors'], role:'framedOpening', label:'framed opening jambs' },
+    { key:'header',  re:/header.*framed\s*opening|framed\s*opening.*header/i,
+      groups:['doors'], role:'framedOpening', label:'framed opening header' },
     { key:'jamb',    re:/\bjamb|\bjack(s)?\b/i,        groups:['framing'], label:'jamb posts' },
     { key:'header',  re:/header/i,                   groups:['framing'], label:'headers' },
     { key:'band',    re:/\bband(s)?\b/i,             groups:['framing'], label:'bottom bands' },
@@ -16016,7 +16025,11 @@ function applyVoiceQuote(parsed, overlay) {
                       jm.userData.sPart = 'jamb';
                       jm.userData.sRole = 'framedOpening';
                       jm.userData.sUnit = 'fo-jamb-' + _dIx + '-' + oi;
-                      grps.framing.add(jm);
+                      // Into doors, not framing: the framing group is off until
+                      // somebody presses Framing, so a jamb post put there was
+                      // invisible in the view everyone actually looks at. The
+                      // jambs and header ARE the framed opening.
+                      grps.doors.add(jm);
                     });
                     // Header across the top of the opening, jamb to jamb.
                     var hw = dw + jw * 2;
@@ -16031,7 +16044,7 @@ function applyVoiceQuote(parsed, overlay) {
                     hm.userData.sPart = 'header';
                     hm.userData.sRole = 'framedOpening';
                     hm.userData.sUnit = 'fo-hdr-' + _dIx;
-                    grps.framing.add(hm);
+                    grps.doors.add(hm);
                   } catch(e) { try { console.warn('framed opening structure skipped:', e); } catch(_) {} }
                 })();
                 if (isG) {
@@ -17386,11 +17399,20 @@ function applyVoiceQuote(parsed, overlay) {
               // was ever reaching for. Side sheds have always done it this way.
               var wcn=(wc&&wc.wainscotColor)||(_ribHasW?wainscotColorName:cn);
               var hx=pc(cn),r=(hx>>16)&0xff,g=(hx>>8)&0xff,b=hx&0xff;
-              mRibHi=new THREE.MeshBasicMaterial({color:((Math.min(255,r+55)<<16)|(Math.min(255,g+55)<<8)|Math.min(255,b+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
-              mRibSh=new THREE.MeshBasicMaterial({color:((Math.max(0,r-40)<<16)|(Math.max(0,g-40)<<8)|Math.max(0,b-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
+              // The rib striations sit on the very same plane as the wall panel
+              // behind them, so the depth buffer has to pick a winner per pixel
+              // and picks differently across the wall — the ragged dark vertical
+              // streaks. Polygon offset pulls the ribs a hair toward the camera
+              // in depth only, without moving them in space, so the panel never
+              // wins. The further the camera sits the worse the fighting gets,
+              // which is why it showed up first on a building with attachments
+              // out to 140 feet.
+              var _ribOff = { polygonOffset:true, polygonOffsetFactor:-2, polygonOffsetUnits:-2 };
+              mRibHi=new THREE.MeshBasicMaterial(Object.assign({color:((Math.min(255,r+55)<<16)|(Math.min(255,g+55)<<8)|Math.min(255,b+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9}, _ribOff));
+              mRibSh=new THREE.MeshBasicMaterial(Object.assign({color:((Math.max(0,r-40)<<16)|(Math.max(0,g-40)<<8)|Math.max(0,b-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75}, _ribOff));
               var whx=pc(wcn),wr=(whx>>16)&0xff,wg=(whx>>8)&0xff,wb=whx&0xff;
-              mRibWsHi=new THREE.MeshBasicMaterial({color:((Math.min(255,wr+55)<<16)|(Math.min(255,wg+55)<<8)|Math.min(255,wb+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9});
-              mRibWsSh=new THREE.MeshBasicMaterial({color:((Math.max(0,wr-40)<<16)|(Math.max(0,wg-40)<<8)|Math.max(0,wb-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75});
+              mRibWsHi=new THREE.MeshBasicMaterial(Object.assign({color:((Math.min(255,wr+55)<<16)|(Math.min(255,wg+55)<<8)|Math.min(255,wb+55)),side:THREE.DoubleSide,transparent:true,opacity:0.9}, _ribOff));
+              mRibWsSh=new THREE.MeshBasicMaterial(Object.assign({color:((Math.max(0,wr-40)<<16)|(Math.max(0,wg-40)<<8)|Math.max(0,wb-40)),side:THREE.DoubleSide,transparent:true,opacity:0.75}, _ribOff));
               _wsHr=_ribHasW?Math.min(4*Sc,sh):0;
             }
             _setRibMats(null);
@@ -18637,6 +18659,14 @@ function applyVoiceQuote(parsed, overlay) {
                     var mainSlope = (_extSr-_extSh)/(sw/2);
                     var valleyDX = (mainSlope > 0 && extRidgeH > _extSh) ? (extRidgeH-_extSh)/mainSlope : 0;
                     var valleyX = aX - dir*valleyDX; // X where ridge height = main roof height (wall when dropped)
+                    // No valley exists when the extension has been dropped far
+                    // enough that its ridge is at or under the main eave: it
+                    // dies into the WALL, not into the roof. valleyDX is 0 then
+                    // and valleyX collapses onto aX, which turned the valley
+                    // fill quads below into a roof-coloured panel standing flat
+                    // on the main building's wall — the black blotch, and the
+                    // streaking where it fought the wall behind it.
+                    var _hasValley = valleyDX > 0.001;
                     // Clamp to center: can't go past ridge
                     if (dir > 0 && valleyX < 0) valleyX = 0;
                     if (dir < 0 && valleyX > 0) valleyX = 0;
@@ -18663,8 +18693,10 @@ function applyVoiceQuote(parsed, overlay) {
                         // Back slope: mirror.
                         grps.shed.add(mkQ([aX,extRidgeH-.003,zMid, oXoh,extRidgeH-.003,zMid, oXoh,_extEaveH-.003,z2oh, aX,_eaveWall-.003,_zw2], mSh));
                         // Carry on inboard over the main roof to the valley point.
+                        if (_hasValley) {
                         grps.shed.add(mkQ([aX,_eaveWall-.003,_zw1, aX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid], mSh));
                         grps.shed.add(mkQ([aX,_eaveWall-.003,_zw2, aX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid], mSh));
+                        }
                         // Either side of the valley the porch roof carries straight on under
                         // the gable. The legs stop at the gable, so the gable fills its own
                         // width here — without it the roof reads as two porches with a hole
@@ -18681,9 +18713,11 @@ function applyVoiceQuote(parsed, overlay) {
                     grps.shed.add(mkQ([valleyX,extRidgeH-.003,zMid, oXoh,extRidgeH-.003,zMid, oXoh,_extEaveH-.003,z2oh, aX,_extEaveH-.003,z2], mSh));
                     // Valley fill: triangle from valley point down to front/back eave corners on main building
                     // Front valley: [valleyX,extRidgeH,zMid] → [aX,sh,z1] along main roof surface
+                    if (_hasValley) {
                     grps.shed.add(mkQ([aX,_extEaveH-.003,z1, aX,_extSh-.003,z1, valleyX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid], mSh));
                     // Back valley: mirror
                     grps.shed.add(mkQ([aX,_extEaveH-.003,z2, aX,_extSh-.003,z2, valleyX,extRidgeH-.003,zMid, valleyX,extRidgeH-.003,zMid], mSh));
+                    }
                     // Roof framing — purlins on both slopes (matches main building)
                     _extTrussRun('x', aX, oXoh, zMid, z1, z2, _extEaveH, extRidgeH);
                     _extPurlins('x', aX, oXoh, z1, zMid, _extEaveH, extRidgeH);   // front slope
@@ -25740,7 +25774,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M108-1117';
+window.SAUCE_BUILD = 'M110-1117';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
