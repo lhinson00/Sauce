@@ -25668,13 +25668,39 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M102-1116';
+window.SAUCE_BUILD = 'M104-1117';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
 // hand, so it sat at M43-1908 through every build after it and said nothing
 // about what was actually loaded. It reads the real one now.
 try { console.log('%c[Sauce] BUILD ' + window.SAUCE_BUILD, 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
+// Divider labor was added after these profiles were written, so a profile can
+// be carrying a zero for it that nobody chose — either because the key was
+// never there, or because the Labor panel was opened and saved before the rate
+// had a value. Either way the walls go on the quote with no labor against them,
+// which is never what anyone wanted. Put the working rate in once; a profile
+// whose Labor panel has since been saved is marked and left alone, so a company
+// that genuinely wants no divider labor can still set zero and keep it.
+window._dividerRateRepair = function() {
+  try {
+    var R = window.SauceRates;
+    if (!R || !R.all) return false;
+    var a = R.all();
+    if (!a || !a.labor) return false;
+    var it = a.labor.interior = a.labor.interior || {};
+    if (it.rateChosen === 'yes') return false;
+    if (it.dividerPerSqft > 0) return false;
+    it.dividerPerSqft = 1.55;
+    R.save(a);
+    return true;
+  } catch(e) { return false; }
+};
+try { window._dividerRateRepair(); } catch(e) {}
+try { document.addEventListener('DOMContentLoaded', function(){
+  try { window._dividerRateRepair(); } catch(e) {}
+}); } catch(e) {}
+
 window._stampBuild = function() {
   try {
     var el = document.getElementById('buildStamp');
@@ -46901,7 +46927,13 @@ window.SauceRates = (function() {
                     cornerBrace: 0, minBuild: 0 },
       openings:   { standard: 0, large: 0, barnPerSqft: 0, cupola: 0,
                     snootTruss: 0, cornerBrace: 0 },
-      interior:   { dividerPerSqft: 0 },
+      // Divider wall labor ships with a working rate rather than a zero, so the
+      // walls bill the moment they are drawn. Every other rate starts at zero
+      // because there is no sane universal figure for it; this one has a known
+      // figure and a quote with partitions on it and no labor against them is
+      // worse than a figure a company can change. Editable like any other rate
+      // in Pricing -> Labor, and a company that sets its own overrides this.
+      interior:   { dividerPerSqft: 1.55 },
       posts:      { wrap: 0, wetSet: 0, sonoTube: 0, stall: 0, protector: 0, pier: 0,
                     up8x8: 0, up10x10: 0, up12x12: 0 },
       awning:     { upTo8: 0, over8: 0 },
@@ -50576,6 +50608,16 @@ window.concreteIncludes = function() {
         tn = tn[tp[k]];
       }
       tn[tp[tp.length - 1]] = String(texts[t].value || '').trim();
+    }
+
+    // A person has now looked at these rates and pressed Save, so whatever is in
+    // them is deliberate — including a zero. The startup repair below leaves a
+    // marked profile alone, which is what makes "set it to zero to switch the
+    // line off" work instead of being undone on the next load.
+    if (id === 'laborPricingModal') {
+      obj.labor = obj.labor || {};
+      obj.labor.interior = obj.labor.interior || {};
+      obj.labor.interior.rateChosen = 'yes';
     }
 
     window.SauceRates.save(obj);
@@ -56660,6 +56702,13 @@ window.openConcreteModal = function(forcedType) {
 
   panel.appendChild(resultsDiv);
 
+  // True only while the live-refresh hook below is driving recalc. scheduleBuild()
+  // calls that hook after every rebuild, and recalc() asks for a rebuild so the
+  // slab shows or hides — between them that is a loop that rebuilds the model
+  // every 320ms for as long as the modal is open, which is what made the screen
+  // jump and stutter. A rebuild asked for by the hook does not ask for another.
+  var _concInRefresh = false;
+
   function recalc() {
     // Re-read live so the modal tracks building/shed dimension edits made while it
     // is open. These shadow the values captured when the modal was first built.
@@ -56688,7 +56737,7 @@ window.openConcreteModal = function(forcedType) {
     var _mainIsPiersOrMono = mainOpts && mainOpts.included && (mainOpts.type === 'piers' || mainOpts.footers);
     if (_ptEl) _ptEl.value = _mainIsPiersOrMono ? 'Yes' : 'No';
     // Trigger 3D re-render to show/hide slab
-    scheduleBuild();
+    if (!_concInRefresh) scheduleBuild();
 
     try { updateStripFromLocalCalc(); } catch(e) {}
 
@@ -56798,7 +56847,8 @@ window.openConcreteModal = function(forcedType) {
     // Sheds added/removed while open: the section rows themselves are stale, so
     // rebuild the whole modal (recalc() saves selections to _lastConcreteOpts first).
     if ((window._shedConfigs || []).length !== _builtShedCount) { window.openConcreteModal(forcedType); return; }
-    recalc();
+    _concInRefresh = true;
+    try { recalc(); } finally { _concInRefresh = false; }
   };
 
   recalc();
