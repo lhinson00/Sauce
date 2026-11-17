@@ -10727,7 +10727,21 @@ function vpTogglePosts() {
       ch.visible = (ch.userData && ch.userData.hideBehindWall) ? _hiddenPostsShown : true;
     });
   }
-  d.grps.posts.visible = true; // sheds always show structural posts
+  // Sheds always show their exposed structural posts; the ones buried in a
+  // walled-in attachment follow the toggle, same as the main building's.
+  d.grps.posts.visible = true;
+  if (d.grps.posts.children) {
+    var _scfgT = window._shedConfigs || [];
+    d.grps.posts.traverse(function(ch){
+      if (!ch.isMesh) return;
+      var si = ch.userData && ch.userData.sIdx;
+      var sc = (si != null) ? _scfgT[si] : null;
+      var enclosed = !!(sc && sc.encl === 'enclosed'
+                        && (sc.enclWalls || []).indexOf('outer') >= 0
+                        && !(sc.enclFt != null && parseFloat(sc.enclFt) < sc.l));
+      ch.visible = enclosed ? _hiddenPostsShown : true;
+    });
+  }
   try { window._footXray(window._footXrayState()); } catch(e){}
 
   var btn = document.getElementById('vpPostToggle');
@@ -19892,6 +19906,51 @@ function applyVoiceQuote(parsed, overlay) {
                     // Draw a garage door on a shed gable END wall (X-Y plane at fixed Z).
                     // Centered on the end-wall span; height clamped to the outer eave height so
                     // it fits under the lean-to slope. Mirrors _drawShedGableWalkDoor.
+                    // Where the framed openings on one gable end actually fall. The
+                    // sizing has to match _drawShedGableGarageDoor exactly or the
+                    // hole and the trim around it will not line up.
+                    function _shedGableFOZones(which, _xMin, _xMax, _outerWH) {
+                        var out = [];
+                        (sc.doors||[]).filter(function(gd){ return (gd.wall||'outer') === which; })
+                          .forEach(function(gd){
+                            if (!gd.framedOpening) return;
+                            var _p = (gd.size||'10x10').split('x');
+                            var gwFt = parseFloat(_p[0])||10, ghFt = parseFloat(_p[1])||10;
+                            var spanW = Math.abs(_xMax - _xMin);
+                            var dw = gwFt * Sc; if (dw > spanW - 0.04) dw = spanW - 0.04;
+                            var dh = Math.min(ghFt * Sc, _outerWH);
+                            var cx = (_xMin + _xMax) / 2;
+                            out.push({ x0: cx - dw/2, x1: cx + dw/2, h: dh });
+                          });
+                        return out;
+                    }
+
+                    // A shed end wall is one trapezoid quad, so a framed opening in it
+                    // had nothing to cut and the metal stayed solid behind the trim.
+                    // When there are openings the wall is laid down as vertical strips
+                    // instead, each one starting above any opening it crosses, which
+                    // leaves a real hole and still follows the sloping top edge.
+                    function _shedGableWallCut(faceZ, zones, _xMin, _xMax, _oX, _aX, _outerWH, _innerTopH, _mat) {
+                        var span = Math.abs(_oX - _aX);
+                        if (!(span > 0)) return;
+                        var step = 0.02;
+                        for (var x = _xMin; x < _xMax - 1e-6; x += step) {
+                            var xa = x, xb = Math.min(x + step, _xMax);
+                            function topAt(xx) {
+                                var frac = Math.abs(xx - _oX) / span;
+                                return _outerWH + frac * (_innerTopH - _outerWH);
+                            }
+                            var ya = topAt(xa), yb = topAt(xb);
+                            var base = 0;
+                            for (var zi = 0; zi < zones.length; zi++) {
+                                var zn = zones[zi];
+                                if (xb > zn.x0 + 1e-6 && xa < zn.x1 - 1e-6) base = Math.max(base, zn.h);
+                            }
+                            if (base >= Math.min(ya, yb) - 1e-6) continue;   // opening reaches the top
+                            grps.wallPanels.add(mkQ([xa, base, faceZ, xa, ya, faceZ, xb, yb, faceZ, xb, base, faceZ], _mat));
+                        }
+                    }
+
                     function _drawShedGableGarageDoor(gd, faceZ, zo, _xMin, _xMax) {
                         const _p = (gd.size||'10x10').split('x');
                         const gwFt = parseFloat(_p[0])||10, ghFt = parseFloat(_p[1])||10;
@@ -20335,7 +20394,10 @@ function applyVoiceQuote(parsed, overlay) {
                         const xMin = Math.min(oX, aX), xMax = Math.max(oX, aX);
                         const innerTopH = attachH; // inner top follows attachment height (accounts for drop)
                         if (hasWall('gable1') && showGable1) {
-                        if (shedWsH > 0 && shedWsH < outerWH) {
+                        var _fo1 = _shedGableFOZones('gable1', xMin, xMax, outerWH);
+                        if (_fo1.length) {
+                            _shedGableWallCut(z1, _fo1, xMin, xMax, oX, aX, outerWH, innerTopH, mW);
+                        } else if (shedWsH > 0 && shedWsH < outerWH) {
                             grps.wallPanels.add(mkQ([oX, 0, z1, oX, shedWsH, z1, aX, Math.min(shedWsH, innerTopH), z1, aX, 0, z1], mWainscot));
                             grps.wallPanels.add(mkQ([oX, shedWsH, z1, oX, outerWH, z1, aX, innerTopH, z1, aX, Math.min(shedWsH, innerTopH), z1], mW));
                         } else {
@@ -20343,6 +20405,11 @@ function applyVoiceQuote(parsed, overlay) {
                         }
                         grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, z1), new THREE.Vector3(oX, outerWH, z1), new THREE.Vector3(aX, innerTopH, z1)], mTrimLine));
                         for (let x = xMin + sRibSp; x < xMax; x += sRibSp) {
+                            // A rib is a striation on the metal. Where the metal has
+                            // been cut away for a framed opening there is nothing for
+                            // it to sit on, and running it through left the hole
+                            // looking like solid wall.
+                            if (_fo1.some(function(z){ return x > z.x0 - 0.004 && x < z.x1 + 0.004; })) continue;
                             const frac = Math.abs(x - oX) / endWallW;
                             const rH = outerWH + frac * (innerTopH - outerWH) - 0.015;
                             _shedEndRib(x, z1 - 0.003, rH);
@@ -20358,7 +20425,10 @@ function applyVoiceQuote(parsed, overlay) {
                         }
                         // Back end wall
                         if (hasWall('gable2') && showGable2) {
-                        if (shedWsH > 0 && shedWsH < outerWH) {
+                        var _fo2 = _shedGableFOZones('gable2', xMin, xMax, outerWH);
+                        if (_fo2.length) {
+                            _shedGableWallCut(z2, _fo2, xMin, xMax, oX, aX, outerWH, innerTopH, mW);
+                        } else if (shedWsH > 0 && shedWsH < outerWH) {
                             grps.wallPanels.add(mkQ([aX, 0, z2, aX, Math.min(shedWsH, innerTopH), z2, oX, shedWsH, z2, oX, 0, z2], mWainscot));
                             grps.wallPanels.add(mkQ([aX, Math.min(shedWsH, innerTopH), z2, aX, innerTopH, z2, oX, outerWH, z2, oX, shedWsH, z2], mW));
                         } else {
@@ -20366,6 +20436,7 @@ function applyVoiceQuote(parsed, overlay) {
                         }
                         grps.wallPanels.add(mkL([new THREE.Vector3(oX, 0, z2), new THREE.Vector3(oX, outerWH, z2), new THREE.Vector3(aX, innerTopH, z2)], mTrimLine));
                         for (let x = xMin + sRibSp; x < xMax; x += sRibSp) {
+                            if (_fo2.some(function(z){ return x > z.x0 - 0.004 && x < z.x1 + 0.004; })) continue;
                             const frac = Math.abs(x - oX) / endWallW;
                             const rH = outerWH + frac * (innerTopH - outerWH) - 0.015;
                             _shedEndRib(x, z2 + 0.003, rH);
@@ -22877,6 +22948,24 @@ function applyVoiceQuote(parsed, overlay) {
             return false;
           });
           grps.posts.visible = _hasOpenShed2 ? true : _postsVisible;
+          // An attachment that is walled in hides its posts the same way the main
+          // building does — they are inside a finished wall, so showing them is
+          // showing something nobody can see. An open or roof-only attachment's
+          // posts are exposed structure and stay. Per post, by the attachment it
+          // belongs to, so one open lean-to no longer forces every enclosed
+          // attachment's posts into view.
+          if (grps.posts.children) {
+            var _scfg = window._shedConfigs || [];
+            grps.posts.traverse(function(ch){
+              if (!ch.isMesh) return;
+              var si = ch.userData && ch.userData.sIdx;
+              var sc = (si != null) ? _scfg[si] : null;
+              var enclosed = !!(sc && sc.encl === 'enclosed'
+                                && (sc.enclWalls || []).indexOf('outer') >= 0
+                                && !(sc.enclFt != null && parseFloat(sc.enclFt) < sc.l));
+              ch.visible = enclosed ? _hiddenPostsShown : true;
+            });
+          }
           }
         }
         if (typeof _interiorVisible !== 'undefined') {
@@ -25774,7 +25863,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M110-1117';
+window.SAUCE_BUILD = 'M111-1117';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
