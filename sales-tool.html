@@ -1630,7 +1630,7 @@ body.customer-mode #stab_specs { display: block !important; }
         <div class="logo-mark">SE</div>
         <div>
           <div class="brand-name-sales">Sales Tool</div>
-          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;">· BUILD M43-1908</span></div>
+          <div class="brand-sub-sales">● Internal <span id="buildStamp" style="color:var(--gold);font-weight:800;letter-spacing:.5px;"></span></div>
         </div>
       </div>
       <div class="topbar-btns">
@@ -8597,7 +8597,11 @@ window.SauceParts = window.SauceParts || (function(){
           }
           var _planned = (entry.key === 'purlin' || entry.key === 'dividerGirt');
           if (Math.abs(len - L) <= tol && !_planned) { out.push({ m:m, b:null }); return; }
-          if (len > L - 0.01) {
+          // A girt run is cut from whatever stock reaches across it, which can be
+          // longer than the run: a 15' divider is one 16' stick. Gating on
+          // "run at least as long as the SKU" threw that mesh away before the
+          // plan could claim it, and the line reported no 16' board drawn.
+          if (entry.key === 'dividerGirt' || len > L - 0.01) {
             var b = boards(m, Lsc,
                            entry.key === 'purlin' ? purlinPlan
                          : entry.key === 'dividerGirt' ? girtPlan : null,
@@ -14892,6 +14896,22 @@ function applyVoiceQuote(parsed, overlay) {
                   var jc = new THREE.Mesh(new THREE.BoxGeometry(runL, 0.022, 0.014), mJc);
                   place(jc, sg * 0.020, jy);
                   grps.wallPanels.add(jc);
+                });
+              });
+
+              // Vertical J-channel up each end that dies into an exterior wall.
+              var _tolJ = 0.5;
+              [[g.x1, g.y1, 0], [g.x2, g.y2, 1]].forEach(function(pt) {
+                var onWall = (Math.abs(pt[0]) < _tolJ || Math.abs(pt[0] - (Q.w||0)) < _tolJ
+                           || Math.abs(pt[1]) < _tolJ || Math.abs(pt[1] - (Q.l||0)) < _tolJ);
+                if (!onWall) return;
+                var ex = ax + (bx - ax) * pt[2], ez = az + (bz - az) * pt[2];
+                _signs.forEach(function(sg) {
+                  var vj = new THREE.Mesh(new THREE.BoxGeometry(0.022, sh, 0.014), mJc);
+                  vj.position.set(ex + perpX * sg * 0.020, postBase + sh / 2,
+                                  ez + perpZ * sg * 0.020);
+                  vj.rotation.y = rotY;
+                  grps.wallPanels.add(vj);
                 });
               });
 
@@ -25648,10 +25668,21 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M101-1116';
+window.SAUCE_BUILD = 'M102-1116';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
-try { console.log('%c[Sauce] BUILD M43-1908', 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
+// The badge in the header used to carry a build number typed into the markup by
+// hand, so it sat at M43-1908 through every build after it and said nothing
+// about what was actually loaded. It reads the real one now.
+try { console.log('%c[Sauce] BUILD ' + window.SAUCE_BUILD, 'color:#c8102e;font-weight:800;font-size:14px'); } catch(e) {}
+window._stampBuild = function() {
+  try {
+    var el = document.getElementById('buildStamp');
+    if (el) el.textContent = '\u00B7 BUILD ' + (window.SAUCE_BUILD || '?');
+  } catch(e) {}
+};
+window._stampBuild();
+try { document.addEventListener('DOMContentLoaded', window._stampBuild); } catch(e) {}
 console.log('%c[Sauce] build 2026-08-12 19:31 UTC', 'color:var(--gold);font-weight:bold');
 
 /* @SAUCE-ENDPOINTS-START */
@@ -44626,12 +44657,32 @@ window.SauceMaterials.calcDividerWalls = function(Q, WALLS, sf) {
       sku: mPrefix, quantity: mQty, metalLength: panelLenTxt,
       detail: runTxt + '  |  ' + facesTxt + "  |  3' wide panels" });
 
-    // ── J-channel, top and bottom of each clad face ──────────────────────────
-    var jcLf  = cladLf * 2;
+    // ── J-channel ────────────────────────────────────────────────────────────
+    // Top and bottom of each clad face, plus a vertical run up each end that
+    // dies into an exterior wall, where the divider's metal meets the building's
+    // own. An end in open floor, or one that runs into another divider, has no
+    // exterior wall to trim against and does not buy one.
+    var jcHorizLf = cladLf * 2;
+    var jcVertLf  = 0, jcVertRuns = 0;
+    var _W = Q.w || 0, _L = Q.l || 0, _tol = 0.5;
+    segs.forEach(function(g) {
+      if (!g.faces) return;
+      var onWall = 0;
+      [[g.x1, g.y1], [g.x2, g.y2]].forEach(function(pt) {
+        if (Math.abs(pt[0]) < _tol || Math.abs(pt[0] - _W) < _tol
+         || Math.abs(pt[1]) < _tol || Math.abs(pt[1] - _L) < _tol) onWall++;
+      });
+      jcVertRuns += onWall * g.faces;
+      jcVertLf   += onWall * g.faces * wallH;
+    });
+    var jcLf  = jcHorizLf + jcVertLf;
     var jcSku = 'JC9' + ((window._selectedColors || {}).trimCode || 'BK') + '10';
     items.push({ category:'Trim', description:'Divider Wall J-Channel', sku:jcSku,
       quantity: Math.ceil(jcLf / 10),
-      detail: 'top and bottom, ' + facesTxt + '  |  ' + Math.round(jcLf) + " lf" });
+      detail: 'top and bottom, ' + facesTxt + '  |  ' + Math.round(jcHorizLf) + ' lf'
+            + (jcVertRuns ? '  +  ' + jcVertRuns + ' vertical at the wall ends, '
+                          + Math.round(jcVertLf) + ' lf' : '')
+            + '  |  ' + Math.round(jcLf) + ' lf total' });
   }
 
   return items;
@@ -55719,6 +55770,38 @@ window.openLaborModal = function() {
       row.appendChild(lbl); row.appendChild(amt);
       col.appendChild(row);
     });
+
+    // A rate left at zero bills nothing, which is correct but invisible: the
+    // walls are on the quote and no line appears against them. Say so here,
+    // where the question "why is there no divider labor" gets asked.
+    try {
+      var _dw = (window._dividerWalls || []).filter(function(d) {
+        return d && !d.disabled && window._dwSeg && window._dwSeg(d)
+            && window._dwSeg(d).len > 0.5 && window._dwFaces(d) > 0;
+      });
+      if (_dw.length && window.SauceRates
+          && !(window.SauceRates.v('labor.interior.dividerPerSqft') > 0)) {
+        var warn = document.createElement('div');
+        warn.style.cssText = 'margin-top:4px;padding:6px 8px;border-radius:6px;'
+          + 'background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.4);'
+          + 'font-size:10px;line-height:1.5;color:#fbbf24;';
+        warn.innerHTML = '<b>' + _dw.length + ' divider wall' + (_dw.length > 1 ? 's' : '')
+          + ' with metal, billing no labor.</b><br>'
+          + 'The $/sqft rate is not set.';
+        var fix = document.createElement('button');
+        fix.textContent = 'Set the rate';
+        fix.style.cssText = 'display:block;width:100%;margin-top:5px;padding:5px 8px;'
+          + 'border-radius:6px;border:1px solid rgba(251,191,36,.6);'
+          + 'background:rgba(251,191,36,.2);color:#fbbf24;font-family:Outfit,sans-serif;'
+          + 'font-size:10px;font-weight:800;cursor:pointer;';
+        fix.onclick = function() {
+          try { window.closeLaborModal(); } catch(e) {}
+          try { window.openDividerLaborRate('metal'); } catch(e) {}
+        };
+        warn.appendChild(fix);
+        col.appendChild(warn);
+      }
+    } catch(e) {}
 
     // Subtotal / minimum
     var footer = document.createElement('div');
