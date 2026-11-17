@@ -2038,26 +2038,22 @@ body.customer-mode #stab_specs { display: block !important; }
         <button class="opening-add-btn" id="addLoftBtn" onclick="addLoft()">+ Add Loft</button>
       </div>
 
-      <!-- DIVIDER WALLS (post frame) -->
-      <div class="sec" id="secDividerWalls" style="display:none;">
-        <div class="sec-title">Divider Walls</div>
+      <!-- INTERIOR — walls and posts, one tool, any frame type -->
+      <div class="sec" id="secInterior">
+        <div class="sec-title">Interior</div>
         <div style="font-size:9px;color:var(--muted);margin-bottom:6px;">
-          Slab to truss bottom. Draw any line on the blueprint, or drop one straight
-          across. Metal both sides, one side, or none for posts only.
-</div>
-        <button class="act-btn secondary" style="width:100%;margin-bottom:5px;" onclick="openDividerDrawTool()">Draw on Blueprint</button>
-        <button class="act-btn secondary" style="width:100%;margin-bottom:5px;" onclick="autoDividersBetweenDoors()">Place Between Doors</button>
-        <button class="act-btn secondary" style="width:100%;margin-bottom:6px;" onclick="addDividerWall()">+ Add Divider Across</button>
-        <div id="dividerWallList"></div>
+          Walls and posts inside the building. Each wall is framed with posts or
+          studs and clad in metal on both sides, one side, or neither.
+        </div>
+        <button class="act-btn secondary" style="width:100%;margin-bottom:5px;" onclick="openInteriorTool()">Interior Design Tool</button>
+        <button class="act-btn secondary" style="width:100%;margin-bottom:6px;" onclick="autoDividersBetweenDoors()">Wall Between Each Door</button>
+        <div id="interiorList"></div>
+        <div id="levelManagerUI" style="margin-top:8px;"></div>
       </div>
 
-      <!-- INTERIOR WALLS (stud frame only) -->
-      <div class="sec" id="secInteriorWalls" style="display:none;">
-        <div class="sec-title">Interior Walls</div>
-        <div id="levelManagerUI"></div>
-        <button class="act-btn secondary" style="width:100%;margin-top:6px;" onclick="openFloorPlanModal()">✏ Design Floor Plan</button>
-        <div id="interiorWallList" style="margin-top:6px;"></div>
-      </div>
+      <!-- Kept so older code paths that address them by id still resolve. -->
+      <div id="secDividerWalls" style="display:none;"><div id="dividerWallList"></div></div>
+      <div id="secInteriorWalls" style="display:none;"><div id="interiorWallList"></div></div>
 
 
 
@@ -2403,11 +2399,8 @@ body.customer-mode #stab_specs { display: block !important; }
           <label class="tog"><input type="checkbox" id="st_sonoTube" onchange="try{scheduleBuild();updateStripFromLocalCalc();}catch(e){}"><span class="tog-track"></span></label>
         </div>
       </div>
-      <!-- Interior / Stall Posts (works on any frame type) -->
-      <div class="sec" id="secStallPosts">
-        <button class="act-btn secondary" style="width:100%;" onclick="openStallPostTool()">◼ Interior / Stall Posts</button>
-        <div style="font-size:9px;color:var(--muted);margin-top:4px;">Place interior posts on the floor plan — shows your building’s current posts. 6×6 or 8×8, $50/post.</div>
-      </div>
+      <!-- Folded into the Interior section above. -->
+      <div class="sec" id="secStallPosts" style="display:none;"></div>
 
       <div class="sec" id="stab_upgrades">
         <div class="sec-title"><span class="icon"></span>Upgrades</div>
@@ -11364,9 +11357,13 @@ function renderLevelManager() {
 }
 
 function _iwShowHide() {
-  var sec = document.getElementById('secInteriorWalls');
-  if (sec) sec.style.display = (currentFrameType === 'stud') ? '' : 'none';
+  // Interior walls live in the Interior section now. Levels are still a stud
+  // idea — a second floor needs a floor system — so the level manager only
+  // appears there.
+  var lm = document.getElementById('levelManagerUI');
+  if (lm) lm.style.display = (currentFrameType === 'stud') ? '' : 'none';
   if (currentFrameType === 'stud') { _ensureLevels(); renderLevelManager(); }
+  try { renderInteriorList(); } catch(e) {}
 }
 
 function removeInteriorWall(id) {
@@ -25694,7 +25691,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M105-1117';
+window.SAUCE_BUILD = 'M106-1117';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -44537,8 +44534,16 @@ window.renderDividerWalls = function() {
 
 // Post frame only — a stud building partitions with the Interior Walls section.
 window._dividerShowHide = function() {
-  var sec = document.getElementById('secDividerWalls');
-  if (sec) sec.style.display = (typeof currentFrameType !== 'undefined' && currentFrameType === 'stud') ? 'none' : '';
+  // The Interior section is for every frame type now: a post building and a
+  // stud building both have an inside, and the wall itself says how it is
+  // framed. Only red iron, which is quoted by the square foot off no material
+  // list at all, has nothing to put in here.
+  var sec = document.getElementById('secInterior');
+  if (sec) {
+    var ri = (typeof currentFrameType !== 'undefined' && currentFrameType === 'redIron');
+    sec.style.display = ri ? 'none' : '';
+  }
+  try { renderInteriorList(); } catch(e) {}
   try { renderDividerWalls(); } catch(e) {}
 };
 // The section's markup ships hidden, and the page init runs in an earlier
@@ -44574,6 +44579,128 @@ window._dwFaces = function(d) {
   var s = (d && d.sides != null) ? parseInt(d.sides, 10) : 2;
   return (s === 0 || s === 1) ? s : 2;
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INTERIOR — one tool over every interior wall and post.
+//
+// A building's interior used to be four panel sections that did not agree with
+// each other: divider walls on post frame, interior walls on stud frame, stall
+// posts on both, and a loft of its own. They all end in the same sentence —
+// put something inside the building and bill it — so they are presented as one
+// thing here.
+//
+// What is NOT unified is storage, deliberately. A post-framed wall stays in
+// _dividerWalls and bills through calcDividerWalls; a stud-framed one stays in
+// _interiorWalls and bills through calcInteriorWallMaterials. Both paths work
+// and are covered by the regression, so switching a wall's framing moves the
+// record between the two lists rather than rewriting either engine. Keys are
+// 'post:3' / 'stud:7' because the two lists number their own records and would
+// otherwise collide.
+// ─────────────────────────────────────────────────────────────────────────────
+window.SauceInterior = (function() {
+
+  function _D() { return window._dividerWalls || (window._dividerWalls = []); }
+  function _S() { return window._interiorWalls || (window._interiorWalls = []); }
+
+  function key(frame, id) { return frame + ':' + id; }
+  function parse(k) {
+    var i = String(k || '').indexOf(':');
+    return i < 0 ? null : { frame: String(k).slice(0, i), id: parseInt(String(k).slice(i+1), 10) };
+  }
+
+  function seg(rec, frame) {
+    if (frame === 'post') return window._dwSeg(rec);
+    var len = Math.sqrt(Math.pow(rec.x2-rec.x1,2) + Math.pow(rec.y2-rec.y1,2));
+    return { x1:rec.x1, y1:rec.y1, x2:rec.x2, y2:rec.y2, len: Math.round(len*12)/12 };
+  }
+
+  // Every interior wall in the building, whatever it is framed with.
+  function list() {
+    var out = [];
+    _D().forEach(function(d) {
+      if (!d || d.disabled) return;
+      var g = window._dwSeg(d);
+      if (!g || !(g.len > 0.5)) return;
+      out.push({ k: key('post', d.id), frame:'post', rec:d, seg:g,
+                 sides: window._dwFaces(d), posts: d.posts !== false });
+    });
+    _S().forEach(function(w) {
+      if (!w) return;
+      var g = seg(w, 'stud');
+      if (!g || !(g.len > 0.5)) return;
+      out.push({ k: key('stud', w.id), frame:'stud', rec:w, seg:g,
+                 sides: (w.sides != null ? (parseInt(w.sides,10) || 0) : 0), posts:false });
+    });
+    out.sort(function(a, b) {
+      return Math.min(a.seg.y1, a.seg.y2) - Math.min(b.seg.y1, b.seg.y2);
+    });
+    return out;
+  }
+
+  function get(k) {
+    var found = null;
+    list().forEach(function(w) { if (w.k === k) found = w; });
+    return found;
+  }
+
+  // Draw a new wall. frame decides which list it lands in and therefore which
+  // material path bills it.
+  function add(x1, y1, x2, y2, frame) {
+    frame = (frame === 'stud') ? 'stud' : 'post';
+    if (frame === 'stud') {
+      var sid = _S().reduce(function(mx, w){ return Math.max(mx, (w.id||0)+1); }, 1);
+      var lvl = 0;
+      try { lvl = (window._levelConfigs || [])[0] ? window._levelConfigs[0].id : 0; } catch(e) {}
+      _S().push({ id:sid, x1:x1, y1:y1, x2:x2, y2:y2, levelId:lvl,
+                  openings:[], drains:[], door:false, bearing:false, sides:0, _open:false });
+      return key('stud', sid);
+    }
+    var did = _D().reduce(function(mx, d){ return Math.max(mx, (d.id||0)+1); }, 1);
+    _D().push({ id:did, x1:x1, y1:y1, x2:x2, y2:y2,
+                atFt: Math.round(((y1+y2)/2)*12)/12,
+                posts:true, sides:2, _open:false });
+    return key('post', did);
+  }
+
+  function remove(k) {
+    var p = parse(k); if (!p) return;
+    if (p.frame === 'post') window._dividerWalls = _D().filter(function(d){ return d.id !== p.id; });
+    else                    window._interiorWalls = _S().filter(function(w){ return w.id !== p.id; });
+  }
+
+  // Move a wall between framing types, keeping its line and its cladding.
+  function setFrame(k, frame) {
+    var w = get(k); if (!w) return k;
+    frame = (frame === 'stud') ? 'stud' : 'post';
+    if (w.frame === frame) return k;
+    var g = w.seg, sides = w.sides;
+    remove(k);
+    var nk = add(g.x1, g.y1, g.x2, g.y2, frame);
+    var nw = get(nk);
+    if (nw) {
+      if (frame === 'post') { nw.rec.sides = sides; nw.rec.posts = true; }
+      else                  { nw.rec.sides = sides; }
+    }
+    return nk;
+  }
+
+  function setMetal(k, sides) {
+    var w = get(k); if (!w) return;
+    var n = parseInt(sides, 10);
+    w.rec.sides = (n === 1 || n === 2) ? n : 0;
+  }
+
+  function setPosts(k, on) {
+    var w = get(k); if (!w) return;
+    if (w.frame === 'post') w.rec.posts = !!on;
+  }
+
+  function postCount() { return (window._stallPosts || []).length; }
+
+  return { list:list, get:get, add:add, remove:remove, key:key, parse:parse,
+           setFrame:setFrame, setMetal:setMetal, setPosts:setPosts,
+           postCount:postCount };
+})();
 
 window.SauceMaterials.calcDividerWalls = function(Q, WALLS, sf) {
   var list = (window._dividerWalls || []).filter(function(d) {
@@ -45597,6 +45724,33 @@ window.SauceMaterials.calcInteriorWallMaterials = function(Q, walls, levels) {
       // Framing nails — same as exterior stud frame
       items.push({ category:cat, description:label+' — Nails 12D', sku:'HDGRS12D30', quantity:1, detail:'wall framing' });
       items.push({ category:cat, description:label+' — Nails 8D',  sku:'HDGRS8D30',  quantity:1, detail:'blocking/misc' });
+
+      // Metal, where this wall is clad. A stud wall needs no girts behind it —
+      // the studs at 16" OC are the nailer — so it buys panels and J-channel
+      // only, and both scale with the number of clad faces exactly as a
+      // post-framed wall's do.
+      var _faces = (iw.sides != null) ? (parseInt(iw.sides, 10) || 0) : 0;
+      if (_faces > 0) {
+        var _wc  = (window._selectedColors || {}).wallCode || 'CC';
+        var _mt  = (document.getElementById('st_wallMetal') || {}).value || 'Tuff-Rib 29ga';
+        var _pre = (typeof getColoredSkuPrefix === 'function')
+                 ? getColoredSkuPrefix(_mt, 'wall') : ('T9' + _wc);
+        var _pf = Math.floor(wallH + 1e-6), _pi = Math.round((wallH - _pf) * 12);
+        if (_pi === 12) { _pf += 1; _pi = 0; }
+        items.push({ category:'Sidewall Metal', description:'Interior Wall Metal',
+          sku:_pre, quantity: Math.ceil(wallLen / 3) * _faces,
+          metalLength: _pf + "'" + (_pi ? ' ' + _pi + '"' : ''),
+          detail: label + '  |  ' + (_faces === 2 ? 'both faces' : 'one face')
+                + "  |  3' wide panels" });
+
+        var _jcLf = wallLen * 2 * _faces;
+        items.push({ category:'Trim', description:'Interior Wall J-Channel',
+          sku: 'JC9' + ((window._selectedColors || {}).trimCode || 'BK') + '10',
+          quantity: Math.ceil(_jcLf / 10),
+          detail: label + '  |  top and bottom, '
+                + (_faces === 2 ? 'both faces' : 'one face') + '  |  '
+                + Math.round(_jcLf) + ' lf' });
+      }
     });
 
     // Floor deck — per zone
@@ -54738,6 +54892,103 @@ window.openStallPostTool = function(){ window.openFloorPlanModal(null, 'post'); 
 // Same blueprint, opened straight onto the Wall tool, which on post frame draws
 // divider walls.
 window.openDividerDrawTool = function(){ window.openFloorPlanModal(null, 'wall'); };
+window.openInteriorTool    = function(){ window.openFloorPlanModal(null, 'wall'); };
+
+// One list for every interior wall, whatever it is framed with, plus the loose
+// posts. Each row carries the two choices that define the wall: what it is
+// framed with, and how much of it is clad.
+window.renderInteriorList = function() {
+  var el = document.getElementById('interiorList');
+  if (!el) return;
+  var SI = window.SauceInterior;
+  if (!SI) { el.innerHTML = ''; return; }
+  var walls = SI.list();
+  var posts = SI.postCount();
+
+  function ftIn(v) {
+    var f = Math.floor(v + 1e-6), i = Math.round((v - f) * 12);
+    if (i === 12) { f += 1; i = 0; }
+    return f + "'" + (i ? ' ' + i + '"' : '');
+  }
+
+  if (!walls.length && !posts) {
+    el.innerHTML = '<div style="font-size:9px;color:var(--muted);">Nothing inside yet. '
+                 + 'Open the tool to draw a wall or drop posts.</div>';
+    return;
+  }
+
+  var html = walls.map(function(w, i) {
+    var g = w.seg;
+    var across = Math.abs(g.y1 - g.y2) < 0.01;
+    var along  = Math.abs(g.x1 - g.x2) < 0.01;
+    var where = across ? 'across, at ' + ftIn(g.y1)
+              : along  ? 'down the length, at ' + ftIn(g.x1)
+              : 'drawn';
+    return '<div class="shed-card"><div class="shed-card-hdr">'
+      + '<span class="shed-card-icon">|</span>'
+      + '<span class="shed-card-lbl">Wall ' + (i+1) + ' &mdash; ' + ftIn(g.len) + '</span>'
+      + '<button class="shed-card-rm" onclick="interiorRemove(\'' + w.k + '\')">&#10005;</button>'
+      + '</div>'
+      + '<div class="shed-body open" style="padding:6px 8px;">'
+      +   '<div style="display:flex;gap:6px;align-items:center;">'
+      +     '<span style="font-size:9px;color:var(--muted);">Framing</span>'
+      +     '<select onchange="interiorSetFrame(\'' + w.k + '\',this.value)" '
+      +       'style="flex:1;font-size:10px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:#f4f6f8;color:var(--navy);font-family:Outfit,sans-serif;font-weight:600;">'
+      +       '<option value="post"' + (w.frame === 'post' ? ' selected' : '') + '>Posts &amp; girts</option>'
+      +       '<option value="stud"' + (w.frame === 'stud' ? ' selected' : '') + '>Studs</option>'
+      +     '</select>'
+      +   '</div>'
+      +   '<div style="display:flex;gap:6px;align-items:center;margin-top:5px;">'
+      +     '<span style="font-size:9px;color:var(--muted);">Metal</span>'
+      +     '<select onchange="interiorSetMetal(\'' + w.k + '\',this.value)" '
+      +       'style="flex:1;font-size:10px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:#f4f6f8;color:var(--navy);font-family:Outfit,sans-serif;font-weight:600;">'
+      +       '<option value="2"' + (w.sides === 2 ? ' selected' : '') + '>Both sides</option>'
+      +       '<option value="1"' + (w.sides === 1 ? ' selected' : '') + '>One side</option>'
+      +       '<option value="0"' + (w.sides === 0 ? ' selected' : '') + '>None</option>'
+      +     '</select>'
+      +   '</div>'
+      + (w.frame === 'post'
+      ?   '<label style="display:flex;align-items:center;gap:4px;font-size:9px;color:var(--muted);cursor:pointer;margin-top:5px;">'
+          + '<input type="checkbox"' + (w.posts ? ' checked' : '') + ' '
+          + 'onchange="interiorSetPosts(\'' + w.k + '\',this.checked)" style="accent-color:var(--gold);">'
+          + 'Buy posts for this wall</label>'
+      :   '')
+      +   '<div style="font-size:9px;color:var(--muted);margin-top:4px;">' + where + '</div>'
+      + '</div></div>';
+  }).join('');
+
+  html += '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:9px;color:var(--muted);">'
+       +  '<span style="flex:1;">' + (posts ? posts + ' interior post' + (posts>1?'s':'') : 'No loose posts')
+       +  '</span>'
+       +  '<button onclick="openStallPostTool()" style="padding:3px 8px;border-radius:5px;border:1px solid var(--border);'
+       +  'background:#f4f6f8;color:var(--navy);font-family:Outfit,sans-serif;font-size:9px;font-weight:700;cursor:pointer;">'
+       +  'Place posts</button></div>';
+
+  el.innerHTML = html;
+};
+
+window.interiorRemove = function(k) {
+  window.SauceInterior.remove(k);
+  _interiorRefresh();
+};
+window.interiorSetFrame = function(k, frame) {
+  window.SauceInterior.setFrame(k, frame);
+  _interiorRefresh();
+};
+window.interiorSetMetal = function(k, sides) {
+  window.SauceInterior.setMetal(k, sides);
+  _interiorRefresh();
+};
+window.interiorSetPosts = function(k, on) {
+  window.SauceInterior.setPosts(k, on);
+  _interiorRefresh();
+};
+function _interiorRefresh() {
+  try { renderInteriorList(); } catch(e) {}
+  try { renderDividerWalls(); } catch(e) {}
+  try { renderInteriorWalls(); } catch(e) {}
+  try { scheduleBuild(); updateStripFromLocalCalc(); } catch(e) {}
+}
 
 // The Labor editor is a long scroll, and a rate nobody has set is the one
 // hardest to find in it. This opens it on the divider rates and puts the cursor
@@ -54835,12 +55086,15 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
   var selectedIdx = -1;
   // On post frame the Wall tool draws divider walls, not stud walls: a line
   // drawn here becomes a post-frame partition with girts, band and metal.
-  var _fpDivMode = !_fpIsStud;
-  var _selDiv = -1;
-  function _divList() { return window._dividerWalls || (window._dividerWalls = []); }
+  // The Wall tool draws into the one interior list on every frame type now. A
+  // new wall is framed to match the building by default, and either wall can be
+  // switched afterwards without redrawing it.
+  var _fpDivMode = true;
+  var _selKey = null;
+  var _newFrame = _fpIsStud ? 'stud' : 'post';
+  function _SI() { return window.SauceInterior; }
   function _divSegs() {
-    return _divList().map(function(d) { var g = window._dwSeg(d); if (g) g._d = d; return g; })
-                     .filter(Boolean);
+    return _SI().list().map(function(w) { var g = w.seg; g._w = w; return g; });
   }
   var _selectedStairIdx = -1;
   var _draggingStair = false;
@@ -54871,28 +55125,39 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
   var instEl = document.createElement('div');
   instEl.style.cssText = 'font-size:10px;color:#64748b;flex:1;';
 
-  // Cycles the selected divider through both faces / one face / posts only.
-  var divMetalBtn = mkTool('divmetal', 'Metal: Both', '#60a5fa', function() {
-    var L = _divList();
-    if (_selDiv < 0 || !L[_selDiv]) { instEl.textContent = 'Click a divider wall first, then set its metal.'; return; }
-    var cur = window._dwFaces(L[_selDiv]);
-    L[_selDiv].sides = (cur === 2) ? 1 : (cur === 1) ? 0 : 2;
+  // What a NEW wall is framed with. Also retargets the selected wall, so the
+  // same button answers "draw studs next" and "make this one studs".
+  var divFrameBtn = mkTool('divframe', 'Framing: Posts', '#fbbf24', function() {
+    var next = (_newFrame === 'post') ? 'stud' : 'post';
+    _newFrame = next;
+    if (_selKey) { _selKey = _SI().setFrame(_selKey, next); }
     _syncDivMetalBtn();
-    try { renderDividerWalls(); } catch(e) {}
+    try { renderInteriorList(); renderDividerWalls(); renderInteriorWalls(); } catch(e) {}
     scheduleBuild(); redraw(lastMouse);
   });
+
+  // Cycles the selected wall through both faces / one face / none.
+  var divMetalBtn = mkTool('divmetal', 'Metal: \u2014', '#60a5fa', function() {
+    if (!_selKey) { instEl.textContent = 'Click a wall first, then set its metal.'; return; }
+    var w = _SI().get(_selKey);
+    if (!w) { _selKey = null; _syncDivMetalBtn(); return; }
+    _SI().setMetal(_selKey, (w.sides === 2) ? 1 : (w.sides === 1) ? 0 : 2);
+    _syncDivMetalBtn();
+    try { renderInteriorList(); renderDividerWalls(); renderInteriorWalls(); } catch(e) {}
+    scheduleBuild(); redraw(lastMouse);
+  });
+
   function _syncDivMetalBtn() {
-    var L = _divList(), txt = 'Metal: \u2014';
-    if (_selDiv >= 0 && L[_selDiv]) {
-      var f = window._dwFaces(L[_selDiv]);
-      txt = 'Metal: ' + (f === 2 ? 'Both' : f === 1 ? 'One' : 'None');
-    }
-    divMetalBtn.textContent = txt;
+    var w = _selKey ? _SI().get(_selKey) : null;
+    divMetalBtn.textContent = w
+      ? ('Metal: ' + (w.sides === 2 ? 'Both' : w.sides === 1 ? 'One' : 'None'))
+      : 'Metal: \u2014';
+    divFrameBtn.textContent = 'Framing: ' + ((w ? w.frame : _newFrame) === 'stud' ? 'Studs' : 'Posts');
   }
 
   var _fpTools = _fpIsStud
-    ? [wallToolBtn, doorToolBtn, bearToolBtn, drainToolBtn, zoneToolBtn, stairToolBtn, postToolBtn, postSizeBtn, instEl]
-    : [wallToolBtn, divMetalBtn, postToolBtn, postSizeBtn, instEl];
+    ? [wallToolBtn, divFrameBtn, divMetalBtn, doorToolBtn, bearToolBtn, drainToolBtn, zoneToolBtn, stairToolBtn, postToolBtn, postSizeBtn, instEl]
+    : [wallToolBtn, divFrameBtn, divMetalBtn, postToolBtn, postSizeBtn, instEl];
   _fpTools.forEach(function(el){ modeBar.appendChild(el); });
   panel.appendChild(modeBar);
 
@@ -55232,9 +55497,11 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
       ctx.save();
       _divSegs().forEach(function(g, gi) {
         var a = ftToCanvas(g.x1, g.y1), b = ftToCanvas(g.x2, g.y2);
-        var faces = window._dwFaces(g._d);
-        var isSel = (gi === _selDiv);
-        var col = faces === 0 ? '#fb923c' : '#60a5fa';
+        var faces = g._w.sides;
+        var isSel = (g._w.k === _selKey);
+        // Studs read amber, posts blue, so the two framings are told apart at a
+        // glance without clicking anything.
+        var col = (g._w.frame === 'stud') ? '#fbbf24' : (faces === 0 ? '#fb923c' : '#60a5fa');
         var ang = Math.atan2(b.y - a.y, b.x - a.x);
         var px = -Math.sin(ang), py = Math.cos(ang);
 
@@ -55252,6 +55519,7 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
         ctx.strokeStyle = isSel ? '#ef4444' : col;
         ctx.lineWidth = isSel ? 4 : 3;
         if (faces === 0) ctx.setLineDash([7, 5]);
+        var lab = 'W' + (gi+1);
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         ctx.setLineDash([]);
 
@@ -55261,7 +55529,6 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
         });
 
         var mx = (a.x + b.x)/2, my = (a.y + b.y)/2;
-        var lab = 'D' + (gi+1);
         ctx.font = 'bold 11px Outfit,sans-serif';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         var tw = ctx.measureText(lab).width + 10;
@@ -55275,7 +55542,8 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
         ctx.fillStyle = '#94a3b8';
         ctx.font = '9px Outfit,sans-serif';
         ctx.fillText((Math.round(g.len*10)/10) + "'  "
-          + (faces === 2 ? '2 side' : faces === 1 ? '1 side' : 'posts'),
+          + (g._w.frame === 'stud' ? 'stud' : 'post') + '  '
+          + (faces === 2 ? '2 side' : faces === 1 ? '1 side' : 'bare'),
           mx + px*16, my + py*16 + 13);
       });
       ctx.restore();
@@ -55639,32 +55907,29 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
     // Wall tool — on post frame this draws divider walls instead of stud walls.
     if(_fpDivMode){
       if(!drawState.startFt){
-        // Select the nearest divider if the click landed on one.
-        var dsegs=_divSegs(), dBest=-1, dDist=999;
-        dsegs.forEach(function(g,gi){
+        // Select the nearest wall if the click landed on one.
+        var dsegs=_divSegs(), dBest=null, dDist=999;
+        dsegs.forEach(function(g){
           var a=ftToCanvas(g.x1,g.y1), b=ftToCanvas(g.x2,g.y2);
           var ddx=b.x-a.x, ddy=b.y-a.y, l2=ddx*ddx+ddy*ddy;
           if(!l2) return;
           var t=Math.max(0,Math.min(1,((cx2-a.x)*ddx+(cy2-a.y)*ddy)/l2));
           var qx=a.x+t*ddx-cx2, qy=a.y+t*ddy-cy2;
           var dd=Math.sqrt(qx*qx+qy*qy);
-          if(dd<dDist){dDist=dd;dBest=gi;}
+          if(dd<dDist){dDist=dd;dBest=g._w.k;}
         });
-        if(dBest>=0 && dDist<10){
-          _selDiv=(_selDiv===dBest)?-1:dBest;
+        if(dBest && dDist<10){
+          _selKey=(_selKey===dBest)?null:dBest;
           _syncDivMetalBtn(); redraw(lastMouse); return;
         }
-        _selDiv=-1; _syncDivMetalBtn();
+        _selKey=null; _syncDivMetalBtn();
         drawState.startFt=ft;
       } else {
         var ddx2=ft.x-drawState.startFt.x, ddy2=ft.y-drawState.startFt.y;
         if(Math.sqrt(ddx2*ddx2+ddy2*ddy2)>0.5){
-          _divList().push({ id:_nextDividerId++,
-            x1:drawState.startFt.x, y1:drawState.startFt.y, x2:ft.x, y2:ft.y,
-            atFt: Math.round(((drawState.startFt.y+ft.y)/2)*12)/12,
-            posts:true, sides:2, _open:false });
-          _selDiv=_divList().length-1; _syncDivMetalBtn();
-          try { renderDividerWalls(); } catch(e) {}
+          _selKey=_SI().add(drawState.startFt.x, drawState.startFt.y, ft.x, ft.y, _newFrame);
+          _syncDivMetalBtn();
+          try { renderInteriorList(); renderDividerWalls(); renderInteriorWalls(); } catch(e) {}
           scheduleBuild();
         }
         drawState.startFt=null;
@@ -55704,9 +55969,9 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
       if(drawState.startFt){drawState.startFt=null;redraw(lastMouse);}
       else{overlay.remove();document.removeEventListener('keydown',escH);}
     }
-    if((e.key==='Delete'||e.key==='Backspace')&&_fpDivMode&&_selDiv>=0){
-      _divList().splice(_selDiv,1);_selDiv=-1;_syncDivMetalBtn();
-      try { renderDividerWalls(); } catch(e) {}
+    if((e.key==='Delete'||e.key==='Backspace')&&_fpDivMode&&_selKey){
+      _SI().remove(_selKey);_selKey=null;_syncDivMetalBtn();
+      try { renderInteriorList(); renderDividerWalls(); renderInteriorWalls(); } catch(e) {}
       scheduleBuild();redraw(lastMouse);
     }
     if((e.key==='Delete'||e.key==='Backspace')&&!_fpDivMode&&selectedIdx>=0){
@@ -55739,9 +56004,9 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
   }
   toolbar.appendChild(mkBtn2('Delete Wall','#ef4444',function(){
     if(_fpDivMode){
-      if(_selDiv<0){ instEl.textContent='Select a divider first (click it), then delete.'; return; }
-      _divList().splice(_selDiv,1); _selDiv=-1; _syncDivMetalBtn();
-      try { renderDividerWalls(); } catch(e) {}
+      if(!_selKey){ instEl.textContent='Select a wall first (click it), then delete.'; return; }
+      _SI().remove(_selKey); _selKey=null; _syncDivMetalBtn();
+      try { renderInteriorList(); renderDividerWalls(); renderInteriorWalls(); } catch(e) {}
       scheduleBuild();redraw(lastMouse); return;
     }
     if(selectedIdx<0){ instEl.textContent='Select a wall first (click it), then delete.'; return; }
@@ -55750,9 +56015,10 @@ window.openFloorPlanModal = function(drawZoneLevelId, startTool) {
   }));
   toolbar.appendChild(mkBtn2('Clear All','#64748b',function(){
     if(_fpDivMode){
-      if(!confirm('Clear all divider walls and interior posts?'))return;
-      window._dividerWalls=[];window._stallPosts=[];_selDiv=-1;_syncDivMetalBtn();
-      try { renderDividerWalls(); } catch(e) {}
+      if(!confirm('Clear every interior wall and post?'))return;
+      window._dividerWalls=[];window._interiorWalls=[];window._stallPosts=[];
+      _selKey=null;_syncDivMetalBtn();
+      try { renderInteriorList(); renderDividerWalls(); renderInteriorWalls(); } catch(e) {}
       scheduleBuild();redraw(lastMouse); return;
     }
     if(!confirm('Clear all interior walls and drains?'))return;
