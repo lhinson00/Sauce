@@ -25643,19 +25643,21 @@ function generatePostLayout() {
     doc.line(tbX,tbY+40,tbX+TBW,tbY+40);           // sheet title / body
     doc.line(tbX,tbY+62,tbD,tbY+62);               // client / building, left half only
     doc.line(tbD,tbY+40,tbD,tbY+TBH);              // body split
-    var brand=(((window._companySettings||{}).brandName)||'Sauce Estimator');
-    doc.setFont('helvetica','bold');doc.setFontSize(10.5);doc.setTextColor(0);
-    doc.text(brand.toUpperCase(),tbX+8,tbY+15);
-    doc.setFontSize(8);doc.text('POST LAYOUT PLAN',tbX+8,tbY+35);
     var custN=(document.getElementById('st_name')||{}).value||'';
+    doc.setFont('helvetica','bold');doc.setTextColor(0);
+    // long names have to shrink rather than run into the sheet number
+    function _tbFit(t,w,mx){ var z=mx;doc.setFontSize(z);
+        while(z>4.6&&doc.getTextWidth(t)>w){ z-=0.25;doc.setFontSize(z); } }
+    _tbFit(custN,236-16,10.5); doc.text(custN,tbX+8,tbY+15);
+    doc.setFontSize(8);doc.text('POST LAYOUT',tbX+8,tbY+35);
     doc.setFont('helvetica','normal');doc.setFontSize(5.8);doc.setTextColor(110);
-    doc.text('CLIENT',tbX+8,tbY+50);
-    doc.text('BUILDING',tbX+8,tbY+72);
+    doc.text('BUILDING SIZE',tbX+8,tbY+50);
+    doc.text('TRUSS TYPE',tbX+8,tbY+72);
     doc.text('SHEET',tbD+8,tbY+52);
-    doc.setFont('helvetica','bold');doc.setFontSize(7.5);doc.setTextColor(0);
-    doc.text(custN.toUpperCase(),tbX+8,tbY+59);
-    doc.setFontSize(7.5);
-    doc.text(bw+"' x "+bl+"' x "+bh+"'   "+pitch+'/12   '+truss,tbX+8,tbY+81);
+    doc.setFont('helvetica','bold');doc.setTextColor(0);
+    var _tbSize=bw+"' X "+bl+"' X "+bh+"'", _tbTruss=(truss+' TRUSS').toUpperCase();
+    _tbFit(_tbSize,tbD-tbX-16,7.5);  doc.text(_tbSize,tbX+8,tbY+59);
+    _tbFit(_tbTruss,tbD-tbX-16,7.5); doc.text(_tbTruss,tbX+8,tbY+81);
     doc.setFontSize(14);doc.text('S1.0',tbD+8,tbY+70);
     doc.setFont('helvetica','normal');doc.setFontSize(6.5);doc.setTextColor(60);
     doc.text(new Date().toLocaleDateString(),tbD+8,tbY+82);
@@ -25685,22 +25687,665 @@ function generatePostLayout() {
         });
     })();
 
-    // General notes
+    // The notes column carries the disclaimer instead. These sheets read like
+    // engineering documents and must not be taken for sealed plans, which some
+    // jurisdictions require before they will issue a permit.
     (function(){
-        var nx=tbX-204, ny=bandY+16;
-        doc.setFont('helvetica','bold');doc.setFontSize(6.5);doc.setTextColor(90);
-        doc.text('GENERAL NOTES',nx,ny-6);
-        doc.setFont('helvetica','normal');doc.setFontSize(6.1);doc.setTextColor(30);
-        var NT=['1.  ALL DIMENSIONS TO POST CENTERLINE U.N.O.'];
-        if(mirrored) NT.push((NT.length+1)+'.  OPPOSITE WALL MATCHES UNLESS DIMENSIONED.');
-        NT.push((NT.length+1)+'.  VERIFY DIAGONAL BEFORE SETTING ANY POST.');
-        NT.push((NT.length+1)+'.  SET POSTS PLUMB, BEARING ON UNDISTURBED SOIL.');
-        NT.push((NT.length+1)+'.  DO NOT SCALE DRAWING.');
-        NT.forEach(function(t,i){ doc.text(t,nx,ny+i*9); });
+        var dx=tbX-224, dy=bandY+18, dh=26;
+        doc.setFont('helvetica','bold');doc.setFontSize(7.5);
+        var w1=doc.getTextWidth('NOT AN ENGINEERED DRAWING');
+        doc.setFont('helvetica','normal');doc.setFontSize(6.3);
+        var w2=doc.getTextWidth('Issued for layout specifications only');
+        doc.setDrawColor(0);doc.setLineWidth(0.9);
+        doc.rect(dx,dy,Math.max(w1,w2)+18,dh);
+        doc.setFont('helvetica','bold');doc.setFontSize(7.5);doc.setTextColor(0);
+        doc.text('NOT AN ENGINEERED DRAWING',dx+9,dy+11);
+        doc.setFont('helvetica','normal');doc.setFontSize(6.3);doc.setTextColor(40);
+        doc.text('Issued for layout specifications only',dx+9,dy+21);
+    })();
+
+
+    // ═══ DETAIL SHEETS ══════════════════════════════════════════════════════
+    // Foundation details and the wall section. These carry no quote data of
+    // their own beyond the title block, so they are drawn the same on every
+    // job. The model, the 3D and the material list are not touched by any of
+    // this - it only governs what prints.
+    (function drawDetailSheets(){
+        var _PW=792, _PH=612, _MG=18, _STRIP=96;
+        var _cust=(document.getElementById('st_name')||{}).value||'';
+        var _size=bw+"' x "+bl+"' x "+bh+"'";
+        var _truss=truss+' Truss';
+
+        function _IN(v){
+            var w=Math.floor(v), f=v-w, s=Math.round(f*16), fs='';
+            if(s>=16){w++;s=0;}
+            if(s>0){ if(s%8===0)fs=' '+s/8+'/2'; else if(s%4===0)fs=' '+s/4+'/4';
+                     else if(s%2===0)fs=' '+s/2+'/8'; else fs=' '+s+'/16'; }
+            return w+fs+'"';
+        }
+        function _frame(){
+            doc.setDrawColor(0);doc.setLineWidth(1.2);
+            doc.rect(_MG,_MG,_PW-2*_MG,_PH-2*_MG);
+            var by=_PH-_MG-_STRIP;
+            doc.setLineWidth(0.8);doc.line(_MG,by,_PW-_MG,by);
+            _disclaimer(by);
+            return by;
+        }
+        // Every sheet carries this. These read like engineering documents and
+        // must not be mistaken for sealed plans where a permit needs them.
+        function _disclaimer(by){
+            var dx=_MG+8, dy=by+14, dh=26;
+            doc.setFont('helvetica','bold');doc.setFontSize(7.5);
+            var w1=doc.getTextWidth('NOT AN ENGINEERED DRAWING');
+            doc.setFont('helvetica','normal');doc.setFontSize(6.3);
+            var w2=doc.getTextWidth('Issued for layout specifications only');
+            doc.setDrawColor(0);doc.setLineWidth(0.9);
+            doc.rect(dx,dy,Math.max(w1,w2)+18,dh);
+            doc.setFont('helvetica','bold');doc.setFontSize(7.5);doc.setTextColor(0);
+            doc.text('NOT AN ENGINEERED DRAWING',dx+9,dy+11);
+            doc.setFont('helvetica','normal');doc.setFontSize(6.3);doc.setTextColor(40);
+            doc.text('Issued for layout specifications only',dx+9,dy+21);
+        }
+        function _titleBlock(by, sheet){
+            var TBW=236, TBH=_STRIP-10, tbX=_PW-_MG-TBW, tbY=by+5, tbD=tbX+152;
+            doc.setDrawColor(0);doc.setLineWidth(0.9);doc.rect(tbX,tbY,TBW,TBH);
+            doc.setLineWidth(0.5);
+            doc.line(tbX,tbY+22,tbX+TBW,tbY+22); doc.line(tbX,tbY+40,tbX+TBW,tbY+40);
+            doc.line(tbX,tbY+62,tbD,tbY+62);     doc.line(tbD,tbY+40,tbD,tbY+TBH);
+            doc.setFont('helvetica','bold');doc.setTextColor(0);
+            function fit(t,w,mx){ var s=mx;doc.setFontSize(s);
+                while(s>4.6&&doc.getTextWidth(t)>w){ s-=0.25;doc.setFontSize(s); } }
+            fit(_cust,TBW-16,10.5); doc.text(_cust,tbX+8,tbY+15);
+            doc.setFontSize(8);doc.text('POST LAYOUT',tbX+8,tbY+35);
+            doc.setFont('helvetica','normal');doc.setFontSize(5.8);doc.setTextColor(110);
+            doc.text('BUILDING SIZE',tbX+8,tbY+50);
+            doc.text('TRUSS TYPE',tbX+8,tbY+72);
+            doc.text('SHEET',tbD+8,tbY+52);
+            doc.setFont('helvetica','bold');doc.setTextColor(0);
+            fit(_size.toUpperCase(),tbD-tbX-16,7.5);  doc.text(_size.toUpperCase(),tbX+8,tbY+59);
+            fit(_truss.toUpperCase(),tbD-tbX-16,7.5); doc.text(_truss.toUpperCase(),tbX+8,tbY+81);
+            doc.setFontSize(14);doc.text(sheet,tbD+8,tbY+70);
+        }
+        function _chain(horiz, at, pts, X, Y, fmt, bold){
+            var F=fmt||FX, fp=bold?8:7.5;
+            var P=pts.map(function(v){ return horiz?X(v):Y(v); });
+            doc.setDrawColor(0);doc.setLineWidth(bold?0.8:0.6);
+            if(horiz) doc.line(P[0],at,P[P.length-1],at); else doc.line(at,P[0],at,P[P.length-1]);
+            P.forEach(function(q){ doc.setLineWidth(0.7);
+                if(horiz) doc.line(q,at-2.5,q,at+2.5); else doc.line(at-2.5,q,at+2.5,q); });
+            doc.setFont('helvetica','bold');doc.setFontSize(fp);doc.setTextColor(0);
+            for(var i=0;i<P.length-1;i++){
+                var a=P[i],b=P[i+1],lb=F(pts[i+1]-pts[i]),tw=doc.getTextWidth(lb),m=(a+b)/2;
+                var room=Math.abs(b-a)>tw+8;
+                if(horiz){
+                    if(room){ doc.setFillColor(255);doc.rect(m-tw/2-3,at-5.5,tw+6,11,'F');
+                              doc.text(lb,m,at+fp*0.34,{align:'center'}); }
+                    else doc.text(lb,m,at+((i%2)?9:-6),{align:'center'});
+                } else {
+                    if(room){ doc.setFillColor(255);doc.rect(at-5.5,m-tw/2-3,11,tw+6,'F');
+                              doc.text(lb,at+fp*0.34,m+tw/2,{angle:90}); }
+                    else doc.text(lb,at+((i%2)?9:-6),m+tw/2,{angle:90});
+                }
+            }
+        }
+        // ── shared drafting marks ───────────────────────────────────────────
+        function _tools(X,Y){
+            var T={}, seed=7;
+            function rnd(){ seed=(seed*16807)%2147483647; return seed/2147483647; }
+            T.reseed=function(s){ seed=s||7; };
+            T.diag=function(x0,x1,y0,y1,step,col,lw){
+                doc.setDrawColor(col==null?185:col);doc.setLineWidth(lw==null?0.18:lw);
+                for(var o=-(y1-y0);o<(x1-x0);o+=step){
+                    var ax=x0+o,ca=Math.max(ax,x0),cb=Math.min(ax+(y1-y0),x1);
+                    if(cb<=ca)continue;
+                    doc.line(X(ca),Y(y0+(ca-ax)),X(cb),Y(y0+(cb-ax)));
+                }
+            };
+            T.earth=function(x0,x1,y0,y1,step){
+                T.diag(x0,x1,y0,y1,step,200,0.25);
+                doc.setDrawColor(200);doc.setLineWidth(0.25);
+                for(var o=0;o<(x1-x0)+(y1-y0);o+=step){
+                    var tlo=Math.max(0,o-(x1-x0)), thi=Math.min(y1-y0,o);
+                    if(thi<=tlo)continue;
+                    doc.line(X(x0+o-tlo),Y(y0+tlo),X(x0+o-thi),Y(y0+thi));
+                }
+            };
+            T.conc=function(x0,x1,y0,y1,dens){
+                doc.setDrawColor(150);doc.setFillColor(150);doc.setLineWidth(0.28);
+                var n=Math.max(8,Math.round((x1-x0)*(y1-y0)*(dens||0.06)));
+                for(var i=0;i<n;i++){
+                    var px=x0+rnd()*(x1-x0), py=y0+rnd()*(y1-y0);
+                    if(rnd()<0.45) doc.circle(X(px),Y(py),0.45,'F');
+                    else { var a=rnd()*Math.PI;
+                        doc.line(X(px),Y(py),X(px+Math.cos(a)*1.1),Y(py+Math.sin(a)*1.1)); }
+                }
+            };
+            T.brkH=function(x0,x1,y,amp){
+                doc.setDrawColor(0);doc.setLineWidth(0.6);
+                var n=10,w=(x1-x0)/n,a=amp||0.5;
+                for(var k=0;k<n;k++){ var p=x0+k*w;
+                    doc.line(X(p),Y(y+((k%2)?a:-a)),X(p+w),Y(y+((k%2)?-a:a))); }
+            };
+            T.brkV=function(y0,y1,x,amp){
+                doc.setDrawColor(0);doc.setLineWidth(0.6);
+                var n=10,w=(y1-y0)/n,a=amp||0.5;
+                for(var k=0;k<n;k++){ var p=y0+k*w;
+                    doc.line(X(x+((k%2)?a:-a)),Y(p),X(x+((k%2)?-a:a)),Y(p+w)); }
+            };
+            T.lead=function(tx,ty,px,py,txt,right,fs){
+                doc.setDrawColor(0);doc.setLineWidth(0.5);
+                doc.line(tx,ty,px,py);
+                doc.setFillColor(0);doc.circle(px,py,1.3,'F');
+                doc.setFont('helvetica','normal');doc.setFontSize(fs||6.3);doc.setTextColor(0);
+                txt.split('|').forEach(function(l,k){
+                    doc.text(l,tx+(right?-5:5),ty+k*7.6+2,right?{align:'right'}:{}); });
+            };
+            T.dimV=function(atX,y0,y1,lab){
+                doc.setDrawColor(0);doc.setLineWidth(0.6);
+                doc.line(atX,Y(y0),atX,Y(y1));
+                doc.line(atX-3,Y(y0),atX+3,Y(y0)); doc.line(atX-3,Y(y1),atX+3,Y(y1));
+                doc.setFont('helvetica','bold');doc.setFontSize(6.6);doc.setTextColor(0);
+                var tw=doc.getTextWidth(lab), m=(Y(y0)+Y(y1))/2;
+                doc.setFillColor(255);doc.rect(atX-5,m-tw/2-3,10,tw+6,'F');
+                doc.text(lab,atX+2.2,m+tw/2,{angle:90});
+            };
+            T.dimH=function(atY,x0,x1,lab){
+                doc.setDrawColor(0);doc.setLineWidth(0.6);
+                doc.line(X(x0),atY,X(x1),atY);
+                doc.line(X(x0),atY-3,X(x0),atY+3); doc.line(X(x1),atY-3,X(x1),atY+3);
+                doc.setFont('helvetica','bold');doc.setFontSize(6.6);doc.setTextColor(0);
+                var m=(X(x0)+X(x1))/2, tw=doc.getTextWidth(lab);
+                doc.setFillColor(255);doc.rect(m-tw/2-3,atY-5.5,tw+6,11,'F');
+                doc.text(lab,m,atY+2.3,{align:'center'});
+            };
+            T.poly=function(P,style){
+                var d=[],i;
+                for(i=1;i<P.length;i++) d.push([X(P[i][0])-X(P[i-1][0]), Y(P[i][1])-Y(P[i-1][1])]);
+                doc.lines(d, X(P[0][0]), Y(P[0][1]), [1,1], style, true);
+            };
+            T.cap=function(cx,yy,txt){
+                doc.setFont('helvetica','bold');doc.setFontSize(7.5);doc.setTextColor(0);
+                doc.text(txt,cx,yy,{align:'center'});
+                var tw=doc.getTextWidth(txt);
+                doc.setDrawColor(0);doc.setLineWidth(0.7);
+                doc.line(cx-tw/2,yy+2.6,cx+tw/2,yy+2.6);
+            };
+            return T;
+        }
+      function drawSection(cx, topY, sc, mode, wood){
+        var full=(mode==='full');
+        var xA = full ?  -9 : -6,   xB = full ? 16 : 11.5;
+        var yA = full ? -10 : -9,   yB = full ? 12 : 11;
+        function X(v){return cx+v*sc;} function Y(v){return topY+(yB-v)*sc;}
+
+        function hatch(x0,x1,y0,y1,step){
+          doc.setDrawColor(185);doc.setLineWidth(0.18);
+          for(var o=-(y1-y0); o<(x1-x0); o+=step){
+            var ax=x0+o, bx=ax+(y1-y0);
+            var cax=Math.max(ax,x0), cbx=Math.min(bx,x1);
+            if(cbx<=cax) continue;
+            doc.line(X(cax),Y(y0+(cax-ax)),X(cbx),Y(y0+(cbx-ax)));
+          }
+        }
+        // post, cut
+        doc.setFillColor(253);doc.setDrawColor(0);doc.setLineWidth(1.1);
+        doc.rect(X(1.5),Y(yB),5.5*sc,(yB-yA)*sc,'FD');
+        hatch(1.5,7,yA,yB,full?0.85:1.15);
+        // girt, cut - 2x6 flat on the outside face of the post
+        doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(0.9);
+        doc.rect(X(0),Y(9.75),1.5*sc,5.5*sc,'FD');
+        doc.setLineWidth(0.45);
+        doc.line(X(0),Y(9.75),X(1.5),Y(4.25)); doc.line(X(0),Y(4.25),X(1.5),Y(9.75));
+        // metal siding
+        doc.setDrawColor(0);doc.setLineWidth(0.9);
+        doc.line(X(-0.45),Y(yB),X(-0.45),Y(-7.5)); doc.line(X(0),Y(yB),X(0),Y(-7.5));
+        // PT skirt board at the base of the siding
+        doc.setFillColor(246);doc.setDrawColor(0);doc.setLineWidth(0.9);
+        doc.rect(X(0),Y(-1.5),1.5*sc,5.5*sc,'FD');
+        doc.setLineWidth(0.45);
+        doc.line(X(0),Y(-1.5),X(1.5),Y(-7)); doc.line(X(0),Y(-7),X(1.5),Y(-1.5));
+        // slab, inside, butting the post
+        doc.setFillColor(242);doc.setDrawColor(0);doc.setLineWidth(0.9);
+        doc.rect(X(7),Y(0),(xB-7)*sc,4*sc,'FD');
+        doc.setDrawColor(165);doc.setLineWidth(0.3);
+        [[8.2,-1.1],[9.6,-2.6],[11.1,-1.4],[12.5,-2.9],[14.0,-1.2],[10.3,-3.4],[13.2,-1.9]]
+          .forEach(function(q){ if(q[0]<xB-0.6) doc.circle(X(q[0]),Y(q[1]),0.6,'S'); });
+        // finished grade, outside
+        doc.setDrawColor(0);doc.setLineWidth(0.9);
+        doc.line(X(xA),Y(-6),X(-0.45),Y(-6));
+        doc.setDrawColor(145);doc.setLineWidth(0.35);
+        var ne=full?11:7;
+        for(var e=0;e<ne;e++){ var ex=xA+0.5+e*0.8; doc.line(X(ex),Y(-6),X(ex-0.9),Y(-7.8)); }
+        // rat guard at grade
+        doc.setFillColor(35);doc.setDrawColor(0);doc.setLineWidth(0.6);
+        doc.rect(X(-1.15),Y(-5.2),0.7*sc,2.8*sc,'F');
+        // break lines
+        function brk(x0,x1,y){ doc.setDrawColor(0);doc.setLineWidth(0.6);
+          var n=10,w=(x1-x0)/n;
+          for(var k=0;k<n;k++){ var a=x0+k*w;
+            doc.line(X(a),Y(y+((k%2)?0.42:-0.42)),X(a+w),Y(y+((k%2)?-0.42:0.42))); } }
+        brk(1.5,7,yA+0.4); brk(7,xB,-4.6); brk(1.5,7,yB-0.4);
+
+        // ── the two origins ────────────────────────────────────────────────────
+        doc.setDrawColor(0);doc.setLineWidth(0.7);doc.setLineDashPattern([4,2],0);
+        doc.line(X(0),Y(yB)-(full?34:46),X(0),Y(yA)+(full?42:12));
+        doc.line(X(1.5),Y(yB)-(full?34:46),X(1.5),Y(yA)+(full?42:12));
+        doc.setLineDashPattern([],0);
+        // the 1 1/2" reads wider than the gap it measures — knock the datum
+        // lines out behind it rather than let the text sit on top of them
+        if(!full){ doc.setFillColor(255);
+          doc.rect(X(0.75)-18,(Y(yB)-24)-13,36,10.5,'F'); }
+        _chain(true, Y(yB)-24, [0,1.5], X,Y, _IN, true);
+        _chain(true, Y(yB)-10, [1.5,7], X,Y, _IN);
+        if(full){
+          doc.setFont('helvetica','normal');doc.setFontSize(6);doc.setTextColor(110);
+          doc.text('GIRT',X(0.75),Y(yB)-39,{align:'center'});
+          doc.text('POST',X(4.25),Y(yB)-16,{align:'center'});
+        } else {
+          // name each origin for THIS sheet's truss type, over its own datum line
+          doc.setFont('helvetica','bold');doc.setFontSize(6.3);doc.setTextColor(0);
+          doc.text(wood?'OPENING STRING':'SLAB EDGE',  X(0)-4,   Y(yB)-50, {align:'right'});
+          doc.text(wood?'POST CHAIN'    :'BOTH STRINGS',X(1.5)+4, Y(yB)-50);
+        }
+
+        function leader(tx,ty,px,py,txt,right){
+          doc.setDrawColor(0);doc.setLineWidth(0.5);
+          doc.line(tx,ty,px,py);
+          doc.setFillColor(0);doc.circle(px,py,1.3,'F');
+          doc.setFont('helvetica','normal');doc.setFontSize(full?6.4:5.9);doc.setTextColor(0);
+          txt.split('|').forEach(function(l,k){
+            doc.text(l, tx+(right?-5:5), ty+k*(full?8:7.4)+2, right?{align:'right'}:{}); });
+        }
+        if(full){
+          var RX=X(xB)+58, LX=X(xA)-58;
+          leader(RX, Y(8),   X(0.75), Y(7),   '2x6 #2 SP GIRT');
+          leader(RX, Y(1.5), X(4.25), Y(2),   'REFER TO STRUCTURAL PLANS &|ELEVATIONS FOR POST REQUIREMENTS');
+          leader(RX, Y(-2.6),X(11),   Y(-2),  'CONCRETE SLAB');
+          leader(LX, Y(9),   X(-0.22),Y(9.5), 'METAL SIDING', true);
+          leader(LX, Y(-1.4),X(-0.8), Y(-4),  'CONTRACTOR SHALL INSTALL|RAT GUARD AT FINISHED|GRADE LINE.', true);
+          leader(LX, Y(-8.2),X(0.75), Y(-5),  '2x6 #2 PT SP SKIRT', true);
+        } else {
+          var RC=X(xB)+18;
+          leader(RC, Y(8.6), X(0.75), Y(7),   '2x6 GIRT  —  1 1/2" TRUE');
+          leader(RC, Y(2.0), X(4.25), Y(2),   '6x6 POST');
+          leader(RC, Y(-3.2),X(9.4),  Y(-2),  'CONCRETE SLAB');
+        }
+        doc.setFont('helvetica','bold');doc.setFontSize(full?6.2:5.8);doc.setTextColor(0);
+        if(full) doc.text('FINISHED GRADE', X(xA)+2, Y(-6)-4);
+        else     doc.text('FINISHED GRADE', X(-1.9), Y(-6)-4, {align:'right'});
+        if(full) doc.text('TOP OF SLAB', X(xB)-2, Y(0)-4, {align:'right'});
+
+        if(full){
+          // origin callouts, spread either side below the section
+          var oy=Y(yA)+56;
+          doc.setFont('helvetica','bold');doc.setFontSize(7);doc.setTextColor(0);
+          doc.text('WOOD TRUSS', X(0)-70, oy, {align:'right'});
+          doc.setFont('helvetica','normal');doc.setFontSize(6);
+          doc.text('dimension taken to the outside', X(0)-70, oy+9, {align:'right'});
+          doc.text('of the GIRT  =  slab edge', X(0)-70, oy+17, {align:'right'});
+          doc.setFont('helvetica','bold');doc.setFontSize(7);
+          doc.text('STEEL TRUSS', X(1.5)+70, oy);
+          doc.setFont('helvetica','normal');doc.setFontSize(6);
+          doc.text('dimension taken to the outside', X(1.5)+70, oy+9);
+          doc.text('of the POST', X(1.5)+70, oy+17);
+          doc.setDrawColor(0);doc.setLineWidth(0.6);
+          doc.line(X(0)-66,oy-2,X(0)-7,oy-2);
+          doc.triangle(X(0),oy-2,X(0)-6,oy-4,X(0)-6,oy,'F');
+          doc.line(X(1.5)+66,oy-2,X(1.5)+7,oy-2);
+          doc.triangle(X(1.5),oy-2,X(1.5)+6,oy-4,X(1.5)+6,oy,'F');
+        } else {
+          // the rule, in two lines, the applicable one in black
+          var oy2=Y(yA)+28;
+          [['WOOD TRUSS','quoted dimension to the outside of the GIRT', !!wood],
+           ['STEEL TRUSS','quoted dimension to the outside of the POST', !wood]
+          ].forEach(function(r,i){
+            var yy=oy2+i*13;
+            doc.setFont('helvetica','bold');doc.setFontSize(6.6);
+            doc.setTextColor(r[2]?0:155); doc.text(r[0], X(xA)+2, yy);
+            doc.setFont('helvetica','normal');doc.setFontSize(6.2);
+            doc.setTextColor(r[2]?30:165); doc.text(r[1], X(xA)+62, yy);
+          });
+          doc.setFont('helvetica','normal');doc.setFontSize(6.2);doc.setTextColor(110);
+          doc.text('The slab edge is the outside of the girt either way.', X(xA)+2, oy2+28);
+        }
+        return {X:X, Y:Y, xA:xA, xB:xB, yA:yA, yB:yB};
+      }
+
+
+      function section(sheet){
+        var bandY=_frame();
+        doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(0);
+        doc.text('WALL SECTION — WHERE THE DIMENSION STARTS', _MG+14, _MG+26);
+        doc.setFont('helvetica','normal');doc.setFontSize(6.5);doc.setTextColor(110);
+        doc.text('Vertical cut through the wall. Both dimension origins shown on one section.', _MG+14, _MG+38);
+
+        var DT=_MG+138, DB=bandY-84;
+        drawSection(_PW/2-40, DT, (DB-DT)/22, 'full');
+
+        _titleBlock(bandY, sheet);
+      }
+
+
+      function slabEdge(cx, topY, sc){
+        // x: 0 = slab edge / outside face of girt, positive = into the building
+        // y: 0 = top of slab.   frame: x -12..30, y -22..14
+        function X(v){return cx+v*sc;} function Y(v){return topY+(14-v)*sc;}
+        var T=_tools(X,Y); T.reseed(11);
+
+        T.earth(-12,0,-22,-3.2,3.0);
+        T.earth(0,30,-22,-4,3.0);
+
+        // the monolithic pour — recessed edge, slab, thickened footing
+        doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(1.2);
+        T.poly([[0,-2],[1.5,-2],[1.5,0],[28,0],[28,-4],[24,-4],[16,-18],[0,-18]],'FD');
+        T.conc(0.6,15.4,-17.4,-4.6,0.14); T.conc(2,27,-3.5,-0.5,0.14);
+        T.conc(16.5,22,-10,-4.6,0.07);
+
+        // compacted fill under the slab
+        doc.setFillColor(252);doc.setDrawColor(0);doc.setLineWidth(0.5);
+        doc.rect(X(24),Y(-4),4*sc,2*sc,'FD');
+        T.diag(24,28,-6,-4,1.3,170,0.25);
+
+        // rebar — three continuous bars, and the hooked edge bar into the slab
+        doc.setFillColor(0);
+        [[5,-8],[11,-8],[8,-14.5]].forEach(function(q){ doc.circle(X(q[0]),Y(q[1]),1.6,'F'); });
+        doc.setDrawColor(0);doc.setLineWidth(1.8);
+        doc.line(X(2.6),Y(-15.5),X(2.6),Y(-2.4)); doc.line(X(2.6),Y(-2.4),X(20),Y(-2.4));
+
+        // post, girt, siding
+        doc.setFillColor(253);doc.setDrawColor(0);doc.setLineWidth(1.1);
+        doc.rect(X(1.5),Y(13),5.5*sc,13*sc,'FD');
+        T.diag(1.5,7,0,13,1.5);
+        doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(0.9);
+        doc.rect(X(0),Y(3.5),1.5*sc,5.5*sc,'FD');
+        doc.setLineWidth(0.45);
+        doc.line(X(0),Y(3.5),X(1.5),Y(-2)); doc.line(X(0),Y(-2),X(1.5),Y(3.5));
+        doc.setDrawColor(0);doc.setLineWidth(0.9);
+        doc.line(X(-0.45),Y(13),X(-0.45),Y(-2)); doc.line(X(0),Y(13),X(0),Y(-2));
+
+        // anchor bracket — the section cuts through its base plate; the legs
+        // stand on the faces either side of the cut
+        doc.setFillColor(70);doc.setDrawColor(0);doc.setLineWidth(0.6);
+        doc.rect(X(1.2),Y(0.4),6.1*sc,0.4*sc,'FD');
+        doc.setDrawColor(0);doc.setLineWidth(0.9);
+        [2.6,5.4].forEach(function(h){ doc.line(X(1.1),Y(h),X(7.4),Y(h));
+          doc.setFillColor(0);doc.circle(X(1.1),Y(h),1.1,'F');doc.circle(X(7.4),Y(h),1.1,'F'); });
+        doc.setLineWidth(1.3); doc.line(X(4.25),Y(0.4),X(4.25),Y(-6));
+
+        T.brkH(1.5,7,12.6,0.4);
+        T.brkV(-6,0,29,0.4);
+        T.brkH(-12,30,-21.5,0.4);
+
+        // grade outside
+        doc.setDrawColor(0);doc.setLineWidth(0.9);
+        doc.line(X(-12),Y(-3.8),X(-0.45),Y(-3.2));
+
+        // labels sit on the side of the detail the part is on, so no leader
+        // has to be dragged across the drawing
+        var LX=X(-12)-24, RX=X(30)+16;
+        T.lead(LX,Y(12),   X(4.25), Y(11),  'POST',true);
+        T.lead(LX,Y(8),    X(1.5),  Y(6),   'ANCHOR BRACKET',true);
+        T.lead(LX,Y(4),    X(-0.22),Y(5),   'METAL SIDING',true);
+        T.lead(LX,Y(0.2),  X(0.75), Y(0.6), 'BOTTOM GIRT',true);
+        T.lead(LX,Y(-4),   X(-6),   Y(-3.5),'FINISHED GRADE',true);
+        T.lead(LX,Y(-14),  X(-7),   Y(-12), 'UNDISTURBED EARTH',true);
+        T.lead(RX,Y(-1.4), X(25),   Y(-2),  '4" CONCRETE SLAB');
+        T.lead(RX,Y(-6.4), X(26),   Y(-5),  'COMPACTED FILL');
+        T.lead(RX,Y(-11),  X(11),   Y(-8),  '#4 REBAR, CONTINUOUS');
+        T.lead(RX,Y(-16),  X(9),    Y(-15), 'MONOLITHIC FOOTING');
+
+        T.dimV(X(-12)-8,0,-18,"1'-6\"");
+        T.dimH(Y(-18)+16,0,16,'16"');
+        T.cap((X(-12)+X(30))/2, Y(-22)+16, 'SLAB EDGE & FOOTING');
+      }
+
+
+      function bracketDetail(cx, topY, sc, title, cat, corner){
+        // x: 0 = post centre.   y: 0 = top of slab.   frame x -11..11, y -9..11
+        // SW66 is a saddle: base plate under the post, a leg up each face.
+        // SW60 is an L: one leg up a face, the flange out beside the post.
+        function X(v){return cx+v*sc;} function Y(v){return topY+(11-v)*sc;}
+        var T=_tools(X,Y); T.reseed(corner?23:19);
+        var hw=2.75, t=0.4, LEG=7.6, FL=3.4;
+        var base = corner ? 0 : t;             // the saddle lifts the post on its plate
+
+        doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(1.0);
+        doc.rect(X(-11),Y(0),22*sc,9*sc,'FD');
+        T.conc(-11,11,-9,0,0.07);
+        T.brkH(-11,11,-8.5,0.4);
+
+        doc.setFillColor(253);doc.setDrawColor(0);doc.setLineWidth(1.1);
+        doc.rect(X(-hw),Y(10),5.5*sc,(10-base)*sc,'FD');
+        T.diag(-hw,hw,base,10,1.5);
+        T.brkH(-hw,hw,9.6,0.4);
+
+        // the bracket itself — solid steel, so it reads as a part and not a line
+        doc.setFillColor(70);doc.setDrawColor(0);doc.setLineWidth(0.6);
+        var anc;
+        if(corner){
+          doc.rect(X(hw),Y(LEG),t*sc,LEG*sc,'FD');                 // leg up the face
+          doc.rect(X(hw+t),Y(t),FL*sc,t*sc,'FD');                  // flange on the slab
+          anc=[hw+t+FL*0.55];
+        } else {
+          doc.rect(X(-hw-t-FL),Y(t),(2*(hw+t+FL))*sc,t*sc,'FD');   // base plate
+          doc.rect(X(-hw-t),Y(LEG),t*sc,(LEG-t)*sc,'FD');          // left leg
+          doc.rect(X(hw),Y(LEG),t*sc,(LEG-t)*sc,'FD');             // right leg
+          anc=[-hw-t-FL*0.55, hw+t+FL*0.55];
+        }
+        // through bolts
+        doc.setDrawColor(0);doc.setLineWidth(0.9);
+        [2.8,5.6].forEach(function(h){
+          var a=corner?-hw-0.6:-hw-t-0.6, b=hw+t+0.6;
+          doc.line(X(a),Y(h),X(b),Y(h));
+          doc.setFillColor(0);
+          doc.circle(X(a),Y(h),1.1,'F'); doc.circle(X(b),Y(h),1.1,'F');
+        });
+        // drill-set anchors down into the slab
+        doc.setDrawColor(0);
+        anc.forEach(function(a){
+          doc.setLineWidth(1.3); doc.line(X(a),Y(t),X(a),Y(-6));
+          doc.setFillColor(0); doc.setLineWidth(0.5);
+          doc.rect(X(a)-2.2,Y(t)-4.4,4.4,4.4,'FD');
+        });
+
+        // each label sits on the side its part is on
+        var LX=X(-11)-14, RX=X(11)+14;
+        T.lead(LX,Y(7.6), X(-hw+1), Y(7.2), 'POST',true,6.2);
+        if(corner) T.lead(RX,Y(5.4), X(hw+t/2), Y(5),  cat+' BRACKET',false,6.2);
+        else       T.lead(LX,Y(3.4), X(-hw-t/2),Y(4),  cat+' BRACKET',true,6.2);
+        T.lead(RX,Y(-2.4),X(anc[anc.length-1]),Y(-3),'DRILL-SET ANCHOR',false,6.2);
+        T.lead(RX,Y(-6.6),X(7),    Y(-6), 'SLAB',false,6.2);
+        T.cap(cx, Y(-9)+18, title);
+      }
+
+
+      function inGround(cx, topY, sc){
+        // x: 0 = post centre.   y: 0 = top of slab
+        //   pad  -52..-48   post bears on it at -48
+        //   collar -48..-32  backfill -32..-6
+        function X(v){return cx+v*sc;} function Y(v){return topY+(18-v)*sc;}
+        var T=_tools(X,Y); T.reseed(31);
+        var hw=2.75;
+
+        T.earth(-17,-8,-54,-6,2.6); T.earth(8,17,-54,-6,2.6);
+
+        // the augered shaft
+        doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(1.0);
+        doc.rect(X(-8),Y(-6),16*sc,26*sc,'FD');          // compacted backfill
+        T.diag(-8,8,-32,-6,1.8,160,0.25);
+        doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(1.0);
+        doc.rect(X(-8),Y(-32),16*sc,16*sc,'FD');         // concrete collar
+        T.conc(-8,8,-48,-32,0.30);
+        doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(1.4);
+        doc.rect(X(-8),Y(-48),16*sc,4*sc,'FD');          // footing pad
+        T.conc(-8,8,-52,-48,0.55);
+
+        // sub-base and the slab poured around the post
+        doc.setFillColor(252);doc.setDrawColor(0);doc.setLineWidth(0.6);
+        doc.rect(X(-17),Y(-4),(17-hw)*sc,2*sc,'FD');
+        doc.rect(X(hw),Y(-4),(17-hw)*sc,2*sc,'FD');
+        T.diag(-17,-hw,-6,-4,1.5,170,0.25); T.diag(hw,17,-6,-4,1.5,170,0.25);
+        doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(1.0);
+        doc.rect(X(-17),Y(0),(17-hw)*sc,4*sc,'FD');
+        doc.rect(X(hw),Y(0),(17-hw)*sc,4*sc,'FD');
+        T.conc(-17,-hw,-4,0,0.09); T.conc(hw,17,-4,0,0.09);
+
+        // the post, bearing on the pad
+        doc.setFillColor(253);doc.setDrawColor(0);doc.setLineWidth(1.1);
+        doc.rect(X(-hw),Y(17),5.5*sc,65*sc,'FD');
+        T.diag(-hw,hw,-48,17,1.6);
+        T.brkH(-hw,hw,16.6,0.42);
+
+        // lag screws through the post, inside the collar
+        doc.setDrawColor(0);doc.setLineWidth(1.2);
+        [-37,-42].forEach(function(h){ doc.line(X(-5.6),Y(h),X(5.6),Y(h)); });
+
+        T.brkH(-17,17,-53.5,0.42);
+        doc.setDrawColor(120);doc.setLineWidth(0.6);doc.setLineDashPattern([4,3],0);
+        doc.line(X(-21),Y(0),X(21),Y(0));doc.setLineDashPattern([],0);
+
+        var LX=X(-17)-30, RX=X(17)+22;
+        T.lead(LX,Y(3),    X(-14), Y(0),   'FINISHED GRADE',true);
+        T.lead(LX,Y(-6),   X(-13), Y(-5),  '4" SLAB AND SUB-BASE|BY OTHERS',true);
+        T.lead(LX,Y(-21),  X(-5.4),Y(-19), 'COMPACTED BACKFILL',true);
+        T.lead(RX,Y(12),   X(hw),  Y(11),  'POST');
+        T.lead(RX,Y(-14),  X(12),  Y(-14), 'UNDISTURBED EARTH');
+        T.lead(RX,Y(-33),  X(4.6), Y(-37), 'GALVANIZED LAG SCREWS');
+        T.lead(RX,Y(-41),  X(6),   Y(-40), 'CONCRETE COLLAR');
+        T.lead(RX,Y(-49),  X(4),   Y(-50), 'FOOTING PAD');
+
+        T.dimV(X(-17)-12,-4,-52,"4'-0\"");
+        T.dimH(Y(-54)+18,-8,8,'16" DIA');
+        T.cap(cx, Y(-54)+38, 'POST IN GROUND');
+      }
+
+
+      function foundation(kind, sheet){
+        var bandY=_frame(), onSlab=(kind==='slab');
+        doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(0);
+        doc.text(onSlab ? 'FOUNDATION DETAILS — POSTS SET ON CONCRETE'
+                        : 'FOUNDATION DETAIL — POSTS SET IN GROUND', _MG+14, _MG+26);
+        doc.setFont('helvetica','normal');doc.setFontSize(6.5);doc.setTextColor(110);
+        doc.text(onSlab ? 'Typical. Post stands on the slab and is held by a drill-set bracket.'
+                        : 'Typical. Post bears on a footing pad, with a concrete collar at the base.', _MG+14, _MG+38);
+
+        if(onSlab){
+          slabEdge(346, 66, 5.4);
+          bracketDetail(250, 296, 7.5, 'INTERIOR POST', 'SW66', false);
+          bracketDetail(560, 296, 7.5, 'CORNER / DOOR POST', 'SW60', true);
+        } else {
+          inGround(396, 62, 5.3);
+        }
+
+        _titleBlock(bandY, sheet);
+      }
+
+
+
+        // ── TRUSS LAYOUT ────────────────────────────────────────────────────
+        // Top down, in the same orientation as the post layout plan: the facing
+        // gable across the bottom, across-the-sheet running -X to +X. Trusses
+        // span the WIDTH and bear on the two eave walls, repeating down the
+        // length wherever the eave wall carries a post.
+        function trussSheet(sheet){
+            var bandY=_frame();
+            doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(0);
+            doc.text('TRUSS LAYOUT',_MG+14,_MG+26);
+            doc.setFont('helvetica','normal');doc.setFontSize(6.5);doc.setTextColor(110);
+            doc.text('Truss span and direction against the building, with the opening locations.',
+                     _MG+14,_MG+38);
+
+            var PLX=bw*12, PLY=bl*12;
+            var DL=_MG+94, DR=_PW-_MG-94, DT=_MG+86, DB=bandY-56;
+            var sc=Math.min((DR-DL)/PLX,(DB-DT)/PLY);
+            var ox=(DL+DR)/2-PLX*sc/2, oy=(DT+DB)/2-PLY*sc/2;
+            function X(v){return ox+v*sc;} function Y(v){return oy+v*sc;}
+
+            // where the trusses land: wherever the eave wall carries a post
+            var tp=(wp.left||[]).map(function(p){return p.ft*12;})
+                   .sort(function(a,b){return a-b;})
+                   .filter(function(v,i,a){return i===0||v-a[i-1]>0.5;});
+            if(tp.length<2) tp=[0,PLY];
+            if(tp[0]>0.5) tp.unshift(0);
+            if(PLY-tp[tp.length-1]>0.5) tp.push(PLY);
+
+            // building
+            doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(1.6);
+            doc.rect(X(0),Y(0),PLX*sc,PLY*sc,'FD');
+
+            // the trusses themselves - gable ends heavier, the rest typical
+            tp.forEach(function(v,i){
+                var end=(i===0||i===tp.length-1);
+                doc.setDrawColor(end?0:70);doc.setLineWidth(end?1.8:0.9);
+                doc.line(X(0),Y(v),X(PLX),Y(v));
+            });
+            // bearing shown at both eave walls
+            doc.setFillColor(40);
+            tp.forEach(function(v){
+                doc.rect(X(0)-1.6,Y(v)-1.6,3.2,3.2,'F');
+                doc.rect(X(PLX)-1.6,Y(v)-1.6,3.2,3.2,'F');
+            });
+
+            // openings on the perimeter
+            var _dl={},_di=1;
+            function _run(d){
+                var o=(d.offset||0)*12, w=d.w*12;
+                if(d.wall==='back')  return {horiz:true, at:PLY, a:o, b:o+w};
+                if(d.wall==='front') return {horiz:true, at:0,   a:o, b:o+w};
+                if(d.wall==='left')  return {horiz:false,at:0,   a:o, b:o+w};
+                return                      {horiz:false,at:PLX, a:o, b:o+w};
+            }
+            (allDoors||[]).forEach(function(d){
+                var key=d.sizeKey||d.size||(d.w+'x'+d.h);
+                if(!_dl[key]) _dl[key]={lbl:'OHD'+(_di++),w:d.w,h:d.h};
+                var r=_run(d), m=(r.a+r.b)/2;
+                doc.setDrawColor(0);doc.setLineWidth(4.2);
+                if(r.horiz) doc.line(X(r.a),Y(r.at),X(r.b),Y(r.at));
+                else        doc.line(X(r.at),Y(r.a),X(r.at),Y(r.b));
+                doc.setFont('helvetica','bold');doc.setFontSize(6.4);doc.setTextColor(0);
+                if(r.horiz) doc.text(_dl[key].lbl,X(m),Y(r.at)+(r.at>0?13:-7),{align:'center'});
+                else        doc.text(_dl[key].lbl,X(r.at)+(r.at>0?9:-9),Y(m)+6,
+                                     {align:r.at>0?'left':'right'});
+            });
+
+            // span across the top, truss spacing down the left
+            _chain(true, Y(0)-30, [0,PLX], X,Y, FX, true);
+            doc.setFont('helvetica','normal');doc.setFontSize(6.4);doc.setTextColor(110);
+            doc.text('TRUSS SPAN',X(PLX/2),Y(0)-40,{align:'center'});
+            _chain(false, X(0)-34, tp, X,Y, FX, true);
+            doc.setFont('helvetica','bold');doc.setFontSize(6.4);doc.setTextColor(110);
+            doc.text('TRUSS SPACING',X(0)-52,Y(PLY/2)+30,{angle:90});
+
+            // one leader, so the lines are named without tagging every one
+            var _ti=Math.max(1,Math.min(tp.length-2,Math.floor(tp.length/2)));
+            doc.setDrawColor(0);doc.setLineWidth(0.5);
+            doc.line(X(PLX)+54,Y(tp[_ti]),X(PLX*0.72),Y(tp[_ti]));
+            doc.setFillColor(0);doc.circle(X(PLX*0.72),Y(tp[_ti]),1.3,'F');
+            doc.setFont('helvetica','normal');doc.setFontSize(6.3);doc.setTextColor(0);
+            doc.text('TRUSS, TYP.',X(PLX)+58,Y(tp[_ti])+2);
+            doc.setFontSize(5.8);doc.setTextColor(110);
+            doc.text('bearing on both eave walls',X(PLX)+58,Y(tp[_ti])+10);
+
+            doc.setFont('helvetica','bold');doc.setFontSize(6.4);doc.setTextColor(110);
+            doc.text('FACING GABLE',X(PLX/2),Y(PLY)+30,{align:'center'});
+            _titleBlock(bandY, sheet);
+        }
+
+        // ── the sheets ──────────────────────────────────────────────────────
+        doc.addPage('letter','landscape'); trussSheet('S1.1');
+        doc.addPage('letter','landscape'); foundation('slab',    'F1');
+        doc.addPage('letter','landscape'); foundation('inground','F2');
+        doc.addPage('letter','landscape'); section('D1');
     })();
 
     // The 3D and elevation pages that follow were laid out against a 30pt margin.
     MG = 30;
+    function _noteNotEngineered(){
+        doc.setFont('helvetica','bold');doc.setFontSize(7);doc.setTextColor(0);
+        doc.text('NOT AN ENGINEERED DRAWING',MG,PH-MG-1);
+        doc.setFont('helvetica','normal');doc.setFontSize(6.3);doc.setTextColor(60);
+        doc.text('Issued for layout specifications only',MG+136,PH-MG-1);
+    }
 
     // === PAGE 2: 3D SNAPSHOTS ===
     var d3=window._3d;
@@ -25742,11 +26387,14 @@ function generatePostLayout() {
         doc.setDrawColor(200);doc.setLineWidth(0.3);doc.line(MG,MG+22,PW-MG,MG+22);
 
         // First view on this page (already captured as snaps[0])
-        var vT=MG+28, vH=PH-vT-MG, vW=PW-MG*2;
+        // The render is given a footer strip rather than running full bleed,
+        // so the disclaimer is not printed underneath the image.
+        var vT=MG+28, vH=PH-vT-MG-14, vW=PW-MG*2;
         doc.setFont('helvetica','bold');doc.setFontSize(7);doc.setTextColor(60);
         doc.text(snaps[0].name,MG+vW/2,vT-3,{align:'center'});
         doc.addImage(snaps[0].data,'JPEG',MG,vT,vW,vH);
         doc.setDrawColor(200);doc.setLineWidth(0.3);doc.rect(MG,vT,vW,vH);
+        _noteNotEngineered();
 
         // Remaining views — one per page
         for(var si=1;si<snaps.length;si++){
@@ -25760,6 +26408,7 @@ function generatePostLayout() {
             doc.text(snaps[si].name,MG+vW/2,vT-3,{align:'center'});
             doc.addImage(snaps[si].data,'JPEG',MG,vT,vW,vH);
             doc.setDrawColor(200);doc.setLineWidth(0.3);doc.rect(MG,vT,vW,vH);
+            _noteNotEngineered();
         }
         doc.setFontSize(5.5);doc.setTextColor(160);
         doc.text((((window._companySettings||{}).brandName)||'Sauce Estimator')+'  |  \u00A9 '+new Date().getFullYear(),PW-MG,PH-MG,{align:'right'});
@@ -25803,6 +26452,12 @@ function generatePostLayout() {
             doc.text('SHEET '+pageNum,PW-MG,MG+21,{align:'right'});
             // bottom rule
             doc.setDrawColor(60);doc.setLineWidth(0.5);doc.line(MG,PH-FB,PW-MG,PH-FB);
+            // Every sheet in the set carries this, so a page that gets printed
+            // or forwarded on its own still says what it is.
+            doc.setFont('helvetica','bold');doc.setFontSize(7);doc.setTextColor(0);
+            doc.text('NOT AN ENGINEERED DRAWING',MG,PH-FB+12);
+            doc.setFont('helvetica','normal');doc.setFontSize(6.3);doc.setTextColor(60);
+            doc.text('Issued for layout specifications only',MG+136,PH-FB+12);
         }
 
         // ── drawing area ─────────────────────────────────────────────────────
@@ -25872,6 +26527,20 @@ function generatePostLayout() {
             doc.text(label,x+dx,cy+tw/2,{angle:90});
         }
 
+        // Half a post, for placing a jamb post centre off its opening edge.
+        // Nominal 6x6 is 5 1/2" true, 8x8 is 7 1/2", and so on.
+        var _sfPost={};
+        try { _sfPost=(typeof serializeConfig==='function'
+                       ? (serializeConfig()||{}).salesFields : null)||{}; } catch(e){}
+        function _halfPost(wid){
+            var sz='6x6';
+            try { if(window.SauceMaterials && window.SauceMaterials.wallPostSizeFor)
+                    sz=window.SauceMaterials.wallPostSizeFor(wid,_sfPost)||'6x6'; } catch(e){}
+            var n=parseFloat(String(sz).split('x')[0]);
+            if(!isFinite(n)||n<4) n=6;
+            return (n-0.5)/2;
+        }
+
         // ── draw one elevation ───────────────────────────────────────────────
         function drawElevation(doc,wallId){
             var isGable=(wallId==='front'||wallId==='back');
@@ -25898,7 +26567,7 @@ function generatePostLayout() {
             // so each side needs the standoff plus about a cap height - not the
             // old 10% of the sheet, which on a wide building ate the drawing.
             var dimSpace=40;
-            var dimBelow = 18 + 2*24;                     // grade line to sheet bottom: bay chain + overall
+            var dimBelow = 18 + 34 + 34 + 20;             // grade line to sheet bottom: two chains, each captioned
             var headRoom = 34;                            // subtitle + notes block
             var maxH = DA_H - dimBelow - headRoom;
             var maxW = DA_W - dimSpace*2;
@@ -26148,25 +26817,64 @@ function generatePostLayout() {
             // Post bays first (nearest the building), overall below it. That is
             // the order a builder works in: set the posts off the chain, check
             // the whole wall against the overall.
-            var dimY1=yGrd+22, dimY2=dimY1+24;
-            var postFt=(wp[wallId]||[]).map(function(p){return along(p.ft);})
-                       .sort(function(a,b){return a-b;})
-                       .filter(function(v,i,a){return i===0||Math.abs(v-a[i-1])>0.02;});
-            if(postFt.length>2){
-                // extension lines from each post down to the chain
-                doc.setDrawColor(150);doc.setLineWidth(0.3);
-                postFt.forEach(function(ft){
-                    var px=x0+ft*sc; doc.line(px,yGrd+3,px,dimY1-4);
-                });
-                // Equal bays collapse to one "N @ 10'-0"" label, same as the
-                // post layout. A 60' wall at 10' centres is one number, not six.
-                _runs(postFt.map(function(f){return{ft:f};})).forEach(function(r){
-                    arrowH(doc, x0+postFt[r.i0]*sc, x0+postFt[r.i1]*sc, dimY1, r.lb, false, true);
-                });
-                arrowH(doc,x0,x1,dimY2,FX(faceFt*12)+'   OVERALL',false);
-            } else {
-                arrowH(doc,x0,x1,dimY1,FX(faceFt*12)+'   OVERALL',false);
+            // TWO strings, because they measure different things and the crew
+            // needs both. The opening layout is what the customer bought:
+            // nominal, pulled from the outside face the quote is taken to,
+            // closing on the quoted dimension. The post chain is what actually
+            // gets set: outside of the corner post, post centres, then outside
+            // of the far corner - so it closes on posts out-to-out, which on a
+            // wood truss is 3" shorter. Sheet D1 shows which face each starts
+            // from. None of this moves a post; it only changes what prints.
+            var dimY1=yGrd+26, dimY2=dimY1+34;
+            var _HP=_halfPost(wallId);
+            var frameIn=faceFt*12-2*girtOff;
+            function sxO(v){ return x0+(v/12)*sc; }                 // quoted frame
+            function sxP(v){ return x0+((v+girtOff)/12)*sc; }       // post frame
+
+            // ── opening layout, in the quoted frame ────────────────────────
+            var opn=[0];
+            faceDoors.forEach(function(d){
+                var o=d.offset||0;
+                if(MIRROR) o=faceFt-o-d.w;
+                opn.push(o,o+d.w);
+            });
+            opn.push(faceFt);
+            opn=opn.map(function(v){return v*12;})
+                   .sort(function(a,b){return a-b;})
+                   .filter(function(v,i,a){return i===0||v-a[i-1]>0.02;});
+
+            // ── post chain, in the post frame ─────────────────────────────
+            // A corner post is dimensioned to its OUTSIDE face, every other post
+            // to its centre. The generator reports a jamb post at the opening
+            // edge, but the post itself stands half a post outside that edge.
+            var pch=[];
+            (wp[wallId]||[]).forEach(function(p){
+                var pos;
+                if(p.corner) pos=(p.ft<faceFt/2)?0:frameIn;
+                else if(p.jamb){
+                    var atStart=faceDoors.some(function(d){
+                        return Math.abs(p.ft-(d.offset||0))<0.02; });
+                    pos=p.ft*12-girtOff+(atStart?-_HP:_HP);
+                } else pos=p.ft*12-girtOff;
+                pch.push(pos);
+            });
+            pch.push(0,frameIn);
+            pch=pch.map(function(v){return Math.max(0,Math.min(frameIn,v));})
+                   .sort(function(a,b){return a-b;})
+                   .filter(function(v,i,a){return i===0||v-a[i-1]>0.02;});
+            if(MIRROR) pch=pch.map(function(v){return frameIn-v;})
+                              .sort(function(a,b){return a-b;});
+
+            function _dimRow(y,pts,X,cap){
+                for(var i=0;i<pts.length-1;i++)
+                    arrowH(doc,X(pts[i]),X(pts[i+1]),y,FX(pts[i+1]-pts[i]),false,true);
+                doc.setFont('helvetica','normal');doc.setFontSize(6.4);doc.setTextColor(110);
+                doc.text(cap,(x0+x1)/2,y+17,{align:'center'});
             }
+            _dimRow(dimY1,opn,sxO,'OPENING LAYOUT \u2014 PULLED FROM OUTSIDE OF '
+                    +(girtOff?'GIRT':'POST')+'    closes on '+FX(faceFt*12));
+            _dimRow(dimY2,pch,sxP,'POST CHAIN \u2014 OUTSIDE OF CORNER TO CENTRES TO '
+                    +'OUTSIDE OF CORNER    closes on '+FX(frameIn));
             // Heights. Spelled out, because EH and RH mean nothing to a crew
             // reading this on a tailgate. These stand off the FULL drawn extent,
             // attachments included - measured off the building wall they landed
@@ -26205,10 +26913,10 @@ function generatePostLayout() {
         // ── PAGE 3: FRONT + REAR ────────────────────────────────────────────
         // user FRONT gable = internal id:'back'; user BACK gable = internal id:'front'
         var elevPages = [
-            {wall:'back',  label:'FRONT ELEVATION',      sheet:'3 OF 6'},
-            {wall:'front', label:'REAR ELEVATION',       sheet:'4 OF 6'},
-            {wall:'left',  label:'LEFT SIDE ELEVATION',  sheet:'5 OF 6'},
-            {wall:'right', label:'RIGHT SIDE ELEVATION', sheet:'6 OF 6'}
+            {wall:'back',  label:'FRONT ELEVATION',      sheet:'10 OF 13'},
+            {wall:'front', label:'REAR ELEVATION',       sheet:'11 OF 13'},
+            {wall:'left',  label:'LEFT SIDE ELEVATION',  sheet:'12 OF 13'},
+            {wall:'right', label:'RIGHT SIDE ELEVATION', sheet:'13 OF 13'}
         ];
 
         elevPages.forEach(function(v){
@@ -26319,7 +27027,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M125-1118';
+window.SAUCE_BUILD = 'M127-1118';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
