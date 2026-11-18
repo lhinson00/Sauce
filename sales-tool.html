@@ -25104,14 +25104,48 @@ function generatePostLayout() {
     wp.front.forEach(function(p){allPts.push({x:0,y:(bw-p.ft)*12,jamb:p.jamb});});
     wp.back.forEach(function(p){allPts.push({x:blIn,y:(bw-p.ft)*12,jamb:p.jamb});});
 
-    function sOff(sc){var isE=(sc.wall==='left'||sc.wall==='right'),mainIn=(isE?bl:bw)*12,sLI=sc.l*12,off=0,sp=sc.position||'center';
-        if(sLI>=mainIn)off=0;else if(sp==='start')off=0;else if(sp==='end')off=mainIn-sLI;else if(sp==='custom')off=Math.max(0,Math.min((sc.offsetFt||0)*12,mainIn-sLI));else off=(mainIn-sLI)/2;
-        return{off:off,sLI:sLI,sWI:sc.w*12};}
+    // A shed can hang off ANOTHER shed rather than the main building - the
+    // parentShedId the sheds panel sets, which the 3D renderer has always
+    // honoured through _shedParentGeom. The post layout did not, so a gable
+    // extension on the end of a gable extension was drawn back against the
+    // building wall, in the wrong place and at the wrong depth.
+    function _parentOf(sc){
+        var P=null;
+        if(sc&&sc.parentShedId)(shedCfgs||[]).forEach(function(q){ if(q&&q.id===sc.parentShedId&&q.id!==sc.id) P=q; });
+        return (P&&P.wall===sc.wall)?P:null;   // same wall only, as the renderer requires
+    }
+    function _place(spanIn,len,pos,offFt){
+        if(len>=spanIn)return 0;
+        if(pos==='start')return 0;
+        if(pos==='end')return spanIn-len;
+        if(pos==='custom')return Math.max(0,Math.min((offFt||0)*12,spanIn-len));
+        return (spanIn-len)/2;
+    }
+    function sOff(sc){
+        var isE=(sc.wall==='left'||sc.wall==='right');
+        // Walk up to the main building, then come back down: each parent moves
+        // the start point along the wall and pushes the child one parent-depth
+        // further out.
+        var chain=[],cur=sc,guard=0;
+        while((cur=_parentOf(cur))&&guard++<8) chain.unshift(cur);
+        var spanIn=(isE?bl:bw)*12, spanOff=0, base=0;
+        chain.forEach(function(P){
+            spanOff += _place(spanIn,P.l*12,P.position||'center',P.offsetFt);
+            spanIn   = P.l*12;
+            base    += P.w*12;
+        });
+        var sLI=sc.l*12;
+        return { off: spanOff+_place(spanIn,sLI,sc.position||'center',sc.offsetFt),
+                 sLI: sLI, sWI: sc.w*12, base: base };
+    }
     function gAPS(wid){for(var i=0;i<WALLS.length;i++)if(WALLS[i].id===wid)return WALLS[i].postSpacing||Q.postSpacing||10;return Q.postSpacing||10;}
 
     var shedDims=[];
     shedCfgs.forEach(function(sc){
         if(!sc.wall||!sc.w||!sc.l)return;var s=sOff(sc),off=s.off,sLI=s.sLI,sWI=s.sWI,aPS=gAPS(sc.wall);
+        // Distance from the main building wall to this shed's inner face: zero
+        // unless it hangs off another shed.
+        var BS=s.base||0, yIn=bwIn+BS, yOut=-BS, xIn=blIn+BS, xOut=-BS;
         // For wrap type, override off to anchor primary leg at the correct corner
         // cw=near corner (off=0), ccw=far corner (off=mainIn-sLI)
         if(sc.type==='wrap'){
@@ -25125,15 +25159,15 @@ function generatePostLayout() {
             if(_cbP&&_cbP.length>1){_bayIn=_cbP.map(function(ftp){return ftp*12;});}
             else{var nB=Math.max(1,Math.floor(sc.l/aPS));_bayIn=[];for(var i=0;i<=nB;i++)_bayIn.push(i*sLI/nB);}
             var _shPts=_bayIn.map(function(bi){return {ft:(off+bi)/12,jamb:false};});
-            if(sc.wall==='left'){allRects.push({x:off,y:bwIn,w:sLI,h:sWI,lbl:lbl,out:'S'});_bayIn.forEach(function(bi){allPts.push({x:off+bi,y:bwIn+sWI,jamb:false});});shedDims.push({kind:'H',posts:_shPts,coord:bwIn+sWI,dir:1,wall:'left'});}
-            else if(sc.wall==='right'){allRects.push({x:off,y:-sWI,w:sLI,h:sWI,lbl:lbl,out:'N'});_bayIn.forEach(function(bi){allPts.push({x:off+bi,y:-sWI,jamb:false});});shedDims.push({kind:'H',posts:_shPts,coord:-sWI,dir:-1,wall:'right'});}
-            else if(sc.wall==='front'){allRects.push({x:-sWI,y:off,w:sWI,h:sLI,lbl:lbl,out:'W'});_bayIn.forEach(function(bi){allPts.push({x:-sWI,y:off+bi,jamb:false});});shedDims.push({kind:'V',posts:_shPts,coord:-sWI,dir:-1,wall:'front'});}
-            else{allRects.push({x:blIn,y:off,w:sWI,h:sLI,lbl:lbl,out:'E'});_bayIn.forEach(function(bi){allPts.push({x:blIn+sWI,y:off+bi,jamb:false});});shedDims.push({kind:'V',posts:_shPts,coord:blIn+sWI,dir:1,wall:'back'});}
+            if(sc.wall==='left'){allRects.push({x:off,y:yIn,w:sLI,h:sWI,lbl:lbl,out:'S'});_bayIn.forEach(function(bi){allPts.push({x:off+bi,y:yIn+sWI,jamb:false});});shedDims.push({kind:'H',posts:_shPts,coord:yIn+sWI,dir:1,wall:'left'});}
+            else if(sc.wall==='right'){allRects.push({x:off,y:yOut-sWI,w:sLI,h:sWI,lbl:lbl,out:'N'});_bayIn.forEach(function(bi){allPts.push({x:off+bi,y:yOut-sWI,jamb:false});});shedDims.push({kind:'H',posts:_shPts,coord:yOut-sWI,dir:-1,wall:'right'});}
+            else if(sc.wall==='front'){allRects.push({x:xOut-sWI,y:off,w:sWI,h:sLI,lbl:lbl,out:'W'});_bayIn.forEach(function(bi){allPts.push({x:xOut-sWI,y:off+bi,jamb:false});});shedDims.push({kind:'V',posts:_shPts,coord:xOut-sWI,dir:-1,wall:'front'});}
+            else{allRects.push({x:xIn,y:off,w:sWI,h:sLI,lbl:lbl,out:'E'});_bayIn.forEach(function(bi){allPts.push({x:xIn+sWI,y:off+bi,jamb:false});});shedDims.push({kind:'V',posts:_shPts,coord:xIn+sWI,dir:1,wall:'back'});}
         }else if(sc.type==='gable'){var gPS=sc.gablePS||10,nB=Math.max(1,Math.floor(sc.w/gPS));
-            if(sc.wall==='left'||sc.wall==='right'){var ry=sc.wall==='left'?bwIn:(-sWI);allRects.push({x:off,y:ry,w:sLI,h:sWI,lbl:lbl});
-                for(var i=1;i<=nB;i++){var py=sc.wall==='left'?bwIn+(i*sWI/nB):-(i*sWI/nB);allPts.push({x:off,y:py,jamb:false});allPts.push({x:off+sLI,y:py,jamb:false});}
-            }else{var rx=sc.wall==='front'?(-sWI):blIn;allRects.push({x:rx,y:off,w:sWI,h:sLI,lbl:lbl});
-                for(var i=1;i<=nB;i++){var px=sc.wall==='front'?-(i*sWI/nB):blIn+(i*sWI/nB);allPts.push({x:px,y:off,jamb:false});allPts.push({x:px,y:off+sLI,jamb:false});}
+            if(sc.wall==='left'||sc.wall==='right'){var ry=sc.wall==='left'?yIn:(yOut-sWI);allRects.push({x:off,y:ry,w:sLI,h:sWI,lbl:lbl,out:(sc.wall==='left'?'S':'N')});
+                for(var i=1;i<=nB;i++){var py=sc.wall==='left'?yIn+(i*sWI/nB):yOut-(i*sWI/nB);allPts.push({x:off,y:py,jamb:false});allPts.push({x:off+sLI,y:py,jamb:false});}
+            }else{var rx=sc.wall==='front'?(xOut-sWI):xIn;allRects.push({x:rx,y:off,w:sWI,h:sLI,lbl:lbl,out:(sc.wall==='front'?'W':'E')});
+                for(var i=1;i<=nB;i++){var px=sc.wall==='front'?xOut-(i*sWI/nB):xIn+(i*sWI/nB);allPts.push({x:px,y:off,jamb:false});allPts.push({x:px,y:off+sLI,jamb:false});}
             }
         }else if(sc.type==='wrap4'){
             // Full wrap-around: 4 rectangular strips (L, R, F, B) + outer posts on all sides.
@@ -25242,286 +25276,431 @@ function generatePostLayout() {
         }
     });
 
-    var mnX=0,mxX=blIn,mnY=0,mxY=bwIn;
+    // ── PLAN ORIENTATION ───────────────────────────────────────────────────
+    // Everything above is built in the generator's frame: X along the building
+    // LENGTH, Y across its WIDTH. Drawn straight out, that puts the gable ends
+    // on the left and right edges, so the plan reads ninety degrees off the 3D
+    // model and the elevations, and a garage door lands on the far side from
+    // where the salesman placed it.
+    //
+    // The model has wall 'back' at +Z - the wall the Front Gable snapshot and
+    // the FRONT ELEVATION both show - and measures a gable offset from
+    // X = -w/2, which is the LEFT of that view. So the facing gable goes across
+    // the BOTTOM and across-the-sheet runs -X to +X:
+    //
+    //     sheet across  =  bwIn - y        (y = bwIn is X = -w/2, view left)
+    //     sheet down    =  x               (x = blIn is wall 'back', facing)
+    allPts.forEach(function(p){ var nx=bwIn-p.y; p.y=p.x; p.x=nx; });
+    allRects.forEach(function(r){
+        var nx=bwIn-(r.y+r.h), ny=r.x, nw=r.h, nh=r.w;
+        r.x=nx; r.y=ny; r.w=nw; r.h=nh;
+    });
+    var PLX=bwIn, PLY=blIn;          // sheet extents after the turn
+    // A gable offset is measured from X = -w/2, and the turn maps that same end
+    // to sheet-left - so the generator's mirror, (bw - offset - w), and the turn
+    // cancel: a gable door simply runs offset to offset+width from the left.
+    // Mirroring again put the door bar on the opposite corner from its own
+    // jamb posts, which are carried through the turn with every other post.
+    function _doorRun(d){
+        var o=(d.offset||0)*12, w=d.w*12;
+        if(d.wall==='back')  return {horiz:true,  at:PLY, a:o, b:o+w, lab:'S'};
+        if(d.wall==='front') return {horiz:true,  at:0,   a:o, b:o+w, lab:'N'};
+        if(d.wall==='left')  return {horiz:false, at:0,   a:o, b:o+w, lab:'W'};
+        return                      {horiz:false, at:PLX, a:o, b:o+w, lab:'E'};
+    }
+
+    var mnX=0,mxX=PLX,mnY=0,mxY=PLY;
     allRects.forEach(function(r){mnX=Math.min(mnX,r.x);mxX=Math.max(mxX,r.x+r.w);mnY=Math.min(mnY,r.y);mxY=Math.max(mxY,r.y+r.h);});
     allPts.forEach(function(p){mnX=Math.min(mnX,p.x);mxX=Math.max(mxX,p.x);mnY=Math.min(mnY,p.y);mxY=Math.max(mxY,p.y);});
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // SHEET S1.0 — POST LAYOUT PLAN
+    //
+    // Drawn to engineering-drawing convention. Nothing below invents geometry:
+    // every post comes from allPts, every footprint from allRects, and every
+    // dimension is taken between two positions that are actually drawn on the
+    // sheet. A column-line grid locates the main structure. Dimension strings
+    // stand OUTBOARD of all geometry, so no string is ever drawn across a
+    // building or an attachment, and each string carries extension lines back
+    // to the posts it measures.
+    //
+    // The attachment geometry is whatever the generator produced - a lean-to
+    // carries one post row along its outer edge, a gable extension carries its
+    // posts down the two side walls running out from the building - so the
+    // chains are derived from the points rather than from the attachment type.
+    // ═══════════════════════════════════════════════════════════════════════
     var doc=new J({orientation:'landscape',unit:'pt',format:'letter'});
-    var PW=792,PH=612,MG=30,pad=50;
-    var aL=MG+pad,aR=PW-MG-pad,aT=MG+36+pad,aB=PH-MG-14-pad;
-    var totW=mxX-mnX,totH=mxY-mnY;
-    if(totW<1)totW=1;if(totH<1)totH=1;
-    var sc2=Math.min((aR-aL)/totW,(aB-aT)/totH)*0.95;
-    var ox=(aL+aR)/2-((mnX+mxX)/2)*sc2,oy=(aT+aB)/2-((mnY+mxY)/2)*sc2;
-    function TX(v){return ox+v*sc2;}function TY(v){return oy+v*sc2;}
-
+    var PW=792, PH=612, MG=18;
     var title=bw+"' x "+bl+"' x "+bh+"'  |  "+pitch+'/12  |  '+truss+' Truss';
-    doc.setFont('helvetica','bold');doc.setFontSize(11);doc.setTextColor(0);
-    doc.text('POST LAYOUT \u2014 '+title,MG,MG+14);
-    doc.setFont('helvetica','normal');doc.setFontSize(8);
-    doc.text('Date: '+new Date().toLocaleDateString(),PW-MG,MG+14,{align:'right'});
-    doc.setDrawColor(200);doc.setLineWidth(0.3);doc.line(MG,MG+22,PW-MG,MG+22);
+    var STRIP=96;                       // bottom band: title block, notes, schedule
+    var ROW=23, BUBG=23, BUBR=8.5, TOL=0.6, DOFF=16;
 
-    doc.setDrawColor(0);doc.setLineWidth(1.2);
-    doc.rect(TX(0),TY(0),blIn*sc2,bwIn*sc2);
-    doc.setDrawColor(0);doc.setLineWidth(0.6);
-    // Attachments carry a letter, not their full name. Spelled out on the
-    // drawing they sat across the dimension chain of the wall they attach to -
-    // a chain that is drawn outward, which on a shallow attachment is straight
-    // through the middle of it. The names go in the legend instead.
-    var _rectKeys=[], _kLtr='ABCDEFGH';
+    // ── posts, de-duplicated ───────────────────────────────────────────────
+    var P=[], _seen={};
+    allPts.forEach(function(p){
+        var k=Math.round(p.x*4)+'|'+Math.round(p.y*4);
+        if(_seen[k]){ if(p.jamb) _seen[k].jamb=true; return; }
+        _seen[k]={x:p.x,y:p.y,jamb:!!p.jamb}; P.push(_seen[k]);
+    });
+    function near(a,b){ return Math.abs(a-b)<TOL; }
+    function ded(a){ a=a.slice().sort(function(x,y){return x-y;});
+        return a.filter(function(v,i){ return i===0||Math.abs(v-a[i-1])>TOL; }); }
+    function rowAt(yv){ return ded(P.filter(function(p){return near(p.y,yv);}).map(function(p){return p.x;})); }
+    function colAt(xv){ return ded(P.filter(function(p){return near(p.x,xv);}).map(function(p){return p.y;})); }
+
+    // ── dimension strings, one stack per side of the sheet ─────────────────
+    var stack={T:[],B:[],L:[],R:[]};
+    function addChain(side, vals, tag){
+        vals=ded(vals||[]);
+        if(vals.length<2) return null;
+        var key=vals.map(function(v){return Math.round(v);}).join(',');
+        var hit=null;
+        stack[side].forEach(function(c){ if(c.key===key) hit=c; });
+        if(hit){ if(tag&&c_has(hit.tag,tag)===false) hit.tag=(hit.tag?hit.tag+' / ':'')+tag; return hit; }
+        var c={key:key, vals:vals, tag:tag||''};
+        stack[side].push(c); return c;
+    }
+    function c_has(s,t){ return (' '+s+' ').indexOf(' '+t+' ')>=0; }
+
+    // Main building walls. rowAt/colAt pick up every post actually sitting on
+    // that line, jambs included, so a wall with a door dimensions its jambs.
+    function clip(v,lo,hi){ return v.filter(function(q){ return q>=lo-TOL && q<=hi+TOL; }); }
+    function keyOf(v){ return v.map(function(q){return Math.round(q);}).join(','); }
+    var gablB=clip(rowAt(PLY),0,PLX), gablT=clip(rowAt(0),0,PLX);   // gable ends
+    var eaveL=clip(colAt(0),0,PLY),   eaveR=clip(colAt(PLX),0,PLY);  // eave walls
+    // The typical bay: the length that turns up most often across all four
+    // walls. Everything that matches it is described by the note, once.
+    var TYP=(function(){
+        var tally={}, best=null, n=0;
+        [gablB,gablT,eaveL,eaveR].forEach(function(v){
+            for(var i=0;i<v.length-1;i++){
+                var k=Math.round(v[i+1]-v[i]);
+                tally[k]=(tally[k]||0)+1;
+                if(tally[k]>n){ n=tally[k]; best=k; }
+            }
+        });
+        return (n>=2)?best:null;
+    })();
+    function allTyp(v){
+        if(TYP==null||v.length<2) return false;
+        for(var i=0;i<v.length-1;i++) if(Math.abs((v[i+1]-v[i])-TYP)>TOL) return false;
+        return true;
+    }
+    var mirrored=false;
+    addChain('B', gablB, 'FACING GABLE');                     // nearest the reader
+    if(keyOf(gablT)===keyOf(gablB)) mirrored=true; else addChain('T', gablT, 'BACK GABLE');
+    addChain('L', eaveL, 'LEFT EAVE');
+    if(keyOf(eaveR)===keyOf(eaveL)) mirrored=true; else addChain('R', eaveR, 'RIGHT EAVE');
+
+    // ── dimension primitives ───────────────────────────────────────────────
+    // Ticks are 45-degree slashes, the label sits in a gap knocked out of the
+    // dimension line, and every tick carries an extension line back to the
+    // post it measures.
+    function segs(vals){
+        if(!_collapse){
+            var ev=[]; for(var e=0;e<vals.length-1;e++) ev.push({a:vals[e],b:vals[e+1],n:1,len:vals[e+1]-vals[e]});
+            return ev;
+        }
+        var out=[], i=0;
+        while(i<vals.length-1){
+            var L=vals[i+1]-vals[i], j=i+1;
+            while(j<vals.length-1 && Math.abs((vals[j+1]-vals[j])-L)<TOL) j++;
+            out.push({a:vals[i],b:vals[j],n:j-i,len:L}); i=j;
+        }
+        return out;
+    }
+    function segLabel(s){
+        if(s.lb) return s.lb;
+        return s.n>1 ? s.n+' SPA @ '+FX(s.len)+'  =  '+FX(s.n*s.len) : FX(s.len);
+    }
+    // Longest form that fits between the ticks, shortest form if none does.
+    function fitLabel(s, room, fp){
+        var opts = s.lb ? [s.lb]
+                 : s.n>1 ? [s.n+' SPA @ '+FX(s.len)+'  =  '+FX(s.n*s.len),
+                            s.n+' SPA @ '+FX(s.len),
+                            FX(s.n*s.len)]
+                 : [FX(s.len)];
+        doc.setFontSize(fp);
+        for(var i=0;i<opts.length;i++){ if(doc.getTextWidth(opts[i])<=room-8) return opts[i]; }
+        return opts[opts.length-1];
+    }
+    // ── attachments ────────────────────────────────────────────────────────
+    var LTR='ABCDEFGHJKLM', tags=[];
     allRects.forEach(function(r){
-        doc.setDrawColor(0);doc.setLineWidth(0.4);
-        doc.rect(TX(r.x),TY(r.y),r.w*sc2,r.h*sc2);
         if(!r.lbl) return;
-        var k=_kLtr.charAt(_rectKeys.length)||'?';
-        _rectKeys.push({k:k,lbl:r.lbl});
-        // Which way does this attachment hang off the building? Derived from the
-        // rectangle rather than a tag, because not every attachment type sets one.
-        var oS = (r.y >= bwIn-1), oN = (r.y+r.h <= 1),
-            oW = (r.x+r.w <= 1),  oE = (r.x >= blIn-1);
-        var rx=TX(r.x), ry=TY(r.y), rw=r.w*sc2, rh=r.h*sc2;
-        // The wall's own chain is drawn D outward from it, which on a shallow
-        // attachment is inside the attachment. Only sit the key inside when
-        // there is room past that chain; otherwise put it beyond the far edge.
-        var deep = ((oS||oN) ? rh : rw) > D + 24;
-        var kx, ky;
-        if(oS)      { kx=rx+11; ky=deep ? ry+rh-7  : ry+rh+13; }
-        else if(oN) { kx=rx+11; ky=deep ? ry+14    : ry-6;     }
-        else if(oW) { ky=ry+14; kx=deep ? rx+11    : rx-10;    }
-        else if(oE) { ky=ry+14; kx=deep ? rx+rw-11 : rx+rw+10; }
-        else        { kx=rx+11; ky=ry+14; }
-        doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(0.5);
-        doc.circle(kx,ky-3,7,'FD');
-        doc.setFontSize(8.5);doc.setFont('helvetica','bold');doc.setTextColor(0);
-        doc.text(k,kx,ky,{align:'center'});
+        var t=LTR.charAt(tags.length)||'?';
+        var oN=(r.y+r.h<=TOL), oS=(r.y>=PLY-TOL), oW=(r.x+r.w<=TOL), oE=(r.x>=PLX-TOL);
+        var side = oN?'T' : oS?'B' : oW?'L' : oE?'R' : null;
+        var rec={t:t, r:r, side:side, lbl:r.lbl};
+        tags.push(rec);
+        if(!side) return;
+        // The post line along the attachment's outer face.
+        rec.edge = (side==='T') ? rowAt(r.y)
+                 : (side==='B') ? rowAt(r.y+r.h)
+                 : (side==='L') ? colAt(r.x)
+                 :                colAt(r.x+r.w);
+        // Posts running OUT from the building, down this attachment's side wall,
+        // measured from the wall face so the first bay is included.
+        var lo,hi,face,depth;
+        if(side==='T'||side==='B'){
+            lo=r.y; hi=r.y+r.h;                       // this block's own extent
+            face=(side==='T')?hi:lo;                  // its inner face
+            depth=colAt(r.x).filter(function(v){ return v>=lo-TOL&&v<=hi+TOL; });
+            if(depth.length<1) depth=colAt(r.x+r.w).filter(function(v){ return v>=lo-TOL&&v<=hi+TOL; });
+        } else {
+            lo=r.x; hi=r.x+r.w;
+            face=(side==='L')?hi:lo;
+            depth=rowAt(r.y).filter(function(v){ return v>=lo-TOL&&v<=hi+TOL; });
+            if(depth.length<1) depth=rowAt(r.y+r.h).filter(function(v){ return v>=lo-TOL&&v<=hi+TOL; });
+        }
+        depth = ded((depth||[]).concat([face]));
+        function spacingOf(v){
+            var sg=segs(v);
+            return (sg.length===1 && sg[0].n>1) ? sg[0].n+' @ '+FX(sg[0].len)
+                 : (sg.length===1)              ? FX(sg[0].len)
+                 : sg.map(function(q){return (q.n>1?q.n+' @ ':'')+FX(q.len);}).join(' + ');
+        }
+        // Whichever line actually carries the run of posts describes the spacing.
+        var run = (rec.edge.length>=3) ? rec.edge : (depth.length>=2 ? depth : rec.edge);
+        if(run && run.length>=2) rec.spacing = spacingOf(run);
     });
 
-    // The dashed line is drawn corner to corner of the footprint, (0,0) to
-    // (blIn,bwIn), so the number beside it has to be that same measurement.
-    // It was reporting the girt-face diagonal instead - frameL/frameW, each
-    // inset 1.5" per side on a wood-truss building - so the label and the line
-    // it labels were two different measurements, 4-1/4" apart.
-    var diag=Math.sqrt(blIn*blIn+bwIn*bwIn);
+    // ── sheet geometry: margins sized to the stacks that have to fit ───────
+    var padT=DOFF+(stack.T.length+1)*ROW+10, padB=DOFF+stack.B.length*ROW+12;
+    var padL=DOFF+(stack.L.length+1)*ROW+10, padR=DOFF+stack.R.length*ROW+12;
+    var DL=MG+12+padL, DR=PW-MG-12-padR, DT=MG+12+padT, DB=PH-MG-STRIP-12-padB;
+    var totW=Math.max(1,mxX-mnX), totH=Math.max(1,mxY-mnY);
+    var sc2=Math.min((DR-DL)/totW,(DB-DT)/totH);
+    var ox=(DL+DR)/2-((mnX+mxX)/2)*sc2, oy=(DT+DB)/2-((mnY+mxY)/2)*sc2;
+    function TX(v){return ox+v*sc2;} function TY(v){return oy+v*sc2;}
+
+    // ── sheet frame + bottom band ──────────────────────────────────────────
+    doc.setDrawColor(0);doc.setLineWidth(1.2);
+    doc.rect(MG,MG,PW-2*MG,PH-2*MG);
+    var bandY=PH-MG-STRIP;
+    doc.setLineWidth(0.8); doc.line(MG,bandY,PW-MG,bandY);
+
+    // ── attachment footprints, then the building over them ─────────────────
+    allRects.forEach(function(r){
+        doc.setFillColor(252);doc.setDrawColor(140);doc.setLineWidth(0.6);
+        doc.rect(TX(r.x),TY(r.y),r.w*sc2,r.h*sc2,'FD');
+    });
+    doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(1.8);
+    doc.rect(TX(0),TY(0),PLX*sc2,PLY*sc2,'FD');
+
+    // ── squaring diagonal ──────────────────────────────────────────────────
+    var diag=Math.sqrt(PLX*PLX+PLY*PLY);
     doc.setDrawColor(150);doc.setLineWidth(0.5);doc.setLineDashPattern([5,3],0);
-    doc.line(TX(0),TY(0),TX(blIn),TY(bwIn));doc.setLineDashPattern([],0);
-    // This is the number a crew pulls a tape on to square the building, so it
-    // gets set like a dimension and not like a footnote.
+    doc.line(TX(0),TY(0),TX(PLX),TY(PLY));doc.setLineDashPattern([],0);
     (function(){
-        var lb='SQUARE  '+FX(diag)+'  CORNER TO CORNER';
-        var mx=(TX(0)+TX(blIn))/2, my=(TY(0)+TY(bwIn))/2;
-        doc.setFontSize(10);doc.setFont('helvetica','bold');
+        var lb='SQUARE  '+FX(diag);
+        var mx=TX(PLX*0.70), my=TY(PLY*0.70);
+        doc.setFontSize(8.5);doc.setFont('helvetica','bold');
         var tw=doc.getTextWidth(lb);
-        doc.setFillColor(255);doc.rect(mx-tw/2-5,my-9,tw+10,15,'F');
-        doc.setTextColor(0);doc.text(lb,mx,my+2,{align:'center'});
+        doc.setFillColor(255);doc.rect(mx-tw/2-4,my-8,tw+8,12,'F');
+        doc.setTextColor(0);doc.text(lb,mx,my+1,{align:'center'});
     })();
 
-    var PR=3;
-    allPts.forEach(function(p){
-        var px=TX(p.x),py=TY(p.y);
-        doc.setDrawColor(0);doc.setLineWidth(0.5);
-        if(p.jamb){doc.setFillColor(40);doc.rect(px-PR,py-PR,PR*2,PR*2,'F');}
-        else{doc.setFillColor(255);doc.rect(px-PR,py-PR,PR*2,PR*2,'FD');}
-    });
-
+    // ── door openings on the plan ──────────────────────────────────────────
     var doorLabels={},doorIdx=1;
     allDoors.filter(function(d){return d.wall;}).forEach(function(d){
         var key=d.type+'_'+d.w+'x'+d.h;
         if(!doorLabels[key])doorLabels[key]={lbl:(d.type==='garage'?'OHD':'WD')+(doorIdx++),w:d.w,h:d.h,type:d.type};
-        var dL=(d.offset||0)*12,dR=dL+d.w*12,dM=(dL+dR)/2;
-        doc.setDrawColor(0);doc.setLineWidth(2.5);
-        doc.setFontSize(6);doc.setFont('helvetica','bold');doc.setTextColor(0);
-        var tag=doorLabels[key].lbl;
-        if(d.wall==='left'){doc.line(TX(dL),TY(bwIn),TX(dR),TY(bwIn));doc.text(tag,TX(dM),TY(bwIn)-5,{align:'center'});}
-        else if(d.wall==='right'){doc.line(TX(dL),TY(0),TX(dR),TY(0));doc.text(tag,TX(dM),TY(0)+10,{align:'center'});}
-        else if(d.wall==='front'){
-            var fL=(bw-(d.offset||0)-d.w)*12,fR=fL+d.w*12,fM=(fL+fR)/2;
-            doc.line(TX(0),TY(fL),TX(0),TY(fR));doc.text(tag,TX(0)+8,TY(fM)+2);}
-        else if(d.wall==='back'){
-            var bL=(bw-(d.offset||0)-d.w)*12,bR=bL+d.w*12,bM=(bL+bR)/2;
-            doc.line(TX(blIn),TY(bL),TX(blIn),TY(bR));doc.text(tag,TX(blIn)-8,TY(bM)+2,{align:'right'});}
+        var run=_doorRun(d), mid=(run.a+run.b)/2, tag=doorLabels[key].lbl;
+        doc.setDrawColor(0);doc.setLineWidth(3.0);
+        doc.setFontSize(6.5);doc.setFont('helvetica','bold');doc.setTextColor(0);
+        if(run.horiz){
+            doc.line(TX(run.a),TY(run.at),TX(run.b),TY(run.at));
+            doc.text(tag,TX(mid),TY(run.at)+(run.lab==='S'?-6:12),{align:'center'});
+        } else {
+            doc.line(TX(run.at),TY(run.a),TX(run.at),TY(run.b));
+            if(run.lab==='W') doc.text(tag,TX(0)-7,TY(mid)+2,{align:'right'});
+            else              doc.text(tag,TX(PLX)+7,TY(mid)+2);
+        }
     });
 
-    var D=20;
-    // A post-to-post chain tells a builder where to set the columns. It does not
-    // tell him where the openings go, so each wall carrying doors gets a second
-    // chain further out with the door edges folded in: corner to jamb, jamb to
-    // jamb, jamb to post, all the way along.
-    function _chainWith(wallId, posts, mirror) {
-        var pts = posts.map(function(p){ return p.ft; });
-        (allDoors||[]).filter(function(d){ return d.wall===wallId; }).forEach(function(d){
-            var a = d.offset||0, b = a + d.w;
-            pts.push(mirror ? (bw - b) : a);
-            pts.push(mirror ? (bw - a) : b);
+    // ── posts ──────────────────────────────────────────────────────────────
+    var PR=3.1;
+    P.forEach(function(p){
+        var px=TX(p.x),py=TY(p.y);
+        var onMain=(near(p.y,0)||near(p.y,PLY)||near(p.x,0)||near(p.x,PLX));
+        doc.setDrawColor(0);doc.setLineWidth(onMain?0.7:0.45);
+        if(p.jamb){doc.setFillColor(30);doc.rect(px-PR,py-PR,PR*2,PR*2,'F');}
+        else{doc.setFillColor(255);doc.rect(px-PR,py-PR,PR*2,PR*2,'FD');}
+    });
+
+    function dimH(y, vals, extTo, big){
+        var x1=TX(vals[0]), x2=TX(vals[vals.length-1]);
+        if(extTo!=null){
+            // A short stub off each tick, pointing at the geometry. Run the
+            // whole way it becomes another line across the drawing.
+            doc.setDrawColor(205);doc.setLineWidth(0.2);
+            var d=(extTo>y)?1:-1, far=Math.min(13,Math.abs(extTo-y)-4);
+            if(far>3) vals.forEach(function(v){ var xx=TX(v); doc.line(xx,y+d*4,xx,y+d*far); });
+        }
+        doc.setDrawColor(0);doc.setLineWidth(0.6);doc.line(x1,y,x2,y);
+        vals.forEach(function(v){ var xx=TX(v);doc.setLineWidth(0.7);doc.line(xx,y-2.5,xx,y+2.5); });
+        var fp=big?9:7.5;
+        doc.setFont('helvetica','bold');doc.setFontSize(fp);doc.setTextColor(0);
+        segs(vals).forEach(function(s){
+            var a=TX(s.a),b=TX(s.b),lb=fitLabel(s,Math.abs(TX(s.b)-TX(s.a)),fp),tw=doc.getTextWidth(lb);
+            if(Math.abs(b-a)>tw+8){
+                doc.setFillColor(255);doc.rect((a+b)/2-tw/2-3,y-5.5,tw+6,11,'F');
+                doc.text(lb,(a+b)/2,y+fp*0.34,{align:'center'});
+            } else doc.text(lb,(a+b)/2,y-6,{align:'center'});
         });
-        var seen={}, out=[];
-        pts.forEach(function(f){
-            var k = Math.round(f*100)/100;
-            if (seen[k]) return; seen[k]=1; out.push({ ft:k, jamb:false });
-        });
-        out.sort(function(x,y){ return x.ft-y.ft; });
-        return out;
     }
-    // Field type on the post layout too: 8.5pt bold black on a 0.5pt line, and
-    // every bay carries its inches so nothing reads as rounded.
-    var PL_PT=8.5;
-    // Equal bays in a row get ONE label - "8 @ 10'-0"" - not eight copies of
-    // the same number. Printing every bay on an 80' wall with five attachments
-    // turned the sheet into a wall of 10'-0". Runs of three or more collapse;
-    // one-off and two-off bays stay spelled out, because those are the ones a
-    // builder has to think about.
+    function dimV(x, vals, extTo, big){
+        var y1=TY(vals[0]), y2=TY(vals[vals.length-1]);
+        if(extTo!=null){
+            doc.setDrawColor(205);doc.setLineWidth(0.2);
+            var d2=(extTo>x)?1:-1, far2=Math.min(13,Math.abs(extTo-x)-4);
+            if(far2>3) vals.forEach(function(v){ var yy=TY(v); doc.line(x+d2*4,yy,x+d2*far2,yy); });
+        }
+        doc.setDrawColor(0);doc.setLineWidth(0.6);doc.line(x,y1,x,y2);
+        vals.forEach(function(v){ var yy=TY(v);doc.setLineWidth(0.7);doc.line(x-2.5,yy,x+2.5,yy); });
+        var fp=big?9:7.5;
+        doc.setFont('helvetica','bold');doc.setFontSize(fp);doc.setTextColor(0);
+        segs(vals).forEach(function(s){
+            var a=TY(s.a),b=TY(s.b),lb=fitLabel(s,Math.abs(TY(s.b)-TY(s.a)),fp),tw=doc.getTextWidth(lb);
+            if(Math.abs(b-a)>tw+8){
+                doc.setFillColor(255);doc.rect(x-5.5,(a+b)/2-tw/2-3,11,tw+6,'F');
+                doc.text(lb,x+fp*0.34,(a+b)/2+tw/2,{angle:90});
+            } else doc.text(lb,x-6,(a+b)/2+tw/2,{angle:90});
+        });
+    }
+
+    // The elevation sheets share this bay-collapsing rule, and call it with
+    // posts in FEET expecting {i0,i1,lb} back.
     function _runs(posts){
-        if(!_collapse){
-            var ev=[]; for(var e=0;e<posts.length-1;e++)
-                ev.push({i0:e,i1:e+1,lb:FX((posts[e+1].ft-posts[e].ft)*12)});
-            return ev;
-        }
-        var out=[], i=0;
-        while(i<posts.length-1){
-            var len=posts[i+1].ft-posts[i].ft, j=i+1;
-            while(j<posts.length-1 && Math.abs((posts[j+1].ft-posts[j].ft)-len)<0.02) j++;
-            var n=j-i;
-            out.push({i0:i,i1:j,len:len,n:n,
-                      lb:(n>=3 ? n+' @ '+FX(len*12) : FX(len*12)), split:(n<3&&n>1)});
-            i=j;
-        }
-        // A pair of equal bays still reads better as two labels than as "2 @".
-        var fin=[];
-        out.forEach(function(r){
-            if(r.split){ for(var k=r.i0;k<r.i1;k++) fin.push({i0:k,i1:k+1,lb:FX(r.len*12)}); }
-            else fin.push(r);
-        });
-        return fin;
+        var v=posts.map(function(p){return p.ft*12;});
+        function idx(t){ for(var i=0;i<v.length;i++) if(Math.abs(v[i]-t)<TOL) return i; return 0; }
+        return segs(v).map(function(s){ return {i0:idx(s.a), i1:idx(s.b), lb:segLabel(s)}; });
     }
-    function dimH(posts,wallY,dir,off){
-        var y=wallY+dir*(off||D);
-        doc.setLineWidth(0.5);doc.setDrawColor(0);
-        if(posts.length>1)doc.line(TX(posts[0].ft*12),y,TX(posts[posts.length-1].ft*12),y);
-        for(var i=0;i<posts.length;i++){var px=TX(posts[i].ft*12);doc.setLineWidth(0.5);doc.line(px,y-3,px,y+3);}
-        doc.setFont('helvetica','bold');doc.setFontSize(PL_PT);doc.setTextColor(0);
-        _runs(posts).forEach(function(r){
-            var x1=TX(posts[r.i0].ft*12),x2=TX(posts[r.i1].ft*12);
-            var tw=doc.getStringUnitWidth(r.lb)*PL_PT/doc.internal.scaleFactor;
-            if(Math.abs(x2-x1)>tw+10){
-                doc.setDrawColor(255);doc.setLineWidth(1.4);
-                doc.line((x1+x2)/2-tw/2-3,y,(x1+x2)/2+tw/2+3,y);
-                doc.setDrawColor(0);
-                doc.text(r.lb,(x1+x2)/2,y+PL_PT*0.32,{align:'center'});
-            } else {
-                doc.text(r.lb,(x1+x2)/2,y+dir*(-7),{align:'center'});
-            }
-        });
-    }
-    function dimV(posts,wallX,dir,off){
-        var x=wallX+dir*(off||D);
-        doc.setLineWidth(0.5);doc.setDrawColor(0);
-        if(posts.length>1)doc.line(x,TY(posts[0].ft*12),x,TY(posts[posts.length-1].ft*12));
-        for(var i=0;i<posts.length;i++){var py=TY(posts[i].ft*12);doc.setLineWidth(0.5);doc.line(x-3,py,x+3,py);}
-        doc.setFont('helvetica','bold');doc.setFontSize(PL_PT);doc.setTextColor(0);
-        _runs(posts).forEach(function(r){
-            var y1=TY(posts[r.i0].ft*12),y2=TY(posts[r.i1].ft*12);
-            var tw=doc.getStringUnitWidth(r.lb)*PL_PT/doc.internal.scaleFactor;
-            // Both gable-end chains read bottom-to-top. The right-hand one used
-            // 270 and ran the opposite way to the left-hand one on the same sheet.
-            // align:'center' is no use on rotated text - jsPDF offsets it in the
-            // unrotated frame - so the centring is done by hand here.
-            if(Math.abs(y2-y1)>tw+10){
-                doc.setDrawColor(255);doc.setLineWidth(1.4);
-                doc.line(x,(y1+y2)/2-tw/2-3,x,(y1+y2)/2+tw/2+3);
-                doc.setDrawColor(0);
-                doc.text(r.lb,x+PL_PT*0.36,(y1+y2)/2+tw/2,{angle:90});
-            } else {
-                doc.text(r.lb,x+(dir<0?-3:PL_PT*1.15),(y1+y2)/2+tw/2,{angle:90});
-            }
-        });
-    }
-    var D2 = D + 18;
-    if(wp.left.length>1)dimH(wp.left,TY(bwIn),1);
-    if(wp.right.length>1)dimH(wp.right,TY(0),-1);
-    if(wp.front.length>1)dimV(wp.front.map(function(p){return{ft:bw-p.ft,jamb:p.jamb};}).sort(function(a,b){return a.ft-b.ft;}),TX(0),-1);
-    if(wp.back.length>1)dimV(wp.back.map(function(p){return{ft:bw-p.ft,jamb:p.jamb};}).sort(function(a,b){return a.ft-b.ft;}),TX(blIn),1);
-    // Opening chains, one row further out, only where a wall actually has doors.
-    (function(){
-        var cl = _chainWith('left',  wp.left,  false); if (cl.length > wp.left.length)  dimH(cl, TY(bwIn), 1, D2);
-        var cr = _chainWith('right', wp.right, false); if (cr.length > wp.right.length) dimH(cr, TY(0),   -1, D2);
-        var fB = wp.front.map(function(p){return{ft:bw-p.ft,jamb:p.jamb};}).sort(function(a,b){return a.ft-b.ft;});
-        var cf = _chainWith('front', fB, true);  if (cf.length > fB.length) dimV(cf, TX(0),    -1, D2);
-        var bB = wp.back.map(function(p){return{ft:bw-p.ft,jamb:p.jamb};}).sort(function(a,b){return a.ft-b.ft;});
-        var cb = _chainWith('back',  bB, true);  if (cb.length > bB.length) dimV(cb, TX(blIn),  1, D2);
-    })();
-    // An attachment that spans its wall at the same spacing produces a chain
-    // identical to the wall's own, printed one row further out. Two copies of
-    // "8 @ 10'-0"" on top of each other is noise, so the duplicate is dropped.
-    function _bayKey(posts){
-        if(!posts||posts.length<2) return '';
-        var k=[]; for(var i=0;i<posts.length-1;i++) k.push(Math.round((posts[i+1].ft-posts[i].ft)*100));
-        return k.join(',');
-    }
-    shedDims.forEach(function(d){
-        if(d.posts.length<2) return;
-        if(d.wall && _bayKey(d.posts) === _bayKey(wp[d.wall])) return;
-        if(d.kind==='H')dimH(d.posts,TY(d.coord),d.dir);else dimV(d.posts,TX(d.coord),d.dir);
-    });
 
-    // Overall footprint, outside every bay chain. The sheet had only the bay
-    // dimensions, so a crew had to add 10+10+4 in their head to get the wall.
+    // ── the four stacks, nearest string first, overall outermost ───────────
     (function(){
-        // Outside EVERYTHING, attachments and their chains included. Measured
-        // off the main building corner these landed inside a lean-to and printed
-        // over its label.
-        var yO = TY(mnY) - D - 26, xO = TX(mnX) - D - 26;
-        function ovH(y,x1,x2,lb){
-            doc.setLineWidth(0.7);doc.setDrawColor(0);
-            doc.line(x1,y,x2,y);
-            doc.triangle(x1,y,x1+5,y-2.2,x1+5,y+2.2,'F');
-            doc.triangle(x2,y,x2-5,y-2.2,x2-5,y+2.2,'F');
-            doc.line(x1,y-4,x1,y+4);doc.line(x2,y-4,x2,y+4);
-            doc.setFont('helvetica','bold');doc.setFontSize(10.5);doc.setTextColor(0);
-            var tw=doc.getStringUnitWidth(lb)*10.5/doc.internal.scaleFactor;
-            doc.setDrawColor(255);doc.setLineWidth(1.6);
-            doc.line((x1+x2)/2-tw/2-4,y,(x1+x2)/2+tw/2+4,y);
-            doc.text(lb,(x1+x2)/2,y+3.4,{align:'center'});
-        }
-        function ovV(x,y1,y2,lb){
-            doc.setLineWidth(0.7);doc.setDrawColor(0);
-            doc.line(x,y1,x,y2);
-            doc.triangle(x,y1,x-2.2,y1+5,x+2.2,y1+5,'F');
-            doc.triangle(x,y2,x-2.2,y2-5,x+2.2,y2-5,'F');
-            doc.line(x-4,y1,x+4,y1);doc.line(x-4,y2,x+4,y2);
-            doc.setFont('helvetica','bold');doc.setFontSize(10.5);doc.setTextColor(0);
-            var tw=doc.getStringUnitWidth(lb)*10.5/doc.internal.scaleFactor;
-            doc.setDrawColor(255);doc.setLineWidth(1.6);
-            doc.line(x,(y1+y2)/2-tw/2-4,x,(y1+y2)/2+tw/2+4);
-            doc.text(lb,x+3.8,(y1+y2)/2+tw/2,{angle:90});
-        }
-        ovH(yO, TX(0), TX(blIn), FX(blIn)+'   OVERALL');
-        ovV(xO, TY(0), TY(bwIn), FX(bwIn)+'   OVERALL');
+        var yT=TY(mnY)-DOFF, yB=TY(mxY)+DOFF, xL=TX(mnX)-DOFF, xR=TX(mxX)+DOFF;
+        stack.T.forEach(function(c,i){ dimH(yT-i*ROW, c.vals, TY(0), false); });
+        dimH(yT-stack.T.length*ROW, [0,PLX], null, true);
+        stack.B.forEach(function(c,i){ dimH(yB+i*ROW, c.vals, TY(PLY), false); });
+        stack.L.forEach(function(c,i){ dimV(xL-i*ROW, c.vals, TX(0), false); });
+        dimV(xL-stack.L.length*ROW, [0,PLY], null, true);
+        stack.R.forEach(function(c,i){ dimV(xR+i*ROW, c.vals, TX(PLX), false); });
     })();
 
-    var lgY=PH-MG+2;
-    doc.setFontSize(7.5);doc.setFont('helvetica','bold');doc.setTextColor(0);
-    doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(0.5);
-    doc.rect(MG,lgY-4,6,6,'FD');doc.text('Post',MG+9,lgY+1);
-    doc.setFillColor(40);doc.rect(MG+32,lgY-4,6,6,'F');doc.text('Jamb Post',MG+41,lgY+1);
-    var dlX=MG+95;
-    Object.values(doorLabels).forEach(function(dl){
-        var dtxt=dl.lbl+': '+dl.w+"'x"+dl.h+"' "+(dl.type==='garage'?'Garage Door':'Walk Door');
-        doc.text(dtxt,dlX,lgY+1);dlX+=doc.getTextWidth(dtxt)+12;
+    // ── attachment tags, reversed out so they cannot read as grid bubbles ──
+    // The attachment says what it is, where it is. A lettered tag plus a key in
+    // the band meant reading the sheet in two places to learn one thing.
+    var _lblBoxes=[];
+    tags.forEach(function(rec){
+        var r=rec.r, cx=TX(r.x)+r.w*sc2/2, cy=TY(r.y)+r.h*sc2/2;
+        var dpt=(rec.side==='T'||rec.side==='B')?r.h*sc2:r.w*sc2;
+        var txt=rec.lbl+(rec.spacing?'   '+rec.spacing:'');
+        doc.setFont('helvetica','normal');doc.setFontSize(6.5);
+        var tw=doc.getTextWidth(txt);
+        var wide=(rec.side==='T'||rec.side==='B')?r.w*sc2:r.h*sc2;   // room along the label
+        var fits=(tw+8<=wide), room=(dpt>22);
+        if(fits&&room){
+            if(rec.side==='T') cy=TY(r.y)+11;
+            if(rec.side==='B') cy=TY(r.y+r.h)-7;
+            if(rec.side==='L') cx=TX(r.x)+r.w*sc2/2;
+            if(rec.side==='R') cx=TX(r.x+r.w)-r.w*sc2/2;
+        }
+        // A label wider than its own block stays centred on the block and is
+        // held inside the drawing area. Pushed outboard it walked straight into
+        // the dimension stack in that margin.
+        // Hold it inside the GEOMETRY, not just the page: the dimension stacks
+        // live between the drawing area edge and the building, so clamping to
+        // the page let a label sit on top of a rotated dimension string.
+        cx = Math.max(TX(mnX)+tw/2+2, Math.min(TX(mxX)-tw/2-2, cx));
+        cy = Math.max(TY(mnY)+9,      Math.min(TY(mxY)-3,      cy));
+        // Two attachments stacked on the same wall centre on the same line, so
+        // step a label down until it is clear of the ones already placed.
+        for(var _g=0; _g<8; _g++){
+            var hit=false;
+            for(var _i=0;_i<_lblBoxes.length;_i++){
+                var q=_lblBoxes[_i];
+                if(Math.abs(cy-q.y)<10 && Math.abs(cx-q.x)<(tw+q.w)/2+4){ hit=true; break; }
+            }
+            if(!hit) break;
+            cy += 11;
+            if(cy>TY(mxY)-3){ cy=TY(mnY)+9; cx+=tw+8; }
+        }
+        _lblBoxes.push({x:cx,y:cy,w:tw});
+        doc.setFillColor(252);doc.rect(cx-tw/2-2,cy-6,tw+4,9,'F');
+        doc.setTextColor(60);doc.text(txt,cx,cy,{align:'center'});
+        doc.setTextColor(0);
     });
-    // Attachment key, on the row above the legend so a long list has room.
-    if(_rectKeys.length){
-        var akY=lgY-13, akX=MG;
-        doc.setFontSize(7.5);doc.setFont('helvetica','bold');doc.setTextColor(0);
-        _rectKeys.forEach(function(e){
-            doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(0.5);
-            doc.circle(akX+5,akY-2,5.5,'FD');
-            doc.text(e.k,akX+5,akY+1,{align:'center'});
-            doc.text(e.lbl,akX+13,akY+1);
-            akX += 13 + doc.getTextWidth(e.lbl) + 16;
+
+    // ═══ BOTTOM BAND ═══════════════════════════════════════════════════════
+    // Title block hard right; schedule, legend and notes fill the band left of it.
+    var TBW=236, TBH=STRIP-10, tbX=PW-MG-TBW, tbY=bandY+5;
+    var tbD=tbX+152;
+    doc.setDrawColor(0);doc.setLineWidth(0.9);doc.rect(tbX,tbY,TBW,TBH);
+    doc.setLineWidth(0.5);
+    doc.line(tbX,tbY+22,tbX+TBW,tbY+22);           // brand / sheet title
+    doc.line(tbX,tbY+40,tbX+TBW,tbY+40);           // sheet title / body
+    doc.line(tbX,tbY+62,tbD,tbY+62);               // client / building, left half only
+    doc.line(tbD,tbY+40,tbD,tbY+TBH);              // body split
+    var brand=(((window._companySettings||{}).brandName)||'Sauce Estimator');
+    doc.setFont('helvetica','bold');doc.setFontSize(10.5);doc.setTextColor(0);
+    doc.text(brand.toUpperCase(),tbX+8,tbY+15);
+    doc.setFontSize(8);doc.text('POST LAYOUT PLAN',tbX+8,tbY+35);
+    var custN=(document.getElementById('st_name')||{}).value||'';
+    doc.setFont('helvetica','normal');doc.setFontSize(5.8);doc.setTextColor(110);
+    doc.text('CLIENT',tbX+8,tbY+50);
+    doc.text('BUILDING',tbX+8,tbY+72);
+    doc.text('SHEET',tbD+8,tbY+52);
+    doc.setFont('helvetica','bold');doc.setFontSize(7.5);doc.setTextColor(0);
+    doc.text(custN.toUpperCase(),tbX+8,tbY+59);
+    doc.setFontSize(7.5);
+    doc.text(bw+"' x "+bl+"' x "+bh+"'   "+pitch+'/12   '+truss,tbX+8,tbY+81);
+    doc.setFontSize(14);doc.text('S1.0',tbD+8,tbY+70);
+    doc.setFont('helvetica','normal');doc.setFontSize(6.5);doc.setTextColor(60);
+    doc.text(new Date().toLocaleDateString(),tbD+8,tbY+82);
+
+    // Legend + schedule
+    (function(){
+        var lx=MG+12, ly=bandY+16;
+        doc.setFont('helvetica','bold');doc.setFontSize(6.5);doc.setTextColor(90);
+        doc.text('LEGEND',lx,ly-6);
+        doc.setFillColor(255);doc.setDrawColor(0);doc.setLineWidth(0.6);
+        doc.rect(lx,ly-5,6.2,6.2,'FD');
+        doc.setFont('helvetica','normal');doc.setFontSize(6.5);doc.setTextColor(0);
+        doc.text('POST',lx+10,ly);
+        doc.setFillColor(30);doc.rect(lx+42,ly-5,6.2,6.2,'F');
+        doc.text('JAMB POST',lx+52,ly);
+        var hasDoors=Object.keys(doorLabels).length>0;
+        if(hasDoors){
+            doc.setFont('helvetica','bold');doc.setFontSize(6.5);doc.setTextColor(90);
+            doc.text('OPENINGS',lx,ly+16);
+        }
+        doc.setFont('helvetica','normal');doc.setTextColor(0);
+        var dx=lx;
+        Object.keys(doorLabels).forEach(function(k){
+            var dl=doorLabels[k];
+            var t=dl.lbl+'  '+FX(dl.w*12)+' x '+FX(dl.h*12)+'  '+(dl.type==='garage'?'OVERHEAD':'WALK');
+            doc.text(t,dx,ly+28); dx+=doc.getTextWidth(t)+14;
         });
-    }
-    doc.setTextColor(160);
-    doc.text((((window._companySettings||{}).brandName)||'Sauce Estimator')+'  |  \u00A9 '+new Date().getFullYear(),PW-MG,lgY+1,{align:'right'});
+    })();
+
+    // General notes
+    (function(){
+        var nx=tbX-204, ny=bandY+16;
+        doc.setFont('helvetica','bold');doc.setFontSize(6.5);doc.setTextColor(90);
+        doc.text('GENERAL NOTES',nx,ny-6);
+        doc.setFont('helvetica','normal');doc.setFontSize(6.1);doc.setTextColor(30);
+        var NT=['1.  ALL DIMENSIONS TO POST CENTERLINE U.N.O.'];
+        if(mirrored) NT.push((NT.length+1)+'.  OPPOSITE WALL MATCHES UNLESS DIMENSIONED.');
+        NT.push((NT.length+1)+'.  VERIFY DIAGONAL BEFORE SETTING ANY POST.');
+        NT.push((NT.length+1)+'.  SET POSTS PLUMB, BEARING ON UNDISTURBED SOIL.');
+        NT.push((NT.length+1)+'.  DO NOT SCALE DRAWING.');
+        NT.forEach(function(t,i){ doc.text(t,nx,ny+i*9); });
+    })();
+
+    // The 3D and elevation pages that follow were laid out against a 30pt margin.
+    MG = 30;
 
     // === PAGE 2: 3D SNAPSHOTS ===
     var d3=window._3d;
@@ -25758,10 +25937,14 @@ function generatePostLayout() {
 
             // For gable faces: door offsets run left→right along building width
             // For eave faces: door offsets run left→right along building length
-            // PBQ convention: offset = feet from left end of wall (left eave: front→back)
+            // PBQ convention: offset = feet from the -X end of a gable wall, or
+            // the -Z end of an eave wall. See the note above drawElevation for
+            // which views put that end on the right and so have to mirror.
+            var MIRROR = (wallId==='front' || wallId==='right');
+            function along(ft){ return MIRROR ? (faceFt - ft) : ft; }
             function doorX(d){
                 var off=d.offset||0;
-                if(wallId==='back') off=faceFt-off-d.w; // mirror for rear view
+                if(MIRROR) off = faceFt - off - d.w;
                 return x0+off*sc;
             }
 
@@ -25915,19 +26098,13 @@ function generatePostLayout() {
             var wallPosts=wp[wallId]||[];
             doc.setDrawColor(100);doc.setLineWidth(0.5);
             wallPosts.forEach(function(p){
-                var px;
-                if(isGable){
-                    // gable: posts at p.ft from left edge of bw
-                    px=x0+p.ft*sc;
-                } else {
-                    // eave: posts at p.ft from front of bl
-                    px=x0+p.ft*sc;
-                }
+                var px=x0+along(p.ft)*sc;
                 // Don't draw if inside a door opening
+                var _pf=along(p.ft);
                 var inDoor=faceDoors.some(function(d){
                     var off=d.offset||0;
-                    if(wallId==='back') off=faceFt-off-d.w;
-                    return p.ft>off+0.2 && p.ft<off+d.w-0.2;
+                    if(MIRROR) off=faceFt-off-d.w;
+                    return _pf>off+0.2 && _pf<off+d.w-0.2;
                 });
                 if(inDoor) return;
                 doc.setLineWidth(p.jamb?0.8:0.4);
@@ -25972,7 +26149,7 @@ function generatePostLayout() {
             // the order a builder works in: set the posts off the chain, check
             // the whole wall against the overall.
             var dimY1=yGrd+22, dimY2=dimY1+24;
-            var postFt=(wp[wallId]||[]).map(function(p){return p.ft;})
+            var postFt=(wp[wallId]||[]).map(function(p){return along(p.ft);})
                        .sort(function(a,b){return a-b;})
                        .filter(function(v,i,a){return i===0||Math.abs(v-a[i-1])>0.02;});
             if(postFt.length>2){
@@ -26142,7 +26319,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M118-1117';
+window.SAUCE_BUILD = 'M125-1118';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
