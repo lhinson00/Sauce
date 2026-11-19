@@ -25119,17 +25119,21 @@ async function generateQuotePDF() {
 // This goes to the customer, so it carries descriptions and sizes rather than
 // SKUs, and it never touches SauceMaterials.calculate() beyond reading it.
 // ═══════════════════════════════════════════════════════════════════════════
-function generateMaterialListPDF() {
+// Builds the material list and hands back {blob, fileName}, or null if there
+// is nothing to build. generateMaterialListPDF downloads it; the email path
+// attaches it instead, so both go out of one generator.
+async function buildMaterialListPDF(quiet) {
     var Q = window._Q;
-    if (!Q) { alert('Please configure a building first.'); return; }
+    function _bail(msg) { if (!quiet) alert(msg); return null; }
+    if (!Q) return _bail('Please configure a building first.');
     var J = window.jspdf && window.jspdf.jsPDF;
-    if (!J) { alert('PDF library not loaded. Please wait a moment and try again.'); return; }
+    if (!J) return _bail('PDF library not loaded. Please wait a moment and try again.');
 
     var res;
     try { res = window.SauceMaterials.calculate(); }
-    catch(e) { alert('Could not build the material list: ' + (e && e.message)); return; }
+    catch(e) { return _bail('Could not build the material list: ' + (e && e.message)); }
     var items = (res && (res.items || res)) || [];
-    if (!items.length) { alert('No materials to list yet.'); return; }
+    if (!items.length) return _bail('No materials to list yet.');
 
     var doc = new J({ orientation:'portrait', unit:'pt', format:'letter' });
     var PW = 612, PH = 792, MG = 42;
@@ -25176,6 +25180,14 @@ function generateMaterialListPDF() {
 
     var QX = PW - MG;             // quantity column, right-aligned
     var y = 0, page = 0;
+
+    // Same pre-filled viewer link the share flow builds: clicking it opens the
+    // customer's exact configuration in 3D. The encoded config runs to
+    // thousands of characters, so it is never printed as text — the band is
+    // the link.
+    var LINK = '';
+    try { LINK = toolBaseUrl() + '?view=1&config=' + await safeEncodeCompressed(serializeConfig()); }
+    catch(e) { LINK = ''; }
 
     // Some detail strings carry a rate - "144 sqft | $0.00/sqft". This sheet
     // goes to the customer with no prices on it, so any piped chunk holding a
@@ -25261,8 +25273,21 @@ function generateMaterialListPDF() {
         if (CUST) doc.text(CUST, MG, ly + 14);
         doc.text(SIZE + '   ·   ' + TRUSS, CUST ? MG + 210 : MG, ly + 14);
 
-        // ── column titles, on the accent rule
+        // ── the 3D link, page one only, directly under the building line
+        // where the customer looks first. The encoded config runs to thousands
+        // of characters, so the band is the link rather than printed text.
         var hy = ly + 36;
+        if (page === 1 && LINK) {
+            setFill(col.gold); doc.rect(MG, hy - 6, QX - MG, 28, 'F');
+            doc.setFont('helvetica','bold'); doc.setFontSize(9.5); setTxt(col.white);
+            doc.textWithLink('VIEW YOUR BUILDING IN 3D', MG + 12, hy + 12, { url: LINK });
+            doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
+            doc.text('click to open the interactive model', QX - 12, hy + 12, { align:'right' });
+            doc.link(MG, hy - 6, QX - MG, 28, { url: LINK });
+            hy += 40;
+        }
+
+        // ── column titles, on the accent rule
         setFill(col.gold); doc.rect(MG, hy, QX - MG, 2, 'F');
         doc.setFont('helvetica','bold'); doc.setFontSize(7.5); setTxt(col.muted);
         doc.text('MATERIAL', MG, hy + 14);
@@ -25379,12 +25404,18 @@ function generateMaterialListPDF() {
 
     var fname = (CUST ? CUST.replace(/[^A-Za-z0-9]+/g,'_') + '_' : '')
               + Q.w + 'x' + Q.l + 'x' + Q.h + '_material_list.pdf';
-    var blob = doc.output('blob');
-    var url = URL.createObjectURL(blob);
+    return { blob: doc.output('blob'), fileName: fname };
+}
+
+async function generateMaterialListPDF() {
+    var out = null;
+    try { out = await buildMaterialListPDF(); } catch(e) { alert('Could not build the material list: ' + (e && e.message)); return; }
+    if (!out) return;
+    var url = URL.createObjectURL(out.blob);
     window.open(url, '_blank');
     setTimeout(function() {
         var a = document.createElement('a');
-        a.href = url; a.download = fname;
+        a.href = url; a.download = out.fileName;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         setTimeout(function(){ URL.revokeObjectURL(url); }, 5000);
     }, 300);
@@ -27460,7 +27491,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M143-1119';
+window.SAUCE_BUILD = 'M147-1119';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -30786,6 +30817,18 @@ function _sendTextQuote() {
 
 // The button does one of two things depending on whether there is a recipient,
 // so it says which. Called on open and whenever the Send to field changes.
+// With the material list going instead of the quote, the price ticks above do
+// not apply to what is being sent — so they grey out rather than sitting there
+// implying they still choose something.
+window._syncEqMatList = function() {
+  var on = !!(document.getElementById('eqMatListOnly') || {}).checked;
+  var wrap = document.getElementById('eqPriceSelectWrap');
+  if (wrap) {
+    wrap.style.opacity = on ? '0.4' : '1';
+    wrap.style.pointerEvents = on ? 'none' : '';
+  }
+};
+
 window._syncEqSendBtn = function() {
   var btn = document.getElementById('eqSendBtn');
   if (!btn || btn.disabled) return;
@@ -30880,6 +30923,8 @@ function openEmailQuoteModal() {
   if (chkCypress) chkCypress.checked = false;
   if (chkBB)      chkBB.checked      = false;
   var chkRI = document.getElementById('eqChkRedIron'); if (chkRI) chkRI.checked = false;
+  var chkML = document.getElementById('eqMatListOnly'); if (chkML) chkML.checked = false;
+  try { window._syncEqMatList(); } catch(e) {}
 
   modal.style.display = 'flex';
 }
@@ -30934,6 +30979,14 @@ function buildEmailQuoteModal() {
     + '<input type="checkbox" id="eqChkRedIron" style="width:16px;height:16px;accent-color:#f87171;cursor:pointer;justify-self:center;">'
     + '</span>'
     + '</div></div>'
+    // Send the material list instead of the quote: same recipient, same flow,
+    // a different attachment. The price rows above stay visible because the
+    // list still needs a package total, but they stop gating the send.
+    + '<label style=\'display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 12px;background:#111e30;border-radius:8px;border:1px solid rgba(var(--gold-rgb),.15);\'>'
+    + '<input type=\'checkbox\' id=\'eqMatListOnly\' onchange=\'try{window._syncEqMatList();window._syncEqSendBtn();}catch(e){}\' style=\'width:16px;height:16px;accent-color:var(--gold);cursor:pointer;flex-shrink:0;\'>'
+    + '<div><div style=\'font-size:12px;font-weight:700;color:#f0f3f7;\'>Send Material List Instead</div>'
+    + '<div style=\'font-size:10px;color:#8f8f8f;\'>Materials and quantities with one package total — no line pricing</div></div>'
+    + '</label>'
     + '<label style=\'display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 12px;background:#111e30;border-radius:8px;border:1px solid rgba(var(--gold-rgb),.15);\'>'
     + '<input type=\'checkbox\' id=\'eqAttachNewCustomer\' checked style=\'width:16px;height:16px;accent-color:var(--gold);cursor:pointer;flex-shrink:0;\'>'
     + '<div><div style=\'font-size:12px;font-weight:700;color:#f0f3f7;\'>Attach New Customer Info</div>'
@@ -31304,7 +31357,10 @@ async function sendSalesQuoteEmail() {
     if ((document.getElementById('eqChkBB')||{}).checked      && bbR.total)   selectedPrices.push({ type:'MetalBB',       label:buildLabel('MetalBB'),       results: bbR   });
     var _eqRiR = (window.SauceRedIron && window.SauceRedIron.active()) ? window.SauceRedIron.results() : null;
     if ((document.getElementById('eqChkRedIron')||{}).checked && _eqRiR)     selectedPrices.push({ type:'RedIron',       label:buildLabel('RedIron'),       results: _eqRiR });
-    if (!selectedPrices.length) { alert('Please select at least one price to include.'); btn.disabled=false; window._syncEqSendBtn(); return; }
+    var _matListOnly = !!(document.getElementById('eqMatListOnly') || {}).checked;
+    // The material list carries its own package total, so it does not need a
+    // price row ticked to be worth sending.
+    if (!selectedPrices.length && !_matListOnly) { alert('Please select at least one price to include.'); btn.disabled=false; window._syncEqSendBtn(); return; }
 
     // Build filtered 3D link — only include totals for checked types
     var _filteredCfg = serializeConfig();
@@ -31339,12 +31395,21 @@ async function sendSalesQuoteEmail() {
     if (!_J || typeof generateQuotePdfBlob !== 'function') {
       throw new Error('PDF library not loaded yet — give it a moment and try again.');
     }
-    var _pdfBlob = await generateQuotePdfBlob(selectedPrices);
+    var _pdfBlob, _matOut = null;
+    if (_matListOnly) {
+      if (typeof buildMaterialListPDF !== 'function') throw new Error('Material list generator not loaded.');
+      _matOut = await buildMaterialListPDF(true);
+      if (!_matOut) throw new Error('Could not build the material list.');
+      _pdfBlob = _matOut.blob;
+    } else {
+      _pdfBlob = await generateQuotePdfBlob(selectedPrices);
+    }
     if (!_pdfBlob) throw new Error('Could not build the PDF.');
 
     var _custName = ((document.getElementById('st_name')||{}).value || 'Customer').trim();
     var _fileName = _custName.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
-      + (window._shedOnlyMode ? '_Side_Shed' : '_Building') + '_Quote'
+      + (window._shedOnlyMode ? '_Side_Shed' : '_Building')
+      + (_matListOnly ? '_Material_List' : '_Quote')
       + '_' + new Date().toISOString().slice(0, 10) + '.pdf';
 
     // Download a copy for the salesman's own records, then send.
