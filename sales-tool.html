@@ -2661,6 +2661,7 @@ body.customer-mode #stab_specs { display: block !important; }
       <!-- Row 1: Quote actions -->
       <div style="display:flex;gap:6px;">
         <button class="act-btn secondary" onclick="generatePostLayout()"> Post PDF</button>
+        <button class="act-btn secondary" onclick="generateMaterialListPDF()"> Material List</button>
         <button class="act-btn secondary" id="vpSaveDesign" onclick="generateChecklist()"> Checklist PDF</button>
         <button class="act-btn primary" id="saveQuoteBtn" onclick="saveSalesQuote()">Save Quote</button>
         <button class="act-btn secondary" id="emailQuoteBtn" onclick="openEmailQuoteModal()" style="display:none;">Email Quote</button>
@@ -25112,6 +25113,283 @@ async function generateQuotePDF() {
   }, 300);
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MATERIAL LIST PDF — what is in the package, and how many. No prices.
+// This goes to the customer, so it carries descriptions and sizes rather than
+// SKUs, and it never touches SauceMaterials.calculate() beyond reading it.
+// ═══════════════════════════════════════════════════════════════════════════
+function generateMaterialListPDF() {
+    var Q = window._Q;
+    if (!Q) { alert('Please configure a building first.'); return; }
+    var J = window.jspdf && window.jspdf.jsPDF;
+    if (!J) { alert('PDF library not loaded. Please wait a moment and try again.'); return; }
+
+    var res;
+    try { res = window.SauceMaterials.calculate(); }
+    catch(e) { alert('Could not build the material list: ' + (e && e.message)); return; }
+    var items = (res && (res.items || res)) || [];
+    if (!items.length) { alert('No materials to list yet.'); return; }
+
+    var doc = new J({ orientation:'portrait', unit:'pt', format:'letter' });
+    var PW = 612, PH = 792, MG = 42;
+    var CUST = (document.getElementById('st_name') || {}).value || '';
+    var _brand = window._companySettings || {};
+    var BRAND = String(_brand.brandName || _brand.companyName || 'Sauce Estimator').trim();
+
+    // Same palette and the same accent resolver the quote PDF uses, so a
+    // company's material list is stationery from the same set rather than a
+    // plain table with their name at the top.
+    var col = {
+        navy: '#4B4B4B',
+        gold: (window.SaucePdfAccent ? window.SaucePdfAccent.resolve()
+                                     : (window._brandHex ? window._brandHex() : '#FF8200')),
+        white: '#ffffff', lightGray: '#ebebeb', text: '#333333', muted: '#666666'
+    };
+    function _rgb(hex) {
+        try { return hexToRGB(hex); } catch(e) {}
+        var h = String(hex||'').replace('#',''); 
+        return [parseInt(h.substr(0,2),16)||0, parseInt(h.substr(2,2),16)||0, parseInt(h.substr(4,2),16)||0];
+    }
+    function setFill(hex) { var c=_rgb(hex); doc.setFillColor(c[0],c[1],c[2]); }
+    function setTxt(hex)  { var c=_rgb(hex); doc.setTextColor(c[0],c[1],c[2]); }
+    function setDraw(hex) { var c=_rgb(hex); doc.setDrawColor(c[0],c[1],c[2]); }
+    var SIZE  = Q.w + "' x " + Q.l + "' x " + Q.h + "'";
+    var TRUSS = (Q.truss || 'Wood') + ' Truss';
+    var QID   = window._savedQuoteId || '';
+    var DATE  = new Date().toLocaleDateString('en-US',
+                  { year:'numeric', month:'long', day:'numeric' });
+
+    // Group in the order the categories first appear, so the sheet reads the
+    // way the list is built rather than alphabetically.
+    // COMWA is a line on the list, but on the printed sheet it is the signature
+    // block at the end rather than a row in a table, so it comes out of the
+    // grouping and is drawn on its own below.
+    var comwa = null;
+    var order = [], groups = {};
+    items.forEach(function(it) {
+        if (String(it.sku || '').toUpperCase() === 'COMWA') { comwa = it; return; }
+        var c = it.category || 'Materials';
+        if (!groups[c]) { groups[c] = []; order.push(c); }
+        groups[c].push(it);
+    });
+
+    var QX = PW - MG;             // quantity column, right-aligned
+    var y = 0, page = 0;
+
+    // Some detail strings carry a rate - "144 sqft | $0.00/sqft". This sheet
+    // goes to the customer with no prices on it, so any piped chunk holding a
+    // dollar figure is dropped and the rest of the detail kept.
+    // Panel lengths come back as 22'5" — print them the way every other sheet
+    // writes a dimension so the customer is not reading two conventions.
+    function _len(t) {
+        t = String(t || '').trim(); if (!t) return '';
+        var m = t.match(/^(\d+)'(?:\s*(\d+)\s*")?$/);
+        return m ? (m[1] + "'-" + (m[2] || '0') + '"') : t;
+    }
+
+    // The package total, and only the total. Which variant is quoted follows
+    // the route the rest of the tool prices by; materialOnly is the material
+    // package with MFT and adders already in it.
+    function _pkgTotal() {
+        var map = { WoodOH:'_lastPriceOH', WoodNoOH:'_lastPriceNoOH',
+                    EnclosedSteel:'_lastPriceSteel', StudFramed:'_lastPriceStud',
+                    metalBB:'_lastPriceBB', cypress:'_lastPriceCypress' };
+        var r = null;
+        try { var t = (detectCalcRoute() || {}).type; if (t && map[t]) r = window[map[t]]; } catch(e) {}
+        if (!(r && r.materialOnly)) {
+            ['_lastPriceOH','_lastPriceNoOH','_lastPriceSteel',
+             '_lastPriceStud','_lastPriceCypress','_lastPriceBB'].forEach(function(k) {
+                if (!(r && r.materialOnly) && window[k] && window[k].materialOnly) r = window[k];
+            });
+        }
+        if (!(r && r.materialOnly)) return '';
+        var n = parseFloat(String(r.materialOnly).replace(/[^0-9.]/g,''));
+        if (!isFinite(n) || n <= 0) return '';
+        try { return fmtPriceFull(n); } catch(e) { return '$' + n.toFixed(2); }
+    }
+
+    function _noPrice(t) {
+        if (t.indexOf('$') === -1) return t;
+        return t.split('|')
+                .filter(function(seg){ return seg.indexOf('$') === -1; })
+                .join('|').replace(/^\s*\|\s*|\s*\|\s*$/g,'').trim();
+    }
+
+    function header() {
+        page++;
+        if (page > 1) doc.addPage('letter','portrait');
+
+        // ── letterhead: the company's logo if they have one, else a wordmark
+        var LH = 0;
+        if (_brand.logoData) {
+            try {
+                var ip = doc.getImageProperties(_brand.logoData);
+                var bw2 = 250, bh2 = 62;
+                var sc2 = Math.min(bw2 / ip.width, bh2 / ip.height);
+                var lw = ip.width * sc2, lh = ip.height * sc2;
+                LH = 26 + lh + 22;
+                setFill(col.white); doc.rect(0, 0, PW, LH, 'F');
+                doc.addImage(_brand.logoData, (PW - lw) / 2, 26, lw, lh);
+            } catch(e) { LH = 0; }
+        }
+        if (!LH) {
+            LH = 76;
+            setFill(col.white); doc.rect(0, 0, PW, LH, 'F');
+            doc.setFont('helvetica','bold'); doc.setFontSize(19); setTxt(col.navy);
+            var bu = BRAND.toUpperCase();
+            doc.text(bu, PW / 2 - (1.6 * Math.max(0, bu.length - 1)) / 2, 46,
+                     { align:'center', charSpace:1.6 });
+        }
+        setFill(col.gold); doc.rect(0, 0, PW, 4, 'F');
+        setFill(col.gold); doc.rect(PW / 2 - 40, LH - 14, 80, 2, 'F');
+
+        // ── title band
+        var BH = 54;
+        setFill(col.navy); doc.rect(0, LH, PW, BH, 'F');
+        doc.setFont('helvetica','bold'); doc.setFontSize(16); setTxt(col.white);
+        doc.text('MATERIAL LIST', PW / 2, LH + 26, { align:'center' });
+        doc.setFont('helvetica','normal'); doc.setFontSize(8.5); setTxt('#d8d8d8');
+        doc.text(DATE + (QID ? '   ·   Quote ' + QID : ''), PW / 2, LH + 41, { align:'center' });
+
+        // ── who and what
+        var ly = LH + BH + 26;
+        doc.setFont('helvetica','normal'); doc.setFontSize(7.5); setTxt(col.muted);
+        if (CUST) doc.text('PREPARED FOR', MG, ly);
+        doc.text('BUILDING', CUST ? MG + 210 : MG, ly);
+        doc.setFont('helvetica','bold'); doc.setFontSize(10); setTxt(col.text);
+        if (CUST) doc.text(CUST, MG, ly + 14);
+        doc.text(SIZE + '   ·   ' + TRUSS, CUST ? MG + 210 : MG, ly + 14);
+
+        // ── column titles, on the accent rule
+        var hy = ly + 36;
+        setFill(col.gold); doc.rect(MG, hy, QX - MG, 2, 'F');
+        doc.setFont('helvetica','bold'); doc.setFontSize(7.5); setTxt(col.muted);
+        doc.text('MATERIAL', MG, hy + 14);
+        doc.text('LENGTH', QX - 58, hy + 14, { align:'right' });
+        doc.text('QTY', QX, hy + 14, { align:'right' });
+        setDraw(col.lightGray); doc.setLineWidth(0.7);
+        doc.line(MG, hy + 19, QX, hy + 19);
+        y = hy + 34;
+    }
+
+    function footer() {
+        setDraw(col.lightGray); doc.setLineWidth(0.6);
+        doc.line(MG, PH - MG - 16, QX, PH - MG - 16);
+        doc.setFont('helvetica','normal'); doc.setFontSize(7); setTxt(col.muted);
+        doc.text('Material list only — quantities as quoted. No individual pricing shown.',
+                 MG, PH - MG - 4);
+        doc.text('Page ' + page, QX, PH - MG - 4, { align:'right' });
+    }
+
+    function room(h) {
+        if (y + h <= PH - MG - 30) return;
+        footer(); header();
+    }
+
+    header();
+
+    order.forEach(function(cat) {
+        room(42);
+        // category band
+        setFill(col.navy); doc.rect(MG, y - 10, QX - MG, 17, 'F');
+        setFill(col.gold); doc.rect(MG, y - 10, 3, 17, 'F');
+        doc.setFont('helvetica','bold'); doc.setFontSize(8.5); setTxt(col.white);
+        doc.text(String(cat).toUpperCase(), MG + 12, y + 2);
+        y += 24;
+
+        groups[cat].forEach(function(it, i) {
+            var desc = _noPrice(String(it.description || it.sku || 'Item'));
+            var det  = _noPrice(String(it.detail || ''));
+            var qty  = (it.quantity == null) ? '' : String(it.quantity);
+
+            var mlen = _len(it.metalLength);
+            doc.setFont('helvetica','normal'); doc.setFontSize(9);
+            var wrap = doc.splitTextToSize(desc, QX - MG - 140);
+            var dWrap = det ? doc.splitTextToSize(det, QX - MG - 140) : [];
+            var h = wrap.length * 11 + dWrap.length * 9 + 7;
+            room(h);
+
+            if (i % 2 === 1) { doc.setFillColor(250); doc.rect(MG, y - 9, QX - MG, h, 'F'); }
+
+            doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(25);
+            doc.text(wrap, MG + 6, y);
+            doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(20);
+            doc.text(qty, QX - 4, y, { align:'right' });
+            if (mlen) {
+                doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(45);
+                doc.text(mlen, QX - 58, y, { align:'right' });
+            }
+            if (dWrap.length) {
+                doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(135);
+                doc.text(dWrap, MG + 6, y + wrap.length * 11 - 1);
+            }
+            y += h;
+        });
+        y += 8;
+    });
+
+    // One number at the end. Nothing is priced line by line.
+    var pkg = _pkgTotal();
+    if (pkg) {
+        room(54);
+        y += 6;
+        setFill(col.navy); doc.rect(MG, y - 6, QX - MG, 34, 'F');
+        setFill(col.gold); doc.rect(MG, y - 6, 4, 34, 'F');
+        doc.setFont('helvetica','bold'); doc.setFontSize(9.5); setTxt(col.white);
+        doc.text('MATERIAL PACKAGE TOTAL', MG + 14, y + 15);
+        doc.setFontSize(13);
+        doc.text(pkg, QX - 10, y + 16, { align:'right' });
+        y += 44;
+    }
+
+    // ── COMWA — the courtesy-estimate acknowledgement, always the last line.
+    // Straight apostrophes rather than curly: jsPDF's standard fonts are
+    // WinAnsi and a smart quote can come through the encoder mangled, which is
+    // not something to discover on a sheet a customer has already signed.
+    (function() {
+        if (!comwa) return;          // not a material-only quote, so no acknowledgement
+        var txt = _noPrice(String(comwa.description || window.COMWA_TEXT || ''));
+        if (!txt) return;
+        doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+        var wrap = doc.splitTextToSize(txt, QX - MG - 28);
+        var h = 26 + wrap.length * 11 + 40;
+        room(h);
+        y += 10;
+
+        setDraw(col.navy); doc.setLineWidth(0.9);
+        doc.rect(MG, y - 6, QX - MG, h - 10);
+        setFill(col.gold); doc.rect(MG, y - 6, 4, h - 10, 'F');
+
+        doc.setFont('helvetica','bold'); doc.setFontSize(7.5); setTxt(col.muted);
+        doc.text(String((comwa && comwa.sku) || 'COMWA'), MG + 14, y + 8);
+
+        doc.setFont('helvetica','normal'); doc.setFontSize(8.5); setTxt(col.text);
+        doc.text(wrap, MG + 14, y + 22);
+
+        var sy = y + 22 + wrap.length * 11 + 20;
+        setDraw(col.navy); doc.setLineWidth(0.7);
+        doc.line(MG + 70, sy, QX - 20, sy);
+        doc.setFont('helvetica','bold'); doc.setFontSize(8.5); setTxt(col.text);
+        doc.text('Signature', MG + 14, sy - 1);
+        y += h;
+    })();
+
+    footer();
+
+    var fname = (CUST ? CUST.replace(/[^A-Za-z0-9]+/g,'_') + '_' : '')
+              + Q.w + 'x' + Q.l + 'x' + Q.h + '_material_list.pdf';
+    var blob = doc.output('blob');
+    var url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(function() {
+        var a = document.createElement('a');
+        a.href = url; a.download = fname;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(function(){ URL.revokeObjectURL(url); }, 5000);
+    }, 300);
+}
+
 function generatePostLayout() {
     var Q = window._Q, WALLS = window._WALLS, allDoors = window._allDoors, shedCfgs = window._shedConfigs || [];
     if (!Q) { alert('Please configure a building first.'); return; }
@@ -27182,7 +27460,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M136-1119';
+window.SAUCE_BUILD = 'M143-1119';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -32152,10 +32430,19 @@ window.markupPct = function() {
 window.applyMarkupDefault = function() {
   var el = document.getElementById('st_mftRate');
   if (!el || String(el.value).trim() !== '') return;
-  try {
-    var v = window.SauceRates.v('materials.markupPct');
-    el.value = (v == null || !isFinite(v)) ? 0 : v;
-  } catch(e) { el.value = 0; }
+  // This used to write whatever v() returned, and v() returns 0 for a key the
+  // company never set — markupPct defaults to 0 in RATE_DEFAULTS. That 0 then
+  // stuck: this function bails out once the box is non-empty, so the real rate
+  // landing a moment later could never replace it, and the quote priced at no
+  // markup at all. Only a rate the company actually carries goes in the box;
+  // otherwise fall back to the route default the hint already advertises, so
+  // the salesman sees the number he is quoting with instead of a silent zero.
+  var v = null;
+  try { v = window.SauceRates.stored('materials.markupPct'); } catch(e) { v = null; }
+  // House default is 8%, flat, whatever the route. Only a rate the company
+  // actually carries beats it.
+  if (v == null || !isFinite(v)) v = 8;
+  el.value = v;
 };
 
 window.setBrandColor = function(hex) {
@@ -35077,16 +35364,15 @@ function updateConcreteSummary() {
 }
 
 function updateMftRateHint() {
-  var route = (typeof detectCalcRoute === 'function') ? detectCalcRoute() : {};
-  var defaults = {
-    RGSteel: 7, RGSides: 7, RGGables: 7,
-    StudFramed: 12,
-    WoodOH: 9, WoodNoOH: 9, EnclosedSteel: 9
-  };
-  var def = defaults[route.type] || 9;
+  // The hint used to advertise a per-route default of 7 / 9 / 12, which is not
+  // what the tool quotes with. The house rate is a flat 8% unless the company
+  // carries its own, so the label says that and agrees with the box.
+  var def = 8;
+  try { var cv = window.SauceRates.stored('materials.markupPct');
+        if (cv != null && isFinite(cv)) def = cv; } catch(e) {}
   var hint = document.getElementById('st_mftRateDefault');
   var inp  = document.getElementById('st_mftRate');
-  if (hint) hint.textContent = 'Default: ' + def + '% for ' + (route.type || 'this route');
+  if (hint) hint.textContent = 'Default: ' + def + '%';
   if (inp)  inp.placeholder  = def + '%';
 }
 
@@ -48198,6 +48484,16 @@ window.SauceMaterials.calculate = function(forcedType) {
 };
 
 // ── UNIVERSAL LINE ITEMS ──────────────────────────────────────────────────────
+// The COMWA line's wording. Kept here, next to the push that adds it, so the
+// material list and the printed sheet read from the same string. Straight
+// apostrophes on purpose: jsPDF's standard fonts are WinAnsi and a smart quote
+// can come through the encoder mangled, which is not something to find on a
+// sheet a customer has already signed.
+window.COMWA_TEXT = "We've estimated these materials as a courtesy based on the "
+  + "information you provided, without drawings or verified measurements. By signing, "
+  + "you acknowledge that you are responsible for confirming the materials and that we "
+  + "can't guarantee the accuracy or be responsible for incorrectly figured materials.";
+
 // Wrap SauceMaterials.calculate so every return path always includes these items,
 // regardless of building type (Wood OH/No OH, Steel, Stud, Cypress, Metal B&B, Shed Only).
 (function() {
@@ -48210,6 +48506,23 @@ window.SauceMaterials.calculate = function(forcedType) {
         var trackItems = window.SauceMaterials.calcGarageDoorTracks(window._allDoors || []);
         trackItems.forEach(function(it) { res.items.push(it); });
       } catch(e) {}
+
+      // COMWA — the courtesy-estimate acknowledgement. A real SKU off the price
+      // book, so it carries through to anything fed by the material list rather
+      // than being printed on one document. It belongs to a MATERIAL ONLY quote
+      // and nothing else: the wording is about materials figured without
+      // drawings, which does not describe a building we are also erecting.
+      // Pushed after the track options so it is the last line, which is where
+      // it has to read.
+      var _matOnly = false;
+      try { _matOnly = !!(document.getElementById('st_materialKit') || {}).checked; } catch(e) {}
+      if (_matOnly) res.items.push({
+        category: 'Acknowledgement',
+        description: window.COMWA_TEXT,
+        sku: 'COMWA',
+        quantity: 1,
+        detail: ''
+      });
     }
     return res;
   };
@@ -48756,6 +49069,24 @@ window.SauceRates = (function() {
       // Tax and the zone number are not prices — nudging them makes nonsense.
       if (path === 'labor.taxRate' || path === 'concrete.defaultZone') return n;
       return (window.SauceDemo ? window.SauceDemo.adjust(path, n) : n);
+    },
+
+    // The number the STORED profile actually carries for this rate, or null if
+    // it carries none. v() cannot answer this: a key defaulting to 0 in
+    // RATE_DEFAULTS and a company that really charges 0 both read 0. Going to
+    // the stored copy also sidesteps _cache, which can still hold a merge made
+    // before the company's profile landed.
+    stored: function(path) {
+      var o = null;
+      try { o = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); } catch(e) { return null; }
+      var node = o, parts = String(path||'').split('.');
+      for (var i = 0; i < parts.length; i++) {
+        if (node == null || typeof node !== 'object') return null;
+        node = node[parts[i]];
+      }
+      if (node == null || node === '') return null;
+      var n = parseFloat(node);
+      return isFinite(n) ? n : null;
     },
 
     // The stored figure, untouched by demo mode — what the rate editors show and
