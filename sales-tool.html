@@ -16822,6 +16822,10 @@ function applyVoiceQuote(parsed, overlay) {
             const bayFt = (RI.bay === 20) ? 20 : 25;
             const frameGrp = new THREE.Group();
             const cladGrp  = new THREE.Group();
+            // Steel on a shed with no walls is exposed structure -- you see it
+            // on the finished building, so it belongs in the clad view too.
+            // frameGrp is the bare-frame view only; exposedGrp shows in both.
+            const exposedGrp = new THREE.Group();
             const mSteel   = new THREE.MeshBasicMaterial({ color: 0x9a3a26 });   // red-iron web
             const mFlange  = new THREE.MeshBasicMaterial({ color: 0x81301e });   // darker flange
             const mPlate   = new THREE.MeshBasicMaterial({ color: 0x6f2a1a });   // connection plates
@@ -16953,7 +16957,9 @@ function applyVoiceQuote(parsed, overlay) {
               var cW = 0.30*Sc, cD = 0.62*Sc;     // column section
               var rW = 0.26*Sc, rD = 0.52*Sc;     // rafter section
 
-              // One rectangular member between two points, any direction.
+              // One rectangular member between two points, any direction. It
+              // lands in whichever group this shed belongs to -- see _tgt.
+              var _tgt = frameGrp;
               function beam(x1,y1,z1, x2,y2,z2, wx,wy, mat){
                 var a=new THREE.Vector3(x1,y1,z1), b=new THREE.Vector3(x2,y2,z2);
                 var len=a.distanceTo(b); if(len<1e-5) return;
@@ -16961,7 +16967,7 @@ function applyVoiceQuote(parsed, overlay) {
                 m.position.copy(a).add(b).multiplyScalar(0.5);
                 m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),
                                                 b.clone().sub(a).normalize());
-                m.castShadow=true; frameGrp.add(m);
+                m.castShadow=true; _tgt.add(m);
               }
               // Evenly spaced frame positions across a run, at the main bay pitch.
               function runPos(a, b){
@@ -16979,6 +16985,14 @@ function applyVoiceQuote(parsed, overlay) {
                 try {
                   var wall=sc.wall, proj=+sc.w||0, slen=+sc.l||0;
                   if(!(proj>0) || !(slen>0)) return;
+                  // A timber-framed attachment is timber. It keeps its own
+                  // posts and trusses and gets no steel, whatever the main
+                  // building is framed in.
+                  if(sc.frameStyle==='timber' || sc.cypressPosts || sc.cypressRafters) return;
+                  // No walls means the steel is on show, so it has to survive
+                  // the switch to the clad view.
+                  var _open=(sc.encl==='roofonly' || sc.encl==='open');
+                  _tgt = _open ? exposedGrp : frameGrp;
                   var onEave=(wall==='left'||wall==='right');
                   var sign=(wall==='right'||wall==='back') ? 1 : -1;
                   var mainLen=onEave ? Q.l : Q.w;
@@ -17063,7 +17077,9 @@ function applyVoiceQuote(parsed, overlay) {
             // clad shell (and vice-versa). Toggling rebuilds, so this is always correct.
             if (RI.showFrame) grps.redIron.add(frameGrp);
             else              grps.redIron.add(cladGrp);
+            grps.redIron.add(exposedGrp);          // open sheds, both views
             grps.redIron.visible = true;
+            window._riGrps = { frame: frameGrp, clad: cladGrp, exposed: exposedGrp };
             window._riActive = true;
           } catch(e){ console.warn('[3D] red-iron render failed:', e && e.message); }
         } else {
@@ -23223,9 +23239,30 @@ function applyVoiceQuote(parsed, overlay) {
           // building, so it uses the tool's own metal and trim — same panels, ribs,
           // corner trim and rake as any other build — rather than a stand-in skin.
           var _riFrameView = !(window._redIron && window._redIron.showFrame === false);
-          grps.redIron.visible   = _riFrameView;  // steel frame, frame view only
+          // An attachment with no walls shows its steel on the finished
+          // building, so that steel stays up in the clad view while the bare
+          // frame and the stand-in skin come down.
+          grps.redIron.visible   = true;
+          (function(){
+            var _rg = window._riGrps || {};
+            if (_rg.frame)   _rg.frame.visible   = _riFrameView;
+            if (_rg.clad)    _rg.clad.visible    = false;   // tool's own metal is used
+            if (_rg.exposed) _rg.exposed.visible = true;
+          })();
           grps.framing.visible   = false;         // red iron has NO wood
-          grps.posts.visible     = false;
+          // ...except a timber-framed attachment, which is timber by choice and
+          // keeps its own posts. They belong to the finished building, so they
+          // show in the clad view and stay off the bare-steel view.
+          grps.posts.visible     = !_riFrameView;
+          if (!_riFrameView && grps.posts.children) {
+            var _rsc = window._shedConfigs || [];
+            grps.posts.traverse(function(ch){
+              if (!ch.isMesh) return;
+              var si = ch.userData && ch.userData.sIdx;
+              var s  = (si != null) ? _rsc[si] : null;
+              ch.visible = !!(s && (s.frameStyle === 'timber' || s.cypressPosts));
+            });
+          }
           grps.mainPosts.visible = false;
           grps.trusses.visible   = false;
           grps.wallPanels.visible= !_riFrameView && (typeof _wallsVisible === 'undefined' || _wallsVisible);
@@ -25572,11 +25609,14 @@ async function generateMaterialListPDF() {
     }, 300);
 }
 
-function generatePostLayout() {
+// quiet: build the sheets and hand the blob back instead of opening and
+// downloading them, so the email path can attach the same document the
+// Post Layout button produces. Nothing about the drawing changes.
+function generatePostLayout(quiet) {
     var Q = window._Q, WALLS = window._WALLS, allDoors = window._allDoors, shedCfgs = window._shedConfigs || [];
-    if (!Q) { alert('Please configure a building first.'); return; }
+    if (!Q) { if (quiet) return null; alert('Please configure a building first.'); return; }
     var J = window.jspdf && window.jspdf.jsPDF;
-    if (!J) { alert('PDF library not loaded. Please wait a moment and try again.'); return; }
+    if (!J) { if (quiet) return null; alert('PDF library not loaded. Please wait a moment and try again.'); return; }
 
     var bw=Q.w,bl=Q.l,bh=Q.h,pitch=Q.pitch||4,truss=Q.truss||'Wood';
     var girtOff=truss.toLowerCase().indexOf('wood')>=0?1.5:0;
@@ -27849,6 +27889,7 @@ function generatePostLayout() {
 
     // Mobile-safe PDF output: open in new tab instead of triggering download
     var pdfBlob = doc.output('blob');
+    if (quiet) return { blob: pdfBlob, fileName: (bw+'x'+bl+'x'+bh+'_post_layout.pdf') };
     var blobUrl = URL.createObjectURL(pdfBlob);
     window.open(blobUrl, '_blank');
     // Also try download as fallback for desktop
@@ -27945,7 +27986,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M159-1119';
+window.SAUCE_BUILD = 'M161-1119';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -31378,6 +31419,7 @@ function openEmailQuoteModal() {
   if (chkBB)      chkBB.checked      = false;
   var chkRI = document.getElementById('eqChkRedIron'); if (chkRI) chkRI.checked = false;
   var chkML = document.getElementById('eqMatListOnly'); if (chkML) chkML.checked = false;
+  var chkPL = document.getElementById('eqPostLayout'); if (chkPL) chkPL.checked = false;
   try { window._syncEqMatList(); } catch(e) {}
 
   modal.style.display = 'flex';
@@ -31440,6 +31482,12 @@ function buildEmailQuoteModal() {
     + '<input type=\'checkbox\' id=\'eqMatListOnly\' onchange=\'try{window._syncEqMatList();window._syncEqSendBtn();}catch(e){}\' style=\'width:16px;height:16px;accent-color:var(--gold);cursor:pointer;flex-shrink:0;\'>'
     + '<div><div style=\'font-size:12px;font-weight:700;color:#f0f3f7;\'>Send Material List Instead</div>'
     + '<div style=\'font-size:10px;color:#8f8f8f;\'>Materials and quantities with one package total — no line pricing</div></div>'
+    + '</label>'
+    // The post layout sheets, as their own attachment beside the quote.
+    + '<label style=\'display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 12px;background:#111e30;border-radius:8px;border:1px solid rgba(var(--gold-rgb),.15);\'>'
+    + '<input type=\'checkbox\' id=\'eqPostLayout\' style=\'width:16px;height:16px;accent-color:var(--gold);cursor:pointer;flex-shrink:0;\'>'
+    + '<div><div style=\'font-size:12px;font-weight:700;color:#f0f3f7;\'>Attach Post Layout</div>'
+    + '<div style=\'font-size:10px;color:#8f8f8f;\'>Plan, truss layout, foundation, wall section and elevations — separate PDF</div></div>'
     + '</label>'
     + '<label style=\'display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px 12px;background:#111e30;border-radius:8px;border:1px solid rgba(var(--gold-rgb),.15);\'>'
     + '<input type=\'checkbox\' id=\'eqAttachNewCustomer\' checked style=\'width:16px;height:16px;accent-color:var(--gold);cursor:pointer;flex-shrink:0;\'>'
@@ -31900,6 +31948,34 @@ async function sendSalesQuoteEmail() {
       fr.readAsDataURL(_pdfBlob);
     });
 
+    // Post layout sheets, as their own attachment. Built from the same
+    // generator as the Post Layout button, so the customer gets exactly the
+    // document the salesman would have downloaded. If it cannot be built the
+    // quote still goes -- losing the drawings is not a reason to lose the send.
+    var _extras = [];
+    if ((document.getElementById('eqPostLayout') || {}).checked) {
+      try {
+        var _plOut = (typeof generatePostLayout === 'function')
+                     ? generatePostLayout(true) : null;
+        if (_plOut && _plOut.blob) {
+          var _plB64 = await new Promise(function(resolve, reject) {
+            var fr2 = new FileReader();
+            fr2.onload  = function(){ resolve(String(fr2.result).split(',')[1] || ''); };
+            fr2.onerror = function(){ reject(new Error('Could not read the post layout.')); };
+            fr2.readAsDataURL(_plOut.blob);
+          });
+          if (_plB64) _extras.push({
+            filename: (_custName && _custName !== 'Customer'
+                        ? _custName.replace(/[^A-Za-z0-9]+/g,'_').replace(/^_+|_+$/g,'') + '_'
+                        : '') + 'Post_Layout.pdf',
+            content: _plB64
+          });
+        }
+      } catch (e) {
+        try { console.warn('post layout not attached:', e.message); } catch(_) {}
+      }
+    }
+
     var _co   = (window._companySettings && window._companySettings.brandName) || currentCompanyName() || '';
     var _first = (_custName && _custName !== 'Customer') ? _custName.split(' ')[0] : '';
     var _subj = (_custName && _custName !== 'Customer' ? _custName + ' - ' : '')
@@ -31985,7 +32061,11 @@ async function sendSalesQuoteEmail() {
     try {
       _res = await sbFunction('send-email', {
         to: _to, cc: _cc, subject: _subj, text: _text, html: _html,
-        pdfBase64: _b64, filename: _fileName
+        pdfBase64: _b64, filename: _fileName,
+        extras: _extras,
+        // The checkbox has been on the modal all along but its answer was
+        // never sent, so the info sheet went out either way.
+        includeInfo: !!((document.getElementById('eqAttachNewCustomer') || {}).checked)
       }, 60000);
     } catch (e) {
       _res = { error: e.message };
