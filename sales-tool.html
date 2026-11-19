@@ -25939,8 +25939,13 @@ function generatePostLayout() {
             doc.text(tag,TX(mid),TY(run.at)+(run.lab==='S'?-6:12),{align:'center'});
         } else {
             doc.line(TX(run.at),TY(run.a),TX(run.at),TY(run.b));
-            if(run.lab==='W') doc.text(tag,TX(0)-7,TY(mid)+2,{align:'right'});
-            else              doc.text(tag,TX(PLX)+7,TY(mid)+2);
+            // Inboard, like the tags on the gable walls. Outboard put them in
+            // the same strip as the dimension chain, whose white knockout then
+            // printed through the middle of the tag.
+            var _tw=doc.getTextWidth(tag);
+            var _tx=(run.lab==='W')?(TX(0)+7):(TX(PLX)-7-_tw);
+            doc.setFillColor(255);doc.rect(_tx-2,TY(mid)-5,_tw+4,9,'F');
+            doc.setTextColor(0);doc.text(tag,_tx,TY(mid)+2);
         }
     });
 
@@ -25954,7 +25959,8 @@ function generatePostLayout() {
         else{doc.setFillColor(255);doc.rect(px-PR,py-PR,PR*2,PR*2,'FD');}
     });
 
-    function dimH(y, vals, extTo, big){
+    function dimH(y, vals, extTo, big, out){
+        var _out=(out<0||out>0)?out:-1, _last=-1e9;
         var x1=TX(vals[0]), x2=TX(vals[vals.length-1]);
         if(extTo!=null){
             // A short stub off each tick, pointing at the geometry. Run the
@@ -25972,10 +25978,23 @@ function generatePostLayout() {
             if(Math.abs(b-a)>tw+8){
                 doc.setFillColor(255);doc.rect((a+b)/2-tw/2-3,y-5.5,tw+6,11,'F');
                 doc.text(lb,(a+b)/2,y+fp*0.34,{align:'center'});
-            } else doc.text(lb,(a+b)/2,y-6,{align:'center'});
+            } else {
+                // Too tight to sit on the line: step the figure off to the
+                // outboard side, slide it along if the one before it is still
+                // there, and run a leader back to the bay it measures.
+                var m0=(a+b)/2, mm=m0;
+                if(mm-tw/2<_last+4) mm=_last+4+tw/2;
+                _last=mm+tw/2;
+                var ly=y+_out*12;
+                doc.setDrawColor(150);doc.setLineWidth(0.35);
+                doc.line(m0,y+_out*3,mm,ly-_out*5);
+                doc.setFillColor(255);doc.rect(mm-tw/2-2,ly-5.5,tw+4,11,'F');
+                doc.setTextColor(0);doc.text(lb,mm,ly+fp*0.34,{align:'center'});
+            }
         });
     }
-    function dimV(x, vals, extTo, big){
+    function dimV(x, vals, extTo, big, out){
+        var _out=(out<0||out>0)?out:-1, _last=-1e9;
         var y1=TY(vals[0]), y2=TY(vals[vals.length-1]);
         if(extTo!=null){
             doc.setDrawColor(205);doc.setLineWidth(0.2);
@@ -25991,7 +26010,18 @@ function generatePostLayout() {
             if(Math.abs(b-a)>tw+8){
                 doc.setFillColor(255);doc.rect(x-5.5,(a+b)/2-tw/2-3,11,tw+6,'F');
                 doc.text(lb,x+fp*0.34,(a+b)/2+tw/2,{angle:90});
-            } else doc.text(lb,x-6,(a+b)/2+tw/2,{angle:90});
+            } else {
+                // Same rule as the horizontal strings: step off the line rather
+                // than print over a post, slide along if crowded, leader back.
+                var m0=(a+b)/2, mm=m0;
+                if(mm-tw/2<_last+4) mm=_last+4+tw/2;
+                _last=mm+tw/2;
+                var lx=x+_out*12;
+                doc.setDrawColor(150);doc.setLineWidth(0.35);
+                doc.line(x+_out*3,m0,lx-_out*5,mm);
+                doc.setFillColor(255);doc.rect(lx-5.5,mm-tw/2-2,11,tw+4,'F');
+                doc.setTextColor(0);doc.text(lb,lx+fp*0.34,mm+tw/2,{angle:90});
+            }
         });
     }
 
@@ -26006,12 +26036,15 @@ function generatePostLayout() {
     // ── the four stacks, nearest string first, overall outermost ───────────
     (function(){
         var yT=TY(mnY)-DOFF, yB=TY(mxY)+DOFF, xL=TX(mnX)-DOFF, xR=TX(mxX)+DOFF;
-        stack.T.forEach(function(c,i){ dimH(yT-i*ROW, c.vals, TY(0), false); });
-        dimH(yT-stack.T.length*ROW, [0,PLX], null, true);
-        stack.B.forEach(function(c,i){ dimH(yB+i*ROW, c.vals, TY(PLY), false); });
-        stack.L.forEach(function(c,i){ dimV(xL-i*ROW, c.vals, TX(0), false); });
-        dimV(xL-stack.L.length*ROW, [0,PLY], null, true);
-        stack.R.forEach(function(c,i){ dimV(xR+i*ROW, c.vals, TX(PLX), false); });
+        // The last argument is which way is OUTBOARD for that string, so a
+        // figure too tight for its own bay steps away from the building
+        // instead of landing on the posts.
+        stack.T.forEach(function(c,i){ dimH(yT-i*ROW, c.vals, TY(0), false, -1); });
+        dimH(yT-stack.T.length*ROW, [0,PLX], null, true, -1);
+        stack.B.forEach(function(c,i){ dimH(yB+i*ROW, c.vals, TY(PLY), false, 1); });
+        stack.L.forEach(function(c,i){ dimV(xL-i*ROW, c.vals, TX(0), false, -1); });
+        dimV(xL-stack.L.length*ROW, [0,PLY], null, true, -1);
+        stack.R.forEach(function(c,i){ dimV(xR+i*ROW, c.vals, TX(PLX), false, 1); });
     })();
 
     // ── attachment tags, reversed out so they cannot read as grid bubbles ──
@@ -26201,18 +26234,35 @@ function generatePostLayout() {
             P.forEach(function(q){ doc.setLineWidth(0.7);
                 if(horiz) doc.line(q,at-2.5,q,at+2.5); else doc.line(at-2.5,q,at+2.5,q); });
             doc.setFont('helvetica','bold');doc.setFontSize(fp);doc.setTextColor(0);
+            // A figure that fits between its own ticks prints on the line. One
+            // that does not is stacked clear of it instead of over its
+            // neighbours: alternating sides, pushed along the chain when two on
+            // the same side would still touch, knocked out in white and tied
+            // back to its own bay with a leader. This only moves where a number
+            // prints -- no dimension, post or spacing changes.
+            var lastL=-1e9, lastR=-1e9, useR=false;
             for(var i=0;i<P.length-1;i++){
                 var a=P[i],b=P[i+1],lb=F(pts[i+1]-pts[i]),tw=doc.getTextWidth(lb),m=(a+b)/2;
-                var room=Math.abs(b-a)>tw+8;
-                if(horiz){
-                    if(room){ doc.setFillColor(255);doc.rect(m-tw/2-3,at-5.5,tw+6,11,'F');
-                              doc.text(lb,m,at+fp*0.34,{align:'center'}); }
-                    else doc.text(lb,m,at+((i%2)?9:-6),{align:'center'});
-                } else {
-                    if(room){ doc.setFillColor(255);doc.rect(at-5.5,m-tw/2-3,11,tw+6,'F');
-                              doc.text(lb,at+fp*0.34,m+tw/2,{angle:90}); }
-                    else doc.text(lb,at+((i%2)?9:-6),m+tw/2,{angle:90});
+                if(Math.abs(b-a)>tw+8){
+                    doc.setFillColor(255);
+                    if(horiz){ doc.rect(m-tw/2-3,at-5.5,tw+6,11,'F');
+                               doc.text(lb,m,at+fp*0.34,{align:'center'}); }
+                    else     { doc.rect(at-5.5,m-tw/2-3,11,tw+6,'F');
+                               doc.text(lb,at+fp*0.34,m+tw/2,{angle:90}); }
+                    continue;
                 }
+                var off=useR?12:-11, m0=m;
+                if(useR){ if(m-tw/2<lastR+4) m=lastR+4+tw/2; lastR=m+tw/2; }
+                else    { if(m-tw/2<lastL+4) m=lastL+4+tw/2; lastL=m+tw/2; }
+                useR=!useR;
+                doc.setDrawColor(150);doc.setLineWidth(0.35);
+                var tail=at+off-(off>0?5:-5), head=at+(off>0?2.5:-2.5);
+                if(horiz) doc.line(m0,head,m,tail); else doc.line(head,m0,tail,m);
+                doc.setFillColor(255);doc.setTextColor(0);
+                if(horiz){ doc.rect(m-tw/2-2,at+off-5.5,tw+4,11,'F');
+                           doc.text(lb,m,at+off+fp*0.34,{align:'center'}); }
+                else     { doc.rect(at+off-5.5,m-tw/2-2,11,tw+4,'F');
+                           doc.text(lb,at+off+fp*0.34,m+tw/2,{angle:90}); }
             }
         }
         // ── shared drafting marks ───────────────────────────────────────────
@@ -26773,13 +26823,18 @@ function generatePostLayout() {
             var _gap=(tp.length>1)?(tp[1]-tp[0]):PLY, _even=true;
             for(var _k=0;_k<tp.length-1;_k++)
                 if(Math.abs((tp[_k+1]-tp[_k])-_gap)>0.5){ _even=false; break; }
+            // The count on this sheet is the number of TRUSSES, not the number
+            // of spaces between them. "16 @ 5'-0"" on an 80' building is 16
+            // bays and 17 trusses, and it was being read as sixteen trusses.
+            // Both end trusses are gables, so the rest are typical.
+            var _nTruss=tp.length, _nGable=Math.min(2,_nTruss), _nTyp=_nTruss-_nGable;
             var _spLbl;
             if(_even && tp.length>7){
                 _chain(false, X(0)-34, [0,PLY], X,Y, FX, true);
-                _spLbl=(tp.length-1)+' @ '+FX(_gap)+' O.C.';
+                _spLbl=_nTruss+' TRUSSES @ '+FX(_gap)+' O.C.';
             } else {
                 _chain(false, X(0)-34, tp, X,Y, FX, true);
-                _spLbl='TRUSS SPACING';
+                _spLbl=_nTruss+' TRUSSES';
             }
             doc.setFont('helvetica','bold');doc.setFontSize(6.4);doc.setTextColor(110);
             doc.text(_spLbl,X(0)-52,Y(PLY/2)+doc.getTextWidth(_spLbl)/2,{angle:90});
@@ -26793,6 +26848,12 @@ function generatePostLayout() {
             doc.text('TRUSS, TYP.',X(PLX)+58,Y(tp[_ti])+2);
             doc.setFontSize(5.8);doc.setTextColor(110);
             doc.text('bearing on both eave walls',X(PLX)+58,Y(tp[_ti])+10);
+            // Spelled out so the count on the sheet and the count on the
+            // material list are read the same way.
+            doc.setFont('helvetica','bold');doc.setFontSize(6.2);doc.setTextColor(0);
+            doc.text(_nTruss+' TRUSSES TOTAL',X(PLX)+58,Y(tp[_ti])+24);
+            doc.setFont('helvetica','normal');doc.setFontSize(5.8);doc.setTextColor(110);
+            doc.text(_nGable+' gable end  +  '+_nTyp+' typical',X(PLX)+58,Y(tp[_ti])+32);
 
             doc.setFont('helvetica','bold');doc.setFontSize(6.4);doc.setTextColor(110);
             doc.text('FACING GABLE',X(PLX/2),Y(PLY)+30,{align:'center'});
@@ -26951,7 +27012,7 @@ function generatePostLayout() {
         // rather than 6.5pt grey on a hairline. Everything that is not a
         // measurement stays light so the numbers are what the eye lands on.
         var DIM_PT=9.5, DIM_SM=8;
-        function arrowH(doc,x1,x2,y,label,above,small){
+        function arrowH(doc,x1,x2,y,label,above,small,noLabel){
             var d=above?-1:1, fp=small?DIM_SM:DIM_PT;
             doc.setLineWidth(0.6);doc.setDrawColor(60);
             // shaft
@@ -26965,6 +27026,10 @@ function generatePostLayout() {
             // extension ticks
             doc.setLineWidth(0.5);
             doc.line(x1,y-3.5,x1,y+3.5);doc.line(x2,y-3.5,x2,y+3.5);
+            // The caller can ask for the geometry alone and place the number
+            // itself, which is how a chain of tight bays keeps its figures from
+            // landing on top of one another.
+            if(noLabel) return;
             // Knock a gap in the shaft so the number is not printed over the line.
             var tw=doc.getStringUnitWidth(label)*fp/doc.internal.scaleFactor;
             var cx=(x1+x2)/2;
@@ -27047,7 +27112,7 @@ function generatePostLayout() {
             // so each side needs the standoff plus about a cap height - not the
             // old 10% of the sheet, which on a wide building ate the drawing.
             var dimSpace=40;
-            var dimBelow = 18 + 34 + 34 + 20;             // grade line to sheet bottom: two chains, each captioned
+            var dimBelow = 32 + 42 + 22 + 20;             // grade line to sheet bottom: two chains, each captioned, room to stack tight figures
             var headRoom = 34;                            // subtitle + notes block
             var maxH = DA_H - dimBelow - headRoom;
             var maxW = DA_W - dimSpace*2;
@@ -27354,7 +27419,7 @@ function generatePostLayout() {
             // of the far corner - so it closes on posts out-to-out, which on a
             // wood truss is 3" shorter. Sheet D1 shows which face each starts
             // from. None of this moves a post; it only changes what prints.
-            var dimY1=yGrd+26, dimY2=dimY1+34;
+            var dimY1=yGrd+32, dimY2=dimY1+42;
             var _HP=_halfPost(wallId);
             var frameIn=faceFt*12-2*girtOff;
             function sxO(v){ return x0+(v/12)*sc; }                 // quoted frame
@@ -27394,11 +27459,43 @@ function generatePostLayout() {
             if(MIRROR) pch=pch.map(function(v){return frameIn-v;})
                               .sort(function(a,b){return a-b;});
 
+            // A bay whose figure will not fit between its own arrowheads gets
+            // the figure stacked clear of the line instead of printed over its
+            // neighbours: alternating above and below, pushed sideways if two
+            // on the same side would still touch, and tied back to the bay it
+            // belongs to with a leader. Nothing here moves a post or changes a
+            // number; it only changes where the number prints.
             function _dimRow(y,pts,X,cap){
-                for(var i=0;i<pts.length-1;i++)
-                    arrowH(doc,X(pts[i]),X(pts[i+1]),y,FX(pts[i+1]-pts[i]),false,true);
+                var fp=DIM_SM, segs=[];
+                doc.setFont('helvetica','bold');doc.setFontSize(fp);
+                for(var i=0;i<pts.length-1;i++){
+                    var xa=X(pts[i]), xb=X(pts[i+1]), lb=FX(pts[i+1]-pts[i]);
+                    var tw=doc.getStringUnitWidth(lb)*fp/doc.internal.scaleFactor;
+                    segs.push({xa:xa,xb:xb,lb:lb,tw:tw,fits:(Math.abs(xb-xa)>tw+14)});
+                }
+                // every shaft and arrowhead first, so no leader crosses one
+                segs.forEach(function(s){ arrowH(doc,s.xa,s.xb,y,s.lb,false,true,true); });
+                var lastUp=-1e9, lastDn=-1e9, up=true;
+                segs.forEach(function(s){
+                    var cx=(s.xa+s.xb)/2;
+                    if(s.fits){
+                        doc.setDrawColor(255);doc.setLineWidth(1.4);
+                        doc.line(cx-s.tw/2-3,y,cx+s.tw/2+3,y);
+                        doc.setFont('helvetica','bold');doc.setFontSize(fp);doc.setTextColor(0);
+                        doc.text(s.lb,cx,y+fp*0.32,{align:'center'});
+                        return;
+                    }
+                    var ly = up ? (y-10) : (y+12), lx = cx;
+                    if(up){ if(lx-s.tw/2 < lastUp+5) lx = lastUp+5+s.tw/2; lastUp = lx+s.tw/2; }
+                    else  { if(lx-s.tw/2 < lastDn+5) lx = lastDn+5+s.tw/2; lastDn = lx+s.tw/2; }
+                    doc.setDrawColor(150);doc.setLineWidth(0.4);
+                    doc.line(cx, up?y-3.5:y+3.5, lx, up?ly+2.5:ly-6.5);
+                    doc.setFont('helvetica','bold');doc.setFontSize(fp);doc.setTextColor(0);
+                    doc.text(s.lb,lx,ly,{align:'center'});
+                    up=!up;
+                });
                 doc.setFont('helvetica','normal');doc.setFontSize(6.4);doc.setTextColor(110);
-                doc.text(cap,(x0+x1)/2,y+17,{align:'center'});
+                doc.text(cap,(x0+x1)/2,y+22,{align:'center'});
             }
             _dimRow(dimY1,opn,sxO,'OPENING LAYOUT \u2014 PULLED FROM OUTSIDE OF '
                     +(girtOff?'GIRT':'POST')+'    closes on '+FX(faceFt*12));
@@ -27559,7 +27656,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M151-1119';
+window.SAUCE_BUILD = 'M156-1119';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
