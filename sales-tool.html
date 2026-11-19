@@ -27559,7 +27559,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M150-1119';
+window.SAUCE_BUILD = 'M151-1119';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -48505,19 +48505,22 @@ window.SauceMaterials.calculate = function(forcedType) {
   (function() {
     var cupolaDefaults = (window.SaucePriceDefaults || {}).cupola || {};
     var size = ((document.getElementById('qgCupolaSize')||{}).value||'').toString().trim();
+    if (!size) return;
     var qty  = parseInt((document.getElementById('qgCupolaQty')||{}).value||'1') || 1;
-    var cupolaPrices = {};
-    Object.keys(cupolaDefaults).forEach(function(k) { cupolaPrices[k] = priceForSku('CUPOLA' + k, cupolaDefaults[k]); });
-    if (size && cupolaPrices[size] != null) {
-      items.push({
-        category:    'Hardware',
-        description: 'Cupola ' + size + '"',
-        sku:         'CUPOLA' + size,
-        quantity:    qty,
-        fixedCost:   cupolaPrices[size] * qty,
-        detail:      size + '" cupola  |  qty ' + qty + '  |  $' + cupolaPrices[size].toFixed(2) + ' each'
-      });
-    }
+    // Standard cupolas are priced by size and roof pitch, so resolve the real
+    // order code first and fall back to the old generic code only if the map
+    // has nothing for this size.
+    var sku  = (typeof window.cupolaSkuFor === 'function') ? window.cupolaSkuFor(size, Q.pitch) : null;
+    var each = sku ? priceForSku(sku, cupolaDefaults[size])
+                   : priceForSku('CUPOLA' + size, cupolaDefaults[size]);
+    items.push({
+      category:    'Hardware',
+      description: 'Cupola ' + size + '"',
+      sku:         sku || ('CUPOLA' + size),
+      quantity:    qty,
+      fixedCost:   each * qty,
+      detail:      size + '" cupola  |  qty ' + qty + '  |  ' + String.fromCharCode(36) + each.toFixed(2) + ' each'
+    });
   })();
   items.push({ category: 'Hardware', description: 'Joist Hanger Nails', sku: 'JHNS1.255LB', quantity: 1, detail: 'always 1 box' });
   SM.calcJoistHangers(Q, window._shedConfigs||[]).forEach(function(item) { items.push(item); });
@@ -48825,6 +48828,34 @@ window.SaucePriceDefaults = {
   boardBattenPerFoot: 0
 };
 /* @SAUCE-PRICE-DEFAULTS-END */
+
+// ── CUPOLA SKUs ─────────────────────────────────────────────────────────────
+// The price book lists standard cupolas by size AND roof pitch, so the code the
+// tool prices against depends on both. Edit this map when the yard adds a size
+// or a pitch -- nothing below reads a cupola SKU from anywhere else.
+//   size (inches) -> roof pitch (x/12) -> SKU
+window.SauceCupolaSkus = {
+  '24': { '4': 'CUP244SMB' },
+  '30': {},                                  // no standard 30" cupola in the book
+  '36': { '4': 'CUP364SMB', '6': 'CUP366SMB' },
+  '48': { '4': 'CUP484SMB', '6': 'CUP486SMB' }
+};
+
+// Pick the SKU for a size at the building's pitch. An exact pitch match wins;
+// otherwise the closest pitch the book carries for that size is used, so an
+// 8/12 building still prices off the 6/12 cupola instead of landing at zero.
+window.cupolaSkuFor = function(size, pitch) {
+  try {
+    var byPitch = (window.SauceCupolaSkus || {})[String(size)] || {};
+    var keys = Object.keys(byPitch);
+    if (!keys.length) return null;
+    var p = parseFloat(pitch);
+    if (!isFinite(p)) p = 4;
+    if (byPitch[String(p)]) return byPitch[String(p)];
+    keys.sort(function(a, b) { return Math.abs(a - p) - Math.abs(b - p); });
+    return byPitch[keys[0]] || null;
+  } catch (e) { return null; }
+};
 
 // Look a SKU up in the loaded price list first; fall back to the embedded value
 // only when the list doesn't carry it. Returns 0 rather than a stale number, so
