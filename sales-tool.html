@@ -4369,7 +4369,14 @@ function buildTrussChips(){
 function buildPitchChips(){
   var wopts=[{val:4,label:'4/12'},{val:6,label:'6/12'},{val:8,label:'8/12'},{val:10,label:'10/12'}];
   var sopts=[{val:4,label:'4/12'},{val:6,label:'6/12'}];
-  var opts = cfgTruss==='Steel'?sopts:wopts;
+  // Red iron is a clear-span rigid frame and the frame is drawn at 2/12, so
+  // 2/12 is the only pitch offered. Without this the frame-type chip set the
+  // pitch to 2, this function found no 2/12 option and put it straight back to
+  // 4 -- the frame drew at 2/12 while the chip and the peak badge said 4/12.
+  var _riPitch=false;
+  try { _riPitch = (typeof currentFrameType!=='undefined' && currentFrameType==='redIron')
+                || (Q.frameType==='redIron'); } catch(e){}
+  var opts = _riPitch ? [{val:2,label:'2/12'}] : (cfgTruss==='Steel'?sopts:wopts);
   if(!opts.find(function(o){return o.val===Q.pitch;})){Q.pitch=opts[0].val;}
   chips('pitchChips',opts,function(){return Q.pitch;},function(v){Q.pitch=v;});
 }
@@ -16931,6 +16938,127 @@ function applyVoiceQuote(parsed, overlay) {
             [-HL,HL].forEach(function(z){ cplane([ -HW,0,z, HW,0,z, HW,HH,z, -HW,0,z, HW,HH,z, -HW,HH,z ], mWw);
               cplane([ -HW,HH,z, HW,HH,z, 0,RY,z ], mWw); });
 
+            // ── SIDE SHEDS, IN RED IRON ─────────────────────────────────────
+            // Everything above is built from Q.w/Q.l/Q.h alone, so a job with
+            // side sheds drew a bare box sitting in the middle of a slab poured
+            // for the whole footprint -- and the square footage the rate is
+            // charged on already counts the sheds. Each shed gets its own rigid
+            // frames here, bearing on the main frame line, at the same bay
+            // spacing, so the model matches what is being quoted.
+            //   left = -X   right = +X   front = -Z   back = +Z
+            (function _riSheds(){
+              var cfgs = window._shedConfigs || [];
+              if (!cfgs.length) return;
+              var RISE = 2/12;                    // red iron is always 2/12
+              var cW = 0.30*Sc, cD = 0.62*Sc;     // column section
+              var rW = 0.26*Sc, rD = 0.52*Sc;     // rafter section
+
+              // One rectangular member between two points, any direction.
+              function beam(x1,y1,z1, x2,y2,z2, wx,wy, mat){
+                var a=new THREE.Vector3(x1,y1,z1), b=new THREE.Vector3(x2,y2,z2);
+                var len=a.distanceTo(b); if(len<1e-5) return;
+                var m=new THREE.Mesh(new THREE.BoxGeometry(wx,wy,len), mat||mSteel);
+                m.position.copy(a).add(b).multiplyScalar(0.5);
+                m.quaternion.setFromUnitVectors(new THREE.Vector3(0,0,1),
+                                                b.clone().sub(a).normalize());
+                m.castShadow=true; frameGrp.add(m);
+              }
+              // Evenly spaced frame positions across a run, at the main bay pitch.
+              function runPos(a, b){
+                var span=Math.abs(b-a); if(span<1e-6) return [a];
+                var n=Math.max(1, Math.round(span/(bayFt*Sc))), out=[];
+                for(var i=0;i<=n;i++) out.push(a + (i/n)*(b-a));
+                return out;
+              }
+              // Purlin/girt run tying one frame line to the next.
+              function tie(pts, mk){
+                for(var i=0;i<pts.length-1;i++) mk(pts[i], pts[i+1]);
+              }
+
+              cfgs.forEach(function(sc){
+                try {
+                  var wall=sc.wall, proj=+sc.w||0, slen=+sc.l||0;
+                  if(!(proj>0) || !(slen>0)) return;
+                  var onEave=(wall==='left'||wall==='right');
+                  var sign=(wall==='right'||wall==='back') ? 1 : -1;
+                  var mainLen=onEave ? Q.l : Q.w;
+                  var face=(onEave ? Q.w/2 : Q.l/2);          // wall face, feet
+
+                  // centre of the shed along its wall, in feet from building centre
+                  var pos=sc.position||'center', offFt;
+                  if(slen>=mainLen) offFt=0;
+                  else if(pos==='start') offFt=0;
+                  else if(pos==='end') offFt=mainLen-slen;
+                  else if(pos==='custom') offFt=Math.max(0,Math.min(sc.offsetFt||0,mainLen-slen));
+                  else offFt=(mainLen-slen)/2;
+                  var ctr=(offFt + slen/2 - mainLen/2)*Sc;
+
+                  // A nested shed starts at its parent's outer edge, not the wall.
+                  var baseFt=0;
+                  if(sc.parentShedId!=null){
+                    var par=cfgs.filter(function(c){return c.id===sc.parentShedId;})[0];
+                    if(par && par.wall===wall) baseFt=+par.w||0;
+                  }
+                  var inFt=face+baseFt, outFt=face+baseFt+proj;
+                  var attachY=Math.max(0.01,(Q.h-(sc.dropFt||0)))*Sc;
+                  var isGable=(sc.type==='gable');
+
+                  if(!isGable){
+                    // ── LEAN-TO: outer column line, rafter back to the main frame
+                    var outY=Math.max(0.01*Sc, attachY - proj*((sc.ltPitch||1)/12)*Sc);
+                    var zs=runPos(ctr-slen/2*Sc, ctr+slen/2*Sc);
+                    var ai=sign*inFt*Sc, ao=sign*outFt*Sc;
+                    zs.forEach(function(p){
+                      if(onEave){
+                        beam(ao,0,p, ao,outY,p, cW,cD);
+                        beam(ai,attachY,p, ao,outY,p, rW,rD);
+                        if(baseFt>0) beam(ai,0,p, ai,attachY,p, cW,cD);
+                      } else {
+                        beam(p,0,ao, p,outY,ao, cD,cW);
+                        beam(p,attachY,ai, p,outY,ao, rD,rW);
+                        if(baseFt>0) beam(p,0,ai, p,attachY,ai, cD,cW);
+                      }
+                    });
+                    tie(zs,function(p,q){
+                      if(onEave) beam(ao,outY,p, ao,outY,q, 0.09*Sc,0.09*Sc, mGirt);
+                      else       beam(p,outY,ao, q,outY,ao, 0.09*Sc,0.09*Sc, mGirt);
+                    });
+                  } else {
+                    // ── GABLE: its own ridge, frames marching out from the wall
+                    var hs=slen/2*Sc;
+                    var ridgeY=attachY + (slen/2)*RISE*Sc;
+                    var xs=runPos(sign*inFt*Sc, sign*outFt*Sc);
+                    xs.forEach(function(p){
+                      if(onEave){
+                        // ridge runs outward along X, span across Z
+                        beam(p,0,ctr-hs, p,attachY,ctr-hs, cW,cD);
+                        beam(p,0,ctr+hs, p,attachY,ctr+hs, cW,cD);
+                        beam(p,attachY,ctr-hs, p,ridgeY,ctr, rW,rD);
+                        beam(p,attachY,ctr+hs, p,ridgeY,ctr, rW,rD);
+                      } else {
+                        // extension of the main gable, span across X
+                        beam(ctr-hs,0,p, ctr-hs,attachY,p, cD,cW);
+                        beam(ctr+hs,0,p, ctr+hs,attachY,p, cD,cW);
+                        beam(ctr-hs,attachY,p, ctr,ridgeY,p, rD,rW);
+                        beam(ctr+hs,attachY,p, ctr,ridgeY,p, rD,rW);
+                      }
+                    });
+                    tie(xs,function(a,b){
+                      if(onEave){
+                        beam(a,ridgeY,ctr, b,ridgeY,ctr, 0.09*Sc,0.09*Sc, mGirt);
+                        beam(a,attachY,ctr-hs, b,attachY,ctr-hs, 0.09*Sc,0.09*Sc, mGirt);
+                        beam(a,attachY,ctr+hs, b,attachY,ctr+hs, 0.09*Sc,0.09*Sc, mGirt);
+                      } else {
+                        beam(ctr,ridgeY,a, ctr,ridgeY,b, 0.09*Sc,0.09*Sc, mGirt);
+                        beam(ctr-hs,attachY,a, ctr-hs,attachY,b, 0.09*Sc,0.09*Sc, mGirt);
+                        beam(ctr+hs,attachY,a, ctr+hs,attachY,b, 0.09*Sc,0.09*Sc, mGirt);
+                      }
+                    });
+                  }
+                } catch(e){ try{ console.warn('[3D] red-iron shed skipped:', e.message); }catch(_){} }
+              });
+            })();
+
             // Build ONLY the active representation so the frame can never bleed through the
             // clad shell (and vice-versa). Toggling rebuilds, so this is always correct.
             if (RI.showFrame) grps.redIron.add(frameGrp);
@@ -23106,7 +23234,11 @@ function applyVoiceQuote(parsed, overlay) {
           grps.shed.visible      = !_riFrameView;
           grps.loft.visible      = false;
           grps.interior.visible  = false;
-          grps.doors.visible     = true;
+          // Door assemblies are post-frame carpentry - headers, jambs, tracks.
+          // In the clad view they sit in a finished wall and belong there; in
+          // the frame view there is no wall behind them, so they were left
+          // hanging in mid-air beside the steel.
+          grps.doors.visible     = !_riFrameView;
         }
         // Sync toggle button appearances
         (function() {
@@ -27656,7 +27788,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M156-1119';
+window.SAUCE_BUILD = 'M158-1119';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
