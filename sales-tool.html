@@ -3673,9 +3673,15 @@ function updateStripFromLocalCalc() {
   // Helper: materials subtotal for a variant
   var _missingSkuSet = {}; // deduped set of SKUs with no price — shared across all variants
   var _variantHasMissing = {}; // per-variant flag: forcedType -> true if any SKU is unpriced
+  // A SKU the book carries but prices at nothing is the quieter version of the
+  // same fault: the line is on the quote and contributes no money. It gets the
+  // same red total, so it cannot sit there unnoticed.
+  var _zeroSkuSet = {};
+  var _variantHasZero = {};
   function matForVariant(forcedType) {
     var total = 0;
     var hasMissing = false;
+    var hasZero = false;
     var _odMV = window._allDoors;
     if (!window._stepDoorPass) { window._allDoors = window._stepDoorScope().main; }
     try {
@@ -3687,13 +3693,19 @@ function updateStripFromLocalCalc() {
           if (_pack !== 'all' && window._keepForPack) {
             if (!window._keepForPack(item, _pack)) return;
           }
-          if (item.fixedCost != null) { total += item.fixedCost; return; }
+          if (item.fixedCost != null) {
+            if (item.fixedCost === 0 && item.sku) {
+              _zeroSkuSet[(item.sku||'').toUpperCase()] = true; hasZero = true;
+            }
+            total += item.fixedCost; return;
+          }
           var _pt = window.SauceMaterials._priceTable || {};
           var _skuKey = (item.sku||'').toUpperCase();
           var up = _pt[_skuKey];
           var _inTable = up != null;
           if (!_inTable || up === 0) {
-            if (item.sku && !_inTable) { _missingSkuSet[_skuKey] = true; hasMissing = true; }
+            if (item.sku && !_inTable)      { _missingSkuSet[_skuKey] = true; hasMissing = true; }
+            else if (item.sku && up === 0)  { _zeroSkuSet[_skuKey]    = true; hasZero    = true; }
             up = 0; return;
           }
           if (item.metalLength) {
@@ -3710,6 +3722,7 @@ function updateStripFromLocalCalc() {
     } catch(e) {}
     window._allDoors = _odMV;
     _variantHasMissing[forcedType] = hasMissing;
+    _variantHasZero[forcedType]    = hasZero;
     return total;
   }
 
@@ -3958,13 +3971,18 @@ function updateStripFromLocalCalc() {
       tot.textContent = grand > 0 ? fmtPriceFull(grand) : '—';
       tot.classList.remove('pending');
       if (grand > 0) tot.classList.add('highlight'); else tot.classList.remove('highlight');
-      // Red total if this variant has any unpriced SKUs
-      if (_variantHasMissing[v.forcedType]) {
+      // Red total if this variant has any unpriced SKUs, or any that priced at
+      // nothing -- both mean the figure on the strip is short by a real line.
+      if (_variantHasMissing[v.forcedType] || _variantHasZero[v.forcedType]) {
         tot.style.color = '#ef4444';
         tot.style.fontWeight = '900';
+        tot.title = _variantHasMissing[v.forcedType]
+          ? 'Some SKUs have no price on file — this total is incomplete.'
+          : 'Some lines priced at $0.00 — this total is short.';
       } else {
         tot.style.color = '';
         tot.style.fontWeight = '';
+        tot.title = '';
       }
     }
 
@@ -4023,6 +4041,7 @@ function updateStripFromLocalCalc() {
 
   // Store missing SKUs for downstream use (materials modal, etc.)
   window._missingPriceSKUs = Object.keys(_missingSkuSet || {});
+  window._zeroPriceSKUs    = Object.keys(_zeroSkuSet || {});
 
   try { if (window.refreshLaborPanel) window.refreshLaborPanel(); } catch(e) {}
 }
@@ -27991,7 +28010,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M162-1119';
+window.SAUCE_BUILD = 'M163-1120';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -41622,33 +41641,41 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
   var totalSqFt = allGDs.reduce(function(sum, d) { return sum + (d.w * d.h); }, 0);
   var miles     = window._cachedMileage || 0;
 
-  var rate, sku, detail;
-  var hasFullView = allGDs.some(function(d){ return d.fullView; });
-  if (hasFullView) {
-    // Full view glass doors — use GDC
-    sku = 'GDC';
-  } else if (miles <= 100) {
-    sku = 'GDIP<100MILES';
-  } else if (miles <= 150) {
-    sku = 'GDIP<150MILES';
-  } else if (miles <= 205) {
-    sku = 'GDIP<205MILES';
-  } else {
-    sku = 'GDIP>205MILES';
-  }
-  var _longHaul = (window.SauceRates ? window.SauceRates.v('shipping.longHaulPerMile') : 0);
-  rate = priceForSku(sku, 0);
-  if (miles <= 205) {
-    detail = (miles > 0 ? miles + ' mi  |  ' : '') + '$' + rate.toFixed(2) + '/sqft';
-  } else {
-    var extraMiles = miles - 205;
-    var extraFee   = extraMiles * _longHaul;
-    detail = miles + ' mi  |  $' + rate.toFixed(2) + '/sqft base + $' + _longHaul.toFixed(2) + ' × ' + extraMiles + ' extra mi ($' + extraFee.toFixed(2) + ' added)';
-  }
+  // The mileage SKUs, exactly as the price book spells them. Three of the four
+  // codes this read before -- GDIP<150MILES, GDIP<205MILES, GDIP>205MILES --
+  // are not in the book at all, so every job past 100 miles priced the install
+  // at zero. There is no over-205 code: that band bills the 150-205 rate and
+  // picks up the long-haul charge per mile beyond 205, which is what the rates
+  // in the note above this function always described.
+  var sku, detail;
+  if (miles <= 100)      sku = 'GDIP<100MILES';
+  else if (miles <= 150) sku = 'GDIP100-150MILES';
+  else                   sku = 'GDIP150-205MILES';
 
-  var baseCost  = totalSqFt * rate;
+  var _longHaul = (window.SauceRates ? window.SauceRates.v('shipping.longHaulPerMile') : 0);
+  var rate = priceForSku(sku, 0);
+
+  // Full view is an ADDER over the square footage, not a different rate. It
+  // used to swap the whole fee to GDC -- a custom-door code priced at zero --
+  // so a single full-view door wiped out the install fee for the whole job.
+  var _fvQty  = allGDs.filter(function(d){ return d.fullView; }).length;
+  var _fvEach = _fvQty ? priceForSku('GDIFV', 0) : 0;
+  var _fvCost = _fvEach * _fvQty;
+
+  // Minimum charge, from the rate profile so the yard can move it.
+  var _min = (window.SauceRates
+              ? window.SauceRates.v(miles <= 100 ? 'materials.gdInstallMinNear'
+                                                 : 'materials.gdInstallMinFar')
+              : 0) || 0;
+
+  var baseCost  = Math.max(_min, totalSqFt * rate);
   var extraCost = miles > 205 ? (miles - 205) * _longHaul : 0;
-  var total     = baseCost + extraCost;
+  var total     = baseCost + extraCost + _fvCost;
+
+  detail = (miles > 0 ? miles + ' mi  |  ' : '') + '$' + rate.toFixed(2) + '/sqft';
+  if (_min && totalSqFt * rate < _min) detail += '  |  $' + _min.toFixed(2) + ' minimum';
+  if (miles > 205) detail += '  |  + $' + _longHaul.toFixed(2) + ' × ' + (miles - 205) + ' mi over 205';
+  if (_fvQty)      detail += '  |  + $' + _fvEach.toFixed(2) + ' full view × ' + _fvQty;
 
   return [{
     category:    'Garage Doors',
@@ -49528,6 +49555,8 @@ window.SauceRates = (function() {
       gutterGuardPerFt: 0,   // gutter guard, per foot
       gutterMinCharge: 0,   // never bill less than this for gutters
       drumDoorMinCharge: 0,   // minimum charge for a drum door install
+      gdInstallMinNear: 0,   // panel garage door install minimum, under 100 mi
+      gdInstallMinFar: 0,   // panel garage door install minimum, 100 mi and beyond
       markupPct:         0,   // percentage added to every material price
       craneFee: 0,   // flat crane charge when one is needed
       highLiftPerDoor: 0,   // garage door high lift track, each
@@ -51086,6 +51115,7 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       gutterPerFt: 10.50, gutterGuardPerFt: 8.50, gutterMinCharge: 550,
       craneFee: 1850, highLiftPerDoor: 315, verticalTrackPerDoor: 315,
       drumDoorMinCharge: 325, scissorTrussEach: 34, atticTrussEach: 46,
+      gdInstallMinNear: 300, gdInstallMinFar: 350,
       markupPct: 8
     }
   };
@@ -53467,6 +53497,8 @@ window.concreteIncludes = function() {
       + _pcNum('materials.highLiftPerDoor',      'High lift track, each')
       + _pcNum('materials.verticalTrackPerDoor', 'Vertical track, each')
       + _pcNum('materials.drumDoorMinCharge',    'Drum door install minimum')
+      + _pcNum('materials.gdInstallMinNear',     'Garage door install minimum, under 100 mi')
+      + _pcNum('materials.gdInstallMinFar',      'Garage door install minimum, 100 mi and over')
       + _pcSection('Trusses & equipment')
       + _pcNum('materials.scissorTrussEach', 'Scissor truss upgrade, each')
       + _pcNum('materials.atticTrussEach',   'Attic truss upgrade, each')
@@ -59844,6 +59876,7 @@ window.openMaterialsModal = function(initialTab) {
     }
 
     var _missingPrices = []; // collect SKUs with no price for summary banner
+    var _zeroPrices    = []; // SKUs the book answered for, but with $0.00
 
     var sub = document.createElement('div');
     sub.style.cssText = 'font-size:10px;color:#666;margin-bottom:8px;';
@@ -60080,8 +60113,19 @@ window.openMaterialsModal = function(initialTab) {
           row.style.background = 'rgba(239,68,68,.06)';
         } else if (lineTotal != null) {
           var isOverridden = (item._ovUnit != null);
+          // A line that prices at exactly zero is not a free item -- it is a
+          // SKU the price book answered for with nothing, or one the tool asked
+          // for under a name the book does not carry. It used to print $0.00 in
+          // the same green as a real figure and disappear into the list, so it
+          // gets the same red treatment as a SKU with no price at all.
+          var _zeroPrice = (lineTotal === 0);
+          if (_zeroPrice) {
+            _zeroPrices.push(item.sku || item.description);
+            row.style.background = 'rgba(239,68,68,.06)';
+          }
           var totSpan = document.createElement('span');
-          totSpan.style.cssText = 'color:' + (isOverridden ? '#f59e0b' : '#4ade80') + ';font-weight:700;font-size:11px;display:block;' + (isSignedInModal && item.fixedCost == null ? 'cursor:pointer;text-decoration:underline dotted;' : '');
+          totSpan.style.cssText = 'color:' + (_zeroPrice ? '#ef4444' : (isOverridden ? '#f59e0b' : '#4ade80')) + ';font-weight:700;font-size:11px;display:block;' + (isSignedInModal && item.fixedCost == null ? 'cursor:pointer;text-decoration:underline dotted;' : '');
+          totSpan.title = _zeroPrice ? ('No price on file for ' + (item.sku || item.description) + ' — it is costing nothing on this quote.') : '';
           totSpan.textContent = '$' + lineTotal.toFixed(2) + (isOverridden ? ' ✎' : '');
           if (isSignedInModal && item.fixedCost == null) {
             (function(captItem, captUnit) {
@@ -60160,6 +60204,25 @@ window.openMaterialsModal = function(initialTab) {
       missingBanner.appendChild(missingIcon);
       missingBanner.appendChild(missingText);
       body.appendChild(missingBanner);
+    }
+
+    // Zero-price banner — the quieter failure. The SKU was found, the book
+    // answered, and the answer was nothing, so the line adds no money to the
+    // quote while looking exactly like a line that does.
+    if (_zeroPrices.length > 0) {
+      var zeroBanner = document.createElement('div');
+      zeroBanner.style.cssText = 'display:flex;align-items:flex-start;gap:10px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.35);border-radius:8px;padding:10px 14px;margin:8px 0 4px;';
+      var zeroIcon = document.createElement('div');
+      zeroIcon.style.cssText = 'font-size:16px;line-height:1;margin-top:1px;flex-shrink:0;color:#ef4444;';
+      zeroIcon.textContent = '!';
+      var zeroText = document.createElement('div');
+      zeroText.style.cssText = 'font-size:11px;color:#ef4444;';
+      zeroText.innerHTML = '<strong style="font-weight:800;">' + _zeroPrices.length + ' item'
+        + (_zeroPrices.length > 1 ? 's' : '') + ' priced at $0.00</strong> — adding nothing to the total.<br>'
+        + '<span style="color:#f87171;font-size:10px;">' + _zeroPrices.join('&nbsp;&nbsp;') + '</span>';
+      zeroBanner.appendChild(zeroIcon);
+      zeroBanner.appendChild(zeroText);
+      body.appendChild(zeroBanner);
     }
 
     // Custom Adders section
