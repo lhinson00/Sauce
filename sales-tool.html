@@ -21383,26 +21383,44 @@ function applyVoiceQuote(parsed, overlay) {
                 if (hideBW) _p.userData.hideBehindWall = true;
                 grps.shed.add(_p);
             }
-            // Place eave posts along Z at _ssAX (high) and _ssRX (low)
-            var _ssNumBays = Math.floor(Q.l / (Q.eavePS||Q.postSpacing||10));
-            for (var _ssi=0; _ssi<=_ssNumBays; _ssi++) {
-                var _ssZp = _ssZ1i + (_ssi/_ssNumBays)*(sl);
-                // High eave (left) — exposed only where that wall is open
-                _ssAddPost(_ssAX, ssHiH - 0.015, _ssZp, _ssLeftOpen ? mPopen : mPencl, !_ssLeftOpen);
-                // Low eave (right) — same rule
-                _ssAddPost(_ssRX, ssLoH - 0.015, _ssZp, _ssRightOpen ? mPopen : mPencl, !_ssRightOpen);
+            // Where the posts actually go, asked of the same function the whole
+            // rest of the tool asks -- the material list, the post sheet, the
+            // footings. This used to divide the wall by a GLOBAL spacing, so a
+            // single slope could not show a per-wall spacing or a hand-set run
+            // at all: both eaves came out on one even grid no matter what the
+            // panel said, and the quote and the model disagreed.
+            function _ssPostFts(wid, fallbackPS, wallLen) {
+                try {
+                    var SM = window.SauceMaterials;
+                    if (SM && SM.getPostsForWall) {
+                        var l = SM.getPostsForWall(wid, Q, (wallCfgs || WALLS || []), (window._allDoors || [])) || [];
+                        if (l.length) return l.map(function(p){ return p.ft; });
+                    }
+                } catch(e) {}
+                var step = fallbackPS || 10, out = [], n = Math.floor(wallLen / step);
+                for (var i = 0; i <= n; i++) out.push(Math.min(i * step, wallLen));
+                if (out[out.length - 1] < wallLen - 0.01) out.push(wallLen);
+                return out;
             }
+            // High eave (left) — exposed only where that wall is open
+            _ssPostFts('left', (Q.eavePS || Q.postSpacing), Q.l).forEach(function(ft){
+                _ssAddPost(_ssAX, ssHiH - 0.015, _ssZ1i + ft * Sc,
+                           _ssLeftOpen ? mPopen : mPencl, !_ssLeftOpen);
+            });
+            // Low eave (right) — same rule, read from its own wall
+            _ssPostFts('right', (Q.eavePS || Q.postSpacing), Q.l).forEach(function(ft){
+                _ssAddPost(_ssRX, ssLoH - 0.015, _ssZ1i + ft * Sc,
+                           _ssRightOpen ? mPopen : mPencl, !_ssRightOpen);
+            });
 
             // ── GABLE END POSTS ───────────────────────────────────────────────
             // Enclosed gable ends: corner posts at hi/lo heights + intermediate posts
             // across the width at gable post spacing (same as enclosed lean-to extension)
-            var _ssGablePS = (Q.gablePS || Q.postSpacing || 10) * Sc;
-            var _ssNumGableBays = Math.max(1, Math.round(sw / _ssGablePS));
-
-            function _ssGableEndPosts(gz, hideBW) {
-                // Step across width from high eave (_ssAX) to low eave (_ssRX)
-                for (var _gi = 0; _gi <= _ssNumGableBays; _gi++) {
-                    var _gx = _ssAX + (_gi / _ssNumGableBays) * sw;
+            function _ssGableEndPosts(gz, hideBW, wid) {
+                // Across the width, off that gable wall's own post line
+                var _fts = _ssPostFts(wid, (Q.gablePS || Q.postSpacing), Q.w);
+                _fts.forEach(function(ft, _gi) {
+                    var _gx = _ssAX + ft * Sc;
                     // Post height grades linearly from ssHiH (left) to ssLoH (right)
                     var _gh = ssHiH + (_gx - _ssAX) / sw * (ssLoH - ssHiH);
                     // Cap 0.015 below roof plane so posts don't pierce the roof panel
@@ -21413,12 +21431,12 @@ function applyVoiceQuote(parsed, overlay) {
                     _pg.userData = _pg.userData || {};
                     if (hideBW) _pg.userData.hideBehindWall = true;
                     grps.shed.add(_pg);
-                }
+                });
             }
             // These rows are only drawn on a CLOSED gable end, so they are
             // always standing inside finished metal.
-            if (!_ssFrontOpen) _ssGableEndPosts(_ssZ1i, true);
-            if (!_ssBackOpen)  _ssGableEndPosts(_ssZ2i, true);
+            if (!_ssFrontOpen) _ssGableEndPosts(_ssZ1i, true, 'front');
+            if (!_ssBackOpen)  _ssGableEndPosts(_ssZ2i, true, 'back');
 
             // ── SNOOT on HIGH/OPEN EAVE ────────────────────────────────────────
             // Always 4' snoot at 7/12 pitch. Outer edge drops 4*(7/12) below high eave.
@@ -28214,7 +28232,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M173-1123';
+window.SAUCE_BUILD = 'M174-1123';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
