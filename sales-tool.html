@@ -4395,7 +4395,16 @@ function buildPitchChips(){
   var _riPitch=false;
   try { _riPitch = (typeof currentFrameType!=='undefined' && currentFrameType==='redIron')
                 || (Q.frameType==='redIron'); } catch(e){}
-  var opts = _riPitch ? [{val:2,label:'2/12'}] : (cfgTruss==='Steel'?sopts:wopts);
+  // A single slope is drawn at 1/12 and nothing else -- the roof geometry has
+  // the figure hardcoded. The chips went on offering 4/12 and 6/12, so the
+  // panel read 4/12 on a building whose roof was never anything but 1/12 and a
+  // salesman had no way to know. The material list does not read the pitch on a
+  // single slope, so this changes what is shown, not what is quoted.
+  var _ssPitch=false;
+  try { _ssPitch = (Q.roofStyle === 'single'); } catch(e){}
+  var opts = _riPitch ? [{val:2,label:'2/12'}]
+           : _ssPitch ? [{val:1,label:'1/12'}]
+           : (cfgTruss==='Steel'?sopts:wopts);
   if(!opts.find(function(o){return o.val===Q.pitch;})){Q.pitch=opts[0].val;}
   chips('pitchChips',opts,function(){return Q.pitch;},function(v){Q.pitch=v;});
 }
@@ -4733,12 +4742,28 @@ function postSpacingSpecStr(){
     if (inch === 12) { ft += 1; inch = 0; }
     return inch === 0 ? (ft + "'") : (ft + "' " + inch + '"');
   }
+  // A wall laid out by hand is not on any one spacing, so reporting its
+  // postSpacing described a 20-20-10 run as plain 10' o.c. -- on the quote, the
+  // PDF and the email. Where a hand-set line exists, the bays are read back off
+  // it and printed as they are.
+  function baysOf(id){
+    var w = ww.find(function(x){ return x.id===id; });
+    var m = w && w.postsManual;
+    if (!Array.isArray(m) || m.length < 2) return null;
+    var v = m.map(parseFloat).filter(function(n){ return isFinite(n); }).sort(function(a,b){ return a-b; });
+    if (v.length < 2) return null;
+    var out=[]; for (var i=1;i<v.length;i++) out.push(fmtPS(v[i]-v[i-1]));
+    // all equal is just a spacing, so say it the short way
+    if (out.every(function(s){ return s===out[0]; })) return out[0];
+    return out.join(' / ');
+  }
   var eFb = Qd.eavePS || Qd.postSpacing || 10, gFb = Qd.gablePS || Qd.postSpacing || 10;
   var L = psOf('left', eFb), R = psOf('right', eFb), F = psOf('front', gFb), B = psOf('back', gFb);
-  var Lf = fmtPS(L), Rf = fmtPS(R), Ff = fmtPS(F), Bf = fmtPS(B);
-  if (L===R && F===B && L===F) return Lf + " on center";
-  var eave  = (L===R) ? ("Eaves " + Lf)  : ("Left Eave " + Lf + "  Right Eave " + Rf);
-  var gable = (F===B) ? ("Gables " + Ff) : ("Front Gable " + Ff + "  Back Gable " + Bf);
+  var Lf = baysOf('left')  || fmtPS(L), Rf = baysOf('right') || fmtPS(R);
+  var Ff = baysOf('front') || fmtPS(F), Bf = baysOf('back')  || fmtPS(B);
+  if (Lf===Rf && Ff===Bf && Lf===Ff) return Lf + " on center";
+  var eave  = (Lf===Rf) ? ("Eaves " + Lf)  : ("Left Eave " + Lf + "  Right Eave " + Rf);
+  var gable = (Ff===Bf) ? ("Gables " + Ff) : ("Front Gable " + Ff + "  Back Gable " + Bf);
   return eave + "   |   " + gable + "  (on center)";
 }
 
@@ -28008,9 +28033,24 @@ function generatePostLayout(quiet) {
             // These used to sit at the bottom: the post-spacing callout started
             // at x0 and sat 4pt off the width dimension, so it landed on that
             // dimension's left tick and ran into its label.
-            var ps=((WALLS||[]).find(function(w){return w.id===wallId;})||{}).postSpacing||Q.postSpacing||10;
+            // A wall laid out by hand has no single spacing. Printing its
+            // postSpacing called a 20-20-10 wall 10'-0" O.C. on the very sheet
+            // the builder sets it out from, with the dimension string below
+            // showing something else entirely.
+            var _wCfgN=((WALLS||[]).find(function(w){return w.id===wallId;})||{});
+            var ps=_wCfgN.postSpacing||Q.postSpacing||10;
+            var _psTxt=FX(ps*12)+' O.C.';
+            (function(){
+                var m=_wCfgN.postsManual;
+                if(!Array.isArray(m)||m.length<2) return;
+                var v=m.map(parseFloat).filter(function(n){return isFinite(n);}).sort(function(a,b){return a-b;});
+                if(v.length<2) return;
+                var bays=[]; for(var i=1;i<v.length;i++) bays.push(FX((v[i]-v[i-1])*12));
+                if(bays.every(function(s){return s===bays[0];})) { _psTxt=bays[0]+' O.C.'; return; }
+                _psTxt=bays.join(' / ');
+            })();
             var notes=[
-                'POST SPACING  '+FX(ps*12)+' O.C.',
+                'POST SPACING  '+_psTxt,
                 'ROOF PITCH  '+pitch+'/12',
                 'WALL HEIGHT  '+FX(bh*12)
             ];
@@ -28146,7 +28186,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M167-1123';
+window.SAUCE_BUILD = 'M169-1123';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
