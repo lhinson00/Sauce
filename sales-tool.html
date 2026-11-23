@@ -5411,7 +5411,10 @@ function spaceDoorsEvenly(wallId) {
   doors.sort(function(a,b){return (a.offset||0)-(b.offset||0);});
   var totalDoorW = doors.reduce(function(sum,d){return sum+(d.w||10);}, 0);
   var totalGap = wall.len - totalDoorW;
-  if (totalGap < 0) return;
+  // Nothing fits, so the spacing is left alone -- but the item was still
+  // added, and bailing out here skipped the rebuild and the reprice with it,
+  // leaving the quote on a figure from before it existed.
+  if (totalGap < 0) { refreshOpenings(); scheduleBuild(); return; }
   var gap = totalGap / (doors.length + 1);
   var cursor = gap;
   doors.forEach(function(d){
@@ -5457,7 +5460,10 @@ function spaceDoorsTallestCenter(wallId) {
   // Even spacing across the wall in the new order
   var totalDoorW = slots.reduce(function(s,d){return s+(d.w||10);}, 0);
   var totalGap = wall.len - totalDoorW;
-  if (totalGap < 0) return;
+  // Nothing fits, so the spacing is left alone -- but the item was still
+  // added, and bailing out here skipped the rebuild and the reprice with it,
+  // leaving the quote on a figure from before it existed.
+  if (totalGap < 0) { refreshOpenings(); scheduleBuild(); return; }
   var gap = totalGap / (n + 1);
   var cursor = gap;
   slots.forEach(function(door){
@@ -5474,7 +5480,10 @@ function spaceWindowsEvenly(wallId) {
   wins.sort(function(a,b){return (a.offset||0)-(b.offset||0);});
   var totalW = wins.reduce(function(sum,d){return sum+winDims(d.type).w;}, 0);
   var totalGap = wall.len - totalW;
-  if (totalGap < 0) return;
+  // Nothing fits, so the spacing is left alone -- but the item was still
+  // added, and bailing out here skipped the rebuild and the reprice with it,
+  // leaving the quote on a figure from before it existed.
+  if (totalGap < 0) { refreshOpenings(); scheduleBuild(); return; }
   var gap = totalGap / (wins.length + 1);
   var cursor = gap;
   wins.forEach(function(d){
@@ -16827,6 +16836,23 @@ function applyVoiceQuote(parsed, overlay) {
             if (!_wdO) continue;
             _wdO.userData = _wdO.userData || {};
             if (!_wdO.userData.sRole) _wdO.userData.sRole = 'walkDoor';
+            // The wall ribs carry a negative polygon offset so they beat the
+            // wall panel behind them. A walk door stands barely an inch and a
+            // half proud of that same wall, so at any distance the ribs won
+            // against the door as well and struck through its face -- the
+            // striping that came and went as the model turned. The door is
+            // pulled further forward in depth than the ribs are, so the
+            // hierarchy is panel, then ribs, then door, at every angle.
+            try {
+                var _wdM = _wdO.material;
+                (Array.isArray(_wdM) ? _wdM : [_wdM]).forEach(function(mm){
+                    if (!mm) return;
+                    mm.polygonOffset = true;
+                    mm.polygonOffsetFactor = -6;
+                    mm.polygonOffsetUnits  = -6;
+                    mm.needsUpdate = true;
+                });
+            } catch(e) {}
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -17482,7 +17508,13 @@ function applyVoiceQuote(parsed, overlay) {
             window._spPart = 'rakeTrim';
             const rakeH = 0.04;       // face height of the rake trim board
             const rakeEps = 0.006;    // nudge outboard of the gable plane to avoid z-fighting
-            const mRake = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide });
+            // Six tenths of an inch is not enough on its own: the gable ribs are
+            // polygon-offset toward the camera to beat the wall panel, and that
+            // bias beats this nudge as soon as the camera backs off, which is
+            // why the rake striped at a distance and cleared up close. Same
+            // hierarchy as the walk door -- trim is pulled in front of the ribs.
+            const mRake = new THREE.MeshBasicMaterial({ color: pc(trimColorName), side: THREE.DoubleSide,
+                polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
             const _rakeFront = !(shedCfgs||[]).some(function(s){return s.type==='gable'&&s.wall==='front';});
             const _rakeBack  = !(shedCfgs||[]).some(function(s){return s.type==='gable'&&s.wall==='back';});
             const _rxL = -sw/2 - ohE, _rxR = sw/2 + ohE; // eave corners (incl. eave overhang)
@@ -28010,7 +28042,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M163-1120';
+window.SAUCE_BUILD = 'M165-1123';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -34100,6 +34132,7 @@ async function doAddressLookup(addrOverride) {
   }
 
   // Apply results
+  var _prevMiles        = parseFloat(_cachedMileage) || 0;
   _cachedMileage        = mileage;
   window._cachedMileage = mileage;
   try { if (window.syncLongMileageRow) window.syncLongMileageRow(); } catch(e) {}
@@ -34125,6 +34158,22 @@ async function doAddressLookup(addrOverride) {
 
   try { updateStripFromLocalCalc(); } catch(e) {}
   try { if (window._MatBuilder && window._MatBuilder._refreshShip) window._MatBuilder._refreshShip(); } catch(e) {}
+
+  // The distance lands after the quote has already been priced once, so every
+  // figure that reads it -- the garage door install band above all -- was
+  // worked out before it arrived. Refreshing the strip alone left the rest
+  // stale, which is why touching any unrelated control appeared to fix it. A
+  // distance that actually changed now runs the same path a real edit runs, so
+  // the quote is right the moment the lookup returns and not one click later.
+  if (mileage !== _prevMiles) {
+    try { scheduleBuild(); } catch(e) {}
+    try {
+      if (document.getElementById('sauceMaterialsModal') && window._matActiveKey) {
+        window.openMaterialsModal(window._matActiveKey);
+      }
+    } catch(e) {}
+    try { if (window._concreteModalRefresh) window._concreteModalRefresh(); } catch(e) {}
+  }
 }
 
 function onInsulationChange() {
@@ -41672,7 +41721,17 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
   var extraCost = miles > 205 ? (miles - 205) * _longHaul : 0;
   var total     = baseCost + extraCost + _fvCost;
 
+  // The band is chosen from the driving distance, and that distance comes from
+  // a geocode plus a routing call. When either fails the distance stays 0 and
+  // every job quietly bills the under-100 rate -- the cheapest one -- with
+  // nothing on the line to say so. If an address has been entered and the
+  // distance still did not resolve, say it on the line and flag it.
+  var _addr = '';
+  try { _addr = ((document.getElementById('st_address')||{}).value || '').trim(); } catch(e) {}
+  var _noDist = (miles <= 0 && _addr.length >= 5);
+
   detail = (miles > 0 ? miles + ' mi  |  ' : '') + '$' + rate.toFixed(2) + '/sqft';
+  if (_noDist) detail = 'DISTANCE NOT SET — billed at the under-100 mi rate  |  $' + rate.toFixed(2) + '/sqft';
   if (_min && totalSqFt * rate < _min) detail += '  |  $' + _min.toFixed(2) + ' minimum';
   if (miles > 205) detail += '  |  + $' + _longHaul.toFixed(2) + ' × ' + (miles - 205) + ' mi over 205';
   if (_fvQty)      detail += '  |  + $' + _fvEach.toFixed(2) + ' full view × ' + _fvQty;
@@ -41683,6 +41742,7 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
     sku:         sku,
     quantity:    totalSqFt,
     fixedCost:   total,
+    _suspect:    _noDist ? 'Distance did not resolve, so this is billed at the under-100 mile rate.' : null,
     detail:      totalSqFt + ' sqft  |  ' + detail
   }];
 };
@@ -59877,6 +59937,7 @@ window.openMaterialsModal = function(initialTab) {
 
     var _missingPrices = []; // collect SKUs with no price for summary banner
     var _zeroPrices    = []; // SKUs the book answered for, but with $0.00
+    var _suspectLines  = []; // priced, but on an assumption worth checking
 
     var sub = document.createElement('div');
     sub.style.cssText = 'font-size:10px;color:#666;margin-bottom:8px;';
@@ -60123,9 +60184,16 @@ window.openMaterialsModal = function(initialTab) {
             _zeroPrices.push(item.sku || item.description);
             row.style.background = 'rgba(239,68,68,.06)';
           }
+          // A line that priced, but off an assumption the tool had to make.
+          var _suspect = (!_zeroPrice && item._suspect) ? item._suspect : null;
+          if (_suspect) {
+            _suspectLines.push(item.description);
+            row.style.background = 'rgba(245,158,11,.07)';
+          }
           var totSpan = document.createElement('span');
-          totSpan.style.cssText = 'color:' + (_zeroPrice ? '#ef4444' : (isOverridden ? '#f59e0b' : '#4ade80')) + ';font-weight:700;font-size:11px;display:block;' + (isSignedInModal && item.fixedCost == null ? 'cursor:pointer;text-decoration:underline dotted;' : '');
-          totSpan.title = _zeroPrice ? ('No price on file for ' + (item.sku || item.description) + ' — it is costing nothing on this quote.') : '';
+          totSpan.style.cssText = 'color:' + (_zeroPrice ? '#ef4444' : (_suspect ? '#f59e0b' : (isOverridden ? '#f59e0b' : '#4ade80'))) + ';font-weight:700;font-size:11px;display:block;' + (isSignedInModal && item.fixedCost == null ? 'cursor:pointer;text-decoration:underline dotted;' : '');
+          totSpan.title = _zeroPrice ? ('No price on file for ' + (item.sku || item.description) + ' — it is costing nothing on this quote.')
+                        : (_suspect || '');
           totSpan.textContent = '$' + lineTotal.toFixed(2) + (isOverridden ? ' ✎' : '');
           if (isSignedInModal && item.fixedCost == null) {
             (function(captItem, captUnit) {
@@ -60223,6 +60291,22 @@ window.openMaterialsModal = function(initialTab) {
       zeroBanner.appendChild(zeroIcon);
       zeroBanner.appendChild(zeroText);
       body.appendChild(zeroBanner);
+    }
+
+    // Priced, but off an assumption the tool had to make — amber, not red.
+    if (_suspectLines.length > 0) {
+      var susBanner = document.createElement('div');
+      susBanner.style.cssText = 'display:flex;align-items:flex-start;gap:10px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.35);border-radius:8px;padding:10px 14px;margin:8px 0 4px;';
+      var susIcon = document.createElement('div');
+      susIcon.style.cssText = 'font-size:16px;line-height:1;margin-top:1px;flex-shrink:0;color:#f59e0b;';
+      susIcon.textContent = '!';
+      var susText = document.createElement('div');
+      susText.style.cssText = 'font-size:11px;color:#f59e0b;';
+      susText.innerHTML = '<strong style="font-weight:800;">Check the distance</strong> — the job address did not return a driving distance, so these are billed at the nearest-mileage rate.<br>'
+        + '<span style="color:#fcd34d;font-size:10px;">' + _suspectLines.join('&nbsp;&nbsp;') + '</span>';
+      susBanner.appendChild(susIcon);
+      susBanner.appendChild(susText);
+      body.appendChild(susBanner);
     }
 
     // Custom Adders section
