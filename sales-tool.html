@@ -1815,7 +1815,7 @@ body.customer-mode #stab_specs { display: block !important; }
             <div style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Left Eave Spacing</div>
             <div class="chip-row" id="psLeftEaveChips"></div>
             <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
-              <input id="psLeftEaveCustom" type="text" placeholder="custom: 4 bays or 11'" title="Type a bay COUNT (4) or a target spacing (11'). The eave is divided into equal bays; lumber lengths are figured from the result. Applies to both eaves." oninput="setEaveCustomPS('left',this.value)" style="flex:1;min-width:0;font-size:11px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-family:Outfit,sans-serif;">
+              <input id="psLeftEaveCustom" type="text" placeholder="custom: 4 bays or 11'" title="Type a bay COUNT (4), a target spacing (11'), or an uneven run such as 20-20-10 (steel truss only, must add up to the wall). Applies to this eave only." oninput="setEaveCustomPS('left',this.value)" style="flex:1;min-width:0;font-size:11px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-family:Outfit,sans-serif;">
               <span id="psLeftEaveOut" style="font-size:10px;color:var(--muted);font-weight:700;white-space:nowrap;"></span>
             </div>
           </div>
@@ -1823,7 +1823,7 @@ body.customer-mode #stab_specs { display: block !important; }
             <div style="font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Right Eave Spacing</div>
             <div class="chip-row" id="psRightEaveChips"></div>
             <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
-              <input id="psRightEaveCustom" type="text" placeholder="custom: 4 bays or 11'" title="Type a bay COUNT (4) or a target spacing (11'). The eave is divided into equal bays; lumber lengths are figured from the result. Applies to both eaves." oninput="setEaveCustomPS('right',this.value)" style="flex:1;min-width:0;font-size:11px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-family:Outfit,sans-serif;">
+              <input id="psRightEaveCustom" type="text" placeholder="custom: 4 bays or 11'" title="Type a bay COUNT (4), a target spacing (11'), or an uneven run such as 20-20-10 (steel truss only, must add up to the wall). Applies to this eave only." oninput="setEaveCustomPS('right',this.value)" style="flex:1;min-width:0;font-size:11px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);font-family:Outfit,sans-serif;">
               <span id="psRightEaveOut" style="font-size:10px;color:var(--muted);font-weight:700;white-space:nowrap;"></span>
             </div>
           </div>
@@ -4631,12 +4631,56 @@ function suggestBaySpacing(len) {
 function setEaveCustomPS(side, raw){
   var out=document.getElementById(side==='left'?'psLeftEaveOut':'psRightEaveOut');
   var len=Q.l;
-  function apply(v){ ['left','right'].forEach(function(id){ var w=WALLS.find(function(x){return x.id===id;}); if(w) w.postSpacing=v; }); Q.eavePS=v; Q.postSpacing=v; }
+  var wSelf = WALLS.find(function(x){return x.id===side;});
+  var other = (side==='left') ? 'right' : 'left';
+  var wOther= WALLS.find(function(x){return x.id===other;});
+  // This box used to write both eave walls at once, so one eave could never be
+  // set without dragging the other along with it. It now writes its own wall
+  // only -- and pins the far eave to the spacing it is already running on, so
+  // that one does not drift when the shared fallback changes underneath it.
+  function pinOther(){ if(wOther && !wOther.postSpacing) wOther.postSpacing = Q.eavePS || Q.postSpacing || 10; }
+  function applySelf(v){ pinOther(); if(wSelf){ wSelf.postSpacing=v; delete wSelf.postsManual; delete wSelf.postsManualPs; } }
+
   if(!String(raw||'').trim()){
     // cleared — fall back to nearest chip value already selected
+    if(wSelf){ delete wSelf.postsManual; delete wSelf.postsManualPs; }
     if(out) out.textContent='';
     scheduleBuild(); try{updateStripFromLocalCalc();}catch(e){} return;
   }
+
+  // ── An uneven run, written bay by bay: "20-20-10", or commas if you prefer.
+  // Split on dashes and commas only -- a space is left alone so "11' 9"" is
+  // still read as one measurement and not as two bays.
+  var _parts = String(raw).split(/[,\-+]/).map(function(s){return s.trim();}).filter(function(s){return s.length;});
+  if (_parts.length >= 2) {
+    var bays=[], bad=false;
+    _parts.forEach(function(p){ var f=_ftIn(p); if(isNaN(f)||f<=0) bad=true; else bays.push(f); });
+    if (bad) { if(out){ out.textContent='?'; out.style.color='#c00'; } return; }
+    var sum = bays.reduce(function(a,c){return a+c;},0);
+    if (Math.abs(sum-len) > 0.02) {
+      // Say what is wrong rather than quietly laying out the wrong wall.
+      if(out){ out.style.color='#c00';
+        out.textContent = fmtFtIn(sum)+' of '+fmtFtIn(len)+(sum<len ? '  (short '+fmtFtIn(len-sum)+')' : '  (over '+fmtFtIn(sum-len)+')'); }
+      return;
+    }
+    // Hand-set post lines are honoured on steel truss only, the same rule the
+    // post layout editor runs under. Saying so beats laying out a wall that
+    // then quietly reverts to even bays.
+    if (String(Q.truss||'').toLowerCase() !== 'steel') {
+      if(out){ out.style.color='#c00'; out.textContent='steel truss only'; }
+      return;
+    }
+    var pts=[0], run=0;
+    bays.forEach(function(bv){ run+=bv; pts.push(Math.round(run*100)/100); });
+    pinOther();
+    if(wSelf){ wSelf.postsManual = pts; wSelf.postsManualPs = bays[0]; }
+    if(out){ out.style.color='var(--muted)';
+      out.textContent = bays.length+' bays  '+bays.map(function(bv){return fmtFtIn(bv);}).join(' / '); }
+    try{ buildPSChips(); }catch(e){}
+    scheduleBuild(); try{updateStripFromLocalCalc();}catch(e){}
+    return;
+  }
+
   var v=_ftIn(raw);
   if(isNaN(v)||v<=0){ if(out){out.textContent='?';out.style.color='#c00';} return; }
   // Small bare integer (<=12, no ' or ") = BAY COUNT; otherwise a target spacing.
@@ -4644,7 +4688,7 @@ function setEaveCustomPS(side, raw){
   var n = isCount ? Math.round(v) : Math.max(1, Math.round(len/v));
   if(n<1) n=1;
   var spacing = len/n;
-  apply(spacing);
+  applySelf(spacing);
   if(out){ out.style.color='var(--muted)'; out.textContent=n+' bays @ '+fmtFtIn(spacing); }
   try{ buildPSChips(); }catch(e){}
   scheduleBuild(); try{updateStripFromLocalCalc();}catch(e){}
@@ -10765,7 +10809,12 @@ function vpTogglePosts() {
   // Reveal/hide ONLY the posts behind fully-enclosed walls. Open-wall, interior,
   // and shed posts stay visible (exposed structural members).
   _hiddenPostsShown = !_hiddenPostsShown;
-  if (d.grps.mainPosts && d.grps.mainPosts.children) {
+  // A single slope builds its own posts and keeps the generic ones hidden, so
+  // forcing this group on would put a second set of posts on the building --
+  // the two sets do not stand in the same place, which read as posts outside
+  // the wall.
+  var _ssPosts = ((window._Q || {}).roofStyle === 'single');
+  if (d.grps.mainPosts && d.grps.mainPosts.children && !_ssPosts) {
     d.grps.mainPosts.visible = true;
     d.grps.mainPosts.children.forEach(function(ch) {
       ch.visible = (ch.userData && ch.userData.hideBehindWall) ? _hiddenPostsShown : true;
@@ -10773,8 +10822,8 @@ function vpTogglePosts() {
   }
   // Sheds always show their exposed structural posts; the ones buried in a
   // walled-in attachment follow the toggle, same as the main building's.
-  d.grps.posts.visible = true;
-  if (d.grps.posts.children) {
+  if (!_ssPosts) d.grps.posts.visible = true;
+  if (d.grps.posts.children && !_ssPosts) {
     var _scfgT = window._shedConfigs || [];
     d.grps.posts.traverse(function(ch){
       if (!ch.isMesh) return;
@@ -10784,6 +10833,15 @@ function vpTogglePosts() {
                         && (sc.enclWalls || []).indexOf('outer') >= 0
                         && !(sc.enclFt != null && parseFloat(sc.enclFt) < sc.l));
       ch.visible = enclosed ? _hiddenPostsShown : true;
+    });
+  }
+  // A single slope keeps its posts in grps.shed, which this never reached, so
+  // the button did nothing for them. Same rule as above: only the ones flagged
+  // as standing inside a finished wall follow the toggle.
+  if (d.grps.shed && d.grps.shed.children) {
+    d.grps.shed.traverse(function(ch){
+      if (!ch.isMesh) return;
+      if (ch.userData && ch.userData.hideBehindWall) ch.visible = _hiddenPostsShown;
     });
   }
   try { window._footXray(window._footXrayState()); } catch(e){}
@@ -14468,6 +14526,19 @@ function applyVoiceQuote(parsed, overlay) {
         const postH = postsOnTop ? sh - _pBaseH : sh;
         function _hsPostH(zScene){ if(!_hsOn) return postH; var _e=_hsEaveFtAtCenter(zScene/Sc)*Sc; return postsOnTop ? (_e - _pBaseH) : _e; }
 
+        // A single slope is ONE plane running from the high eave (left, -X) down
+        // to the low eave (right, +X) at 1/12. Posts were being sized with the
+        // gable formula, which climbs to a ridge in the middle of the building
+        // -- a ridge a single slope does not have -- so the middle posts stood
+        // taller than the whole roof and came straight out through it. Returns
+        // the plane height, in feet, over any x.
+        function _ssTopFt(xScene){
+          var _f = (xScene + sw / 2) / Math.max(1e-6, sw);
+          _f = Math.max(0, Math.min(1, _f));
+          return (Q.h || 0) - _f * ((Q.w || 0) / 12);
+        }
+        function _ssPostH(xScene){ return _ssTopFt(xScene) * Sc - postBase; }
+
         // Bracket materials
         const mBracket = new THREE.MeshBasicMaterial({ color: 0x8A9098, side: THREE.DoubleSide });
         const mBracketDark = new THREE.MeshBasicMaterial({ color: 0x5A6268 });
@@ -14548,7 +14619,16 @@ function applyVoiceQuote(parsed, overlay) {
             // edge. Trim each post to the panel's underside over its own
             // footprint, measured at the outermost corner - the lowest point the
             // panel reaches above that post.
-            if (!Q.roofStyle || Q.roofStyle === 'gable') {
+            if (Q.roofStyle === 'single') {
+                // Same rule on a single slope, measured against its one plane
+                // rather than a gable's two. The outermost corner of the post
+                // footprint toward the LOW eave is where the panel sits lowest
+                // over that post, so that is what it has to clear.
+                const _outS = x + ps / 2;
+                const _underS = (Q.h * Sc - 0.01) - ((_outS + sw / 2) / Math.max(1e-6, sw)) * ((Q.w / 12) * Sc) - 0.002;
+                const _topS = postBase + h;
+                if (_topS > _underS && _topS - _underS < 0.06) h = _underS - postBase;
+            } else if (!Q.roofStyle || Q.roofStyle === 'gable') {
                 const _outX = Math.abs(x) + ps / 2;
                 const _under = (sh - 0.01) + (sw / 2 - _outX) * ((Q.pitch || 4) / 12) - 0.002;
                 const _top = postBase + h;
@@ -14819,7 +14899,7 @@ function applyVoiceQuote(parsed, overlay) {
                         const mPeave = (wCfg && wCfg.encl === 'open') ? mPopen : mPencl;
                         var _inOpenRun = false;
                         if (wCfg && (parseFloat(wCfg.openLenFt)||0) > 0) { var _oRS = parseFloat(wCfg.openStartFt)||0, _oRE = _oRS + (parseFloat(wCfg.openLenFt)||0); _inOpenRun = (post.ft >= _oRS - 0.01 && post.ft <= _oRE + 0.01); }
-                        addMainPost(xSide, z, _hsPostH(z), _inOpenRun ? mPopen : mPeave, ((wCfg && wCfg.encl === 'enclosed') && !_inOpenRun) || (_inOpenRun && wCfg && wCfg._insetOpen));
+                        addMainPost(xSide, z, (isSingleSlope ? _ssPostH(xSide) : _hsPostH(z)), _inOpenRun ? mPopen : mPeave, ((wCfg && wCfg.encl === 'enclosed') && !_inOpenRun) || (_inOpenRun && wCfg && wCfg._insetOpen));
                     }
                 });
             });
@@ -14849,7 +14929,9 @@ function applyVoiceQuote(parsed, overlay) {
                     if (_shedCoveredCorners.has(key)) return; // hidden behind shed gable cap
                     postPositions.add(key);
                     const distC = Math.abs(post.ft - Q.w / 2);
-                    const pH = (((_hsOn ? (wallId==='front'?_hsSecs[0].h:_hsSecs[_hsSecs.length-1].h) : Q.h) + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc) - postBase;
+                    const pH = isSingleSlope
+                        ? _ssPostH(xPos)
+                        : (((_hsOn ? (wallId==='front'?_hsSecs[0].h:_hsSecs[_hsSecs.length-1].h) : Q.h) + (Q.w / 2 - distC) * (Q.pitch / 12)) * Sc) - postBase;
                     var _gInOpen = (_goLen > 0 && post.ft >= _goS - 1e-6 && post.ft <= _goE + 1e-6);
                     const mPgable = (_gInOpen || (wCfg && wCfg.encl === 'open')) ? mPopen : mPencl;
                     addMainPost(xPos, zPos, pH, mPgable, ((!_gInOpen && wCfg && wCfg.encl === 'enclosed')) || (_gInOpen && wCfg && wCfg._insetOpen));
@@ -15596,12 +15678,14 @@ function applyVoiceQuote(parsed, overlay) {
             }
         });
         if (isSingleSlope) {
-            // Side-shed posts land in grps.posts / grps.mainPosts, which are hidden for single
-            // slope (those groups also hold wrong-height main-gable posts). Re-parent ONLY the
-            // shed posts just added into grps.shed — the visible single-slope group.
+            // Posts used to be re-parented into grps.shed here, because the main
+            // post groups were hidden outright on a single slope. grps.shed is
+            // always on and carries no hide-behind-wall flag, so every post it
+            // received showed straight through a finished wall. The posts are
+            // sized to the slope plane now and the main groups are no longer
+            // hidden, so they stay where they were built and follow the same
+            // Show Posts rule as every other roof. The de-dup still runs.
             (function(){ var _arr=grps.posts.children, _st=_ssShedPostStart||0, _seen={}, _dupes=[]; for(var _i=_st;_i<_arr.length;_i++){ var _p=_arr[_i]; var _k=Math.round(_p.position.x*250)+'|'+Math.round(_p.position.z*250); if(_seen[_k]) _dupes.push(_p); else _seen[_k]=1; } _dupes.forEach(function(_p){ grps.posts.remove(_p); }); })();
-            grps.posts.children.slice(_ssShedPostStart).forEach(function(o){ grps.shed.add(o); });
-            grps.mainPosts.children.slice(_ssShedMainPostStart).forEach(function(o){ grps.shed.add(o); });
         }
         _activePerma = _permaMode; // sheds done — remaining posts follow the main building's Post Base
 
@@ -21232,22 +21316,28 @@ function applyVoiceQuote(parsed, overlay) {
             // ── EAVE POSTS ────────────────────────────────────────────────────
             // Spaced per eave post spacing. Both ends always get a post.
             var _ssPosSet = new Set();
-            function _ssAddPost(xPos, h, zPos, mat) {
+            // A post standing inside a finished wall is not visible on the real
+            // building, so it carries the same flag every other roof style uses
+            // and stays down until Show Posts is pressed. Without it a single
+            // slope drew every post straight through its own metal.
+            function _ssAddPost(xPos, h, zPos, mat, hideBW) {
                 var _key = Math.round(xPos*1000)+','+Math.round(zPos*1000);
                 if (_ssPosSet.has(_key)) return;
                 _ssPosSet.add(_key);
                 var _p = new THREE.Mesh(new THREE.BoxGeometry(ps,h,ps), mat);
                 _p.position.set(xPos, h/2, zPos); _p.castShadow=true;
+                _p.userData = _p.userData || {};
+                if (hideBW) _p.userData.hideBehindWall = true;
                 grps.shed.add(_p);
             }
             // Place eave posts along Z at _ssAX (high) and _ssRX (low)
             var _ssNumBays = Math.floor(Q.l / (Q.eavePS||Q.postSpacing||10));
             for (var _ssi=0; _ssi<=_ssNumBays; _ssi++) {
                 var _ssZp = _ssZ1i + (_ssi/_ssNumBays)*(sl);
-                // High eave (left) — structural posts always render
-                _ssAddPost(_ssAX, ssHiH - 0.015, _ssZp, mPopen);
-                // Low eave (right) — structural posts always render (open/closed affects walls, not posts)
-                _ssAddPost(_ssRX, ssLoH - 0.015, _ssZp, _ssRightOpen ? mPopen : mPencl);
+                // High eave (left) — exposed only where that wall is open
+                _ssAddPost(_ssAX, ssHiH - 0.015, _ssZp, _ssLeftOpen ? mPopen : mPencl, !_ssLeftOpen);
+                // Low eave (right) — same rule
+                _ssAddPost(_ssRX, ssLoH - 0.015, _ssZp, _ssRightOpen ? mPopen : mPencl, !_ssRightOpen);
             }
 
             // ── GABLE END POSTS ───────────────────────────────────────────────
@@ -21256,7 +21346,7 @@ function applyVoiceQuote(parsed, overlay) {
             var _ssGablePS = (Q.gablePS || Q.postSpacing || 10) * Sc;
             var _ssNumGableBays = Math.max(1, Math.round(sw / _ssGablePS));
 
-            function _ssGableEndPosts(gz) {
+            function _ssGableEndPosts(gz, hideBW) {
                 // Step across width from high eave (_ssAX) to low eave (_ssRX)
                 for (var _gi = 0; _gi <= _ssNumGableBays; _gi++) {
                     var _gx = _ssAX + (_gi / _ssNumGableBays) * sw;
@@ -21267,11 +21357,15 @@ function applyVoiceQuote(parsed, overlay) {
                     var _gmat = (_gi === 0) ? mPopen : mPencl;
                     var _pg = new THREE.Mesh(new THREE.BoxGeometry(ps, _gh, ps), _gmat);
                     _pg.position.set(_gx, _gh/2, gz); _pg.castShadow = true;
+                    _pg.userData = _pg.userData || {};
+                    if (hideBW) _pg.userData.hideBehindWall = true;
                     grps.shed.add(_pg);
                 }
             }
-            if (!_ssFrontOpen) _ssGableEndPosts(_ssZ1i);
-            if (!_ssBackOpen)  _ssGableEndPosts(_ssZ2i);
+            // These rows are only drawn on a CLOSED gable end, so they are
+            // always standing inside finished metal.
+            if (!_ssFrontOpen) _ssGableEndPosts(_ssZ1i, true);
+            if (!_ssBackOpen)  _ssGableEndPosts(_ssZ2i, true);
 
             // ── SNOOT on HIGH/OPEN EAVE ────────────────────────────────────────
             // Always 4' snoot at 7/12 pitch. Outer edge drops 4*(7/12) below high eave.
@@ -23247,10 +23341,20 @@ function applyVoiceQuote(parsed, overlay) {
         if (typeof _trussesVisible  !== 'undefined') { grps.trusses.visible = _trussesVisible; }
         if (typeof _postsVisible    !== 'undefined') {
           if (isSingleSlope) {
-            // Single slope: posts live in grps.shed; main building posts wrong height
-            grps.mainPosts.visible = false;
+            // Single slope builds its own posts, into grps.shed. That group was
+            // simply switched on and off whole, so a post inside a finished
+            // wall showed through the metal and the Show Posts button turned
+            // the lot off instead of revealing the hidden ones. The posts carry
+            // the hide-behind-wall flag now, so the rule here is the same one
+            // every other roof style uses: exposed posts always show, the ones
+            // buried in a wall wait for the toggle.
+            grps.mainPosts.visible = false;   // single slope's posts are not these
             grps.posts.visible     = false;
-            grps.shed.visible      = _postsVisible;
+            grps.shed.visible      = true;
+            if (grps.shed.children) grps.shed.traverse(function(ch){
+              if (!ch.isMesh) return;
+              if (ch.userData && ch.userData.hideBehindWall) ch.visible = _hiddenPostsShown;
+            });
           } else {
           // Posts behind FULLY enclosed walls are hidden on load; open-wall &
           // interior posts always show. The Posts toggle reveals the hidden ones.
@@ -28042,7 +28146,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M165-1123';
+window.SAUCE_BUILD = 'M167-1123';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
