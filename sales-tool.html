@@ -28186,7 +28186,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M169-1123';
+window.SAUCE_BUILD = 'M172-1123';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -41845,7 +41845,13 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
   else if (miles <= 150) sku = 'GDIP100-150MILES';
   else                   sku = 'GDIP150-205MILES';
 
-  var _longHaul = (window.SauceRates ? window.SauceRates.v('shipping.longHaulPerMile') : 0);
+  // The over-205 charge is its own SKU, GDIM -- "MILEAGE ABOVE 205 MILES,
+  // $6.00 PER MILE" -- and it bills as its own line, one unit per mile past
+  // 205, so the yard sees the code and the mile count rather than a lump
+  // folded into the install fee. It used to read a rate-profile value that is
+  // zero until somebody fills it in, so the distance charge came to nothing on
+  // every long job. As an ordinary priced line it needs no fallback: if GDIM
+  // has no price the line says so in red, like any other unpriced SKU.
   var rate = priceForSku(sku, 0);
 
   // Full view is an ADDER over the square footage, not a different rate. It
@@ -41862,8 +41868,7 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
               : 0) || 0;
 
   var baseCost  = Math.max(_min, totalSqFt * rate);
-  var extraCost = miles > 205 ? (miles - 205) * _longHaul : 0;
-  var total     = baseCost + extraCost + _fvCost;
+  var total     = baseCost + _fvCost;   // mileage over 205 bills on its own GDIM line
 
   // The band is chosen from the driving distance, and that distance comes from
   // a geocode plus a routing call. When either fails the distance stays 0 and
@@ -41877,10 +41882,10 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
   detail = (miles > 0 ? miles + ' mi  |  ' : '') + '$' + rate.toFixed(2) + '/sqft';
   if (_noDist) detail = 'DISTANCE NOT SET — billed at the under-100 mi rate  |  $' + rate.toFixed(2) + '/sqft';
   if (_min && totalSqFt * rate < _min) detail += '  |  $' + _min.toFixed(2) + ' minimum';
-  if (miles > 205) detail += '  |  + $' + _longHaul.toFixed(2) + ' × ' + (miles - 205) + ' mi over 205';
+  if (miles > 205) detail += '  |  mileage over 205 on GDIM below';
   if (_fvQty)      detail += '  |  + $' + _fvEach.toFixed(2) + ' full view × ' + _fvQty;
 
-  return [{
+  var _out = [{
     category:    'Garage Doors',
     description: 'Garage Door Install Fee',
     sku:         sku,
@@ -41889,6 +41894,20 @@ window.SauceMaterials.calcGarageDoorInstall = function(allDoors) {
     _suspect:    _noDist ? 'Distance did not resolve, so this is billed at the under-100 mile rate.' : null,
     detail:      totalSqFt + ' sqft  |  ' + detail
   }];
+
+  // One unit per mile past 205, priced like any other SKU, so the yard reads
+  // the code and the mile count and the per-mile rate follows the price list.
+  if (miles > 205) {
+    var _over = Math.round(miles - 205);
+    if (_over > 0) _out.push({
+      category:    'Garage Doors',
+      description: 'Install Mileage Over 205',
+      sku:         'GDIM',
+      quantity:    _over,
+      detail:      miles + ' mi  |  ' + _over + ' mi past 205  |  per mile'
+    });
+  }
+  return _out;
 };
 
 
