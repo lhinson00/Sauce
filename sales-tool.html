@@ -28308,7 +28308,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M184-1124';
+window.SAUCE_BUILD = 'M185-1124';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -29328,8 +29328,33 @@ async function uploadGalleryPhoto(file) {
 }
 
 // Upsert a quote row to Supabase
-async function sbSaveQuote(snap) {
-  if (_previewBlocked('saving a quote')) return false;
+// Quote ids used to be the last four base-36 digits of the Unix second:
+//     Math.floor(Date.now()/1000).toString(36).slice(-4)
+// Four base-36 digits cover 1,679,616 seconds, so the whole id space came
+// round again every 19.44 days, and two quotes saved in the same second got
+// the same id as well. The write was an upsert, so a clash wrote silently over
+// the older quote. Random digits of the same shape and length, plus a database
+// that refuses a clash rather than merging it, is what makes that impossible.
+function _mintQuoteId() {
+  var abc = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', out = '';
+  var buf = null;
+  try {
+    if (window.crypto && window.crypto.getRandomValues) {
+      buf = new Uint32Array(4); window.crypto.getRandomValues(buf);
+    }
+  } catch (e) { buf = null; }
+  for (var i = 0; i < 4; i++) {
+    var n = buf ? buf[i] : Math.floor(Math.random() * 4294967296);
+    out += abc.charAt(n % 36);
+  }
+  return 'QS-' + (new Date().getFullYear()) + '-' + out;
+}
+window._mintQuoteId = _mintQuoteId;
+
+async function sbSaveQuote(snap, opts) {
+  // Previewing another company used to return false here, which the caller read
+  // as a successful save -- so the PDF went out linking to a row nobody wrote.
+  if (_previewBlocked('saving a quote')) throw new Error('saving is disabled while previewing another company');
   var row = {
     id:              snap.quoteId || snap.quoteID || '',
     date:            snap.timestamp ? snap.timestamp.substring(0,10).replace(/-/g,'/') : new Date().toLocaleDateString('en-US'),
@@ -29355,9 +29380,28 @@ async function sbSaveQuote(snap) {
     updated_at:      new Date().toISOString()
   };
   if (!row.id) { console.warn('[SB] sbSaveQuote: no quoteId'); return null; }
-  var result = await sbFetch('quotes?on_conflict=id', { method: 'POST', body: JSON.stringify(row),
+  // An overwrite is meant to land on top of the row it loaded, so it merges. A
+  // NEW quote is not: without on_conflict the database answers a clash with 409
+  // instead of quietly writing over somebody else's quote, and the caller mints
+  // another id and tries again.
+  var _ow   = !!(opts && opts.overwrite);
+  var _path = _ow ? 'quotes?on_conflict=id' : 'quotes';
+  var _pref = _ow ? 'resolution=merge-duplicates,return=minimal' : 'return=minimal';
+  var result = await sbFetch(_path, { method: 'POST', body: JSON.stringify(row),
     headers: { 'Authorization': _sbAuthHeader(),
-               'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' } });
+               'Content-Type': 'application/json', 'Prefer': _pref } });
+
+  // sbFetch answers null for every refusal and records why in _sbLastError.
+  // Nothing read it. That is how a quote could fail to save while the tool went
+  // on to print a PDF whose 3-D link pointed at a row that was never written --
+  // the customer clicked it and got a default building.
+  if (result === null) {
+    var _se = window._sbLastError || {};
+    throw new Error(_se.status
+      ? ('the database refused it (' + _se.status + ')'
+         + (_se.body ? ' - ' + String(_se.body).replace(/\s+/g, ' ').slice(0, 200) : ''))
+      : 'the database could not be reached');
+  }
 
   // Auto-upsert follow-up — only if customer has email and not already sent/closed
   if (snap.email) {
@@ -31273,13 +31317,11 @@ async function saveSalesQuote(overwriteMode) {
     // 5. Save snapshot — generate ID client-side so Supabase doesn't depend on GAS response
     var _isOverwrite = (overwriteMode === 'overwrite' && window._loadedQuoteId);
     var _saveAction  = _isOverwrite ? 'updateQuoteSnapshot' : 'saveQuoteSnapshot';
-    var _clientId    = _isOverwrite ? window._loadedQuoteId : (function(){
-      var yr  = new Date().getFullYear();
-      var sfx = Math.floor(Date.now() / 1000).toString(36).slice(-4).toUpperCase();
-      return 'QS-' + yr + '-' + sfx;
-    }());
+    var _clientId    = _isOverwrite ? window._loadedQuoteId : _mintQuoteId();
     snapshot.quoteId = _clientId;
-    window._savedQuoteId = _clientId;
+    // _savedQuoteId is set further down, once the row is actually in the
+    // database. Setting it here is what let a refused save still produce a PDF
+    // with a short link to a quote that does not exist.
 
     // Capture 4 building snapshots for CRM display
     var _capturedSnaps = null;
@@ -31318,8 +31360,30 @@ async function saveSalesQuote(overwriteMode) {
     // Save main row — snapshots excluded to keep payload lean
     var _sbSnap = Object.assign({}, snapshot, { quoteId: _clientId });
     delete _sbSnap.snapshots;
-    try { await sbSaveQuote(_sbSnap); console.log('[SB] save complete'); }
-    catch(e) { console.warn('[SB] save failed:', e); throw new Error('Save failed: ' + e.message); }
+    // A clash on a new quote is decided by the database, not guessed at here.
+    // Mint another id and try again rather than writing over the other quote.
+    var _saved = false, _saveErr = '';
+    for (var _try = 0; _try < 5 && !_saved; _try++) {
+      _sbSnap.quoteId = _clientId;
+      snapshot.quoteId = _clientId;
+      try {
+        await sbSaveQuote(_sbSnap, { overwrite: _isOverwrite });
+        _saved = true;
+      } catch (e) {
+        var _st = (window._sbLastError || {}).status;
+        if (!_isOverwrite && _st === 409) { _clientId = _mintQuoteId(); continue; }
+        _saveErr = (e && e.message) ? e.message : String(e);
+        break;
+      }
+    }
+    if (!_saved) {
+      window._savedQuoteId = null;
+      console.warn('[SB] save failed:', _saveErr);
+      // The caller's alert already says 'Save failed', so this carries the reason only.
+      throw new Error(_saveErr || 'five id clashes in a row');
+    }
+    window._savedQuoteId = _clientId;
+    console.log('[SB] save complete', _clientId);
 
     // Save snapshots separately
     if (_capturedSnaps) {
