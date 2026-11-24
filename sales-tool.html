@@ -28308,7 +28308,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M182-1124';
+window.SAUCE_BUILD = 'M184-1124';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -28843,34 +28843,69 @@ window.sendPromoEmails = async function () {
   if (!picks.length) { alert('No customers selected.'); return; }
   if (!confirm('Send the promo email to ' + picks.length + ' customer(s)?')) return;
   var tmpl = (document.getElementById('pmMsg') || {}).value || '';
+  var subj = (((document.getElementById('pmSubject') || {}).value) || '').trim()
+             || 'A Special Offer';
   var btn = document.getElementById('pmSendBtn'), st = document.getElementById('pmStatus');
   btn.disabled = true;
-  var ok = 0, fail = 0;
+
+  // The flyer is read once, not per recipient. Its own type goes with it, so a
+  // PNG arrives as a PNG rather than as a PDF that will not open.
+  var attachments = [];
+  if (window._promoAttach && window._promoAttach.b64) {
+    attachments.push({
+      filename:    window._promoAttach.name || 'Flyer.pdf',
+      content:     window._promoAttach.b64,
+      contentType: window._promoAttach.mime || ''
+    });
+  }
+  function esc(t) {
+    return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  var ok = 0, fail = 0, lastErr = '';
   for (var i = 0; i < picks.length; i++) {
     var o = picks[i];
     st.textContent = 'Sending ' + (i + 1) + ' of ' + picks.length + '...';
     var msg = tmpl.replace(/\{name\}/g, o.r.name || 'there')
                   .replace(/\{specs\}/g, o.r.specs || '')
                   .replace(/\{sqft\}/g, o.sqft.toLocaleString());
+    var link = toolBaseUrl() + '?view=1&loadQuote=' + encodeURIComponent(o.r.id);
     try {
-      var res = await fetch(API_URL, {
-        method: 'POST', headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify({ action: 'sendPromoBlast',
-          customerEmail: o.r.email, customerName: o.r.name || '',
-          customMessage: msg,
-          subject: (((document.getElementById('pmSubject') || {}).value) || '').trim(),
-          viewLink: toolBaseUrl() + '?view=1&loadQuote=' + encodeURIComponent(o.r.id),
-          username: (window.currentUser || {}).username || '', token: getToken(),
-          extraAttachmentBase64: (window._promoAttach && window._promoAttach.b64) || '',
-          extraAttachmentName:   (window._promoAttach && window._promoAttach.name) || '',
-          extraAttachmentMime:   (window._promoAttach && window._promoAttach.mime) || '' })
-      });
-      var j = await res.json();
-      if (j && j.success) ok++; else fail++;
-    } catch (e) { fail++; }
+      // Same function the quotes go through, so one sign-in covers both. No
+      // info sheet on a promotion, and no copy back to the sending account --
+      // one quote is worth filing, forty-five of the same flyer is not.
+      var j = await sbFunction('send-email', {
+        to:          o.r.email,
+        subject:     subj,
+        text:        msg + '\n\n' + link,
+        html:        esc(msg).replace(/\n/g, '<br>')
+                     + '<br><br><a href="' + esc(link) + '">View your building</a>',
+        extras:      attachments,
+        includeInfo: false,
+        selfCopy:    false
+      }, 90000);
+      if (j && j.success) { ok++; }
+      else {
+        fail++;
+        lastErr = (j && (j.error || j.message)) || 'no answer from send-email';
+        console.warn('[promo] failed for', o.r.email, '->', lastErr);
+      }
+    } catch (e) {
+      fail++;
+      lastErr = (e && e.message) ? e.message : 'network error';
+      console.warn('[promo] threw for', o.r.email, '->', lastErr);
+    }
+    // Three in a row with nothing sent means the next forty will fail the same
+    // way. Stopping keeps the daily send quota intact for when it is fixed.
+    if (ok === 0 && fail >= 3) {
+      st.textContent = 'Stopped after ' + fail + ' failures - ' + lastErr;
+      st.style.color = '#c00';
+      btn.disabled = false;
+      return;
+    }
     await new Promise(function (r) { setTimeout(r, 900); });
   }
-  st.textContent = 'Done - ' + ok + ' sent' + (fail ? ', ' + fail + ' failed' : '');
+  st.textContent = 'Done - ' + ok + ' sent' + (fail ? ', ' + fail + ' failed - ' + lastErr : '');
+  st.style.color = fail ? '#c00' : '#666';
   btn.disabled = false;
 };
 
