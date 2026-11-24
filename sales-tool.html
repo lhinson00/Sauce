@@ -3950,6 +3950,12 @@ function updateStripFromLocalCalc() {
     var gcFeeOn = !!(document.getElementById('st_gcFee')||{}).checked;
     var gcFeeAmt = gcFeeOn ? (matWithMft + tax + labor + conc + shipAmt + esdAmt) * 0.15 : 0;
     var grand  = matWithMft + tax + labor + conc + shipAmt + esdAmt + gcFeeAmt;
+    // A running promotion comes off the finished total and prints as its own
+    // line. Nothing above this point moves: same material list, same labor,
+    // same tax on the same materials subtotal.
+    var _promo    = (window.SaucePromo ? window.SaucePromo.forTotal(grand, v.forcedType) : null);
+    var _promoAmt = _promo ? _promo.amount : 0;
+    if (_promoAmt > 0) grand = grand - _promoAmt;
     // Note: manualAdder (st_manualAdder) intentionally excluded — material adders
     // are already included in matWithMft via matAdderAmt to avoid double-counting.
 
@@ -3986,6 +3992,30 @@ function updateStripFromLocalCalc() {
       }
     }
 
+    // A discounted total that looks like any other total is the dangerous one:
+    // the salesman quotes it and then takes the promotion off a second time by
+    // hand. The badge sits under the figure and names the amount already gone.
+    (function() {
+      if (!tot || !tot.parentNode) return;
+      var _bid = v.prefix + 'promoBadge';
+      var _bd  = document.getElementById(_bid);
+      if (_promoAmt > 0) {
+        if (!_bd) {
+          _bd = document.createElement('div');
+          _bd.id = _bid;
+          _bd.style.cssText = 'font-size:9px;font-weight:800;letter-spacing:.3px;color:#0b0b0b;'
+            + 'background:#fbbf24;border-radius:4px;padding:1px 5px;margin:3px auto 0;'
+            + 'white-space:nowrap;text-align:center;width:fit-content;font-family:Outfit,sans-serif;';
+          tot.parentNode.insertBefore(_bd, tot.nextSibling);
+        }
+        _bd.textContent = _promo.badge;
+        _bd.style.display = '';
+        tot.title = _promo.note;
+      } else if (_bd) {
+        _bd.style.display = 'none';
+      }
+    })();
+
     // Store into _lastPrice* so PDF/email can read them
     // Keys match GAS results format: materialOnly, labor, concrete, esd, shipping, tax, total
     var priceObj = {
@@ -3998,6 +4028,8 @@ function updateStripFromLocalCalc() {
       shipping:     shipAmt > 0 ? fmtPriceFull(shipAmt) : '',
       esd:          esdAmt > 0 ? fmtPriceFull(esdAmt) : '',
       mft:          mft,
+      promoAmt:     _promoAmt,
+      promoName:    _promo ? _promo.name : '',
       _source:      'local'
     };
     if (v.prefix === 'ps_')  window._lastPriceOH      = priceObj;
@@ -24919,7 +24951,8 @@ async function generateQuotePDF() {
                 r.esd, r.shipping, r.tax, r.manualAdders];
     var visRows = (_singleTotalPdf || r.lumpSum) ? 0
                 : rows.filter(function(v){ return fmtAmt(v); }).length + _cl.length;
-    return 22 + visRows*18 + 24 + (parseFloat(String(r.materialOnly||0).replace(/[^0-9.]/g,''))>0 ? 20 : 0) + 12;
+    var _prH = ((parseFloat(r.promoAmt || 0) > 0) && !_singleTotalPdf && !r.lumpSum) ? 18 : 0;
+    return 22 + visRows*18 + 24 + (parseFloat(String(r.materialOnly||0).replace(/[^0-9.]/g,''))>0 ? 20 : 0) + 12 + _prH;
   }
 
   function priceBlock(entry, yPos) {
@@ -24959,6 +24992,16 @@ async function generateQuotePDF() {
       doc.setFont('helvetica','bold'); setTxt(col.navy);
       doc.text('$' + Math.round(n).toLocaleString('en-US'), MG+bodyW-8, yPos+12, {align:'right'});
       yPos += 18; idx++;
+    }
+    // Promotion, on its own line, so the customer can see what came off rather
+    // than being handed a total that quietly disagrees with the rate sheet.
+    var _prAmt = parseFloat(String(r.promoAmt || 0).replace(/[^0-9.]/g,'')) || 0;
+    if (_prAmt > 0 && !_singleTotalPdf && !r.lumpSum) {
+      setFill(col.lightGray); doc.rect(MG, yPos, bodyW, 18, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); setTxt(col.darkGold);
+      doc.text(String(r.promoName || 'Promotion'), MG+8, yPos+12);
+      doc.text('-$' + Math.round(_prAmt).toLocaleString('en-US'), MG+bodyW-8, yPos+12, {align:'right'});
+      yPos += 18;
     }
     // Total row
     var totNum = parseFloat(String(r.total || r.totalCombined || 0).replace(/[^0-9.]/g,'')) || 0;
@@ -28250,7 +28293,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M179-1124';
+window.SAUCE_BUILD = 'M181-1124';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -31010,6 +31053,8 @@ async function saveSalesQuote(overwriteMode) {
       tax:            fmtPriceFull(oh.tax),
       shipping:       fmtPriceFull(oh.shipping),
       manualAdders:   fmtPriceFull(oh.manualAdders),
+      promoAmt:       oh.promoAmt  || 0,
+      promoName:      oh.promoName || '',
       totalCombined:  fmtPriceFull(oh.total),
       total:          fmtPriceFull(oh.total),
       mileage:        oh.mileage || _cachedMileage || 0,
@@ -49933,6 +49978,17 @@ window.SauceRates = (function() {
       fuelPerMile: 0,    // surcharge per mile past fuelStartMiles
       longHaulPerMile: 0     // extra per mile on installs beyond 205 miles
     },
+    // A limited-time promotion that comes off the quoted total. Ships EMPTY,
+    // exactly like every other rate here, so no company inherits another's
+    // offer. The tiers are text rather than fixed fields so a run can be added,
+    // moved or pulled without touching this file.
+    promo: {
+      name:          '',   // what it prints as on the quote and on the strip badge
+      startDate:     '',   // yyyy-mm-dd, blank = no start limit
+      endDate:       '',   // yyyy-mm-dd, blank = never expires
+      postFrameOnly: 0,    // 1 keeps it off stud frame
+      tiers:         ''    // one per line:  from | to | amount off
+    },
     concrete: {
       // 'flat'  — one set of rates for every job, wherever it is
       // 'zones' — rates vary by county, using zoneMap below
@@ -52022,6 +52078,13 @@ window.SAUCE_CATALOG = [["PAL","Pallet charge","Concrete Accessories"],["PBFP16"
       +   _pcTile('Concrete', 'One flat rate, or different rates by county.',
                  (window.SauceConcrete.mode() === 'zones' ? 'by county' : 'flat'), 'openConcretePricing()', '#fbbf24')
       +   _pcTile('Shipping', 'Per mile, minimums and surcharges.', mark(anySet('shipping')), 'openShippingPricing()', '#86efac')
+      +   _pcTile('Promotion', 'A limited-time discount off the quoted total.',
+                 (function(){ try {
+                     if (!window.SaucePromo || !window.SaucePromo.tiers().length) return 'none';
+                     return (window.SauceRates.text('promo.name','') || 'set up')
+                            + (window.SaucePromo.inWindow() ? '' : ' (ended)');
+                   } catch(e){ return 'none'; } })(),
+                 'openPromoPricing()', '#f0abfc')
       +   ((function(){
             try {
               return (window.currentUser||{}).isCompanyAdmin
@@ -53818,6 +53881,51 @@ window.concreteIncludes = function() {
     _pcShell('shippingPricingModal', 'Shipping', 'Delivery and mileage', html);
   };
 
+  // ── PROMOTION ────────────────────────────────────────────────────────────
+  window.openPromoPricing = function() {
+    var html = '<div style="font-size:10px;color:#8f8f8f;padding:6px 0 8px;line-height:1.45;font-family:Outfit,sans-serif;">'
+      + 'A discount that comes off the quoted total and prints as its own line on the quote. '
+      + 'The material list, the labor and the tax are untouched. Empty the tiers to switch it off.'
+      + '</div>'
+      + _pcSection('What it is called')
+      + _pcText('promo.name', '', 'Black Friday Sale', 1)
+      + _pcSection('When it runs')
+      + '<div style="font-size:10px;color:#8f8f8f;padding:2px 0 6px;font-family:Outfit,sans-serif;">'
+      +   'YYYY-MM-DD. Leave a box empty for no limit on that end.</div>'
+      + _pcText('promo.startDate', 'First day', '2026-11-24', 1)
+      + _pcText('promo.endDate',   'Last day',  '2026-12-15', 1)
+      + _pcSection('Tiers')
+      + '<div style="font-size:10px;color:#8f8f8f;padding:2px 0 6px;line-height:1.45;font-family:Outfit,sans-serif;">'
+      +   'One per line, as <b style="color:#c8c8c8;">from | to | amount off</b>. Leave the middle empty for '
+      +   '&quot;and up&quot;. Start each line a cent above the one before it, so a package landing on a round '
+      +   'figure can only match one tier. The first line that fits wins.'
+      + '</div>'
+      + _pcText('promo.tiers', '', '10000 | 20000 | 500\n20000.01 | 30000 | 1000\n30000.01 | 44999.99 | 1500\n45000 | | 2500', 6)
+      + _pcNum('promo.postFrameOnly', 'Post frame only', '1 keeps it off stud frame. 0 applies it to every frame type.')
+      + '<button onclick="loadBlackFriday2026()" style="width:100%;margin-top:12px;padding:9px;'
+      +   'background:rgba(var(--gold-rgb),.12);color:var(--gold);border:1px solid rgba(var(--gold-rgb),.45);'
+      +   'border-radius:8px;font-size:11px;font-weight:800;cursor:pointer;font-family:Outfit,sans-serif;">'
+      +   'Fill in Black Friday 2026</button>';
+    _pcShell('promoPricingModal', 'Promotion', 'A discount off the quoted total', html);
+  };
+
+  // Fills the boxes from the flyer and stops there. Nothing is stored until
+  // Save is pressed, so every figure can still be changed first.
+  window.loadBlackFriday2026 = function() {
+    function setT(path, val) {
+      var el = document.querySelector('#promoPricingModalBody [data-pc-text="' + path + '"]');
+      if (el) el.value = val;
+    }
+    setT('promo.name',      'Black Friday Sale');
+    setT('promo.startDate', '2026-11-24');
+    setT('promo.endDate',   '2026-12-15');
+    setT('promo.tiers',     '10000 | 20000 | 500\n20000.01 | 30000 | 1000\n30000.01 | 44999.99 | 1500\n45000 | | 2500');
+    var n = document.querySelector('#promoPricingModalBody [data-pc-path="promo.postFrameOnly"]');
+    if (n) n.value = 1;
+    var st = document.getElementById('promoPricingModalStatus');
+    if (st) { st.textContent = 'Filled in. Press Save to put it on quotes.'; st.style.color = 'var(--gold)'; }
+  };
+
   // ── MATERIALS ────────────────────────────────────────────────────────────
   window.openMaterialsPricing = function() {
     var info = window._priceListInfo || {};
@@ -55203,6 +55311,77 @@ window.SauceESD = {
     };
   }
 };
+// ====================================================================
+// SAUCE PROMO — a limited-time discount that comes off the quoted total.
+//
+// The tiers live in Pricing -> Promotion as a text block, one per line:
+//
+//     from | to | amount off          (a blank "to" means "and up")
+//
+// so a run can be added, re-cut or pulled without a code change. Lower bounds
+// are entered a cent above the tier below, so a package landing exactly on a
+// round figure can only ever match one tier.
+//
+// This is a discount on the PRICE. The material list, the quantities, the
+// labor and the tax are not touched by anything in here.
+// ====================================================================
+window.SaucePromo = {
+  tiers: function() {
+    var raw = '';
+    try { raw = window.SauceRates ? window.SauceRates.text('promo.tiers', '') : ''; } catch(e) {}
+    var out = [];
+    String(raw || '').split('\n').forEach(function(ln) {
+      var p = ln.split('|').map(function(x){ return String(x).replace(/[$,\s]/g, ''); });
+      if (p.length < 3) return;
+      var min = parseFloat(p[0]);
+      var max = (p[1] === '') ? Infinity : parseFloat(p[1]);
+      var amt = parseFloat(p[2]);
+      if (!isFinite(min) || isNaN(amt) || amt <= 0) return;
+      if (isNaN(max)) max = Infinity;
+      out.push({ min: min, max: max, amount: amt });
+    });
+    return out;
+  },
+
+  // Inside the dates, or always when neither end is set.
+  inWindow: function(today) {
+    var Rt = window.SauceRates; if (!Rt) return false;
+    var a = '', b = '';
+    try { a = Rt.text('promo.startDate', ''); b = Rt.text('promo.endDate', ''); } catch(e) {}
+    var d = today || (new Date()).toISOString().slice(0, 10);
+    if (a && d < a) return false;
+    if (b && d > b) return false;
+    return true;
+  },
+
+  // null when nothing applies, so the caller subtracts nothing at all.
+  forTotal: function(total, forcedType) {
+    try {
+      total = parseFloat(total) || 0;
+      if (total <= 0) return null;
+      if (!window.SaucePromo.inWindow()) return null;
+      var Rt = window.SauceRates;
+      if (Rt && Rt.v('promo.postFrameOnly') && forcedType === 'stud') return null;
+      var list = window.SaucePromo.tiers(), hit = null;
+      for (var i = 0; i < list.length; i++) {
+        if (total >= list[i].min && total <= list[i].max) { hit = list[i]; break; }
+      }
+      if (!hit) return null;
+      var name = (Rt ? (Rt.text('promo.name', '') || '') : '') || 'Promotion';
+      var amt  = Math.min(hit.amount, total);
+      function money(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
+      return {
+        amount: amt,
+        name:   name,
+        tier:   hit,
+        badge:  name.toUpperCase() + '  -' + money(amt),
+        note:   name + ': was ' + money(total) + ', ' + money(amt)
+                + ' off, now ' + money(total - amt) + '.'
+      };
+    } catch(e) { return null; }
+  }
+};
+
 // ====================================================================
 window.SauceTax = {
   // Rate comes from the company's profile, same as SauceLabor.calcTax.
