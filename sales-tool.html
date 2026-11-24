@@ -4706,7 +4706,16 @@ function setEaveCustomPS(side, raw){
     var pts=[0], run=0;
     bays.forEach(function(bv){ run+=bv; pts.push(Math.round(run*100)/100); });
     pinOther();
-    if(wSelf){ wSelf.postsManual = pts; wSelf.postsManualPs = bays[0]; }
+    // postsManualPs records the GRID SPACING this hand-set line was derived
+    // from, not the size of its first bay. The bar joist editor compares it
+    // against the wall's current spacing to decide whether the spacing setting
+    // has moved under the line and the grid needs relaying -- so storing a bay
+    // size here left it permanently out of step, and opening the editor threw
+    // the run away and rebuilt an even grid.
+    if(wSelf){
+      wSelf.postsManual   = pts;
+      wSelf.postsManualPs = wSelf.postSpacing || Q.eavePS || Q.postSpacing || 10;
+    }
     if(out){ out.style.color='var(--muted)';
       out.textContent = bays.length+' bays  '+bays.map(function(bv){return fmtFtIn(bv);}).join(' / '); }
     try{ buildPSChips(); }catch(e){}
@@ -28232,7 +28241,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M174-1123';
+window.SAUCE_BUILD = 'M175-1123';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -34487,6 +34496,26 @@ window.bjBaseGrid = function(wallId) {
   return out;
 };
 
+// How a wall's spacing reads on the plan. A wall laid out by hand is not on
+// any one spacing, so saying "10' o.c." over a 20-20-10 run described a wall
+// that is not there -- the designer has to show the same layout the model and
+// the quote do.
+window.bjSpacingLabel = function(wallId) {
+  var w = window.bjWall(wallId);
+  var m = w && w.postsManual;
+  if (Array.isArray(m) && m.length > 1) {
+    var v = m.map(parseFloat).filter(function(n){ return isFinite(n); }).sort(function(a,b){ return a-b; });
+    if (v.length > 1) {
+      var bays = [], i;
+      for (i = 1; i < v.length; i++) bays.push(Math.round((v[i]-v[i-1])*100)/100);
+      var even = bays.every(function(b){ return Math.abs(b - bays[0]) < 0.01; });
+      if (!even) return bays.map(function(b){ return b + "'"; }).join(' / ');
+      return bays[0] + "' o.c.";
+    }
+  }
+  return window.bjSpacing(wallId) + "' o.c.";
+};
+
 // What the editor is working on: the hand-set line if there is one, otherwise
 // the plain grid.
 window.bjWorkingPosts = function(wallId) {
@@ -35529,15 +35558,15 @@ window.bjDrawPlan = function() {
 
   ctx.font = 'bold 10px Outfit, sans-serif';
   ctx.fillStyle = U.wall === 'right' ? '#fbbf24' : '#475569';
-  ctx.fillText('RIGHT EAVE  ' + window.bjSpacing('right') + "' o.c.", (g.x0+g.x1)/2, g.y0 - 16);
+  ctx.fillText('RIGHT EAVE  ' + window.bjSpacingLabel('right'), (g.x0+g.x1)/2, g.y0 - 16);
   ctx.fillStyle = U.wall === 'left' ? '#fbbf24' : '#475569';
-  ctx.fillText('LEFT EAVE  ' + window.bjSpacing('left') + "' o.c.", (g.x0+g.x1)/2, g.y1 + 24);
+  ctx.fillText('LEFT EAVE  ' + window.bjSpacingLabel('left'), (g.x0+g.x1)/2, g.y1 + 24);
   ctx.save(); ctx.translate(g.x0 - 6, (g.y0+g.y1)/2); ctx.rotate(-Math.PI/2);
   ctx.fillStyle = U.wall === 'front' ? '#fbbf24' : '#475569';
-  ctx.fillText('FRONT GABLE  ' + window.bjSpacing('front') + "' o.c.", 0, 0); ctx.restore();
+  ctx.fillText('FRONT GABLE  ' + window.bjSpacingLabel('front'), 0, 0); ctx.restore();
   ctx.save(); ctx.translate(g.x1 + 14, (g.y0+g.y1)/2); ctx.rotate(-Math.PI/2);
   ctx.fillStyle = U.wall === 'back' ? '#fbbf24' : '#475569';
-  ctx.fillText('BACK GABLE  ' + window.bjSpacing('back') + "' o.c.", 0, 0); ctx.restore();
+  ctx.fillText('BACK GABLE  ' + window.bjSpacingLabel('back'), 0, 0); ctx.restore();
 
   ctx.textAlign = 'left'; ctx.font = '9px Outfit, sans-serif'; ctx.fillStyle = '#475569';
   ctx.fillText('Click a wall to work on it', 12, cv.height - 12);
@@ -35673,7 +35702,7 @@ window.bjDraw = function() {
   // Header
   var sub = document.getElementById('bjSub');
   if (sub) sub.textContent = window.bjWallLabel(U.wall) + '  ·  ' + g.wLen + "'  ·  "
-    + step + "' o.c.  ·  " + posts.length + ' posts'
+    + window.bjSpacingLabel(U.wall) + '  ·  ' + posts.length + ' posts'
     + (function() {
         if (!Array.isArray(w.postsManual)) return '  ·  automatic';
         var base = window.bjBaseGrid(U.wall);
