@@ -21623,9 +21623,14 @@ function applyVoiceQuote(parsed, overlay) {
               }
               sb2(_ssRX,ssLoH,_ssRX+_ssNx,ssLoH+_ssNy,_ssTWeb);
             }
-            for(var _sti=1;_sti<_ssTrussCount;_sti++){
+            // The list buys numBays + 1 -- a truss on every post line, both ends
+            // included. This drew 1..count-1, the interior only, so the two end
+            // trusses sitting on the end posts were missing from the model while
+            // the quote was buying them. Same bounds the gable path uses, and the
+            // ends are tagged the way it tags them.
+            for(var _sti=0;_sti<=_ssTrussCount;_sti++){
               window._spUnit = 'st' + _sti;
-              window._spPart = 'truss';
+              window._spPart = (_sti === 0 || _sti === _ssTrussCount) ? 'gableTruss' : 'truss';
               ssTruss(_ssZ1i+(_sti/_ssTrussCount)*sl);
             }
             window._spUnit = null; window._spPart = null;
@@ -24345,9 +24350,10 @@ function buildModernQuoteDoc(ctx) {
     T(opt.sub || '', MG+18, y+38, 8.5, 'normal', lead ? '#c9dcff' : C.body);
     T(money(opt.total), PW-MG-18, y+35, 21, 'bold', lead ? C.white : C.ink, 'right');
     y += 52;
-    if (ctx.depositPct > 0) {
-      T(ctx.depositPct + '% deposit to start', MG+18, y+14, 8.5, 'normal', C.muted);
-      T(money(opt.total * ctx.depositPct / 100) + ' due on order',
+    // The amount, never the percentage.
+    if (opt.deposit > 0) {
+      T('Deposit to start', MG+18, y+14, 8.5, 'normal', C.muted);
+      T(money(opt.deposit) + ' due on order',
         PW-MG-18, y+14, 9, 'bold', C.ink, 'right');
       y += 22;
     }
@@ -24380,6 +24386,24 @@ function buildModernQuoteDoc(ctx) {
 // Gathers what the modern layout needs from the quote that is already on
 // screen. Everything here is read from the same places the classic document
 // reads, so the two can never describe the building differently.
+// ── DEPOSIT ──────────────────────────────────────────────────────────────────
+// 30% of materials + tax + delivery. Never the full total, and never the labor
+// or the concrete -- those are not owed on order. A company or a salesman may
+// set its own figure, but what they set is the PERCENT; the base is always the
+// same three lines. The percentage itself is never printed on a quote, only the
+// amount, so a customer sees what is due and not the arithmetic behind it.
+//
+// Both quote layouts used to work this out for themselves, and both did it off
+// the full total -- which on a discounted quote also meant the deposit quietly
+// moved with the promotion.
+window.SauceDepositAmt = function(r, pct) {
+  r = r || {};
+  function n(v){ return parseFloat(String(v == null ? 0 : v).replace(/[^0-9.-]/g, '')) || 0; }
+  var base = n(r.materialOnly) + n(r.tax) + n(r.shipping);
+  var p = (pct > 0 && pct <= 100) ? pct : 30;
+  return base > 0 ? Math.round(base * p / 100) : 0;
+};
+
 function modernQuoteContext(a) {
   var brand = window._companySettings || {};
   var Q = window._Q || {}, WALLS = window._WALLS || [];
@@ -24492,7 +24516,10 @@ function modernQuoteContext(a) {
     options: a.priceEntries.map(function(e){
       return { label: e.label,
                sub: 'Materials, labor, concrete, delivery and tax',
-               total: parseFloat(String(e.r && e.r.total || 0).replace(/[^0-9.]/g,'')) || 0 };
+               total: parseFloat(String(e.r && e.r.total || 0).replace(/[^0-9.]/g,'')) || 0,
+               // Worked out per option from that option's own three lines,
+               // rather than from its total, which is what the layout had.
+               deposit: window.SauceDepositAmt(e.r, a.depositPct) };
     }),
     depositPct: a.depositPct || 0,
     link3d: a.link3d || ''
@@ -24977,9 +25004,9 @@ async function generateQuotePDF() {
   // Per-account: some salesmen present a single Total Investment with no cost
   // breakout. Flag comes from column L of the Users sheet via the login response.
   var _singleTotalPdf = !!((window.currentUser || {}).singleTotalPdf);
-  // Per-account deposit rule from column M of the Users sheet. When set, the deposit is
-  // that percent of the FULL TOTAL; when 0/blank the house rule applies (35% of
-  // materials + tax + delivery). Clamped so a bad cell can't produce a silly figure.
+  // Per-account deposit percent from column M of the Users sheet. It sets the
+  // PERCENT only -- the base is always materials + tax + delivery. Blank falls
+  // back to the house 30%. Clamped so a bad cell can't produce a silly figure.
   // The company sets a deposit for everyone; a salesman's own figure overrides
   // it; with neither, the house rule applies. Company first means adding a
   // salesman does not mean remembering to set his deposit.
@@ -25060,14 +25087,9 @@ async function generateQuotePDF() {
     doc.setFontSize(16); setTxt(col.onDark);
     doc.text(totStr, MG+bodyW-8, yPos+16, {align:'right'});
     yPos += 24;
-    // Deposit row — amount only, no breakout shown. House rule is 35% of materials +
-    // tax + delivery; an account with column M set uses that percent of the full total.
-    var matNum  = parseFloat(String(r.materialOnly||0).replace(/[^0-9.]/g,'')) || 0;
-    var taxNum  = parseFloat(String(r.tax||0).replace(/[^0-9.]/g,'')) || 0;
-    var shipNum = parseFloat(String(r.shipping||0).replace(/[^0-9.]/g,'')) || 0;
-    var depBase = _depPctOfTotal > 0 ? totNum : (matNum + taxNum + shipNum);
-    if (depBase > 0) {
-      var dep = Math.round(_depPctOfTotal > 0 ? (totNum * _depPctOfTotal / 100) : (depBase * 0.35));
+    // Deposit row — amount only, no breakout and no percentage shown.
+    var dep = window.SauceDepositAmt(r, _depPctOfTotal);
+    if (dep > 0) {
       var depStr = '$' + dep.toLocaleString('en-US');
       setFill('#5e5e5e'); doc.rect(MG, yPos, bodyW, 20, 'F');
       doc.setFont('helvetica','normal'); doc.setFontSize(9);
@@ -28341,7 +28363,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M189-1125';
+window.SAUCE_BUILD = 'M191-1125';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
