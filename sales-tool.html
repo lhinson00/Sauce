@@ -7841,6 +7841,14 @@ window._spMark = function(grp, from, part, unit){
     var onTop = false;
     try { onTop = ((document.getElementById('st_postsOnTop')||{}).value === 'Yes'); } catch(e){}
     if (onTop) return;
+    // On a Perma-Column job the thing below grade is the column, drawn with the
+    // post itself, and the list buys no footing pads -- so there is no buried
+    // wood and no pad to ghost in here. Without this the sweep below also saw
+    // each column as a post standing at grade and buried IT four feet, which
+    // put a second row of stubs and pads at eight feet down.
+    var _permaFoot = false;
+    try { _permaFoot = ((document.getElementById('st_postBaseType')||{}).value === 'perma'); } catch(e){}
+    if (_permaFoot) return;
     var sc1 = Sc || window._spSc || 0.1;
     var BURY = 4 * sc1;                  // 4' embedment, the same the list buys for
     var PADT = (2/12) * sc1;             // moulded plastic pad, about 2" thick
@@ -14638,6 +14646,12 @@ function applyVoiceQuote(parsed, overlay) {
         // post seats onto via a steel wrap bracket. When selected, posts start atop the pillar.
         const _permaMode = ((document.getElementById('st_postBaseType')||{}).value === 'perma');
         const pillarH = 2 * Sc; // ~2 ft out of the ground
+        // On an in-ground job the column is set in the hole instead, and the
+        // wood post lands on it at grade -- which is the whole point of it, and
+        // why the post stops buying 4' of embedment. Same column, drawn from
+        // 4' down to grade rather than from grade up.
+        const buryH = 4 * Sc;
+        const _permaBuried = _permaMode && !postsOnTop;
         const _pBaseH = _permaMode ? pillarH : slabH;
         const postBase = postsOnTop ? _pBaseH : 0;
         const postH = postsOnTop ? sh - _pBaseH : sh;
@@ -14675,22 +14689,28 @@ function applyVoiceQuote(parsed, overlay) {
             if (_isPerma) {
                 function _addP(m){ if(_hideBW){ m.userData = m.userData || {}; m.userData.hideBehindWall = true; } m.castShadow = true; group.add(m); }
                 const colW = ps * 1.05;
-                var col = new THREE.Mesh(new THREE.BoxGeometry(colW, pillarH, colW), mPerma);
-                col.position.set(x, pillarH/2, z); _addP(col);
+                // Where the column runs from and to. Buried: 4' down to grade,
+                // post on top at grade. On a slab: grade up to 2', post on top
+                // of that -- exactly as before.
+                var _colBot = _permaBuried ? -buryH : 0;
+                var _colTop = _permaBuried ? 0 : pillarH;
+                var _colH   = _colTop - _colBot;
+                var col = new THREE.Mesh(new THREE.BoxGeometry(colW, _colH, colW), mPerma);
+                col.position.set(x, _colBot + _colH/2, z); _addP(col);
                 var cap = new THREE.Mesh(new THREE.BoxGeometry(colW*1.1, 0.012, colW*1.1), mPermaDk);
-                cap.position.set(x, pillarH + 0.006, z); _addP(cap);
+                cap.position.set(x, _colTop + 0.006, z); _addP(cap);
                 var brkH = 1.0 * Sc; // steel wrap ~1' tall around the post base
                 var side = new THREE.BoxGeometry(ps * 0.10, brkH, ps * 1.04);
-                var s1 = new THREE.Mesh(side, mBracket); s1.position.set(x - ps*0.55, pillarH + brkH/2, z); _addP(s1);
-                var s2 = new THREE.Mesh(side, mBracket); s2.position.set(x + ps*0.55, pillarH + brkH/2, z); _addP(s2);
+                var s1 = new THREE.Mesh(side, mBracket); s1.position.set(x - ps*0.55, _colTop + brkH/2, z); _addP(s1);
+                var s2 = new THREE.Mesh(side, mBracket); s2.position.set(x + ps*0.55, _colTop + brkH/2, z); _addP(s2);
                 var fb = new THREE.BoxGeometry(ps * 1.04, brkH, ps * 0.10);
-                var f1 = new THREE.Mesh(fb, mBracket); f1.position.set(x, pillarH + brkH/2, z - ps*0.55); _addP(f1);
-                var f2 = new THREE.Mesh(fb, mBracket); f2.position.set(x, pillarH + brkH/2, z + ps*0.55); _addP(f2);
+                var f1 = new THREE.Mesh(fb, mBracket); f1.position.set(x, _colTop + brkH/2, z - ps*0.55); _addP(f1);
+                var f2 = new THREE.Mesh(fb, mBracket); f2.position.set(x, _colTop + brkH/2, z + ps*0.55); _addP(f2);
                 [-brkH*0.25, brkH*0.28].forEach(function(by){
                     var b1 = new THREE.Mesh(new THREE.BoxGeometry(ps*0.14, 0.012, 0.012), mBracketDark);
-                    b1.position.set(x - ps*0.55 - 0.003, pillarH + brkH/2 + by, z); _addP(b1);
+                    b1.position.set(x - ps*0.55 - 0.003, _colTop + brkH/2 + by, z); _addP(b1);
                     var b2 = new THREE.Mesh(new THREE.BoxGeometry(ps*0.14, 0.012, 0.012), mBracketDark);
-                    b2.position.set(x + ps*0.55 + 0.003, pillarH + brkH/2 + by, z); _addP(b2);
+                    b2.position.set(x + ps*0.55 + 0.003, _colTop + brkH/2 + by, z); _addP(b2);
                 });
                 return;
             }
@@ -14760,7 +14780,12 @@ function applyVoiceQuote(parsed, overlay) {
             p.castShadow = true;
             p.userData.hideBehindWall = !!hideBehindWall;
             grps.mainPosts.add(p);
-            if (postsOnTop) addBracket(x, z, grps.mainPosts, slabH, _permaMode ? !!hideBehindWall : false, _permaMode);
+            // Brackets need a slab under them, so they stay behind postsOnTop.
+            // A Perma-Column does not -- on an in-ground job it is the thing in
+            // the hole, so it draws either way.
+            if (postsOnTop || _permaBuried) {
+              addBracket(x, z, grps.mainPosts, slabH, _permaMode ? !!hideBehindWall : false, _permaMode);
+            }
         }
 
         // Interior / stall posts — slab to truss bottom (eave height), in grps.mainPosts
@@ -28316,7 +28341,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M188-1125';
+window.SAUCE_BUILD = 'M189-1125';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -38015,6 +38040,22 @@ window.SauceMaterials.wallPostSizeFor = function(wallId, sf) {
 
 // Enforce minimum stocked lengths per post size.
 // 8x8 treated posts: shortest we carry is PT8816, so floor 8x8 lengths at 16'.
+// A Perma-Column is a precast concrete column set in the ground; the wood post
+// lands on top of it at grade. So the post stops buying the 4' of embedment,
+// exactly as a post on a slab does -- but the hole, and the sackcrete around
+// it, are still there. Asked the same way calcPostBrackets already asks it:
+// the live form first, then the saved snapshot, so a reloaded quote answers
+// the same as the screen it was saved from.
+window.SauceMaterials.permaBase = function(sf) {
+  var v = null;
+  try {
+    var el = (typeof document !== 'undefined') ? document.getElementById('st_postBaseType') : null;
+    if (el) v = el.value;
+  } catch (e) {}
+  if (!v) v = (sf && (sf.postBracketType || sf.postBaseType)) || 'bracket';
+  return v === 'perma';
+};
+
 window.SauceMaterials.enforceMinPostLen = function(postSize, postLen) {
   // Always round up to next even foot, minimum 10'
   var rounded = Math.ceil(postLen / 2) * 2;
@@ -38153,6 +38194,9 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
   var left  = SM.getPostsForWall('left',  Q, WALLS, allDoors);
   var right = SM.getPostsForWall('right', Q, WALLS, allDoors);
   var onTop = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
+  // A column under the post does the same thing to its length as a slab does.
+  var _perma  = SM.permaBase(sf);
+  var _noBury = onTop || _perma;
   var map   = { '6x6':'PT66', '8x8':'PT88', '10x10':'PT1010', '12x12':'PT1212' };
 
   // ── SINGLE SLOPE: two different post heights ───────────────────────────────
@@ -38163,8 +38207,8 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
     var hiH  = Q.h || 14;                    // Q.h = high eave
     var loH  = Math.max(8, Math.ceil((Q.h||14) - (Q.w||24)/12)); // low eave = high - W/12, ceiled to whole foot
     var postSize = SM.wallPostSizeFor('left', sf) || '6x6';
-    var hiLen = onTop ? hiH : hiH + 4;
-    var loLen = onTop ? loH : loH + 4;
+    var hiLen = _noBury ? hiH : hiH + 4;
+    var loLen = _noBury ? loH : loH + 4;
     hiLen = SM.enforceMinPostLen(postSize, hiLen);
     loLen = SM.enforceMinPostLen(postSize, loLen);
     var hiSku = (map[postSize] || 'PT66') + hiLen;
@@ -38183,7 +38227,7 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
   }
   // ──────────────────────────────────────────────────────────────────────────
 
-  var len   = onTop ? Q.h : Q.h + 4;
+  var len   = _noBury ? Q.h : Q.h + 4;
 
   // Bar joist reduction — applied to whichever side is open/wider (total reduction)
   var bjReduction = SM.getBarjoistPostReduction ? SM.getBarjoistPostReduction(Q) : 0;
@@ -38223,7 +38267,7 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
     function _epAdd(posts, size){
       _epWithBounds(posts).forEach(function(pp){
         var _eh  = _epEaveAt(pp.ft);
-        var _pl  = onTop ? _eh : _eh + 4;
+        var _pl  = _noBury ? _eh : _eh + 4;
         _pl = SM.enforceMinPostLen(size, _pl);
         var _psku = (map[size] || 'PT66') + _pl;
         if (!_epGrp[_psku]) _epGrp[_psku] = { sku:_psku, len:_pl, size:size, qty:0 };
@@ -38241,7 +38285,7 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
         _epGrp[_bgKeys[_bk]].qty -= _take; _rem -= _take;
       }
     }
-    var _sufE = onTop ? ' (posts on top)' : ' (in-ground)';
+    var _sufE = onTop ? ' (posts on top)' : (_perma ? ' (on perma-column)' : ' (in-ground)');
     Object.values(_epGrp).sort(function(a,b){ return a.len - b.len; }).forEach(function(g){
       if (g.qty <= 0) return;
       results.push({ category:'Yard', description:'Main Building Eave Posts', sku:g.sku, quantity:g.qty,
@@ -38254,7 +38298,7 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
     var qty = Math.max(0, wallPosts.length - reduction);
     var useLen = SM.enforceMinPostLen(wallSize, len);
     var sku = (map[wallSize] || 'PT66') + useLen;
-    var suffix = onTop ? ' (posts on top)' : ' (in-ground)';
+    var suffix = onTop ? ' (posts on top)' : (_perma ? ' (on perma-column)' : ' (in-ground)');
     var detail = wallLabel + ': ' + wallPosts.length + ' posts  |  ' + wallSize + ' × ' + useLen + "ft" + suffix;
     if (reduction > 0) detail += '  |  ' + reduction + ' removed by bar joist(s)';
     return { category: 'Yard', description: 'Eave Posts — ' + wallLabel, sku: sku, quantity: qty, detail: detail };
@@ -38265,7 +38309,7 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
     var totalQty = Math.max(0, left.length + right.length - bjReduction);
     var useLen = SM.enforceMinPostLen(leftSize, len);
     var sku = (map[leftSize] || 'PT66') + useLen;
-    var suffix = onTop ? ' (posts on top)' : ' (in-ground)';
+    var suffix = onTop ? ' (posts on top)' : (_perma ? ' (on perma-column)' : ' (in-ground)');
     var detail = left.length + ' left / ' + right.length + ' right  |  ' + leftSize + ' × ' + useLen + "ft" + suffix;
     if (bjReduction > 0) detail += '  |  ' + bjReduction + ' removed by bar joist(s)';
     results.push({ category: 'Yard', description: 'Main Building Eave Posts', sku: sku, quantity: totalQty, detail: detail });
@@ -38282,7 +38326,7 @@ window.SauceMaterials.calcEavePosts = function(Q, WALLS, allDoors, sf) {
     var _ipSize = leftSize;
     var _ipLen  = SM.enforceMinPostLen(_ipSize, len);
     var _ipSku  = (map[_ipSize] || 'PT66') + _ipLen;
-    var _ipSuf  = onTop ? ' (posts on top)' : ' (in-ground)';
+    var _ipSuf  = onTop ? ' (posts on top)' : (_perma ? ' (on perma-column)' : ' (in-ground)');
     results.push({ category:'Yard', description:'Inset Corner Posts', sku:_ipSku, quantity:3,
       detail: '3 posts (inside corner + 2 return junctions)  |  ' + _ipSize + ' × ' + _ipLen + 'ft' + _ipSuf });
   }
@@ -38300,7 +38344,8 @@ window.SauceMaterials.calcGablePosts = function(Q, WALLS, allDoors, sf) {
   var SM = window.SauceMaterials;
   var map      = { '6x6':'PT66', '8x8':'PT88', '10x10':'PT1010', '12x12':'PT1212' };
   var onTop    = (sf.postsOnTop || 'No').toLowerCase() === 'yes';
-  var ground   = onTop ? 0 : 4;
+  // Same rule as the eave posts: a column under the post removes the embedment.
+  var ground   = (onTop || SM.permaBase(sf)) ? 0 : 4;
   var skuGroups = {};
 
   // Height sections: each end wall's posts rise to its END section's eave + gable slope
@@ -38723,7 +38768,11 @@ window.SauceMaterials.calcFootingPads = function(Q, WALLS, allDoors, shedCfgs, s
     groups[sku] += count;
   }
 
-  if (!onTop && !sf.isStudFrame && !window._shedOnlyMode) {
+  // A Perma-Column is set on its own base, so the pads come off the list. The
+  // sackcrete does not: the hole is still dug and still filled around the
+  // column. Only the pads.
+  var _permaFP = SM.permaBase(sf);
+  if (!onTop && !_permaFP && !sf.isStudFrame && !window._shedOnlyMode) {
     // Eave posts — per wall
     ['left', 'right'].forEach(function(wallId) {
       var wallSize = SM.wallPostSizeFor(wallId, sf);
@@ -38821,7 +38870,7 @@ window.SauceMaterials.calcPostBrackets = function(Q, WALLS, allDoors, shedCfgs, 
   //   garage door jamb post (any wall)               -> singleSku x4 per door (2 posts x2)
   //   walk door jamb post (any wall)                 -> singleSku x2
   //   all other posts                                -> regularSku x1
-  if (onTop && !sf.isStudFrame) {
+  if ((onTop || permaMode) && !sf.isStudFrame) {
     var cornerSize = SM.wallPostSizeFor('left', sf);
     if (permaMode) {
       // Perma-Columns: exactly ONE column per post, sized to that post.
