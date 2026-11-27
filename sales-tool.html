@@ -28363,7 +28363,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M191-1125';
+window.SAUCE_BUILD = 'M192-1127';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
@@ -28971,6 +28971,8 @@ window.sendPromoEmails = async function () {
 // creating logins, sending mail, and talking to Claude or Maps. Each one checks
 // the caller's session before it does anything.
 async function sbFunction(name, payload, timeoutMs) {
+  // Mail goes out on the same sign-in, so it ages out the same way.
+  try { if (window.SauceAuth && SauceAuth.ensureFresh) await SauceAuth.ensureFresh(); } catch(e) {}
   var url = window.SAUCE_ENDPOINTS.supabaseUrl + '/functions/v1/' + name;
   var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
   var timer = ctrl ? setTimeout(function(){ ctrl.abort(); }, timeoutMs || 60000) : null;
@@ -29002,10 +29004,12 @@ function _sbAuthHeader() {
   try { return 'Bearer ' + window.SauceAuth.token(); } catch(e) { return 'Bearer ' + _SB_KEY; }
 }
 
-async function sbFetch(path, opts) {
+async function sbFetch(path, opts, _retried) {
   if (!_SB_ON) return null;
   // Start each call clean so a stale failure can't be read as this one's.
   window._sbLastError = null;
+  // Renew the sign-in if it is nearly out, before spending the request on it.
+  try { if (window.SauceAuth && SauceAuth.ensureFresh) await SauceAuth.ensureFresh(); } catch(e) {}
   try {
     // Callers pass their own headers, which would replace these wholesale, so
     // merge rather than overwrite — and always sign with the current session so
@@ -29023,6 +29027,20 @@ async function sbFetch(path, opts) {
       // "the write was refused", which is no help in fixing it.
       var _body = '';
       try { _body = await r.text(); } catch(e2) {}
+      // An expired token is worth one silent retry rather than a failed save:
+      // refresh the sign-in and send the same request again. Once only, so a
+      // genuinely dead sign-in still surfaces instead of looping.
+      if (r.status === 401 && !_retried && /JWT expired|PGRST303/i.test(_body)) {
+        // If another call in flight already renewed the sign-in, the token in
+        // hand is not the one that just failed -- retry on that rather than
+        // asking for a second new one.
+        var _used = String((_o.headers || {})['Authorization'] || '');
+        var _have = 'Bearer ' + (window.SauceAuth ? SauceAuth.token() : '');
+        var _ok = (_have !== _used);
+        if (!_ok) { try { _ok = await SauceAuth.ensureFresh(1e9); } catch(e4) {} }
+        if (_ok) { console.log('[SB] token had expired — refreshed, retrying', path);
+                   return await sbFetch(path, opts, true); }
+      }
       window._sbLastError = { path: path, status: r.status, body: _body };
       console.warn('[SB]', path, r.status, _body);
       return null;
@@ -33294,6 +33312,31 @@ window.SauceAuth = (function() {
     refresh: async function(refreshToken) {
       var r = await _post('/token?grant_type=refresh_token', { refresh_token: refreshToken });
       return (r.ok && r.data && r.data.access_token) ? r.data : null;
+    },
+
+    // The access token lasts about an hour. restore() refreshed it at page
+    // load and nothing refreshed it after, so a tab left open past that hour
+    // went on signing every call with a dead token -- and the database
+    // answered 401 "JWT expired" to a save that had taken real work to set up.
+    // Called before every signed request: it does nothing until the token is
+    // nearly out, and only one refresh is ever in flight at a time.
+    ensureFresh: async function(graceSec) {
+      var sess = window._sbSession;
+      if (!sess || !sess.refresh_token) return false;      // not signed in: nothing to keep alive
+      var now = Math.floor(Date.now() / 1000);
+      var grace = (graceSec == null) ? 120 : graceSec;
+      if (sess.expires_at && sess.expires_at - grace > now) return false;
+      if (this._refreshing) { try { await this._refreshing; } catch(e) {} return true; }
+      var self = this;
+      this._refreshing = (async function() {
+        try {
+          var fresh = await self.refresh(sess.refresh_token);
+          if (fresh) { self.saveSession(fresh); console.log('[auth] session refreshed'); return true; }
+          console.warn('[auth] refresh refused — the sign-in has run out');
+          return false;
+        } finally { self._refreshing = null; }
+      })();
+      try { return await this._refreshing; } catch(e) { return false; }
     },
 
     signOut: async function() {
