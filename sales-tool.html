@@ -2943,6 +2943,33 @@ window._parseShedsFromPdfText = function(txt) {
   return out.length ? out : null;
 };
 
+// Everything the import has to decide when the document does not say. Kept
+// here, out in the open, so it can be changed without touching the parser.
+window.IMPORT_DEFAULTS = {
+
+  // Which wall a garage door lands on when the estimate never states one.
+  // Use a WALL ID from the WALLS table above, NOT a label: the table is
+  // gable-inverted, so the id 'back' is the wall LABELED "Front Gable".
+  garageDoorWall: 'back',          // = Front Gable
+
+  // Our estimator writes some colour names shorter than the tool's list does.
+  // Key on the lower-case name exactly as the estimate prints it; the value
+  // must be a real COLOR_HEX key or it will not apply. Anything not listed
+  // here and not in COLOR_HEX is still reported to the salesman rather than
+  // swapped for a near match.
+  colorAliases: {
+    'black': 'Gloss Black'
+  },
+
+  // Words that begin a label on these sheets. pdf.js flattens a page to one
+  // line, so a free-text value has no colon to stop it and used to run on
+  // into the next label -- "Black" was being reported as "Black Trim Color".
+  labelWords: ['Roof','Wall','Trim','Wainscot','Quantity','Style','Type','Does',
+               'Building','Truss','Pitch','Insulation','Gutters','Soffit',
+               'Overhang','Concrete','Eave','Gable','Width','Length','Height',
+               'Color','Metal','Post','Shed','Side','Farm','Delivery']
+};
+
 window._importWall = function(w, fallback) {
   if (w == null || w === '') return fallback || null;
   var k = String(w).trim().toLowerCase();
@@ -3065,17 +3092,40 @@ window._parseSummertownEstimate = function(rawText) {
   gauge('Wall Metal Type', 'wallMetal', true);
   if (/Standing Seam/i.test(T)) P.standingSeam = true;
 
-  var known = Object.keys(window.COLOR_HEX || {});
-  var vocab = known.map(function(c){ return c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); })
-                   .sort(function(a,b){ return b.length - a.length; }).join('|');
+  // Match against the tool's own colour list AND the alias names our estimator
+  // uses. "Black" is the case that broke: the list has Gloss Black and Matte
+  // Black but no plain Black, so the wall colour was silently never set and the
+  // building kept its default. Putting the alias keys in the vocabulary means
+  // the value is matched exactly, with no greedy free-text capture involved.
+  var _ID     = window.IMPORT_DEFAULTS || {};
+  var _ALIAS  = _ID.colorAliases || {};
+  var known   = Object.keys(window.COLOR_HEX || {}).concat(Object.keys(_ALIAS));
+  var vocab   = known.map(function(c){ return c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); })
+                     .sort(function(a,b){ return b.length - a.length; }).join('|');
+  // Cut a free-text value where the next label starts, so a note reports the
+  // colour and not the colour plus whatever followed it.
+  function _cutAtLabel(str) {
+    var words = String(str).trim().split(/\s+/), lw = _ID.labelWords || [];
+    for (var i = 1; i < words.length; i++) {
+      for (var j = 0; j < lw.length; j++) {
+        if (words[i].toLowerCase() === String(lw[j]).toLowerCase()) return words.slice(0, i).join(' ');
+      }
+    }
+    return words.join(' ');
+  }
   [['Roof Metal Color','roofColor'], ['Wall Metal Color','wallColor'],
    ['Trim Color','trimColor'], ['Wainscot Color','wainscotColor']].forEach(function(pair) {
     if (!vocab) return;
     var v = pick(pair[0], vocab);
-    if (v) P[pair[1]] = v;
+    if (v) {
+      // Translate an alias to the name the colour pickers actually hold.
+      var a = _ALIAS[v.toLowerCase()];
+      if (a) { v = a; notes.push(pair[0] + ' read as "' + a + '"'); }
+      P[pair[1]] = v;
+    }
     else if (new RegExp(pair[0] + '\\s*:', 'i').test(T)) {
-      var any = T.match(new RegExp(pair[0] + '\\s*:\\s*([A-Za-z][A-Za-z ]{2,24})', 'i'));
-      if (any) notes.push(pair[0] + ' "' + any[1].trim() + '"');
+      var any = T.match(new RegExp(pair[0] + '\\s*:\\s*([A-Za-z#][A-Za-z0-9 .]{2,40})', 'i'));
+      if (any) notes.push(pair[0] + ' "' + _cutAtLabel(any[1]) + '" is not a colour the tool carries - set it by hand');
     }
   });
 
@@ -3120,15 +3170,56 @@ window._parseSummertownEstimate = function(rawText) {
   }
   if (wds.length) P.walkDoors = wds;
 
+  // The size is on the sheet in three places and the parser used to read none
+  // of them: it looked only for a label containing the word "Size", which these
+  // estimates do not print, and fell back to a hardcoded 12x12. A 16x12 door
+  // came in as 12x12. Read, in order of trust:
+  //   1. the Style line for that SKU   -- "16X12 INSULATED GARAGE DOOR"
+  //   2. a Size label if one exists    -- the old path, kept for other sheets
+  //   3. the SKU's own digits          -- GD1612IN = 16x12, GD108 = 10x8
+  function _gdSize(sku) {
+    if (sku) {
+      var st = T.match(new RegExp('Style of (?:Garage|Overhead|Roll-?up)[^:]*\\(' +
+                 sku.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\)\\s*:\\s*([^:]{3,60})', 'i'));
+      if (st) {
+        var d = st[1].match(/(\d{1,2})\s*[xX×]\s*(\d{1,2})/);
+        if (d) return { w:+d[1], h:+d[2], insulated:/insulat/i.test(st[1]), src:'style line' };
+      }
+    }
+    var sz = T.match(/(?:Garage|Overhead|Roll-?up)[^:]*Size[^:]*:\s*(\d+)\s*[xX'’\s]+(\d+)/i);
+    if (sz) return { w:+sz[1], h:+sz[2], insulated:false, src:'Size label' };
+    if (sku) {
+      var g = String(sku).replace(/[^0-9]/g,'');
+      if (g.length === 4) return { w:+g.slice(0,2), h:+g.slice(2), insulated:/IN$/i.test(sku), src:'SKU ' + sku };
+      if (g.length === 3) return { w:+g[0],         h:+g.slice(1), insulated:/IN$/i.test(sku), src:'SKU ' + sku };
+      // Two digits can only be a single-digit width and height (GD98 = 9x8).
+      // Require both to be a believable door so a width-only code such as
+      // "GD16" is rejected rather than read as 1x6.
+      if (g.length === 2 && +g[0] >= 6 && +g[1] >= 6)
+        return { w:+g[0], h:+g[1], insulated:/IN$/i.test(sku), src:'SKU ' + sku };
+    }
+    return null;
+  }
   var gds = [], m3, reGD = /Quantity of (?:Garage|Overhead|Roll-?up)[^:(]*(?:\(([A-Z0-9]+)\))?\s*:\s*(\d+)/gi;
   while ((m3 = reGD.exec(T))) {
     if (+m3[2] > 0) {
-      var sz = T.match(/(?:Garage|Overhead|Roll-?up)[^:]*Size[^:]*:\s*(\d+)\s*[xX'’\s]+(\d+)/i);
-      gds.push({ qty:+m3[2], w: sz ? +sz[1] : 12, h: sz ? +sz[2] : 12,
+      var g = _gdSize(m3[1]);
+      if (!g) { g = { w:12, h:12, insulated:false, src:null };
+                notes.push('Garage door size not stated - using 12x12, check it'); }
+      gds.push({ qty:+m3[2], sku:m3[1] || '', w:g.w, h:g.h, insulated:!!g.insulated,
                  placement: (+m3[2] === 1 ? 'center' : 'spaced') });
     }
   }
-  if (gds.length) { P.garageDoors = gds; notes.push('Garage door wall not stated - placed on the back gable'); }
+  if (gds.length) {
+    P.garageDoors = gds;
+    // These sheets never state which wall a door is on -- only the elevation
+    // sketch shows it. Say where it actually went, by the label the salesman
+    // sees on screen, instead of the old note that named a wall the code was
+    // not using.
+    var _gw  = (window.IMPORT_DEFAULTS || {}).garageDoorWall || 'back';
+    var _gwL = ((window.WALLS || []).filter(function(x){ return x.id === _gw; })[0] || {}).label || _gw;
+    notes.push('Garage door wall not stated - placed on the ' + _gwL + ', move it if the drawing differs');
+  }
 
   // ── Flags
   if (/Farm Exemption\?\s*:?\s*Yes/i.test(T)) P.farmTax = true;
@@ -6787,7 +6878,8 @@ async function importCompetitorPDF(input) {
           // Their A=our front (gable), B=our left (eave), C=our back (gable), D=our right (eave).
           // Garage doors CAN sit on a gable end, so map straight through instead of
           // forcing gable doors onto an eave wall (that put doors on the wrong side).
-          var gdWall = window._importWall(gd.wall, 'left');
+          var gdWall = window._importWall(gd.wall,
+                         (window.IMPORT_DEFAULTS || {}).garageDoorWall || 'back');
           try { console.log('[Import] garage door wall: raw=' + JSON.stringify(gd.wall) + ' -> ' + gdWall + ' (' + ((WALLS.find(function(x){return x.id===gdWall;})||{}).label||'?') + ')'); } catch(e){}
           var _isGableW = (gdWall === 'front' || gdWall === 'back');
           var wallObj = WALLS.find(function(wl){ return wl.id === gdWall; }) || {};
@@ -28363,7 +28455,7 @@ async function confirmSaveDesign(){
   }
 }
 
-window.SAUCE_BUILD = 'M192-1127';
+window.SAUCE_BUILD = 'M193-1127';
 // Printed on every load so the build running in the browser can be read off
 // directly, instead of guessing whether a file actually deployed.
 // The badge in the header used to carry a build number typed into the markup by
